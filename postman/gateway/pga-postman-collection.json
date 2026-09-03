@@ -1,0 +1,531 @@
+{
+  "info": {
+    "_postman_id": "51e8ad0a-484b-403c-be75-e6e289a75b53",
+    "name": "Payment Gateway Aggregator API",
+    "description": "WordPress支付网关聚合插件（S系统对接用）。\n\nBase URL: {{base_url}}，实际路径是 https://你的WordPress站点/wp-json/payment-plugin/v1，本Collection里的 base_url 变量请在Environment里直接填到 .../wp-json/payment-plugin/v1 这一级（不用再拼v1，请求path从/pay、/gateway-config这样开始）。\n\n认证：全部用WordPress Application Passwords（HTTP Basic Auth）。插件要求“订单账号”和“配置账号”是两个不同的WordPress用户/应用密码（权限分离），所以Collection里按文件夹分别设置了Authorization，不是Collection级别统一认证。\n\n使用顺序建议：\n1. 先跑“1. 网关配置管理”文件夹里任意一个网关的注册请求（比如Stripe），会自动把返回的config_id写进collection变量gateway_config_id\n2. 再跑“2. 订单接口”里的“创建支付请求”，body里已经引用了{{gateway_config_id}}，响应会自动写入wp_order_id/pay_url/last_s_order_id这几个collection变量\n3. “3. Webhook”和“4. 内部桥接端点”两个文件夹仅供参考阅读，不是S系统需要调用的接口，在Postman里直接点Send大概率会因为签名/token对不上而失败，这是预期行为，不是bug\n\n错误码对照完整表见插件的API文档。这里只在每个请求的description里标了该接口常见的几个错误码。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. 网关配置管理（配置账号）",
+      "description": "对应 POST /v1/gateway-config。需要用“配置账号”的应用密码调用——这是和下面“订单接口”不同的一个WordPress用户/应用密码，权限上专门只开了配置网关的能力（Roles::CAP_MANAGE_GATEWAY_CONFIG），订单账号调不了这个接口，防止订单相关的自动化流程意外拿到改支付密钥的权限。\n\n这个文件夹下的请求一般只在接入新店铺/新网关时跑一次，不是每次下单都调用。\n\n本文件夹的Authorization用的是 {{config_username}} / {{config_password}}，去下面Collection Variables或对应Environment里改成你自己配置账号的应用密码。",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "{{config_username}}",
+            "type": "string"
+          },
+          {
+            "key": "password",
+            "value": "{{config_password}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "注册网关配置 - Stripe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/gateway-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "gateway-config"
+              ]
+            },
+            "description": "对应 POST /v1/gateway-config（设计文档v2 7.4）。\n\nconfig_key建议按“店铺+网关+用途”命名，比如 store-us-stripe-main，同一个config_key重复调用会更新既有配置（幂等）。\n\n成功后把响应里的 data.config_id 存起来，后续调用 /pay、/health 时用 gateway_config_id 引用它，不用每次都把密钥传一遍。\n\n本请求的测试脚本会自动把 config_id 写入collection变量 gateway_config_id，方便直接跑下面“订单接口”文件夹里的请求。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_key\": \"store-us-stripe-main\",\n  \"payment_method\": \"stripe\",\n  \"config\": {\n    \"publishable_key\": \"pk_test_51xxxxxxxxxxxxxxxxxxxxxxxx\",\n    \"secret_key\": \"sk_test_51xxxxxxxxxxxxxxxxxxxxxxxx\",\n    \"webhook_secret\": \"whsec_xxxxxxxxxxxxxxxxxxxxxxxx\"\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"状态码200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "pm.test(\"code为0（成功）\", function () {",
+                  "    pm.expect(json.code).to.eql(0);",
+                  "});",
+                  "if (json.code === 0 && json.data && json.data.config_id) {",
+                  "    pm.collectionVariables.set(\"gateway_config_id\", json.data.config_id);",
+                  "    console.log(\"已写入collection变量 gateway_config_id = \" + json.data.config_id);",
+                  "}",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "注册网关配置 - PayPal (JS SDK)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/gateway-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "gateway-config"
+              ]
+            },
+            "description": "payment_method传 paypal_js（前端Smart Buttons/JS SDK流程，区别于paypal_rest的服务端重定向流程）。\n\nclient_id/client_secret 是PayPal开发者后台App的凭证，webhook_id 是该App订阅Webhook后生成的ID，验签时需要（PayPal的Webhook验签是调用它家API做在线验证，不是本地HMAC）。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_key\": \"store-us-paypal-js-main\",\n  \"payment_method\": \"paypal_js\",\n  \"config\": {\n    \"client_id\": \"AeXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n    \"client_secret\": \"EXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n    \"webhook_id\": \"1AB2345C6D789012E\",\n    \"mode\": \"sandbox\"\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "注册网关配置 - PayPal (REST/重定向)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/gateway-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "gateway-config"
+              ]
+            },
+            "description": "payment_method传 paypal_rest（服务端Orders API + 重定向到PayPal页面，用户批准后跳回插件的/paypal-rest/return桥接端点由服务端完成capture，见下面“内部桥接端点”文件夹）。\n\n字段结构和paypal_js一样（同一套PayPal凭证通常两种模式都能用），但建议分开注册两个config_key，方便以后按渠道单独统计/吊销。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_key\": \"store-us-paypal-rest-main\",\n  \"payment_method\": \"paypal_rest\",\n  \"config\": {\n    \"client_id\": \"AeXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n    \"client_secret\": \"EXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n    \"webhook_id\": \"1AB2345C6D789012E\",\n    \"mode\": \"sandbox\"\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "注册网关配置 - Airwallex",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/gateway-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "gateway-config"
+              ]
+            },
+            "description": "api_key + client_id 用于换取access token（内部会缓存，避免每次请求都重新认证），webhook_secret 用于验证Airwallex Webhook的HMAC签名。\n\nREADME里已经标注：Hosted Payment Page的具体URL格式在实现时无法用真实沙箱账号验证，接入前务必先拿沙箱账号跑一遍完整流程。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_key\": \"store-us-airwallex-main\",\n  \"payment_method\": \"airwallex\",\n  \"config\": {\n    \"api_key\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n    \"client_id\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n    \"webhook_secret\": \"whsec_xxxxxxxxxxxxxxxxxxxxxxxx\",\n    \"mode\": \"sandbox\"\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "注册网关配置 - Antom",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/gateway-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "gateway-config"
+              ]
+            },
+            "description": "private_key 是商户自己的RSA私钥（用于给Antom的请求签名），antom_public_key 是Antom平台的公钥（用于验证Antom返回/notify的签名），region_domain 是Antom分配的接入域名。\n\nREADME里已经标注：Pay API的具体字段名和notify签名路径在实现时无法用真实商户账号验证，属于本插件最不确定的一块，接入前必须找Antom拿沙箱账号联调。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_key\": \"store-us-antom-main\",\n  \"payment_method\": \"antom\",\n  \"config\": {\n    \"client_id\": \"SXXXXXXXXXXXXXXXXXXXXX\",\n    \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n-----END PRIVATE KEY-----\",\n    \"antom_public_key\": \"-----BEGIN PUBLIC KEY-----\\nMIIBxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n-----END PUBLIC KEY-----\",\n    \"region_domain\": \"open-sea-global.alipay.com\",\n    \"mode\": \"sandbox\"\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. 订单接口（订单账号）",
+      "description": "日常下单流程用的三个接口，需要用“订单账号”的应用密码调用（Roles::CAP_MANAGE_ORDERS，和上面配置网关用的账号是分开的两个WordPress应用密码）。\n\n本文件夹的Authorization用的是 {{order_username}} / {{order_password}}。\n\n建议先跑一遍“1. 网关配置管理”里任意一个网关的注册请求（拿到gateway_config_id），再跑这里的“创建支付请求”，两个测试脚本会自动把用到的变量串起来，不用手工复制粘贴。",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "{{order_username}}",
+            "type": "string"
+          },
+          {
+            "key": "password",
+            "value": "{{order_password}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "创建支付请求 - /pay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/pay",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pay"
+              ]
+            },
+            "description": "对应 POST /v1/pay（设计文档v2 7.5），核心下单接口。\n\ngateway_config_id 和 gateway_config 二选一：\n- 推荐用 gateway_config_id（先跑“1. 网关配置管理”文件夹里对应网关的请求，响应会自动把config_id写入collection变量 gateway_config_id，本请求body里已经引用了它）\n- 也可以不引用，直接在gateway_config里按{payment_method: {...}}的结构内联传一份配置（明文传输+每次都要传全，仅建议临时调试用，正式对接请用config_id引用方式）\n\ns_order_id 每次请求前会由Pre-request Script自动生成一个新的（TEST-时间戳），避免同一个订单号重复请求时命中幂等逻辑返回旧订单，方便重复点“Send”测试。\n\n响应里的 pay_url 会自动写入collection变量 pay_url，复制到浏览器打开就是插件渲染的收银台页面。\n\n常见错误码：10005参数校验失败 / 10006支付配置缺字段 / 10007创建WP订单失败 / 10008三方网关返回错误 / 10011引用的gateway_config_id不存在或已吊销。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s_order_id\": \"{{test_s_order_id}}\",\n  \"amount\": 99.9,\n  \"currency\": \"USD\",\n  \"payment_method\": \"stripe\",\n  \"gateway_config_id\": \"{{gateway_config_id}}\",\n  \"callback_url\": \"https://your-laravel-app.example.com/api/webhooks/payment-gateway/status\",\n  \"return_url\": \"https://your-laravel-app.example.com/checkout/thank-you\",\n  \"cancel_url\": \"https://your-laravel-app.example.com/cart\",\n  \"customer\": {\n    \"name\": \"John Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+1-555-0100\"\n  },\n  \"billing_address\": {\n    \"country\": \"US\",\n    \"state\": \"CA\",\n    \"city\": \"Los Angeles\",\n    \"address\": \"123 Main St\",\n    \"zip\": \"90001\"\n  },\n  \"shipping_address\": {\n    \"country\": \"US\",\n    \"state\": \"CA\",\n    \"city\": \"Los Angeles\",\n    \"address\": \"123 Main St\",\n    \"zip\": \"90001\"\n  },\n  \"items\": [\n    {\n      \"sku\": \"SKU-0001\",\n      \"name\": \"Wireless Mouse\",\n      \"quantity\": 2,\n      \"price\": 39.95\n    }\n  ],\n  \"shipping_fee\": 10.0,\n  \"tax_fee\": 0\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 每次跑这个请求前生成一个新的s_order_id，避免重复调用触发幂等命中（返回既有订单）而不是新建。",
+                  "// 如果你是故意要测试幂等逻辑（同样的s_order_id+参数再发一次），",
+                  "// 把下面这行注释掉，直接用collectionVariables里已有的 test_s_order_id 即可。",
+                  "pm.collectionVariables.set(\"test_s_order_id\", \"TEST-\" + Date.now());",
+                  ""
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"状态码200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "pm.test(\"code为0（成功）\", function () {",
+                  "    pm.expect(json.code).to.eql(0);",
+                  "});",
+                  "if (json.code === 0 && json.data) {",
+                  "    if (json.data.wp_order_id) {",
+                  "        pm.collectionVariables.set(\"wp_order_id\", json.data.wp_order_id);",
+                  "    }",
+                  "    if (json.data.pay_url) {",
+                  "        pm.collectionVariables.set(\"pay_url\", json.data.pay_url);",
+                  "    }",
+                  "    if (json.data.s_order_id) {",
+                  "        pm.collectionVariables.set(\"last_s_order_id\", json.data.s_order_id);",
+                  "    }",
+                  "    console.log(\"下单成功，pay_url = \" + json.data.pay_url);",
+                  "}",
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "同步物流信息 - /sync-tracking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/sync-tracking",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "sync-tracking"
+              ]
+            },
+            "description": "对应 POST /v1/sync-tracking（设计文档v2 7.7 / F5）。\n\n只有状态是paid的订单才能同步物流（订单状态不对会返回10002），同一个tracking_number如果已经被别的s_order_id用过会返回10003（防止填错单号污染别的订单）。\n\ns_order_id 默认用的是collection变量 {{last_s_order_id}}（上一次成功调用/pay时写入的），先跑通上面的\"创建支付请求\"、并且手动在后台/数据库把那笔订单状态改成paid，再跑这个才不会报10002。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s_order_id\": \"{{last_s_order_id}}\",\n  \"tracking_number\": \"1Z999AA10123456784\",\n  \"shipping_company\": \"UPS\"\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "网关健康检测 - /health",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "对应 POST /v1/health（设计文档v2 7.8 / F6）。用来在正式下单前探测某个网关配置是否还能正常连通（比如凭证是否过期/吊销），同样支持 gateway_config_id 引用或 gateway_config 内联两种传法。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payment_method\": \"stripe\",\n  \"gateway_config_id\": \"{{gateway_config_id}}\"\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Webhook（仅供参考，非S系统集成范围）",
+      "description": "这个文件夹下的请求不需要S系统调用，插件收Webhook是被动的（网关推给插件）。放在这里纯粹是方便理解数据结构，实际测试Webhook建议用对应网关官方的CLI/沙箱工具（比如Stripe CLI的`stripe trigger`），而不是在Postman里手工拼签名。",
+      "item": [
+        {
+          "name": "[参考] Stripe Webhook示例 - /webhook/stripe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Stripe-Signature",
+                "value": "t=1700000000,v1=REPLACE_WITH_REAL_COMPUTED_SIGNATURE"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/webhook/stripe",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "webhook",
+                "stripe"
+              ]
+            },
+            "description": "⚠️ 这个请求仅供参考，不是S系统需要集成的接口——Webhook是各支付网关主动推给插件的，不是S系统调用插件。放在这里只是方便你了解插件收到网关回调时期望的大致数据形状。\n\n直接在Postman里点Send大概率会失败：insert Stripe-Signature请求头里的t=...,v1=...是Stripe用你配置的webhook_secret对**原始请求体字节**做HMAC-SHA256算出来的，Postman发送的body和这里随手写的签名对不上，WebhookRouter验签会直接拒绝（对应10012签名验证失败）。\n\n如果确实需要在开发环境里手动构造一个能通过验签的请求，得先用同样的算法（时间戳+payload拼接后HMAC-SHA256，Stripe官方SDK有stripe.webhookSignature.generateTestHeaderString可以生成）本地算出正确的Stripe-Signature再填进来，或者更推荐直接用 `stripe trigger` / Stripe CLI转发到本地/测试环境真实触发一次。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"evt_test_webhook\",\n  \"type\": \"checkout.session.completed\",\n  \"data\": {\n    \"object\": {\n      \"id\": \"cs_test_xxxxxxxxxxxxxxxxxxxxxxxx\",\n      \"payment_status\": \"paid\",\n      \"client_reference_id\": \"TEST-1234567890\"\n    }\n  }\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. 内部桥接端点（仅供参考）",
+      "description": "PayPal两种模式在浏览器/PayPal之间跳转时插件内部用到的桥接端点，全部不需要S系统调用，手工在Postman里单独发请求基本无法得到有意义的结果（依赖真实的一次性token/前端流程），放在这里仅为了让你完整了解插件的接口拓扑。",
+      "item": [
+        {
+          "name": "[参考] PayPal JS SDK 前端确认捕获 - /paypal-js/capture",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/paypal-js/capture",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "paypal-js",
+                "capture"
+              ]
+            },
+            "description": "⚠️ 仅供参考。这是插件收银台页面里JS SDK approve回调之后，页面自己的JS代码调用的接口，不是S系统集成范围。公开无需认证，靠body里的s_order_id+pay_token防护（pay_token是/pay接口返回的pay_url里带的一次性token）。\n\n在Postman里单独调用意义不大——pay_token是一次性的，必须先真的走一遍收银台页面点击PayPal按钮完成前端授权流程，才能拿到有效的token去调这个接口，否则会返回10015“链接无效或已过期”。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s_order_id\": \"{{last_s_order_id}}\",\n  \"pay_token\": \"REPLACE_WITH_TOKEN_FROM_PAY_URL\",\n  \"paypal_order_id\": \"REPLACE_WITH_PAYPAL_ORDER_ID\"\n}",
+              "options": {
+                "language": "json"
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[参考] PayPal REST 用户批准后跳转 - /paypal-rest/return",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/paypal-rest/return?token=REPLACE_WITH_PAYPAL_ORDER_ID&PayerID=REPLACE_WITH_PAYER_ID",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "paypal-rest",
+                "return"
+              ],
+              "query": [
+                [
+                  "token",
+                  "REPLACE_WITH_PAYPAL_ORDER_ID"
+                ],
+                [
+                  "PayerID",
+                  "REPLACE_WITH_PAYER_ID"
+                ]
+              ]
+            },
+            "description": "⚠️ 仅供参考。用户在PayPal页面批准付款后，PayPal把浏览器重定向到这个地址（这个URL是插件在preparePayment()时传给PayPal的return_url，不是S系统的return_url——插件在这里完成服务端capture后，再把浏览器最终跳转到S系统真正的return_url）。\n\n查询参数由PayPal附加（通常包含token/PayerID），手工在Postman里发这个请求拿不到真实的token，会走不通capture逻辑，直接体感上没有意义，纯粹放这里说明这一跳的存在。"
+          },
+          "response": []
+        },
+        {
+          "name": "[参考] PayPal REST 用户取消 - /paypal-rest/cancel",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/paypal-rest/cancel?token=REPLACE_WITH_PAYPAL_ORDER_ID",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "paypal-rest",
+                "cancel"
+              ],
+              "query": [
+                [
+                  "token",
+                  "REPLACE_WITH_PAYPAL_ORDER_ID"
+                ]
+              ]
+            },
+            "description": "⚠️ 仅供参考。用户在PayPal页面点取消，PayPal重定向到这里，插件再把浏览器跳转到S系统的cancel_url。同样手工调用没有实际意义，仅作文档参考。"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "gateway_config_id",
+      "value": "",
+      "type": "string",
+      "description": "由“网关配置管理”请求的测试脚本自动写入"
+    },
+    {
+      "key": "test_s_order_id",
+      "value": "",
+      "type": "string",
+      "description": "由“创建支付请求”的Pre-request Script自动生成"
+    },
+    {
+      "key": "last_s_order_id",
+      "value": "",
+      "type": "string",
+      "description": "由“创建支付请求”的测试脚本自动写入，供sync-tracking复用"
+    },
+    {
+      "key": "wp_order_id",
+      "value": "",
+      "type": "string",
+      "description": "由“创建支付请求”的测试脚本自动写入"
+    },
+    {
+      "key": "pay_url",
+      "value": "",
+      "type": "string",
+      "description": "由“创建支付请求”的测试脚本自动写入，复制到浏览器打开即为收银台页面"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "606f1c41-8307-4602-8527-adc0d03f54d7",
+  "name": "Payment Gateway Aggregator - 示例环境",
+  "values": [
+    {
+      "key": "base_url",
+      "value": "https://your-wp-site.example.com/wp-json/payment-plugin/v1",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "order_username",
+      "value": "pga_order_bot",
+      "type": "default",
+      "enabled": true,
+      "description": "拥有CAP_MANAGE_ORDERS权限的WordPress用户名"
+    },
+    {
+      "key": "order_password",
+      "value": "xxxx xxxx xxxx xxxx xxxx xxxx",
+      "type": "secret",
+      "enabled": true,
+      "description": "该用户的Application Password（带空格的16位那种原样填入即可，WP自己会处理）"
+    },
+    {
+      "key": "config_username",
+      "value": "pga_config_admin",
+      "type": "default",
+      "enabled": true,
+      "description": "拥有CAP_MANAGE_GATEWAY_CONFIG权限的WordPress用户名，建议和order账号分开"
+    },
+    {
+      "key": "config_password",
+      "value": "xxxx xxxx xxxx xxxx xxxx xxxx",
+      "type": "secret",
+      "enabled": true,
+      "description": "该用户的Application Password"
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

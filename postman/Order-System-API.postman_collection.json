@@ -1,0 +1,297 @@
+{
+  "info": {
+    "_postman_id": "6f2c1a9e-4b7d-4e3a-9c5f-8d2e4a7b1c30",
+    "name": "多商户订单系统 - Order API",
+    "description": "App-ID + 签名鉴权（sign 放请求体里）。签名逻辑写在 Collection 级别的 Pre-request Script 里，对本 Collection 下所有请求自动生效，不需要每个请求单独配置。\n\n使用前先在 Environment 里填好 base_url / app_id / api_key / group_key（这几个值在系统后台「应用管理」「支付组」里能找到）。\n\n可选：payment_method_key（后台「支付方式」的 method_code）。填了之后，仅对请求体里已经带有 payment_method_key 字段的请求生效（即「创建订单 - 指定支付渠道」那个示例），用来跳过支付组路由与限额风控；此时请求体里的 notify_url / return_url / cancel_url 必须改成该支付方式绑定的站点域名，否则会被 PAYMENT_METHOD_DOMAIN_MISMATCH 拒单。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "last_order_no", "value": "" },
+    { "key": "last_merchant_order_no", "value": "" },
+    { "key": "last_payment_link_token", "value": "" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// ============================================================",
+          "// 统一签名脚本：对 Collection 下所有请求生效。",
+          "//",
+          "// 【重要】签名字段一律不要写成 {{变量}} 放在请求体文本里 ——",
+          "// Postman 对 body 里的 {{}} 做变量替换发生在这个脚本执行完之后，",
+          "// 如果签名时用的是还没替换的占位符文本，和实际发出去的字节不一致，",
+          "// 服务端验签必然失败。需要动态值的地方（如 group_key、",
+          "// merchant_order_no）都在下面用 JS 直接改 bodyObj，不依赖模板替换。",
+          "// ============================================================",
+          "",
+          "const appId = pm.environment.get('app_id');",
+          "const apiKey = pm.environment.get('api_key');",
+          "",
+          "if (!appId || !apiKey) {",
+          "    console.warn('请先在当前 Environment 里配置 app_id 和 api_key');",
+          "}",
+          "",
+          "let bodyObj = {};",
+          "if (pm.request.body && pm.request.body.mode === 'raw' && pm.request.body.raw) {",
+          "    try {",
+          "        bodyObj = JSON.parse(pm.request.body.raw);",
+          "    } catch (e) {",
+          "        bodyObj = {};",
+          "    }",
+          "}",
+          "",
+          "// 用 Environment 里配置的 group_key 覆盖请求体里写死的示例值，",
+          "// 方便切换商户/支付组测试时不用逐个改请求体文本",
+          "const envGroupKey = pm.environment.get('group_key');",
+          "if (envGroupKey && Object.prototype.hasOwnProperty.call(bodyObj, 'group_key')) {",
+          "    bodyObj.group_key = envGroupKey;",
+          "}",
+          "",
+          "// payment_method_key（指定支付渠道）同理：只对请求体里已经带了这个字段的请求生效，",
+          "// 避免把普通下单请求也误改成指定渠道模式（那样三个回跳地址会变成必填，",
+          "// 而且域名还要和渠道绑定站点一致）。",
+          "const envPaymentMethodKey = pm.environment.get('payment_method_key');",
+          "if (envPaymentMethodKey && Object.prototype.hasOwnProperty.call(bodyObj, 'payment_method_key')) {",
+          "    bodyObj.payment_method_key = envPaymentMethodKey;",
+          "}",
+          "",
+          "// merchant_order_no 写 \"AUTO\" 时自动生成一个基于时间戳的唯一值，",
+          "// 避免每次跑集合都因为幂等机制（同一 merchant_order_no 返回同一订单）而拿到旧数据。",
+          "// 如果是故意要测试幂等性，把请求体里的 merchant_order_no 改成一个固定字符串，",
+          "// 连续跑两次，应该会收到一模一样的 order_no。",
+          "if (bodyObj.merchant_order_no === 'AUTO') {",
+          "    bodyObj.merchant_order_no = 'TEST' + Date.now();",
+          "}",
+          "",
+          "delete bodyObj.sign;",
+          "",
+          "// 规范化编码：关联数组（对象）按 key 递归排序，数组保持原顺序。",
+          "// 必须和服务端 App\\Http\\Middleware\\ApiAuthentication::canonicalize() 逐字节一致。",
+          "function ksortRecursive(value) {",
+          "    if (Array.isArray(value)) {",
+          "        return value.map(ksortRecursive);",
+          "    }",
+          "    if (value !== null && typeof value === 'object') {",
+          "        const sorted = {};",
+          "        Object.keys(value).sort().forEach(function (k) {",
+          "            sorted[k] = ksortRecursive(value[k]);",
+          "        });",
+          "        return sorted;",
+          "    }",
+          "    return value;",
+          "}",
+          "",
+          "const canonicalBody = JSON.stringify(ksortRecursive(bodyObj));",
+          "const timestamp = Math.floor(Date.now() / 1000).toString();",
+          "const nonce = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);",
+          "",
+          "const stringToSign = appId + '\\n' + timestamp + '\\n' + nonce + '\\n' + canonicalBody;",
+          "const sign = CryptoJS.HmacSHA256(stringToSign, apiKey).toString(CryptoJS.enc.Hex);",
+          "",
+          "bodyObj.sign = sign;",
+          "",
+          "// 写回去的是最终确定、不再含任何 {{占位符}} 的完整 JSON 文本，",
+          "// 之后 Postman 的变量替换找不到东西可替换，签名和实际发送字节保持一致。",
+          "if (pm.request.body && pm.request.body.mode === 'raw') {",
+          "    pm.request.body.raw = JSON.stringify(bodyObj);",
+          "}",
+          "",
+          "pm.request.headers.upsert({ key: 'App-ID', value: appId });",
+          "pm.request.headers.upsert({ key: 'Timestamp', value: timestamp });",
+          "pm.request.headers.upsert({ key: 'X-Nonce', value: nonce });",
+          "pm.request.headers.upsert({ key: 'Content-Type', value: 'application/json' });",
+          "",
+          "console.log('StringToSign:', stringToSign);",
+          "console.log('Sign:', sign);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "订单管理",
+      "item": [
+        {
+          "name": "创建订单（happy path）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "const json = pm.response.json();",
+                  "",
+                  "pm.test('code === 0', function () { pm.expect(json.code).to.eql(0); });",
+                  "",
+                  "if (json && json.data) {",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    console.log('order_no:', json.data.order_no);",
+                  "    console.log('payment_url:', json.data.payment_url);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/create",
+              "host": ["{{base_url}}"],
+              "path": ["order", "create"]
+            },
+            "description": "180.00(小计) + 15.00(运费) - 10.00(折扣) + 5.00(税) = 190.00，和 amount 对得上，走正常成功路径。\n\nmerchant_order_no 写 \"AUTO\"，Pre-request Script 会自动换成基于时间戳的唯一值，避免重复跑集合时命中幂等逻辑返回旧订单。"
+          }
+        },
+        {
+          "name": "创建订单 - 幂等测试（连续跑两次应返回同一订单）",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"IDEMPOTENCY-TEST-0001\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/create",
+              "host": ["{{base_url}}"],
+              "path": ["order", "create"]
+            },
+            "description": "merchant_order_no 是固定字符串（不是 AUTO），第一次跑会真的创建订单，第二次跑应该收到完全相同的 order_no —— 这是在验证 2.2 节的幂等性铁律（联合唯一索引 + 命中直接返回已存在订单）。"
+          }
+        },
+        {
+          "name": "创建订单 - 金额不符（预期 422 AMOUNT_MISMATCH）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 422', function () { pm.response.to.have.status(422); });",
+                  "",
+                  "const json = pm.response.json();",
+                  "pm.test('error_code === AMOUNT_MISMATCH', function () {",
+                  "    pm.expect(json.error_code).to.eql('AMOUNT_MISMATCH');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"999.99\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/create",
+              "host": ["{{base_url}}"],
+              "path": ["order", "create"]
+            },
+            "description": "故意把 amount 改成 999.99，和 subtotal+shipping_fee-discount+tax(=190.00) 对不上，应该触发 2.1 节的金额公式铁律拒单。"
+          }
+        },
+        {
+          "name": "创建订单 - 指定支付渠道（payment_method_key）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200（成功）或 422（渠道/域名不匹配）', function () {",
+                  "    pm.expect([200, 422]).to.include(pm.response.code);",
+                  "});",
+                  "",
+                  "const json = pm.response.json();",
+                  "const requested = JSON.parse(pm.request.body.raw).payment_method_key;",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('锁定的支付方式就是指定的渠道', function () {",
+                  "        pm.expect(json.data.payment_method).to.eql(requested);",
+                  "    });",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    console.log('order_no:', json.data.order_no, 'pay_url:', json.data.pay_url);",
+                  "} else {",
+                  "    pm.test('422 时错误码与指定渠道相关', function () {",
+                  "        pm.expect(['PAYMENT_METHOD_NOT_AVAILABLE', 'PAYMENT_METHOD_DOMAIN_MISMATCH', 'CALLBACK_DOMAIN_NOT_ALLOWED']).to.include(json.error_code);",
+                  "    });",
+                  "    console.warn('拒单：', json.error_code, json.msg);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"payment_method_key\": \"paypal\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://shop.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://shop.example.com/wp-json/my-plugin/v1/webhook\",\n  \"return_url\": \"https://shop.example.com/checkout/order-received/123/\",\n  \"cancel_url\": \"https://shop.example.com/cart/\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/create",
+              "host": ["{{base_url}}"],
+              "path": ["order", "create"]
+            },
+            "description": "指定支付渠道示例：payment_method_key 传后台「支付方式」的 method_code（这里写的是 paypal）。传了这个参数后，系统不再在支付组里做加权均匀分配，也不再校验单笔/当日金额/当日笔数/当月金额这些限额，直接用这个渠道建单（group_key 仍然必填）。\n\n代价：notify_url / return_url / cancel_url 三个地址必须全部传齐，且域名要与该支付方式绑定的「网站域名」一致（比较时忽略大小写、www. 前缀与端口）。跑之前先把示例里的 shop.example.com 换成你自己站点的域名，把 payment_method_key 换成真实的 method_code（也可以只填 Environment 里的 payment_method_key 变量，Pre-request Script 会覆盖请求体里的值）。\n\n域名对不上会得到 422 PAYMENT_METHOD_DOMAIN_MISMATCH，渠道不存在/不属于该商户/已停用会得到 422 PAYMENT_METHOD_NOT_AVAILABLE，两种情况都不会创建订单。另外商户的回调域名白名单校验仍然照跑，所以该域名也要在白名单里。"
+          }
+        },
+        {
+          "name": "查询订单 - 按 order_no",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/query?order_no={{last_order_no}}",
+              "host": ["{{base_url}}"],
+              "path": ["order", "query"],
+              "query": [{ "key": "order_no", "value": "{{last_order_no}}" }]
+            },
+            "description": "order_no 取自「创建订单（happy path）」请求的 Test Script 存下来的 collection 变量，先跑那个请求再跑这个。\n\nGET 请求也带了一个 body（只有签名需要，query 参数不受影响），因为 /order/query 走的是同一套 api.auth 中间件，同样要求 body 里有 sign 字段。"
+          }
+        },
+        {
+          "name": "查询订单 - 按 merchant_order_no",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/order/query?merchant_order_no=IDEMPOTENCY-TEST-0001",
+              "host": ["{{base_url}}"],
+              "path": ["order", "query"],
+              "query": [{ "key": "merchant_order_no", "value": "IDEMPOTENCY-TEST-0001" }]
+            },
+            "description": "配合上面的幂等测试请求一起用，查一下那个固定 merchant_order_no 对应的订单状态。"
+          }
+        }
+      ]
+    }
+  ]
+}
