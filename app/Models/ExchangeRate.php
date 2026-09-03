@@ -75,6 +75,17 @@ class ExchangeRate extends Model
      */
     public static function getRateWithSurcharge(string $targetCurrency, string $baseCurrency = 'USD'): array
     {
+        // 同币种无需换汇，也不存在汇损，exchange_rates 里也不会有自身对自身的行。
+        if ($targetCurrency === $baseCurrency) {
+            return [
+                'original_rate' => 1.0,
+                'surcharge_percent' => 0.0,
+                'surcharge_type' => (string) SystemConfig::get('exchange.surcharge_type', 'percent'),
+                'surcharge_amount' => 0.0,
+                'actual_rate' => 1.0,
+            ];
+        }
+
         $originalRate = static::getLatestRate($targetCurrency, $baseCurrency);
 
         if ($originalRate === null) {

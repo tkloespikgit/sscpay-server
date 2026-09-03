@@ -12,3 +12,7 @@ Schedule::command('db:backup:upload')->everySixHours();
 Schedule::command('order-events:sync')->everyMinute()->withoutOverlapping();
 
 Schedule::command('order-notifications:process-due')->everyMinute()->withoutOverlapping();
+
+Schedule::command('order-disputes:close-due')->everyFiveMinutes()->withoutOverlapping();
+
+Schedule::command('order-disputes:send-reminders')->everyFiveMinutes()->withoutOverlapping();

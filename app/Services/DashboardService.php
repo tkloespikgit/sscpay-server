@@ -64,8 +64,9 @@ class DashboardService
 
         // 支付成功过的状态：paid 本身 + 支付成功后流转出的状态。
         // refunded / partially_refunded / chargeback 虽然钱退了，但支付环节是成功的；
-        // disputing 同理——订单已经收到过款，只是眼下有争议未决。
-        $paidStatuses = ['paid', 'shipped', 'completed', 'refunded', 'partially_refunded', 'chargeback', 'disputing'];
+        // disputing / dispute_review 同理——订单已经收到过款，只是眼下有网关拒付争议
+        // 或人工审核未决。
+        $paidStatuses = ['paid', 'shipped', 'completed', 'refunded', 'partially_refunded', 'chargeback', 'disputing', 'dispute_review'];
 
         $terminalCount = (clone $query)->where('status', '!=', 'pending')->count();
         $paidCount = (clone $query)->whereIn('status', $paidStatuses)->count();

@@ -3,18 +3,25 @@
 namespace App\Filament\Resources\OrderResource\Pages;
 
 use App\Exceptions\BalanceOperationException;
+use App\Filament\Resources\OrderDisputeEventResource;
 use App\Filament\Resources\OrderResource;
+use App\Filament\Resources\OrderResource\RelationManagers\OrderDisputeEventsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderEventsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderMatchedItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttemptsRelationManager;
 use App\Filament\Support\FinanceSecurity;
 use App\Models\Carrier;
+use App\Models\Order;
+use App\Models\OrderDisputeEvent;
 use App\Services\BalanceService;
+use App\Services\OrderDisputeService;
 use App\Services\OrderShippingService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DateTimePicker;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -153,9 +160,94 @@ class ViewOrder extends ViewRecord
     {
         return [
             OrderResource::queryStatusAction(),
+            $this->openDisputeAction(),
+            $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
             $this->chargebackAction(),
         ];
+    }
+
+    /**
+     * 开立争议审核事件（仅超级管理员/商户财务管理员）：冻结订单金额，
+     * 订单状态改为 dispute_review。需要资金操作强制 2FA（同 refund/chargeback）。
+     * 只有已付款且当前没有处理中事件的订单才可见——前置条件在
+     * BalanceService::freezeForDisputeEvent() 里还会再校验一遍，这里只是
+     * 提前隐藏按钮，避免用户填完表单才被拒绝。
+     */
+    private function openDisputeAction(): Action
+    {
+        return Action::make('openDisputeEvent')
+            ->label(__('admin.order_dispute_event.actions.open'))
+            ->icon('heroicon-o-exclamation-triangle')
+            ->color('danger')
+            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDER_DISPUTES_OPEN)
+                && $record->status === 'paid'
+                && ! $record->activeDisputeEvent)
+            ->schema([
+                TextInput::make('event_no')
+                    ->label(__('admin.order_dispute_event.fields.event_no'))
+                    ->required()
+                    ->maxLength(64),
+                RichEditor::make('reason')
+                    ->label(__('admin.order_dispute_event.fields.reason'))
+                    ->required(),
+                FileUpload::make('images')
+                    ->label(__('admin.order_dispute_event.fields.images'))
+                    ->image()
+                    ->multiple()
+                    ->maxFiles(10)
+                    ->disk('local')
+                    ->directory('dispute-events-tmp'),
+                Select::make('final_action')
+                    ->label(__('admin.order_dispute_event.fields.final_action'))
+                    ->options([
+                        OrderDisputeEvent::FINAL_ACTION_REFUND => __('admin.order_dispute_event.final_actions.refund'),
+                        OrderDisputeEvent::FINAL_ACTION_CHARGEBACK => __('admin.order_dispute_event.final_actions.chargeback'),
+                    ])
+                    ->required(),
+                Grid::make(2)->schema([
+                    TextInput::make('deadline_value')
+                        ->label(__('admin.order_dispute_event.fields.deadline_value'))
+                        ->numeric()
+                        ->required()
+                        ->minValue(1),
+                    Select::make('deadline_unit')
+                        ->label(__('admin.order_dispute_event.fields.deadline_unit'))
+                        ->options([
+                            OrderDisputeEvent::DEADLINE_UNIT_HOURS => __('admin.order_dispute_event.deadline_units.hours'),
+                            OrderDisputeEvent::DEADLINE_UNIT_DAYS => __('admin.order_dispute_event.deadline_units.days'),
+                        ])
+                        ->default(OrderDisputeEvent::DEADLINE_UNIT_HOURS)
+                        ->required(),
+                ]),
+                FinanceSecurity::codeField(),
+            ])
+            ->action(function (array $data, OrderDisputeService $service) {
+                try {
+                    $user = auth()->user();
+                    FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
+                    $event = $service->open($this->record, $user, $data);
+                } catch (BalanceOperationException $e) {
+                    Notification::make()->title($e->getMessage())->danger()->send();
+
+                    return;
+                }
+
+                Notification::make()->title(__('admin.order_dispute_event.notifications.opened'))->success()->send();
+                $this->redirect(OrderDisputeEventResource::getUrl('view', ['record' => $event]));
+            });
+    }
+
+    /**
+     * 有处理中事件时的快捷入口，直接跳转到事件详情页。
+     */
+    private function viewActiveDisputeEventAction(): Action
+    {
+        return Action::make('viewActiveDisputeEvent')
+            ->label(__('admin.order_dispute_event.actions.view_active'))
+            ->icon('heroicon-o-eye')
+            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDER_DISPUTES_VIEW) && $record->activeDisputeEvent)
+            ->url(fn (Order $record) => OrderDisputeEventResource::getUrl('view', ['record' => $record->activeDisputeEvent]));
     }
 
     /**
@@ -249,6 +341,7 @@ class ViewOrder extends ViewRecord
             OrderItemsRelationManager::class,
             OrderMatchedItemsRelationManager::class,
             OrderEventsRelationManager::class,
+            OrderDisputeEventsRelationManager::class,
             OrderNotificationAttemptsRelationManager::class,
         ];
     }

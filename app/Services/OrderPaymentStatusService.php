@@ -228,6 +228,20 @@ class OrderPaymentStatusService
             return false;
         }
 
+        // 订单当前处于人工发起的争议审核事件中（见 OrderDisputeService）：
+        // 这套机制与网关 webhook 驱动的 disputing 完全独立，人工审核期间
+        // 不允许网关事件静默覆盖订单状态（无论目标状态是什么），人工审核
+        // 结果优先。审核结束后订单状态由 BalanceService::releaseForDisputeEvent()
+        // 负责改回 paid，不经过这里。
+        if ($oldStatus === Order::STATUS_DISPUTE_REVIEW) {
+            Log::warning('payment_status: 订单当前处于人工发起的争议审核事件中，忽略网关状态覆盖，人工审核结果优先', [
+                'old_status' => $oldStatus,
+                'target_status' => $targetStatus,
+            ]);
+
+            return false;
+        }
+
         if (in_array($oldStatus, self::TERMINAL_STATUSES, true)) {
             Log::warning('payment_status: 订单已是终态，忽略状态覆盖', [
                 'old_status' => $oldStatus,

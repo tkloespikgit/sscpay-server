@@ -62,7 +62,7 @@ class OrderResource extends Resource
             // shipping.tracking_number 列会自动触发 shipping 的预加载，这里额外带上
             // shipping.operator，避免点击"物流信息"弹窗时才现查触发懒加载；
             // paymentMethod 用于把 payment_method 列从 method_code 换成 method_name 展示。
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent']))
             ->columns([
                 // 商户名称列仅超级管理员可见（商户用户本来就只看自己的订单）
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
@@ -75,7 +75,8 @@ class OrderResource extends Resource
                     ->searchable(['applications.app_id', 'applications.name'])
                     ->toggleable(),
 
-                TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable(),
+                TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable()
+                    ->color(fn ($record) => $record->activeDisputeEvent ? 'danger' : null),
                 TextColumn::make('merchant_order_no')->label(__('admin.order.columns.merchant_order_no'))->searchable(),
                 TextColumn::make('transaction_id')->label(__('admin.order.columns.transaction_id'))
                     ->searchable()
@@ -92,6 +93,7 @@ class OrderResource extends Resource
                         'shipped' => 'warning',
                         'completed' => 'success',
                         'disputing' => 'warning',
+                        'dispute_review' => 'warning',
                         'partially_refunded' => 'warning',
                         'cancelled', 'failed', 'expired', 'refunded', 'chargeback' => 'danger',
                         default => 'gray',
@@ -176,6 +178,7 @@ class OrderResource extends Resource
                     'failed' => __('admin.order.statuses.failed'),
                     'expired' => __('admin.order.statuses.expired'),
                     'disputing' => __('admin.order.statuses.disputing'),
+                    'dispute_review' => __('admin.order.statuses.dispute_review'),
                     'partially_refunded' => __('admin.order.statuses.partially_refunded'),
                     'refunded' => __('admin.order.statuses.refunded'),
                     'chargeback' => __('admin.order.statuses.chargeback'),

@@ -7,10 +7,12 @@ use App\Models\Merchant;
 use App\Models\MerchantBalanceTransaction;
 use App\Models\MerchantWithdrawal;
 use App\Models\Order;
+use App\Models\OrderDisputeEvent;
 use App\Models\OrderRefund;
 use App\Models\User;
 use Closure;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * 商户余额账务服务：所有会改动商户余额/冻结余额的操作都必须经过这里，
@@ -281,6 +283,121 @@ class BalanceService
                 'review_remark' => $remark,
             ]);
         });
+    }
+
+    /**
+     * 开启争议审核事件：冻结订单金额（converted_amount，USD），订单状态改为
+     * Order::STATUS_DISPUTE_REVIEW。加锁顺序与 refund()/chargeback() 一致——
+     * 先锁 Merchant（mutate()），闭包内再锁 Order，避免引入新的死锁风险。
+     * 不写余额流水（冻结/释放不改变 balance 总额，同提现冻结的既有约定）。
+     *
+     * $attributes 需已完成校验/XSS 过滤/图片转存（由 OrderDisputeService 负责），
+     * 这里只管钱和落库，期望包含：event_no, reason, images, final_action,
+     * deadline_value, deadline_unit, deadline_hours。
+     *
+     * @throws BalanceOperationException 订单状态不是 paid，或该订单已存在处理中的事件
+     */
+    public function freezeForDisputeEvent(Order $order, User $operator, array $attributes): OrderDisputeEvent
+    {
+        return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $operator, $attributes) {
+            $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
+
+            if ($fresh->status !== 'paid') {
+                throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可开立争议审核事件，只有已收款的订单才能开立。");
+            }
+
+            $hasProcessing = OrderDisputeEvent::query()
+                ->withoutGlobalScopes()
+                ->where('order_id', $fresh->id)
+                ->where('status', OrderDisputeEvent::STATUS_PROCESSING)
+                ->exists();
+
+            if ($hasProcessing) {
+                throw new BalanceOperationException('该订单已存在处理中的争议审核事件，不能重复开立。');
+            }
+
+            $amount = (string) $fresh->converted_amount;
+            $openedAt = now();
+
+            $event = OrderDisputeEvent::query()->create(array_merge($attributes, [
+                'merchant_id' => $fresh->merchant_id,
+                'order_id' => $fresh->id,
+                'order_no' => $fresh->order_no,
+                'payment_method' => $fresh->payment_method,
+                'status' => OrderDisputeEvent::STATUS_PROCESSING,
+                'frozen_amount' => $amount,
+                'opened_by' => $operator->id,
+                'opened_at' => $openedAt,
+                'due_at' => (clone $openedAt)->addHours((int) $attributes['deadline_hours']),
+            ]));
+
+            $merchant->frozen_balance = bcadd((string) $merchant->frozen_balance, $amount, 2);
+            $merchant->save();
+
+            $fresh->status = Order::STATUS_DISPUTE_REVIEW;
+            $fresh->save();
+
+            return $event;
+        });
+    }
+
+    /**
+     * 关闭争议审核事件（人工手动或系统到期自动均走这里）：按事件自身的
+     * frozen_amount 快照释放冻结（不重新读取订单当前 converted_amount，
+     * 避免订单金额在此期间发生变化导致释放金额与当初冻结的不一致），订单
+     * 状态回退为 paid，事件状态置为 closed。
+     *
+     * 幂等：事件已不是 processing 时静默返回 false，不抛异常——手动关闭
+     * 与到期自动关闭的定时任务可能并发碰到同一个事件，不应该让后到达的
+     * 一方看到报错。
+     *
+     * $operator 为 null 表示系统自动关闭（closed_by 落 NULL）。
+     */
+    public function releaseForDisputeEvent(
+        OrderDisputeEvent $event,
+        ?User $operator,
+        string $closeType,
+        ?string $remark = null,
+    ): bool {
+        $released = $this->mutate($event->merchant_id, function (Merchant $merchant) use ($event, $operator, $closeType, $remark) {
+            $fresh = OrderDisputeEvent::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($event->id);
+
+            if (! $fresh->isProcessing()) {
+                return false;
+            }
+
+            $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, (string) $fresh->frozen_amount, 2);
+            $merchant->save();
+
+            $fresh->update([
+                'status' => OrderDisputeEvent::STATUS_CLOSED,
+                'closed_by' => $operator?->id,
+                'closed_at' => now(),
+                'close_type' => $closeType,
+                'close_remark' => $remark,
+            ]);
+
+            $order = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($fresh->order_id);
+
+            if ($order && $order->status === Order::STATUS_DISPUTE_REVIEW) {
+                $order->status = 'paid';
+                $order->save();
+            } elseif ($order) {
+                Log::warning('order_dispute: 关闭事件时订单状态已不是 dispute_review，跳过状态回退', [
+                    'order_id' => $order->id,
+                    'order_status' => $order->status,
+                    'dispute_event_id' => $fresh->id,
+                ]);
+            }
+
+            return true;
+        });
+
+        if ($released) {
+            $event->refresh();
+        }
+
+        return $released;
     }
 
     // ------------------------------------------------------------------

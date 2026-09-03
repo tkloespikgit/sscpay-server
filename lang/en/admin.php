@@ -262,6 +262,7 @@ return [
             'failed' => 'Payment Failed',
             'expired' => 'Expired',
             'disputing' => 'Disputing',
+            'dispute_review' => 'Dispute Review',
             'partially_refunded' => 'Partially Refunded',
             'refunded' => 'Refunded',
             'chargeback' => 'Charged Back',
@@ -432,6 +433,85 @@ return [
             'wp_order_id' => 'WP Order ID',
             'external_log_id' => 'Plugin Log ID',
             'occurred_at' => 'Occurred At',
+        ],
+    ],
+
+    'order_dispute_event' => [
+        'model_label' => 'Dispute Review Event',
+        'model_label_plural' => 'Dispute Review Events',
+        'nav_label' => 'Dispute Review Events',
+        'statuses' => [
+            'processing' => 'Processing',
+            'closed' => 'Closed',
+        ],
+        'final_actions' => [
+            'refund' => 'Refund',
+            'chargeback' => 'Chargeback',
+        ],
+        'deadline_units' => [
+            'hours' => 'Hours',
+            'days' => 'Days',
+        ],
+        'close_types' => [
+            'manual' => 'Closed Manually',
+            'auto' => 'Closed Automatically',
+        ],
+        'fields' => [
+            'order_no' => 'Order No.',
+            'event_no' => 'Event No.',
+            'status' => 'Status',
+            'payment_method' => 'Payment Channel',
+            'reason' => 'Reason',
+            'images' => 'Image Evidence',
+            'final_action' => 'Intended Outcome',
+            'deadline_value' => 'Deadline',
+            'deadline_unit' => 'Deadline Unit',
+            'due_at' => 'Due At',
+            'frozen_amount' => 'Frozen Amount (USD)',
+            'opened_by' => 'Opened By',
+            'opened_at' => 'Opened At',
+            'closed_by' => 'Closed By',
+            'closed_at' => 'Closed At',
+            'close_type' => 'Close Type',
+            'close_remark' => 'Close Remark',
+        ],
+        'filters' => [
+            'order_no' => 'Order No.',
+            'order_no_placeholder' => 'Fuzzy search supported',
+            'event_no' => 'Event No.',
+            'event_no_placeholder' => 'Fuzzy search supported',
+            'payment_method' => 'Payment Channel',
+            'status' => 'Status',
+        ],
+        'actions' => [
+            'open' => 'Open Dispute Review Event',
+            'view' => 'View',
+            'view_active' => 'View Active Dispute Event',
+            'reply' => 'Reply',
+            'close' => 'Close Event',
+            'close_heading' => 'Confirm Closing the Dispute Review Event',
+            'close_desc' => 'Closing releases the frozen funds back to available balance and reverts the order status to paid. This only marks the review as concluded — it does not trigger any refund/chargeback automatically.',
+        ],
+        'notifications' => [
+            'opened' => 'Dispute review event opened; the corresponding amount has been frozen.',
+            'replied' => 'Reply submitted.',
+            'closed' => 'Event closed; frozen funds have been released.',
+            'already_closed' => 'This event was already auto-closed by the system; no action needed.',
+        ],
+        'placeholders' => [
+            'none' => '—',
+        ],
+    ],
+
+    'order_dispute_event_reply' => [
+        'model_label' => 'Reply',
+        'model_label_plural' => 'Replies',
+        'title' => 'Replies',
+        'fields' => [
+            'operator' => 'Replied By',
+            'content' => 'Content',
+            'images' => 'Images',
+            'created_at' => 'Replied At',
         ],
     ],
 
@@ -638,6 +718,7 @@ return [
         'order_disputing' => "⚠️ Payment dispute opened\n\nOrder: :order_no\nPlease review promptly and consider pausing fulfillment. Latest order logs have been fetched — check the order detail page.",
         'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
         'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
+        'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
     ],
 
     'finance' => [

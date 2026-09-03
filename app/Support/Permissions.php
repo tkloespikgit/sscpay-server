@@ -51,6 +51,15 @@ final class Permissions
 
     public const ORDERS_CHARGEBACK = 'orders.chargeback';    // 订单拒付
 
+    // 争议审核事件（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
+    public const ORDER_DISPUTES_VIEW = 'order_disputes.view';     // 查看争议审核事件列表/详情
+
+    public const ORDER_DISPUTES_OPEN = 'order_disputes.open';     // 开立争议审核事件（冻结资金）
+
+    public const ORDER_DISPUTES_REPLY = 'order_disputes.reply';   // 回复争议审核事件
+
+    public const ORDER_DISPUTES_CLOSE = 'order_disputes.close';   // 手动结束争议审核事件（释放资金）
+
     public static function platformOnly(): array
     {
         return [
@@ -78,6 +87,10 @@ final class Permissions
             self::BALANCE_ADJUST,
             self::ORDERS_REFUND,
             self::ORDERS_CHARGEBACK,
+            self::ORDER_DISPUTES_VIEW,
+            self::ORDER_DISPUTES_OPEN,
+            self::ORDER_DISPUTES_REPLY,
+            self::ORDER_DISPUTES_CLOSE,
         ];
     }
 

@@ -260,6 +260,7 @@ return [
             'failed' => '支付失败',
             'expired' => '已过期',
             'disputing' => '争议中',
+            'dispute_review' => '争议审核中',
             'partially_refunded' => '部分退款',
             'refunded' => '已退款',
             'chargeback' => '已拒付',
@@ -430,6 +431,85 @@ return [
             'wp_order_id' => 'WP 订单 ID',
             'external_log_id' => '插件日志 ID',
             'occurred_at' => '发生时间',
+        ],
+    ],
+
+    'order_dispute_event' => [
+        'model_label' => '争议审核事件',
+        'model_label_plural' => '争议审核事件',
+        'nav_label' => '争议审核事件',
+        'statuses' => [
+            'processing' => '处理中',
+            'closed' => '已结束',
+        ],
+        'final_actions' => [
+            'refund' => '退款',
+            'chargeback' => '拒付',
+        ],
+        'deadline_units' => [
+            'hours' => '小时',
+            'days' => '天',
+        ],
+        'close_types' => [
+            'manual' => '人工结束',
+            'auto' => '系统自动结束',
+        ],
+        'fields' => [
+            'order_no' => '订单号',
+            'event_no' => '事件编号',
+            'status' => '状态',
+            'payment_method' => '支付渠道',
+            'reason' => '开立原因',
+            'images' => '图片凭证',
+            'final_action' => '拟定处理方向',
+            'deadline_value' => '处理期限',
+            'deadline_unit' => '期限单位',
+            'due_at' => '到期时间',
+            'frozen_amount' => '冻结金额(USD)',
+            'opened_by' => '发起人',
+            'opened_at' => '发起时间',
+            'closed_by' => '关闭人',
+            'closed_at' => '关闭时间',
+            'close_type' => '关闭方式',
+            'close_remark' => '关闭备注',
+        ],
+        'filters' => [
+            'order_no' => '订单号',
+            'order_no_placeholder' => '支持模糊搜索',
+            'event_no' => '事件编号',
+            'event_no_placeholder' => '支持模糊搜索',
+            'payment_method' => '支付渠道',
+            'status' => '状态',
+        ],
+        'actions' => [
+            'open' => '开立争议审核事件',
+            'view' => '查看',
+            'view_active' => '查看当前争议事件',
+            'reply' => '回复',
+            'close' => '结束事件',
+            'close_heading' => '确认结束争议审核事件',
+            'close_desc' => '结束后冻结资金将释放回可用余额，订单状态恢复为已支付。仅代表争议处理完结，不会自动触发退款/拒付。',
+        ],
+        'notifications' => [
+            'opened' => '争议审核事件已开立，相应金额已冻结。',
+            'replied' => '回复已提交。',
+            'closed' => '事件已结束，冻结资金已释放。',
+            'already_closed' => '该事件已被系统自动结束，无需重复操作。',
+        ],
+        'placeholders' => [
+            'none' => '—',
+        ],
+    ],
+
+    'order_dispute_event_reply' => [
+        'model_label' => '回复记录',
+        'model_label_plural' => '回复记录',
+        'title' => '回复记录',
+        'fields' => [
+            'operator' => '回复人',
+            'content' => '内容',
+            'images' => '图片',
+            'created_at' => '回复时间',
         ],
     ],
 
@@ -636,6 +716,7 @@ return [
         'order_disputing' => "⚠️ 支付争议通知\n\n订单号：:order_no\n建议尽快核实并考虑暂停发货，已拉取最新订单日志，可在后台订单详情查看",
         'order_refund_gateway' => "💸 网关退款通知\n\n订单号：:order_no\n金额：:currency:amount\n此退款来自网关/商城系统主动发起，系统未自动扣减商户余额，请人工核实后在后台执行退款操作；已拉取最新订单日志，可在后台订单详情查看",
         'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统未自动扣减商户余额，请人工核实后处理资损；已拉取最新订单日志，可在后台订单详情查看",
+        'order_dispute_due_soon' => "⏰ 争议审核事件即将到期\n\n订单号：:order_no\n事件编号：:event_no\n到期时间：:due_at\n请尽快处理，逾期将自动结束并释放冻结资金。",
     ],
 
     'finance' => [

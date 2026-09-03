@@ -30,6 +30,15 @@ class Order extends Model
      */
     public const PLATFORMS_FALLBACK = ['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart'];
 
+    /**
+     * 人工发起的争议审核事件占用的订单状态（见 OrderDisputeService）。
+     * 与网关 webhook 驱动的 'disputing' 是两套完全独立的机制，互不复用——
+     * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫。
+     * status 列本身没有枚举 cast（其余状态值仍按历史习惯用字面量字符串），
+     * 这里单独定义常量只是因为这个值需要被好几处新代码引用，避免手滑打错。
+     */
+    public const STATUS_DISPUTE_REVIEW = 'dispute_review';
+
     protected $fillable = [
         'merchant_id',
         'application_id',
@@ -196,6 +205,20 @@ class Order extends Model
     public function refunds(): HasMany
     {
         return $this->hasMany(OrderRefund::class);
+    }
+
+    public function disputeEvents(): HasMany
+    {
+        return $this->hasMany(OrderDisputeEvent::class);
+    }
+
+    /**
+     * 当前处理中的争议审核事件（至多一条，由 order_dispute_events 的
+     * 生成列唯一约束在数据库层保证），可安全 with() 预加载。
+     */
+    public function activeDisputeEvent(): HasOne
+    {
+        return $this->hasOne(OrderDisputeEvent::class)->where('status', OrderDisputeEvent::STATUS_PROCESSING);
     }
 
     /**

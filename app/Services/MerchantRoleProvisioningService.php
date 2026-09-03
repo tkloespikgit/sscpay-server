@@ -35,6 +35,8 @@ class MerchantRoleProvisioningService
                     Permissions::ORDERS_SHIP,
                     Permissions::LOGISTICS_IMPORTS_MANAGE,
                     Permissions::ORDER_EVENTS_VIEW,
+                    Permissions::ORDER_DISPUTES_VIEW,
+                    Permissions::ORDER_DISPUTES_REPLY,
                 ],
             ],
             'logistics_admin' => [
@@ -61,6 +63,9 @@ class MerchantRoleProvisioningService
                     Permissions::ORDERS_VIEW,
                     Permissions::ORDERS_REFUND,
                     Permissions::ORDERS_CHARGEBACK,
+                    Permissions::ORDER_DISPUTES_VIEW,
+                    Permissions::ORDER_DISPUTES_OPEN,
+                    Permissions::ORDER_DISPUTES_CLOSE,
                 ],
             ],
         ];

@@ -14,6 +14,7 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -64,6 +65,26 @@ class OrderCreationService
      * @throws \App\Exceptions\NoAvailablePaymentMethodException
      */
     public function createOrder(
+        array $data,
+        Merchant $merchant,
+        int $applicationId,
+        string $source,
+    ): Order {
+        // 同一笔订单（merchant_id + merchant_order_no）的并发请求（重复提交/webhook 重试/
+        // 手抖重复点击）在此串行化，避免两边都落在"幂等检查未命中"或"CREATE 模式未命中
+        // 站点同价商品"的窗口期里各自建单/建品，在 WordPress 站点上建出重复商品。
+        // 锁粒度精确到单笔订单，不影响其他订单（含同商户的其他订单）的并发处理。
+        $lockKey = "order-create:{$merchant->id}:{$data['merchant_order_no']}";
+
+        return Cache::lock($lockKey, 30)->block(10, fn () => $this->createOrderLocked(
+            $data,
+            $merchant,
+            $applicationId,
+            $source,
+        ));
+    }
+
+    private function createOrderLocked(
         array $data,
         Merchant $merchant,
         int $applicationId,
