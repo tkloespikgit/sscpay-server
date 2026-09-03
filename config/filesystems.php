@@ -60,6 +60,19 @@ return [
             'report' => false,
         ],
 
+        'oss' => [
+            'driver'            => 'oss',
+            'access_key_id'     => env('OSS_ACCESS_KEY_ID'),
+            'access_key_secret' => env('OSS_ACCESS_KEY_SECRET'),
+            'bucket'            => env('OSS_BUCKET'),
+            'endpoint'          => env('OSS_ENDPOINT'),
+            'internal'          => env('OSS_INTERNAL', null),
+            'domain'            => env('OSS_DOMAIN', null),
+            'is_cname'          => env('OSS_CNAME', false),
+            'prefix'            => env('OSS_PREFIX', ''),
+            'use_ssl'           => env('OSS_SSL', true),
+            'throw'             => env('OSS_THROW', true),
+        ],
     ],
 
     /*
