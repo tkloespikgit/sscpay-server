@@ -7,6 +7,7 @@ use Filament\Auth\MultiFactor\App\Concerns\InteractsWithAppAuthenticationRecover
 use Filament\Auth\MultiFactor\App\Contracts\HasAppAuthentication;
 use Filament\Auth\MultiFactor\App\Contracts\HasAppAuthenticationRecovery;
 use Filament\Models\Contracts\FilamentUser;
+use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -65,7 +66,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
      * Filament 面板访问权限判断（如需限制哪些用户能进后台可在此扩展，
      * 例如要求商户 status = true 才能登录）。
      */
-    public function canAccessPanel(): bool
+    public function canAccessPanel(Panel $panel): bool
     {
         if ($this->is_super_admin) {
             return true;
