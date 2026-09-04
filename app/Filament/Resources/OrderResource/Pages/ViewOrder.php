@@ -150,6 +150,7 @@ class ViewOrder extends ViewRecord
                                 ->label(__('admin.order.fields.logistics_company'))
                                 ->required()
                                 ->searchable()
+                                ->preload()
                                 ->getSearchResultsUsing(fn (string $search) => Carrier::query()
                                     ->where('status', Carrier::STATUS_ENABLED)
                                     ->where(fn ($query) => $query
