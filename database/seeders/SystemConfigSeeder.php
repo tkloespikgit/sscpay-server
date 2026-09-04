@@ -63,7 +63,7 @@ class SystemConfigSeeder extends Seeder
                 'config_value' => '3',
                 'value_type' => 'number',
                 'group' => 'order',
-                'description' => '自动匹配商品时单个商品的最大匹配件数（0 表示不限制）；商品池按此上限计算的总容量不够时会报错',
+                'description' => '自动匹配商品时单个商品件数上限的临界值（0 表示不限制）：每次匹配在 1 ~ 该值之间随机确定各商品的实际件数上限，随机上限内凑不出下一件时才放宽到该值；商品池按此临界值计算的总容量不够时会报错',
             ],
             [
                 'config_key' => 'order_event.sync_enabled',

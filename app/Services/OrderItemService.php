@@ -32,8 +32,10 @@ use RuntimeException;
  *     优先挑"原价不低于剩余额度且最接近"的变体小幅打折；若折扣深度超过
  *     阈值（order_match.min_price_ratio，默认 0.4）则回溯退掉上一行一件把额度凑大，
  *     最多回溯有限轮次；小额订单无行可退时退化为深折扣兜底；
- *   - 单个变体最多匹配 order_match.max_item_quantity 件（默认 3，0 不限制），
- *     商品池按件数上限计算的总容量不够打满目标金额时直接报错。
+ *   - 单个变体的件数上限在每次匹配时于 1 ~ order_match.max_item_quantity
+ *     （默认 3，0 不限制）之间随机确定：后台配置只是临界值，随机值不会超过它，
+ *     让同一单里各商品的件数分布不再千篇一律；随机上限内凑不出下一件时
+ *     才放宽到临界值兜底，商品池按临界值计算的总容量不够打满目标金额时直接报错。
  *
  * CREATE 模式（createItems）：
  *   - 逐条按商户下单明细（order_items）的 USD 折算价在站点商品变体中找同价商品，
@@ -52,7 +54,7 @@ class OrderItemService
     /** order_match.min_price_ratio 未配置时的默认值：改价后单价不低于原价的 40%。 */
     private const DEFAULT_MIN_PRICE_RATIO = '0.4';
 
-    /** order_match.max_item_quantity 未配置时的默认值：单个商品最多匹配 3 件。 */
+    /** order_match.max_item_quantity 未配置时的默认值：单品件数随机上限的临界值为 3 件。 */
     private const DEFAULT_MAX_ITEM_QUANTITY = 3;
 
     /** CREATE 模式同价匹配的相对容差：商品价与目标价差额不超过目标价的 5%。 */
@@ -291,7 +293,8 @@ class OrderItemService
      * 剩余额度一件都买不起时，末件改价补齐：优先挑原价最接近剩余额度的变体小幅打折，
      * 折扣深度低于阈值（order_match.min_price_ratio）时回溯退上一行一件凑大额度，
      * 最多回溯 MAX_BACKTRACK_ROUNDS 轮；无行可退时退化为深折扣兜底。
-     * 单个变体最多匹配 order_match.max_item_quantity 件（0 表示不限制）。
+     * 单个变体的件数上限每次匹配时在 1 ~ order_match.max_item_quantity（0 表示不限制）
+     * 之间随机确定，配置值只是随机上限的临界值；随机上限内已无可用变体时放宽到临界值。
      *
      * @param  Collection<int, SiteProductVariation>  $candidates  候选变体（价格 > 0）
      * @return list<array{variation: SiteProductVariation, price: string, quantity: int, price_adjusted: bool, original_price: string|null}>
@@ -301,11 +304,11 @@ class OrderItemService
         $lines = [];
         $remaining = $targetUsd;
 
-        // 单品最大匹配件数（0 或配成非正数表示不限制）。
-        $maxQty = (int) SystemConfig::get('order_match.max_item_quantity', self::DEFAULT_MAX_ITEM_QUANTITY);
+        // 单品件数上限的临界值（0 或配成非正数表示不限制）。
+        $hardMax = (int) SystemConfig::get('order_match.max_item_quantity', self::DEFAULT_MAX_ITEM_QUANTITY);
 
-        if ($maxQty <= 0) {
-            $maxQty = PHP_INT_MAX;
+        if ($hardMax <= 0) {
+            $hardMax = PHP_INT_MAX;
         }
 
         // 某变体已分配的件数（variation id => 件数）：同一变体可能在多轮里被选中、
@@ -317,28 +320,54 @@ class OrderItemService
             return $allocated[$variation->id] ?? 0;
         };
 
-        // 商品池按件数上限计算的总容量不够打满目标金额时直接报错，
+        // 每个变体本次匹配的随机件数上限（variation id => 件数）：首次参与挑选时在
+        // 1 ~ 临界值之间随机确定并固定下来，同一单里各商品的件数不再一律打满上限。
+        $randomLimits = [];
+
+        $randomLimit = function (SiteProductVariation $variation) use (&$randomLimits, $hardMax): int {
+            return $randomLimits[$variation->id] ??= $hardMax === PHP_INT_MAX ? $hardMax : random_int(1, $hardMax);
+        };
+
+        // 临界值上限：随机上限内已经凑不出下一件时用它兜底，保证随机件数只影响
+        // 明细的件数分布，不会让匹配提前进入改价补齐甚至直接失败。
+        $hardLimit = fn (SiteProductVariation $variation) => $hardMax;
+
+        // 未达件数上限的候选变体。
+        $poolUnder = fn (callable $limit) => $candidates->filter(
+            fn (SiteProductVariation $variation) => $allocatedQty($variation) < $limit($variation)
+        );
+
+        // 剩余额度买得起、且未达件数上限的候选池：单价最高的 RANDOM_POOL_SIZE 个。
+        $affordableUnder = function (callable $limit) use ($poolUnder, &$remaining) {
+            return $poolUnder($limit)
+                ->filter(fn (SiteProductVariation $variation) => bccomp($this->variationPrice($variation), $remaining, 2) <= 0)
+                ->sortByDesc(fn (SiteProductVariation $variation) => (float) $variation->price)
+                ->take(self::RANDOM_POOL_SIZE);
+        };
+
+        // 商品池按件数临界值计算的总容量不够打满目标金额时直接报错，
         // 避免硬凑出改价离谱的明细行。
-        if ($maxQty !== PHP_INT_MAX) {
+        if ($hardMax !== PHP_INT_MAX) {
             $capacity = '0';
 
             foreach ($candidates as $variation) {
-                $capacity = bcadd($capacity, bcmul($this->variationPrice($variation), (string) $maxQty, 2), 2);
+                $capacity = bcadd($capacity, bcmul($this->variationPrice($variation), (string) $hardMax, 2), 2);
             }
 
             if (bccomp($targetUsd, $capacity, 2) > 0) {
-                throw new RuntimeException("站点商品容量不足：按单品最多 {$maxQty} 件计算，可用商品总额 {$capacity} 美金，低于目标金额 {$targetUsd} 美金，无法自动匹配商品");
+                throw new RuntimeException("站点商品容量不足：按单品最多 {$hardMax} 件计算，可用商品总额 {$capacity} 美金，低于目标金额 {$targetUsd} 美金，无法自动匹配商品");
             }
         }
 
         while (bccomp($remaining, '0', 2) > 0) {
             // 从剩余额度买得起且未达件数上限的变体里，取单价最高的 10 个再随机选 1 个，
-            // 避免每次都命中同一件最高价商品。
-            $affordable = $candidates
-                ->filter(fn (SiteProductVariation $variation) => bccomp($this->variationPrice($variation), $remaining, 2) <= 0
-                    && $allocatedQty($variation) < $maxQty)
-                ->sortByDesc(fn (SiteProductVariation $variation) => (float) $variation->price)
-                ->take(self::RANDOM_POOL_SIZE);
+            // 避免每次都命中同一件最高价商品；优先在随机件数上限内挑，随机上限内
+            // 一件都买不起时才放宽到临界值。
+            $affordable = $affordableUnder($randomLimit);
+
+            if ($affordable->isEmpty()) {
+                $affordable = $affordableUnder($hardLimit);
+            }
 
             if ($affordable->isEmpty()) {
                 break;
@@ -347,8 +376,13 @@ class OrderItemService
             $picked = $affordable->random();
             $price = $this->variationPrice($picked);
 
-            // 数量取剩余额度最多能买的件数（再加一件就会超出），且不超过单品件数上限。
-            $quantity = min((int) bcdiv($remaining, $price, 0), $maxQty - $allocatedQty($picked));
+            // 数量取剩余额度最多能买的件数（再加一件就会超出），且不超过该变体的件数上限：
+            // 随机上限还有余量就按随机上限，随机上限已用满（放宽轮次命中）时按临界值。
+            $randomLeft = $randomLimit($picked) - $allocatedQty($picked);
+            $quantity = min(
+                (int) bcdiv($remaining, $price, 0),
+                $randomLeft > 0 ? $randomLeft : $hardMax - $allocatedQty($picked)
+            );
 
             $lines[] = [
                 'variation' => $picked,
@@ -373,11 +407,10 @@ class OrderItemService
             $picked = null;
 
             for ($attempt = 0; $attempt <= self::MAX_BACKTRACK_ROUNDS; $attempt++) {
-                // 末件改价行也是一件，同样要排除已达件数上限的变体。
-                $picked = $this->pickClosestAbove(
-                    $candidates->filter(fn (SiteProductVariation $variation) => $allocatedQty($variation) < $maxQty),
-                    $remaining
-                );
+                // 末件改价行也是一件，同样要排除已达件数上限的变体：先在随机上限内挑，
+                // 挑不出"原价不低于剩余额度"的再放宽到临界值。
+                $picked = $this->pickClosestAbove($poolUnder($randomLimit), $remaining)
+                    ?? $this->pickClosestAbove($poolUnder($hardLimit), $remaining);
 
                 // 折扣深度可接受（改价/原价 >= 阈值）就用它，停止回溯。
                 if ($picked !== null
@@ -414,9 +447,15 @@ class OrderItemService
 
             if ($picked === null) {
                 // 深折扣兜底：所有变体原价都低于剩余额度或无行可退时，
-                // 从未达件数上限的最便宜 10 个里随机挑一件改价补齐。
-                $fallbackPool = $candidates
-                    ->filter(fn (SiteProductVariation $variation) => $allocatedQty($variation) < $maxQty)
+                // 从未达件数上限（随机上限内没有可用变体时放宽到临界值）的
+                // 最便宜 10 个里随机挑一件改价补齐。
+                $pool = $poolUnder($randomLimit);
+
+                if ($pool->isEmpty()) {
+                    $pool = $poolUnder($hardLimit);
+                }
+
+                $fallbackPool = $pool
                     ->sortBy(fn (SiteProductVariation $variation) => (float) $variation->price)
                     ->take(self::RANDOM_POOL_SIZE);
 
