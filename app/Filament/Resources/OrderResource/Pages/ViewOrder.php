@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\OrderResource\Pages;
 
+use App\Events\OrderStatusChanged;
 use App\Exceptions\BalanceOperationException;
 use App\Filament\Resources\OrderDisputeEventResource;
 use App\Filament\Resources\OrderResource;
@@ -11,9 +12,11 @@ use App\Filament\Resources\OrderResource\RelationManagers\OrderItemsRelationMana
 use App\Filament\Resources\OrderResource\RelationManagers\OrderMatchedItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttemptsRelationManager;
 use App\Filament\Support\FinanceSecurity;
+use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
+use App\Models\OrderShipping;
 use App\Services\BalanceService;
 use App\Services\OrderDisputeService;
 use App\Services\OrderShippingService;
@@ -90,6 +93,18 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('shipping.logistics_company')->label(__('admin.order.fields.logistics_company'))->placeholder(__('admin.order.placeholders.not_shipped')),
                     TextEntry::make('shipping.tracking_number')->label(__('admin.order.fields.tracking_number'))->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))->dateTime()->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.sync_status')->label(__('admin.order.fields.sync_status'))
+                        ->badge()
+                        ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
+                        ->color(fn (?string $state) => match ($state) {
+                            OrderShipping::SYNC_STATUS_SYNCED => 'success',
+                            OrderShipping::SYNC_STATUS_FAILED => 'danger',
+                            default => 'gray',
+                        })
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.sync_message')->label(__('admin.order.fields.sync_message'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->columnSpanFull(),
                     TextEntry::make('shipping.operator.name')->label(__('admin.order.fields.operator'))
                         ->state(fn ($record) => $record->shipping?->operator_id === OrderShippingService::API_OPERATOR_ID
                             ? 'API'
@@ -97,6 +112,28 @@ class ViewOrder extends ViewRecord
                         ->placeholder(__('admin.order.placeholders.none')),
                 ])
                 ->headerActions([
+                    Action::make('syncTrackingNow')
+                        ->label(__('admin.order.actions_shipping.sync_now'))
+                        ->icon('heroicon-o-arrow-path')
+                        ->color('gray')
+                        // 只有待同步/同步失败的记录才需要手动重试；已同步的没有必要重复触发。
+                        ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_SHIP)
+                            && $record->shipping
+                            && in_array($record->shipping->sync_status, [
+                                OrderShipping::SYNC_STATUS_PENDING,
+                                OrderShipping::SYNC_STATUS_FAILED,
+                            ], true))
+                        ->action(function ($record) {
+                            // 立即标记为待同步，给出"已在处理中"的即时反馈；真实结果由 Job 执行完后回写。
+                            $record->shipping->update(['sync_status' => OrderShipping::SYNC_STATUS_PENDING]);
+
+                            SyncOrderTrackingJob::dispatch($record->shipping->id);
+
+                            Notification::make()
+                                ->title(__('admin.order.actions_shipping.sync_now_queued'))
+                                ->success()
+                                ->send();
+                        }),
                     Action::make('recordShipment')
                         ->label(fn ($record) => $record->shipping ? __('admin.order.actions_shipping.update') : __('admin.order.actions_shipping.record'))
                         ->icon('heroicon-o-truck')
@@ -164,7 +201,77 @@ class ViewOrder extends ViewRecord
             $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
             $this->chargebackAction(),
+            $this->manualStatusChangeAction(),
         ];
+    }
+
+    /**
+     * 超级管理员专用兜底：当自动状态流转（网关回调 / 查询最新状态）因为异常
+     * 没能生效时，人工把订单强制改到「交易成功」或「失败」。
+     *
+     * 不复用 OrderPaymentStatusService::applyStatus()——那条路径带着"已收款
+     * 状态不允许回退""终态不接受覆盖"这些为网关事件设计的保护规则，人工纠错
+     * 恰恰是要绕开这些规则；这里只做最小化校验（来源状态是否合理）+ 直接落库
+     * + 照样 fire OrderStatusChanged（下游 Telegram 监听器已经兼容非网关来源）。
+     *
+     * 「拒付」不在这里：已有 chargebackAction 走 BalanceService::chargeback()
+     * 真实扣款 + 2FA，语义和这个"纯改状态标签"的动作不一样，不重复实现。
+     * completed/failed 本身不涉及金额变动，所以不需要 2FA。
+     */
+    private function manualStatusChangeAction(): Action
+    {
+        // 目标状态 => 允许的来源状态（业务含义：completed 只能从"已收过款"的
+        // 状态族确认完成；failed 只能从"还没收到钱"的 pending 标记为失败，
+        // 已收款订单不允许被标记为失败，避免和真实到账的钱对不上）。
+        $allowedSources = [
+            'completed' => ['paid', 'shipped', 'partially_refunded'],
+            'failed' => ['pending'],
+        ];
+
+        return Action::make('manualStatusChange')
+            ->label(__('admin.order.actions.manual_status_change'))
+            ->icon('heroicon-o-wrench-screwdriver')
+            ->color('gray')
+            ->requiresConfirmation()
+            ->visible(fn ($record) => (bool) auth()->user()?->is_super_admin
+                && collect($allowedSources)->contains(fn ($sources) => in_array($record->status, $sources, true)))
+            ->modalDescription(__('admin.order.actions.manual_status_change_desc'))
+            ->schema(fn ($record) => [
+                Select::make('target_status')
+                    ->label(__('admin.order.fields.manual_status_target'))
+                    ->options(collect($allowedSources)
+                        ->filter(fn ($sources) => in_array($record->status, $sources, true))
+                        ->keys()
+                        ->mapWithKeys(fn (string $status) => [$status => __('admin.order.statuses.'.$status)]))
+                    ->required(),
+                Textarea::make('reason')->label(__('admin.order.fields.manual_status_reason'))->rows(2)->maxLength(500),
+            ])
+            ->action(function (array $data) use ($allowedSources) {
+                $order = $this->record;
+                $target = $data['target_status'];
+
+                if (! in_array($order->status, $allowedSources[$target] ?? [], true)) {
+                    Notification::make()->title(__('admin.order.actions.manual_status_change_invalid'))->danger()->send();
+
+                    return;
+                }
+
+                $oldStatus = $order->status;
+                $operator = auth()->user();
+
+                $note = now()->toDateTimeString()." [{$operator->name}] 手动改状态 {$oldStatus} → {$target}"
+                    .(filled($data['reason'] ?? null) ? "：{$data['reason']}" : '');
+
+                $order->forceFill([
+                    'status' => $target,
+                    'remark' => trim(($order->remark ? $order->remark."\n" : '').$note),
+                ])->save();
+
+                event(new OrderStatusChanged($order, $oldStatus, $target));
+
+                Notification::make()->title(__('admin.order.actions.manual_status_change_success'))->success()->send();
+                $this->record->refresh();
+            });
     }
 
     /**

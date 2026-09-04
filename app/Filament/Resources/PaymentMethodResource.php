@@ -89,6 +89,11 @@ class PaymentMethodResource extends Resource
                         ->label(__('admin.payment_method.fields.sync_logistics'))
                         ->default(true)
                         ->inline(false),
+                    Toggle::make('allow_returned_source')
+                        ->label(__('admin.payment_method.fields.allow_returned_source'))
+                        ->helperText(__('admin.payment_method.help.allow_returned_source'))
+                        ->default(true)
+                        ->inline(false),
 
                     TextEntry::make('divider')
                         ->hiddenLabel() // V5 推荐用 ->hiddenLabel() 代替 ->label('')
@@ -256,6 +261,7 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
+                IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),
             ]))
             ->recordActions([

@@ -110,6 +110,7 @@ return [
             'invoice_prefix' => 'Invoice Prefix',
             'virtual_product_prefix' => 'Virtual Product Prefix',
             'sync_logistics' => 'Sync Logistics Info',
+            'allow_returned_source' => 'Allow Return to Source Site',
             'max_amount_per_transaction' => 'Max Amount per Transaction',
             'max_amount_per_day' => 'Max Daily Total Amount',
             'max_count_per_day' => 'Max Daily Transaction Count',
@@ -129,6 +130,7 @@ return [
             'invoice_prefix' => 'Name prefix used when generating invoice products. Leave empty for no prefix.',
             'virtual_product_prefix' => 'Name prefix used when generating virtual products. Leave empty for no prefix.',
             'sync_logistics' => 'Whether to sync logistics info (carrier and tracking number) to the corresponding site after an order is shipped.',
+            'allow_returned_source' => 'Whether the customer may be redirected back to the source site after payment. Forced to disallowed when the order platform is invoice, which takes priority over this setting.',
             'fees' => 'Fixed fee (USD) charged on refund/chargeback, deducted from the merchant balance; enter 0 for none',
         ],
         'validation' => [
@@ -147,6 +149,7 @@ return [
             'daily_limit' => 'Daily Limit',
             'monthly_limit' => 'Monthly Limit',
             'sync_logistics' => 'Sync Logistics',
+            'allow_returned_source' => 'Allow Return to Source',
         ],
         'actions' => [
             'duplicate' => 'Duplicate',
@@ -267,6 +270,11 @@ return [
             'refunded' => 'Refunded',
             'chargeback' => 'Charged Back',
         ],
+        'sync_statuses' => [
+            'pending' => 'Pending Sync',
+            'synced' => 'Synced',
+            'failed' => 'Sync Failed',
+        ],
         'columns' => [
             'order_no' => 'Order No.',
             'merchant_order_no' => 'Merchant Order No.',
@@ -283,6 +291,7 @@ return [
             'platform' => 'Platform',
             'created_at' => 'Created At',
             'shipping_status' => 'Shipping Status',
+            'sync_status' => 'Tracking Sync Status',
         ],
         'filters' => [
             'merchant' => 'Merchant',
@@ -293,6 +302,7 @@ return [
             'shipping_status' => 'Shipping Status',
             'shipping_shipped' => 'Shipped',
             'shipping_unshipped' => 'Not Shipped',
+            'sync_status' => 'Tracking Sync Status',
             'customer_email' => 'Customer Email',
             'customer_email_placeholder' => 'Fuzzy search supported',
             'transaction_id' => 'Transaction ID',
@@ -314,6 +324,10 @@ return [
             'query_status_unknown' => 'The plugin returned an unrecognized status (:status). Logged for review, local status was not changed.',
             'query_status_changed' => 'Order status updated: :old → :new',
             'query_status_unchanged' => 'Order status unchanged (currently: :status)',
+            'manual_status_change' => 'Manually Change Status',
+            'manual_status_change_desc' => 'For manual correction only when the automatic status flow (gateway callback/query) failed to apply. Use with care.',
+            'manual_status_change_invalid' => 'The current order status does not allow manually changing to this target status',
+            'manual_status_change_success' => 'Order status updated',
         ],
         'sections' => [
             'order_info' => 'Order Information',
@@ -353,6 +367,10 @@ return [
             'shipped_at' => 'Shipped At',
             'operator' => 'Operator',
             'remark' => 'Remark',
+            'sync_status' => 'Tracking Sync Status',
+            'sync_message' => 'Sync Result',
+            'manual_status_target' => 'Target Status',
+            'manual_status_reason' => 'Reason',
         ],
         'placeholders' => [
             'not_shipped' => 'Not shipped yet',
@@ -363,6 +381,8 @@ return [
             'update' => 'Update Shipment (Reship / Correction)',
             'success' => 'Shipment saved, order status updated to Shipped',
             'success_saved' => 'Shipment saved',
+            'sync_now' => 'Sync Now',
+            'sync_now_queued' => 'Queued for sync, refresh shortly to see the result',
         ],
         'modals' => [
             'customer_info_heading' => 'Customer Information',

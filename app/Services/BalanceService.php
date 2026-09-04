@@ -83,8 +83,14 @@ class BalanceService
         $fee = $method ? (string) $method->refund_fee : '0';
 
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountOriginal, $operator, $reason, $fee) {
-            // 在锁内重新读取订单已退款额，做并发安全的封顶校验
+            // 在锁内重新读取订单最新状态，做并发安全的校验：不能只信外层（加锁前）
+            // 读到的旧状态——等锁期间订单可能已被另一笔并发的拒付/退款改变状态。
             $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
+
+            if (! in_array($fresh->status, ['paid', 'shipped', 'completed', 'partially_refunded'], true)) {
+                throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可退款，只有已收款的订单才能退款。");
+            }
+
             $remaining = bcsub((string) $fresh->amount, (string) $fresh->refunded_amount, 2);
 
             if (bccomp($amountOriginal, $remaining, 2) > 0) {
@@ -151,10 +157,17 @@ class BalanceService
         $fee = $method ? (string) $method->chargeback_fee : '0';
 
         $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountUsd, $fee, $operator, $reason) {
+            // 在锁内重新读取订单最新状态/退款额：等锁期间订单可能已被另一笔并发的
+            // 退款/拒付改变状态，不能只信外层（加锁前）读到的旧值，否则会对同一笔
+            // 订单重复扣款（如退款已发生后又被拒付扣了全额）。
             $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
 
-            if ($fresh->status === 'chargeback') {
-                throw new BalanceOperationException('该订单已是拒付状态。');
+            if (! in_array($fresh->status, ['paid', 'shipped', 'completed'], true)) {
+                throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可拒付。");
+            }
+
+            if (bccomp((string) $fresh->refunded_amount, '0', 2) > 0) {
+                throw new BalanceOperationException('该订单已发生退款，不能再做拒付，请人工处理。');
             }
 
             $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK, '-'.$amountUsd, [

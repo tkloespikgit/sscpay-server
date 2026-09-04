@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Order;
 use App\Models\OrderShipping;
 use Illuminate\Validation\ValidationException;
@@ -20,6 +21,10 @@ use Illuminate\Validation\ValidationException;
  *   - 如果该订单已经有一条物流记录，视为"补发/改单"，直接覆盖更新，
  *     而不是报错拒绝——这是 OrderShipping::recordShipment() 的 updateOrCreate
  *     语义，本服务只负责前置校验，不重复实现 upsert 逻辑。
+ *   - 每次落库后都会自动把"同步给 WordPress 商城系统插件"这个动作丢进队列
+ *     （SyncOrderTrackingJob）尝试一次；同步状态（待同步/已同步/同步失败）
+ *     记在 OrderShipping.sync_status 上，失败/待同步的记录可以在后台手动
+ *     重新入队重试，见 OrderResource\Pages\ViewOrder 的"手动同步"按钮。
  */
 class OrderShippingService
 {
@@ -48,9 +53,13 @@ class OrderShippingService
             ]);
         }
 
-        return OrderShipping::recordShipment($order->id, array_merge($attributes, [
+        $shipping = OrderShipping::recordShipment($order->id, array_merge($attributes, [
             'merchant_id' => $order->merchant_id,
             'operator_id' => $operatorId,
         ]));
+
+        SyncOrderTrackingJob::dispatch($shipping->id);
+
+        return $shipping;
     }
 }

@@ -49,6 +49,7 @@ class PaymentMethod extends Model
         'invoice_prefix',
         'virtual_product_prefix',
         'sync_logistics',
+        'allow_returned_source',
         'max_amount_per_transaction',
         'max_amount_per_day',
         'max_count_per_day',
@@ -62,6 +63,7 @@ class PaymentMethod extends Model
         return [
             'is_active' => 'boolean',
             'sync_logistics' => 'boolean',
+            'allow_returned_source' => 'boolean',
             'config' => 'array',
             'max_amount_per_transaction' => 'decimal:2',
             'max_amount_per_day' => 'decimal:2',

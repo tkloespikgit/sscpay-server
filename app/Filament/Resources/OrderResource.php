@@ -6,6 +6,7 @@ use App\Filament\Resources\OrderResource\Pages;
 use App\Models\Application;
 use App\Models\Merchant;
 use App\Models\Order;
+use App\Models\OrderShipping;
 use App\Models\PaymentMethod;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
@@ -117,6 +118,18 @@ class OrderResource extends Resource
                     ->color(fn ($record) => $record->shipping ? 'primary' : 'gray')
                     ->action(static::viewShippingInfoAction()),
 
+                // 物流是否已同步给 WordPress 商城系统插件，没有物流记录的订单不展示（placeholder）。
+                TextColumn::make('shipping.sync_status')->label(__('admin.order.columns.sync_status'))
+                    ->badge()
+                    ->placeholder(__('admin.order.placeholders.not_shipped'))
+                    ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
+                    ->color(fn (?string $state) => match ($state) {
+                        OrderShipping::SYNC_STATUS_SYNCED => 'success',
+                        OrderShipping::SYNC_STATUS_FAILED => 'danger',
+                        default => 'gray',
+                    })
+                    ->toggleable(),
+
                 TextColumn::make('platform')->label(__('admin.order.columns.platform')),
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
             ])
@@ -196,6 +209,23 @@ class OrderResource extends Resource
                         return $query
                             ->when(($data['value'] ?? null) === 'shipped', fn ($q) => $q->whereHas('shipping'))
                             ->when(($data['value'] ?? null) === 'unshipped', fn ($q) => $q->doesntHave('shipping'));
+                    }),
+
+                // 物流同步状态：支持多选（比如同时勾选"待同步"+"同步失败"找出所有需要处理的记录）。
+                SelectFilter::make('sync_status')
+                    ->label(__('admin.order.filters.sync_status'))
+                    ->multiple()
+                    ->options([
+                        OrderShipping::SYNC_STATUS_PENDING => __('admin.order.sync_statuses.pending'),
+                        OrderShipping::SYNC_STATUS_SYNCED => __('admin.order.sync_statuses.synced'),
+                        OrderShipping::SYNC_STATUS_FAILED => __('admin.order.sync_statuses.failed'),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $values = $data['values'] ?? [];
+
+                        return empty($values)
+                            ? $query
+                            : $query->whereHas('shipping', fn ($q) => $q->whereIn('sync_status', $values));
                     }),
 
                 Filter::make('customer_email')
@@ -376,6 +406,17 @@ class OrderResource extends Resource
                 TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))
                     ->dateTime()
                     ->placeholder(__('admin.order.placeholders.none')),
+                TextEntry::make('shipping.sync_status')->label(__('admin.order.fields.sync_status'))
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
+                    ->color(fn (?string $state) => match ($state) {
+                        OrderShipping::SYNC_STATUS_SYNCED => 'success',
+                        OrderShipping::SYNC_STATUS_FAILED => 'danger',
+                        default => 'gray',
+                    }),
+                TextEntry::make('shipping.sync_message')->label(__('admin.order.fields.sync_message'))
+                    ->placeholder(__('admin.order.placeholders.none'))
+                    ->columnSpanFull(),
                 TextEntry::make('shipping.operator.name')->label(__('admin.order.fields.operator'))
                     ->state(fn ($record) => $record->shipping?->operator_id === OrderShippingService::API_OPERATOR_ID
                         ? 'API'

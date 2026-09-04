@@ -43,4 +43,28 @@ class Carrier extends Model
             ->whereRaw('UPPER(carrier_code) = ?', [mb_strtoupper($code)])
             ->exists();
     }
+
+    /**
+     * 把本地存的 logistics_company（即 carrier_code）换算成商城系统插件
+     * /sync-tracking 接口要的 carrier_code + is_other_carrier（见
+     * doc/s-system-sync-tracking.md 第三节"承运商字段说明"）：
+     * pp_supported=true 时是渠道方（目前仅 PayPal）认识的标准代码，原样传并
+     * 标 N；pp_supported=false（渠道枚举里没有对应项）则改传承运商名称自由
+     * 文本，标 Y。找不到承运商记录属异常情况（入库前已校验过），兜底按
+     * 标准代码处理。
+     *
+     * @return array{0: string, 1: string} [carrier_code, is_other_carrier]
+     */
+    public static function resolveTrackingCode(string $logisticsCompany): array
+    {
+        $carrier = static::query()
+            ->whereRaw('UPPER(carrier_code) = ?', [mb_strtoupper($logisticsCompany)])
+            ->first();
+
+        if ($carrier && ! $carrier->pp_supported) {
+            return [$carrier->carrier_name, 'Y'];
+        }
+
+        return [$logisticsCompany, 'N'];
+    }
 }

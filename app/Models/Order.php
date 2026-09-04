@@ -31,6 +31,12 @@ class Order extends Model
     public const PLATFORMS_FALLBACK = ['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart'];
 
     /**
+     * platform=invoice（手工发票类订单）强制不允许返回源站，
+     * 见 OrderCreationService::createRemotePayment() 的 allow_returned_source 判定。
+     */
+    public const PLATFORM_INVOICE = 'invoice';
+
+    /**
      * 人工发起的争议审核事件占用的订单状态（见 OrderDisputeService）。
      * 与网关 webhook 驱动的 'disputing' 是两套完全独立的机制，互不复用——
      * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫。

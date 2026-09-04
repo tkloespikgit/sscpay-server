@@ -108,6 +108,7 @@ return [
             'invoice_prefix' => 'Invoice 前缀',
             'virtual_product_prefix' => '虚拟商品前缀',
             'sync_logistics' => '同步物流信息',
+            'allow_returned_source' => '允许返回源站',
             'max_amount_per_transaction' => '单笔交易金额上限',
             'max_amount_per_day' => '单日交易总金额上限',
             'max_count_per_day' => '单日交易笔数上限',
@@ -127,6 +128,7 @@ return [
             'invoice_prefix' => '生成 invoice 商品时使用的名称前缀，留空表示不加前缀',
             'virtual_product_prefix' => '生成虚拟商品时使用的名称前缀，留空表示不加前缀',
             'sync_logistics' => '订单发货后，是否将物流信息（物流公司、运单号）同步到对应站点',
+            'allow_returned_source' => '支付完成后是否允许返回源站；订单平台为 invoice 时强制不允许，优先级高于此配置',
             'fees' => '退款/拒付时按此固定金额（USD）收取手续费，从商户余额扣除；填 0 表示不收取',
         ],
         'validation' => [
@@ -145,6 +147,7 @@ return [
             'daily_limit' => '单日上限',
             'monthly_limit' => '单月上限',
             'sync_logistics' => '同步物流',
+            'allow_returned_source' => '允许返回源站',
         ],
         'actions' => [
             'duplicate' => '复制',
@@ -265,6 +268,11 @@ return [
             'refunded' => '已退款',
             'chargeback' => '已拒付',
         ],
+        'sync_statuses' => [
+            'pending' => '待同步',
+            'synced' => '已同步',
+            'failed' => '同步失败',
+        ],
         'columns' => [
             'order_no' => '订单号',
             'merchant_order_no' => '商户订单号',
@@ -281,6 +289,7 @@ return [
             'platform' => '平台',
             'created_at' => '创建时间',
             'shipping_status' => '发货状态',
+            'sync_status' => '物流同步状态',
         ],
         'filters' => [
             'merchant' => '商户',
@@ -291,6 +300,7 @@ return [
             'shipping_status' => '发货状态',
             'shipping_shipped' => '已发货',
             'shipping_unshipped' => '未发货',
+            'sync_status' => '物流同步状态',
             'customer_email' => '客户邮箱',
             'customer_email_placeholder' => '支持模糊搜索',
             'transaction_id' => '三方交易号',
@@ -312,6 +322,10 @@ return [
             'query_status_unknown' => '插件返回了未知状态（:status），已记录日志，未更新本地状态',
             'query_status_changed' => '订单状态已更新：:old → :new',
             'query_status_unchanged' => '订单状态未变化（当前：:status）',
+            'manual_status_change' => '手动更改订单状态',
+            'manual_status_change_desc' => '仅用于自动状态流转（网关回调/查询）因异常未能生效时的人工兜底纠正，请谨慎操作。',
+            'manual_status_change_invalid' => '当前订单状态不允许手动改为该目标状态',
+            'manual_status_change_success' => '订单状态已更新',
         ],
         'sections' => [
             'order_info' => '订单信息',
@@ -351,6 +365,10 @@ return [
             'shipped_at' => '发货时间',
             'operator' => '操作人',
             'remark' => '备注',
+            'sync_status' => '物流同步状态',
+            'sync_message' => '同步结果说明',
+            'manual_status_target' => '目标状态',
+            'manual_status_reason' => '备注原因',
         ],
         'placeholders' => [
             'not_shipped' => '尚未发货',
@@ -361,6 +379,8 @@ return [
             'update' => '修改物流信息（补发/改单）',
             'success' => '物流信息已保存，订单状态已更新为已发货',
             'success_saved' => '物流信息已保存',
+            'sync_now' => '手动同步',
+            'sync_now_queued' => '已加入同步队列，请稍后刷新查看结果',
         ],
         'modals' => [
             'customer_info_heading' => '客户信息',

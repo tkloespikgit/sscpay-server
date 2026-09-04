@@ -343,6 +343,7 @@ class OrderCreationService
         // 发票号与订单主题随支付方式配置生成，落库后随 payload 一并同步给 WordPress。
         $invoiceNumber = $this->buildInvoiceNumber($order, $paymentMethod);
         $subject       = $this->buildSubject($order, $paymentMethod);
+        $allowReturnedSource = $this->resolveAllowReturnedSource($order, $paymentMethod);
 
         $order->update([
             'matched_discount' => $matched['overflow'],
@@ -382,6 +383,8 @@ class OrderCreationService
             'subject'          => $order->subject,
             // 支付方式的商品匹配模式作为交易类型透传给商城系统
             'trans_type'       => $mode,
+            // 是否允许支付完成后返回源站，Y/N；platform=invoice 强制 N，优先级高于支付方式配置。
+            'allow_returned_source' => $allowReturnedSource,
             'callback_url'     => url('/api/webhooks/payment-gateway/status'),
             // TODO: 支付状态回调路由（PaymentGatewayWebhookController）待实现
             'return_url'       => $order->return_url ?: url('/payment/'.$order->payment_link_token),
@@ -458,6 +461,19 @@ class OrderCreationService
     private function buildSubject(Order $order, PaymentMethod $paymentMethod): string
     {
         return trim((string) $paymentMethod->virtual_product_prefix)." ".$order->order_no;
+    }
+
+    /**
+     * 是否允许支付完成后返回源站（商城系统字段 allow_returned_source，Y/N）。
+     * platform=invoice 的订单强制不允许返回源站，优先级高于支付方式的 allow_returned_source 配置。
+     */
+    private function resolveAllowReturnedSource(Order $order, PaymentMethod $paymentMethod): string
+    {
+        if ($order->platform === Order::PLATFORM_INVOICE) {
+            return 'N';
+        }
+
+        return $paymentMethod->allow_returned_source ? 'Y' : 'N';
     }
 
     /**
