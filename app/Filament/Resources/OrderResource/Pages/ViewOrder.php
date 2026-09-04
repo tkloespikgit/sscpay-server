@@ -150,16 +150,11 @@ class ViewOrder extends ViewRecord
                                 ->label(__('admin.order.fields.logistics_company'))
                                 ->required()
                                 ->searchable()
+                                // preload + options() 保证下拉框一打开就直接展示承运商列表，
+                                // 不用先输入关键字才触发 getSearchResultsUsing 的异步搜索。
                                 ->preload()
-                                ->getSearchResultsUsing(fn (string $search) => Carrier::query()
-                                    ->where('status', Carrier::STATUS_ENABLED)
-                                    ->where(fn ($query) => $query
-                                        ->where('carrier_name', 'like', "%{$search}%")
-                                        ->orWhere('carrier_code', 'like', "%{$search}%"))
-                                    ->orderBy('carrier_name')
-                                    ->limit(50)
-                                    ->get()
-                                    ->mapWithKeys(fn (Carrier $carrier) => [$carrier->carrier_code => "{$carrier->carrier_name} ({$carrier->carrier_code})"]))
+                                ->options(fn () => static::carrierOptions())
+                                ->getSearchResultsUsing(fn (string $search) => static::carrierOptions($search))
                                 ->getOptionLabelUsing(function (?string $value) {
                                     if (blank($value)) {
                                         return null;
@@ -452,5 +447,23 @@ class ViewOrder extends ViewRecord
             OrderDisputeEventsRelationManager::class,
             OrderNotificationAttemptsRelationManager::class,
         ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function carrierOptions(?string $search = null): array
+    {
+        return Carrier::query()
+            ->where('status', Carrier::STATUS_ENABLED)
+            ->when(filled($search), fn ($query) => $query
+                ->where(fn ($query) => $query
+                    ->where('carrier_name', 'like', "%{$search}%")
+                    ->orWhere('carrier_code', 'like', "%{$search}%")))
+            ->orderBy('carrier_name')
+            ->limit(50)
+            ->get()
+            ->mapWithKeys(fn (Carrier $carrier) => [$carrier->carrier_code => "{$carrier->carrier_name} ({$carrier->carrier_code})"])
+            ->all();
     }
 }

@@ -2,16 +2,19 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\Merchant;
 use App\Models\TelegramBot;
 use App\Services\TelegramNotificationService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Illuminate\Support\HtmlString;
 
@@ -19,6 +22,9 @@ use Illuminate\Support\HtmlString;
  * Telegram 通知配置（4.11 节）。每个商户最多绑定一个机器人
  * （telegram_bots.merchant_id 唯一），所以做成单例设置页而不是
  * 列表型 Resource——商户后台不需要"新建/列表"这些多余的操作。
+ *
+ * 商户用户看不到商户选择器，始终锁定自己所在商户（同 PaymentMethodResource
+ * 的约定）；超级管理员没有 merchant_id，必须显式选择要配置哪个商户的机器人。
  */
 class TelegramSettings extends Page
 {
