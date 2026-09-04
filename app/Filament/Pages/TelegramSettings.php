@@ -48,15 +48,40 @@ class TelegramSettings extends Page
 
     public function mount(): void
     {
-        $bot = $this->currentBot();
+        $isSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $merchantId = $isSuperAdmin ? null : auth()->user()->merchant_id;
+        $bot = $merchantId ? $this->botForMerchant($merchantId) : null;
 
-        $this->form->fill($bot ? $bot->only(['bot_token', 'chat_id', 'is_enabled']) : []);
+        $this->form->fill([
+            'merchant_id' => $merchantId,
+            ...($bot ? $bot->only(['bot_token', 'chat_id', 'is_enabled']) : []),
+        ]);
     }
 
     public function form(Schema $schema): Schema
     {
+        $isSuperAdmin = (bool) auth()->user()?->is_super_admin;
+
         return $schema
             ->components([
+                Select::make('merchant_id')
+                    ->label(__('admin.telegram.fields.merchant'))
+                    ->options(fn () => Merchant::query()->where('status', true)->orderBy('name')->pluck('name', 'id'))
+                    ->searchable()
+                    ->required()
+                    // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
+                    // 不选就直接保存会导致 telegram_bots.merchant_id 外键列为空，必须在这里显式选。
+                    ->disabled(! $isSuperAdmin)
+                    ->default(fn () => $isSuperAdmin ? null : auth()->user()->merchant_id)
+                    ->dehydrated()
+                    ->live()
+                    ->afterStateUpdated(function (?string $state, Set $set) {
+                        $bot = filled($state) ? $this->botForMerchant((int) $state) : null;
+
+                        $set('bot_token', $bot?->bot_token);
+                        $set('chat_id', $bot?->chat_id);
+                        $set('is_enabled', $bot?->is_enabled ?? true);
+                    }),
                 TextInput::make('bot_token')->label(__('admin.telegram.fields.bot_token'))->password()->revealable()->required(),
                 TextInput::make('chat_id')->label(__('admin.telegram.fields.chat_id'))->required()->rule('regex:/^-?\d+$/')->helperText(__('admin.telegram.help.chat_id')),
                 Toggle::make('is_enabled')->label(__('admin.telegram.fields.is_enabled'))->default(true),
@@ -83,12 +108,10 @@ class TelegramSettings extends Page
     public function save(): void
     {
         $data = $this->form->getState();
+        $merchantId = (int) $data['merchant_id'];
+        unset($data['merchant_id']);
 
-        TelegramBot::query()
-            ->updateOrCreate(
-                ['merchant_id' => auth()->user()->merchant_id],
-                $data
-            );
+        TelegramBot::query()->updateOrCreate(['merchant_id' => $merchantId], $data);
 
         Notification::make()->title(__('admin.telegram.notifications.saved'))->success()->send();
     }
@@ -97,7 +120,9 @@ class TelegramSettings extends Page
     {
         $this->save(); // 先保存，确保测试用的是最新填写的配置
 
-        $sent = $service->sendTest(auth()->user()->merchant_id);
+        $merchantId = (int) $this->form->getState()['merchant_id'];
+
+        $sent = $service->sendTest($merchantId);
 
         if ($sent) {
             Notification::make()->title(__('admin.telegram.notifications.test_sent'))->success()->send();
@@ -106,9 +131,9 @@ class TelegramSettings extends Page
         }
     }
 
-    private function currentBot(): ?TelegramBot
+    private function botForMerchant(int $merchantId): ?TelegramBot
     {
-        return TelegramBot::query()->where('merchant_id', auth()->user()->merchant_id)->first();
+        return TelegramBot::query()->where('merchant_id', $merchantId)->first();
     }
 
     public static function shouldRegisterNavigation(): bool

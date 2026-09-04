@@ -700,6 +700,7 @@ return [
     'telegram' => [
         'nav_label' => 'Telegram Notifications',
         'fields' => [
+            'merchant' => 'Merchant',
             'bot_token' => 'Bot Token',
             'chat_id' => 'Chat ID',
             'is_enabled' => 'Enable Notifications',

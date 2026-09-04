@@ -698,6 +698,7 @@ return [
     'telegram' => [
         'nav_label' => 'Telegram 通知',
         'fields' => [
+            'merchant' => '商户',
             'bot_token' => 'Bot Token',
             'chat_id' => 'Chat ID',
             'is_enabled' => '启用通知',
