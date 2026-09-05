@@ -48,8 +48,9 @@ class TelegramSettings extends Page
 
     public function mount(): void
     {
-        $isSuperAdmin = (bool) auth()->user()?->is_super_admin;
-        $merchantId = $isSuperAdmin ? null : auth()->user()->merchant_id;
+        $user = auth()->user();
+        $canPickMerchant = (bool) $user?->isPlatformStaff();
+        $merchantId = $canPickMerchant ? null : $user->merchant_id;
         $bot = $merchantId ? $this->botForMerchant($merchantId) : null;
 
         $this->form->fill([
@@ -60,19 +61,27 @@ class TelegramSettings extends Page
 
     public function form(Schema $schema): Schema
     {
-        $isSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $canPickMerchant = (bool) $viewer?->isPlatformStaff();
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
 
         return $schema
             ->components([
                 Select::make('merchant_id')
                     ->label(__('admin.telegram.fields.merchant'))
-                    ->options(fn () => Merchant::query()->where('status', true)->orderBy('name')->pluck('name', 'id'))
+                    ->options(function () use ($isViewerMerchantManager, $viewer) {
+                        if ($isViewerMerchantManager) {
+                            return $viewer->ownedMerchants()->where('status', true)->orderBy('name')->pluck('name', 'id');
+                        }
+
+                        return Merchant::query()->where('status', true)->orderBy('name')->pluck('name', 'id');
+                    })
                     ->searchable()
                     ->required()
-                    // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
+                    // 商户用户锁定成自己所在商户；超管、商户级管理员的 merchant_id 本来就是 NULL，
                     // 不选就直接保存会导致 telegram_bots.merchant_id 外键列为空，必须在这里显式选。
-                    ->disabled(! $isSuperAdmin)
-                    ->default(fn () => $isSuperAdmin ? null : auth()->user()->merchant_id)
+                    ->disabled(! $canPickMerchant)
+                    ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                     ->dehydrated()
                     ->live()
                     ->afterStateUpdated(function (?string $state, Set $set) {

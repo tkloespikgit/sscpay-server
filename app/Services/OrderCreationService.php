@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
+use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
+use App\Models\Application;
 use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
@@ -27,18 +29,23 @@ use Illuminate\Support\Facades\DB;
  *   1. 幂等检查（merchant_id + merchant_order_no）—— 命中直接返回已存在订单，不新建。
  *   2. 金额公式校验（2.1 节）。
  *   3. 商品明细小计校验（3.8 节：subtotal 必须等于所有明细 total_price 之和）。
- *   4. 回调域名白名单校验（notify_url / return_url / cancel_url）。
+ *   4. 回跳域名一致性校验（notify_url / return_url / cancel_url 必须与本次下单所属
+ *      应用绑定的域名 applications.website 一致；商户维度的 allowed_domains 白名单已废弃）。
  *   5. 汇率 + 汇损快照计算（2.3 节），换算出 USD 金额。
  *   6. 锁定唯一支付方式（2.4 节，最新决定：不返回列表，直接锁死）：默认按支付组做
  *      加权均匀分配 + 风控阈值筛选；商户传了 payment_method_key 时直接使用该渠道
  *      （跳过组内路由与限额风控），代价是强制校验三个回跳地址都落在该渠道绑定的
  *      电商网站域名上。
- *   7. 事务内创建订单 + 商品明细。
- *   8. 调支付网关插件 /pay 远程创建支付订单，拿到收银台支付链接（pay_url）回填订单。
+ *   7. 交易手续费快照 + 最小金额校验：按锁定的支付方式当前的 fee_percent/fee_fixed
+ *      算出这笔订单的手续费与实际到账金额（settlement_amount），三者都写死在订单上，
+ *      后续商户改支付方式费率不影响已下的订单。手续费之和超过订单 USD 金额（到账会
+ *      变负）时直接拒单，不建订单记录。
+ *   8. 事务内创建订单 + 商品明细。
+ *   9. 调支付网关插件 /pay 远程创建支付订单，拿到收银台支付链接（pay_url）回填订单。
  *
- * 注意：第 1~6 步都在数据库事务之外完成，只有第 7 步才开事务——这样风控检查、
+ * 注意：第 1~7 步都在数据库事务之外完成，只有第 8 步才开事务——这样风控检查、
  * 汇率读取这些"只读"操作不会持有不必要的事务/锁时间，失败时也不需要回滚任何东西。
- * 第 8 步同样在事务外（HTTP 调用不占事务）：远程失败时订单已落库，
+ * 第 9 步同样在事务外（HTTP 调用不占事务）：远程失败时订单已落库，
  * 重新下单命中幂等分支会自动补创建（插件 /pay 对同一 s_order_id 幂等）。
  */
 class OrderCreationService
@@ -68,7 +75,7 @@ class OrderCreationService
     public function createOrder(
         array $data,
         Merchant $merchant,
-        int $applicationId,
+        Application $application,
         string $source,
     ): Order {
         // 同一笔订单（merchant_id + merchant_order_no）的并发请求（重复提交/webhook 重试/
@@ -80,7 +87,7 @@ class OrderCreationService
         return Cache::lock($lockKey, 30)->block(10, fn () => $this->createOrderLocked(
             $data,
             $merchant,
-            $applicationId,
+            $application,
             $source,
         ));
     }
@@ -88,7 +95,7 @@ class OrderCreationService
     private function createOrderLocked(
         array $data,
         Merchant $merchant,
-        int $applicationId,
+        Application $application,
         string $source,
     ): Order {
         // 1. 幂等检查
@@ -122,10 +129,15 @@ class OrderCreationService
             throw new OrderItemsMismatchException((string) $data['subtotal'], $itemsSum);
         }
 
-        // 4. 回调域名白名单
+        // 4. 回跳域名必须与本次下单所属应用绑定的域名一致（notify_url / return_url / cancel_url）。
+        //    商户维度的 allowed_domains 白名单已废弃，改为直接比对 applications.website，
+        //    复用与「指定渠道」校验同一套 normalizeHost()/isSameHost() 归一化规则
+        //    （忽略大小写、www. 前缀、端口，兼容裸域名与带路径写法）。
+        //    应用未绑定 website 时 $boundDomain 为空串，任一非空回跳地址都会判为不一致而拒单。
+        $boundDomain = (string) $application->website;
         foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
-            if (! empty($data[$field]) && ! $merchant->isDomainAllowed($data[$field])) {
-                throw new CallbackDomainNotAllowedException($field, $data[$field]);
+            if (! empty($data[$field]) && ! $this->isSameHost($data[$field], $boundDomain)) {
+                throw new CallbackDomainNotAllowedException($field, $data[$field], $boundDomain);
             }
         }
 
@@ -153,12 +165,25 @@ class OrderCreationService
             ? $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data)
             : $this->paymentService->resolvePaymentMethod($group, (float) $convertedAmount);
 
-        // 7. 事务内创建订单 + 商品明细；第 8 步（远程创建支付订单）在事务外执行，
+        // 7. 交易手续费快照：按锁定的支付方式当前费率算出百分比/固定手续费金额与
+        // 实际到账金额，三者写死在订单上（后续商户改费率不影响已下的订单）。
+        // 手续费之和超过订单 USD 金额（到账会变负）时直接拒单，不建订单记录。
+        $feePercentAmount = bcmul($convertedAmount, bcdiv((string) $paymentMethod->fee_percent, '100', 6), 2);
+        $feeFixedAmount = (string) $paymentMethod->fee_fixed;
+        $totalFee = bcadd($feePercentAmount, $feeFixedAmount, 2);
+
+        if (bccomp($totalFee, $convertedAmount, 2) > 0) {
+            throw new MinimumAmountNotMetException($paymentMethod->minTransactionAmount(), $convertedAmount);
+        }
+
+        $settlementAmount = bcsub($convertedAmount, $totalFee, 2);
+
+        // 8. 事务内创建订单 + 商品明细；第 9 步（远程创建支付订单）在事务外执行，
         // 避免 HTTP 调用占用事务时间。
         $order = DB::transaction(function () use (
             $data,
             $merchant,
-            $applicationId,
+            $application,
             $source,
             $group,
             $paymentMethod,
@@ -168,11 +193,14 @@ class OrderCreationService
             $shippingFeeConverted,
             $discountConverted,
             $taxConverted,
-            $surchargeFee
+            $surchargeFee,
+            $feePercentAmount,
+            $feeFixedAmount,
+            $settlementAmount
         ) {
             $order = Order::createWithGeneratedIdentifiers([
                 'merchant_id' => $merchant->id,
-                'application_id' => $applicationId,
+                'application_id' => $application->id,
                 'payment_group_id' => $group->id,
                 'merchant_order_no' => $data['merchant_order_no'],
                 'source' => $source,
@@ -196,6 +224,9 @@ class OrderCreationService
                 'surcharge_type' => $rate['surcharge_type'],
                 'surcharge_amount' => $rate['surcharge_amount'],
                 'surcharge_fee' => $surchargeFee,
+                'fee_percent_amount' => $feePercentAmount,
+                'fee_fixed_amount' => $feeFixedAmount,
+                'settlement_amount' => $settlementAmount,
                 'customer_first_name' => $data['customer_first_name'],
                 'customer_last_name' => $data['customer_last_name'],
                 'customer_email' => $data['customer_email'],
@@ -250,7 +281,7 @@ class OrderCreationService
      *   2. 作为跳过风控的对价，强制要求 notify_url / return_url / cancel_url 三个地址
      *      都存在，且域名都与该渠道绑定的电商网站域名（payment_methods.domain）一致，
      *      任一缺失或不匹配都直接拒单，避免"指定渠道"被当成任意站点收款的口子。
-     *      （第 4 步的商户回调域名白名单校验仍然照跑，两道关卡叠加。）
+     *      （第 4 步的"回跳域名 = 应用绑定域名"校验仍然照跑，两道关卡叠加。）
      *
      * 渠道必须属于当前商户且处于启用状态；不要求它一定挂在 group_key 对应的支付组里
      * （group_key 只用于校验归属并记录到订单上）。

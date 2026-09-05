@@ -135,7 +135,10 @@ class ListOrders extends ListRecords
             Action::make('createManualOrder')
                 ->label(__('admin.order.actions.create_manual_order'))
                 ->icon('heroicon-o-plus')
-                ->visible(fn () => (bool) auth()->user()?->can(Permissions::ORDERS_CREATE_MANUAL))
+                // 显隐统一走 CreateManualOrder::canAccess()：既覆盖原有的
+                // orders.create_manual 权限判断，也受页面里的功能总开关控制。
+                // 手工建单被临时关闭时，这个按钮会自动隐藏，无需在此重复维护开关。
+                ->visible(fn () => CreateManualOrder::canAccess())
                 ->url(fn () => OrderResource::getUrl('create-manual')),
         ];
     }
@@ -143,7 +146,8 @@ class ListOrders extends ListRecords
     /**
      * 「导出物流模板」绑定的商户 ID：
      *   - 商户用户 -> 自己的 merchant_id；
-     *   - 超级管理员 -> 列表「商户」筛选里选定的那一个，没选则返回 null（禁止跨商户导出）。
+     *   - 平台侧账号（超级管理员、商户级管理员）-> 列表「商户」筛选里选定的那一个，
+     *     没选则返回 null（禁止跨商户导出）。
      *
      * 动作闭包里一律用 self:: 而不是 static:: 调本类的静态方法：
      * Filament 在 clone 组件时会把闭包 bindTo 到克隆体上，而 bindTo 会把
@@ -157,7 +161,7 @@ class ListOrders extends ListRecords
             return null;
         }
 
-        if (! $user->is_super_admin) {
+        if (! $user->isPlatformStaff()) {
             return $user->merchant_id ? (int) $user->merchant_id : null;
         }
 
@@ -168,10 +172,19 @@ class ListOrders extends ListRecords
 
         $selected = $livewire->getTableFilterState('merchant_id')['value'] ?? null;
 
-        // 筛选项必须是系统里真实存在的商户，避免手改请求参数塞一个任意 ID 进来
-        return filled($selected) && Merchant::query()->whereKey($selected)->exists()
-            ? (int) $selected
-            : null;
+        if (blank($selected)) {
+            return null;
+        }
+
+        // 筛选项必须是系统里真实存在、且在自己可管理范围内的商户——超管不限；
+        // 商户级管理员即便手改请求参数塞一个别家商户的 ID 进来，也会在这里被拦下。
+        $manageableIds = $user->manageableMerchantIds();
+
+        if ($manageableIds !== null && ! in_array((int) $selected, $manageableIds, true)) {
+            return null;
+        }
+
+        return Merchant::query()->whereKey($selected)->exists() ? (int) $selected : null;
     }
 
     /**

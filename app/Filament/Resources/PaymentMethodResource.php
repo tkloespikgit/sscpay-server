@@ -58,7 +58,10 @@ class PaymentMethodResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        $isViewerSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
+        $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
             // 整体两栏布局：基本信息占左侧 2/3，网关配置、风控阈值、手续费三个面板堆叠在最右侧。
@@ -74,11 +77,17 @@ class PaymentMethodResource extends Resource
                         ->columnSpanFull(),
                     Select::make('merchant_id')
                         ->label(__('admin.payment_method.fields.merchant'))
-                        ->options(fn () => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                        ->options(function () use ($isViewerMerchantManager, $viewer) {
+                            if ($isViewerMerchantManager) {
+                                return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                            }
+
+                            return Merchant::query()->where('status', true)->pluck('name', 'id');
+                        })
                         ->required()
                         ->searchable()
-                        ->disabled(! $isViewerSuperAdmin)
-                        ->default(fn () => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
+                        ->disabled(! $canPickMerchant)
+                        ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
                         ->columnSpanFull(),
                     TextInput::make('method_code')->label(__('admin.payment_method.fields.method_code'))->required()->maxLength(50)->placeholder('paypal / stripe'),
@@ -215,6 +224,43 @@ class PaymentMethodResource extends Resource
                     ->schema([
                         TextInput::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->numeric()->default(0)->prefix('$'),
                         TextInput::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->numeric()->default(0)->prefix('$'),
+                        TextInput::make('fee_percent')
+                            ->label(__('admin.payment_method.fields.fee_percent'))
+                            ->helperText(__('admin.payment_method.help.transaction_fees'))
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->maxValue(100)
+                            ->suffix('%')
+                            ->live(onBlur: true),
+                        TextInput::make('fee_fixed')
+                            ->label(__('admin.payment_method.fields.fee_fixed'))
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->prefix('$')
+                            ->live(onBlur: true),
+                        Placeholder::make('min_transaction_amount')
+                            ->label(__('admin.payment_method.fields.min_transaction_amount'))
+                            ->columnSpanFull()
+                            ->content(function (Get $get) {
+                                $feePercent = (float) ($get('fee_percent') ?? 0);
+                                $feeFixed = (float) ($get('fee_fixed') ?? 0);
+
+                                if ($feeFixed <= 0) {
+                                    return __('admin.payment_method.help.min_transaction_amount_none');
+                                }
+
+                                $remainingRatio = 1 - $feePercent / 100;
+
+                                if ($remainingRatio <= 0) {
+                                    return __('admin.payment_method.help.min_transaction_amount_undefined');
+                                }
+
+                                $minAmount = number_format($feeFixed / $remainingRatio, 2);
+
+                                return __('admin.payment_method.help.min_transaction_amount', ['amount' => $minAmount]);
+                            }),
                     ])->columns(2),
             ])->columnSpan(1),
         ]);
@@ -225,8 +271,8 @@ class PaymentMethodResource extends Resource
         $columns = [];
 
         // 商户用户在全局 Scope 下只能看到自己的支付方式，商户列没有意义；
-        // 超管看全量数据时才需要展示归属商户。
-        if ((bool) auth()->user()?->is_super_admin) {
+        // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
+        if ((bool) auth()->user()?->isPlatformStaff()) {
             $columns[] = TextColumn::make('merchant.name')->label(__('admin.payment_method.fields.merchant'))->searchable()->sortable();
         }
 
@@ -249,6 +295,8 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
                 TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))->suffix('%')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),

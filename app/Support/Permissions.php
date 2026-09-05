@@ -98,4 +98,14 @@ final class Permissions
     {
         return array_merge(self::platformOnly(), self::merchantScoped());
     }
+
+    /**
+     * 平台级"商户级管理员"角色的权限集：拥有全部商户级权限（可在名下任意商户上
+     * 操作业务数据）+ MERCHANTS_MANAGE（可管理/创建名下商户）。
+     * 不含 SYSTEM_CONFIGS_MANAGE —— 系统配置是纯平台基础设施，只有真正的超级管理员能碰。
+     */
+    public static function platformMerchantManager(): array
+    {
+        return array_merge(self::merchantScoped(), [self::MERCHANTS_MANAGE]);
+    }
 }

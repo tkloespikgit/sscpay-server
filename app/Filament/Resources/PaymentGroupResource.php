@@ -52,20 +52,29 @@ class PaymentGroupResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        $isViewerSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
+        $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
             Section::make(__('admin.payment_group.sections.basic_info'))->schema([
-                // 商户用户锁定成自己所在商户；超管的 merchant_id 为 NULL，
-                // 见 BelongsToMerchant：自动回填只对非超管生效，超管必须显式选。
+                // 商户用户锁定成自己所在商户；超管/商户级管理员的 merchant_id 为 NULL，
+                // 见 BelongsToMerchant：自动回填只对绑定单一商户的普通用户生效，两者都必须显式选。
                 Select::make('merchant_id')
                     ->label(__('admin.payment_group.fields.merchant'))
-                    ->options(fn () => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                    ->options(function () use ($isViewerMerchantManager, $viewer) {
+                        if ($isViewerMerchantManager) {
+                            return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                        }
+
+                        return Merchant::query()->where('status', true)->pluck('name', 'id');
+                    })
                     ->required()
                     ->searchable()
                     ->live()
-                    ->disabled(! $isViewerSuperAdmin)
-                    ->default(fn () => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
+                    ->disabled(! $canPickMerchant)
+                    ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                     ->dehydrated()
                     // 换了商户之后，上一个商户的支付方式选项失效，清掉避免把别家商户的方式挂进来。
                     ->afterStateUpdated(fn (Set $set) => $set('paymentMethods', [])),
@@ -88,11 +97,11 @@ class PaymentGroupResource extends Resource
                         'paymentMethods',
                         'method_name',
                         // 搜索走的是 relationship 的动态搜索（绕开下方 options 闭包），
-                        // 必须在这里也按所选商户过滤，否则超管搜索时会搜出别家商户的支付方式。
-                        modifyQueryUsing: function ($query, Get $get) use ($isViewerSuperAdmin) {
-                            if ($isViewerSuperAdmin) {
+                        // 必须在这里也按所选商户过滤，否则平台侧账号搜索时会搜出别家商户的支付方式。
+                        modifyQueryUsing: function ($query, Get $get) use ($canPickMerchant) {
+                            if ($canPickMerchant) {
                                 if (blank($get('merchant_id'))) {
-                                    // 还没选商户时不允许搜出任何支付方式，逼超管先选商户。
+                                    // 还没选商户时不允许搜出任何支付方式，逼操作者先选商户。
                                     return $query->whereRaw('1 = 0');
                                 }
 
@@ -102,10 +111,10 @@ class PaymentGroupResource extends Resource
                             return $query;
                         },
                     )
-                    // 超管：按所选商户加载（forMerchant 绕开全局 Scope 显式过滤）；
+                    // 平台侧账号（超管、商户级管理员）：按所选商户加载（forMerchant 绕开全局 Scope 显式过滤）；
                     // 商户用户：全局 Scope 已自动过滤到自己商户，不用额外处理。
-                    ->options(function (Get $get) use ($isViewerSuperAdmin) {
-                        if ($isViewerSuperAdmin) {
+                    ->options(function (Get $get) use ($canPickMerchant) {
+                        if ($canPickMerchant) {
                             $merchantId = $get('merchant_id');
 
                             if (! $merchantId) {
@@ -141,8 +150,8 @@ class PaymentGroupResource extends Resource
         $columns = [];
 
         // 商户用户在全局 Scope 下只能看到自己的支付组，商户列没有意义；
-        // 超管看全量数据时才需要展示归属商户。
-        if ((bool) auth()->user()?->is_super_admin) {
+        // 平台侧账号（超管、商户级管理员）看到多个商户的数据时才需要展示归属商户。
+        if ((bool) auth()->user()?->isPlatformStaff()) {
             $columns[] = TextColumn::make('merchant.name')->label(__('admin.payment_group.fields.merchant'))->searchable()->sortable();
         }
 

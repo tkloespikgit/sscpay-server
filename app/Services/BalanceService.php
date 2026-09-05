@@ -36,7 +36,9 @@ class BalanceService
      */
     public function creditForPaidOrder(Order $order): ?MerchantBalanceTransaction
     {
-        $amount = (string) $order->converted_amount;
+        // 按扣除支付方式手续费后的实际到账金额（settlement_amount）入账，
+        // 不是订单折算 USD 全额（converted_amount）——手续费快照在下单时已经算好。
+        $amount = (string) $order->settlement_amount;
         $key = 'order_paid:'.$order->id;
 
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amount, $key) {

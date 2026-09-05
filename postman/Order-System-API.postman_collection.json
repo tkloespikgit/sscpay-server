@@ -250,7 +250,7 @@
               "host": ["{{base_url}}"],
               "path": ["order", "create"]
             },
-            "description": "指定支付渠道示例：payment_method_key 传后台「支付方式」的 method_code（这里写的是 paypal）。传了这个参数后，系统不再在支付组里做加权均匀分配，也不再校验单笔/当日金额/当日笔数/当月金额这些限额，直接用这个渠道建单（group_key 仍然必填）。\n\n代价：notify_url / return_url / cancel_url 三个地址必须全部传齐，且域名要与该支付方式绑定的「网站域名」一致（比较时忽略大小写、www. 前缀与端口）。跑之前先把示例里的 shop.example.com 换成你自己站点的域名，把 payment_method_key 换成真实的 method_code（也可以只填 Environment 里的 payment_method_key 变量，Pre-request Script 会覆盖请求体里的值）。\n\n域名对不上会得到 422 PAYMENT_METHOD_DOMAIN_MISMATCH，渠道不存在/不属于该商户/已停用会得到 422 PAYMENT_METHOD_NOT_AVAILABLE，两种情况都不会创建订单。另外商户的回调域名白名单校验仍然照跑，所以该域名也要在白名单里。"
+            "description": "指定支付渠道示例：payment_method_key 传后台「支付方式」的 method_code（这里写的是 paypal）。传了这个参数后，系统不再在支付组里做加权均匀分配，也不再校验单笔/当日金额/当日笔数/当月金额这些限额，直接用这个渠道建单（group_key 仍然必填）。\n\n代价：notify_url / return_url / cancel_url 三个地址必须全部传齐，且域名要与该支付方式绑定的「网站域名」一致（比较时忽略大小写、www. 前缀与端口）。跑之前先把示例里的 shop.example.com 换成你自己站点的域名，把 payment_method_key 换成真实的 method_code（也可以只填 Environment 里的 payment_method_key 变量，Pre-request Script 会覆盖请求体里的值）。\n\n域名对不上会得到 422 PAYMENT_METHOD_DOMAIN_MISMATCH，渠道不存在/不属于该商户/已停用会得到 422 PAYMENT_METHOD_NOT_AVAILABLE，两种情况都不会创建订单。另外这些回跳地址的域名还必须与下单所用应用绑定的网站域名一致，否则同样会被拒（CALLBACK_DOMAIN_NOT_ALLOWED）。"
           }
         },
         {

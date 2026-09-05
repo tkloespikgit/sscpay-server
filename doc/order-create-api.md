@@ -165,8 +165,8 @@ $response = curl_exec($ch);
 | `items[].product_description` | string | 否 | 商品描述 |
 | `items[].unit_price` | string(数字) | ✅ | 单价 |
 | `items[].quantity` | integer ≥1 | ✅ | 数量 |
-| `notify_url` | string(url) ≤500 | 条件必填 | 交易结果异步回调地址。域名必须在该商户的回调域名白名单内，否则拒单；**传了 `payment_method_key` 时本字段必填**，且域名还必须与该渠道绑定的电商网站域名一致 |
-| `return_url` | string(url) ≤500 | 条件必填 | 支付成功后跳转地址（同上：需在商户白名单内；指定渠道时必填且必须与渠道绑定域名一致） |
+| `notify_url` | string(url) ≤500 | 条件必填 | 交易结果异步回调地址。域名必须与本次调用所用应用（`App-ID`）在后台绑定的网站域名一致，否则拒单；**传了 `payment_method_key` 时本字段必填**，且域名还必须与该渠道绑定的电商网站域名一致 |
+| `return_url` | string(url) ≤500 | 条件必填 | 支付成功后跳转地址（同上：需与应用绑定域名一致；指定渠道时必填且必须与渠道绑定域名一致） |
 | `cancel_url` | string(url) ≤500 | 条件必填 | 取消/失败跳转地址（同上） |
 | `sign` | string | ✅ | 见上方签名算法 |
 
@@ -199,7 +199,7 @@ $response = curl_exec($ch);
 | 限额风控 | 校验单笔/当日金额/当日笔数/当月金额阈值，全部不通过则拒单 | **不再校验这些阈值**，直接建单 |
 | `group_key` | 必填 | 仍然必填（校验支付组存在且启用，并记录到订单上；不要求该渠道一定挂在这个组里） |
 | 三个回跳地址 | 可选 | **全部必填**，且域名必须与该渠道绑定的电商网站域名（后台"支付方式 → 网站域名"）一致，否则拒单 |
-| 商户回调域名白名单 | 校验 | 仍然校验（两道关卡叠加） |
+| 应用绑定域名一致性 | 校验 | 仍然校验（两道关卡叠加） |
 
 域名比较忽略大小写、`www.` 前缀与端口号，即 `https://www.shop.example.com/cart` 与绑定域名 `https://shop.example.com` 视为同一站点；子域名不同（如 `merchant.example.com` vs `shop.example.com`）则视为不匹配。
 
@@ -254,7 +254,7 @@ $response = curl_exec($ch);
 | 422 | `Validation failed`（无 `error_code`，走标准校验错误格式，`errors` 字段带具体字段错误） | 请求体字段格式不对（必填缺失、类型不对、超长等） |
 | 422 | `AMOUNT_MISMATCH` | `amount` 与 `subtotal+shipping_fee-discount+tax` 的差超过 0.01 |
 | 422 | `ITEMS_SUBTOTAL_MISMATCH` | `subtotal` 与所有 `items[].unit_price × quantity` 之和对不上 |
-| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | `notify_url`/`return_url`/`cancel_url` 的域名不在商户的回调域名白名单内 |
+| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | `notify_url`/`return_url`/`cancel_url` 的域名与下单所用应用绑定的网站域名不一致 |
 | 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | 指定的 `payment_method_key` 在该商户名下不存在，或对应的支付方式已停用（不会创建订单） |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | 指定 `payment_method_key` 时，`notify_url`/`return_url`/`cancel_url` 缺失，或其域名与该渠道绑定的电商网站域名不一致（不会创建订单） |
 | 409 | `NO_AVAILABLE_PAYMENT_METHOD` | `group_key` 下所有支付方式都被风控阈值拦截，或该支付组不存在/未启用（仅在**未**指定 `payment_method_key` 时出现） |
@@ -273,6 +273,6 @@ $response = curl_exec($ch);
 
 1. **金额字段一律传字符串**，不要传数字字面量（`"190.00"` 而不是 `190.00`），避免序列化差异导致签名或金额校验出错。
 2. **`sign` 计算时的规范化算法必须和服务端逐字节一致**——尤其是"关联数组按 key 排序、列表保持原序"这条规则，这是最容易出问题的地方。
-3. **`notify_url`/`return_url`/`cancel_url` 的域名要提前加到商户的回调域名白名单**，不然请求会直接被拒（`CALLBACK_DOMAIN_NOT_ALLOWED`），这个白名单在系统后台"商户管理"里配置（需要超级管理员操作）。
+3. **`notify_url`/`return_url`/`cancel_url` 的域名必须与下单所用应用绑定的网站域名一致**，不然请求会直接被拒（`CALLBACK_DOMAIN_NOT_ALLOWED`），这个域名在系统后台"应用管理"的 `website` 字段里配置。域名比对忽略大小写、`www.` 前缀与端口号；应用未绑定网站域名时，传任一非空回跳地址都会被拒。
 4. **`payment_method` 是系统直接锁定返回的，不是候选列表**——商户端不需要（也没有）二次选择支付方式的环节，收到响应后直接把客户导向 `payment_url` 完成支付即可。
 5. **`payment_method_key` 是可选的"点名渠道"参数**，只在下单站点就是该渠道绑定的电商网站时才用得上：它绕过限额风控，但要求 `notify_url`/`return_url`/`cancel_url` 三个地址全部传齐且域名与渠道绑定域名完全一致，否则会以 `PAYMENT_METHOD_DOMAIN_MISMATCH` 拒单。不确定要不要用就别传，交给系统按支付组自动路由。

@@ -25,7 +25,6 @@ return [
         'model_label_plural' => '商户',
         'sections' => [
             'basic_info' => '基本信息',
-            'security' => '安全配置',
             'remark' => '备注',
         ],
         'fields' => [
@@ -35,13 +34,15 @@ return [
             'contact_email' => '联系邮箱',
             'status' => '启用',
             'remark' => '备注',
-            'allowed_domains' => '回调域名白名单',
             'applications_count' => '应用数',
             'created_at' => '创建时间',
+            'owner' => '所属商户级管理员',
         ],
         'help' => [
-            'allowed_domains' => 'notify_url / return_url / cancel_url 的域名必须在此白名单内，否则下单会被拒绝。',
-            'allowed_domains_placeholder' => '如 hat.com',
+            'owner' => '不选表示由平台超级管理员直接管理，不属于任何商户级管理员名下。',
+        ],
+        'placeholders' => [
+            'owner_platform' => '平台直管',
         ],
     ],
 
@@ -115,6 +116,9 @@ return [
             'max_amount_per_month' => '单月交易总金额上限',
             'refund_fee' => '退款手续费',
             'chargeback_fee' => '拒付手续费',
+            'fee_percent' => '交易百分比手续费',
+            'fee_fixed' => '交易固定手续费',
+            'min_transaction_amount' => '最小交易金额',
         ],
         'help' => [
             'risk_control' => '填 0 表示该项不限制',
@@ -130,6 +134,10 @@ return [
             'sync_logistics' => '订单发货后，是否将物流信息（物流公司、运单号）同步到对应站点',
             'allow_returned_source' => '支付完成后是否允许返回源站；订单平台为 invoice 时强制不允许，优先级高于此配置',
             'fees' => '退款/拒付时按此固定金额（USD）收取手续费，从商户余额扣除；填 0 表示不收取',
+            'transaction_fees' => '每笔交易支付成功入账时，按百分比+固定手续费从订单金额里扣除，商户实际到账金额 = 订单折算 USD 金额 - 百分比手续费 - 固定手续费。下单时会按订单金额校验是否满足最小交易金额，不满足则直接拒单。',
+            'min_transaction_amount' => '当前费率组合下，最小交易金额约为 $:amount（USD），低于此金额的订单会被拒绝',
+            'min_transaction_amount_none' => '固定手续费为 0，无最小交易金额限制',
+            'min_transaction_amount_undefined' => '百分比手续费 ≥ 100%，任何金额都无法覆盖手续费，请调整费率',
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
@@ -357,6 +365,9 @@ return [
             'original_exchange_rate' => '原始汇率',
             'surcharge_percent' => '汇损百分比',
             'surcharge_fee' => '汇损费用',
+            'fee_percent_amount' => '百分比手续费',
+            'fee_fixed_amount' => '固定手续费',
+            'settlement_amount' => '实际到账金额',
             'customer_first_name' => '客户名',
             'customer_last_name' => '客户姓',
             'customer_email' => '邮箱',
@@ -654,6 +665,7 @@ return [
             'email' => '登录邮箱',
             'password' => '密码',
             'is_super_admin' => '设为超级管理员',
+            'is_merchant_manager' => '设为商户级管理员',
             'merchant' => '所属商户',
             'roles' => '角色',
             'created_at' => '创建时间',
@@ -661,6 +673,7 @@ return [
         'help' => [
             'password_edit' => '留空表示不修改密码',
             'is_super_admin' => '超级管理员不属于任何商户，拥有全平台权限',
+            'is_merchant_manager' => '商户级管理员不属于任何商户，但只能管理自己名下的商户及其业务数据，看不到其他商户/其他管理员',
             'roles' => '角色列表根据上面选择的商户动态变化',
         ],
         'placeholders' => [

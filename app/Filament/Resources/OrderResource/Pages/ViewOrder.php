@@ -78,6 +78,9 @@ class ViewOrder extends ViewRecord
                         ->visible(fn () => (bool) auth()->user()?->is_super_admin),
                     TextEntry::make('surcharge_fee')->label(__('admin.order.fields.surcharge_fee'))->money('usd')
                         ->visible(fn () => (bool) auth()->user()?->is_super_admin),
+                    TextEntry::make('fee_percent_amount')->label(__('admin.order.fields.fee_percent_amount'))->money('usd'),
+                    TextEntry::make('fee_fixed_amount')->label(__('admin.order.fields.fee_fixed_amount'))->money('usd'),
+                    TextEntry::make('settlement_amount')->label(__('admin.order.fields.settlement_amount'))->money('usd'),
                 ]),
             ]),
 

@@ -55,6 +55,8 @@ class PaymentMethod extends Model
         'max_amount_per_month',
         'refund_fee',
         'chargeback_fee',
+        'fee_percent',
+        'fee_fixed',
     ];
 
     protected function casts(): array
@@ -70,6 +72,8 @@ class PaymentMethod extends Model
             'max_amount_per_month' => 'decimal:2',
             'refund_fee' => 'decimal:2',
             'chargeback_fee' => 'decimal:2',
+            'fee_percent' => 'decimal:4',
+            'fee_fixed' => 'decimal:2',
         ];
     }
 
@@ -123,5 +127,21 @@ class PaymentMethod extends Model
     {
         return ! $this->isUnlimited('max_amount_per_transaction')
             && $amountUsd > (float) $this->max_amount_per_transaction;
+    }
+
+    /**
+     * 该支付方式扣完百分比+固定手续费后到账金额仍 >= 0 所需的最小订单金额（USD）。
+     * fee_percent 存的是百分比数值（如 3.5 表示 3.5%），公式：fee_fixed / (1 - fee_percent/100)。
+     * 百分比费率 >= 100% 时无解（怎么收都会倒贴），返回 null。
+     */
+    public function minTransactionAmount(): ?string
+    {
+        $remainingRatio = bcsub('1', bcdiv((string) $this->fee_percent, '100', 6), 6);
+
+        if (bccomp($remainingRatio, '0', 6) <= 0) {
+            return null;
+        }
+
+        return bcdiv((string) $this->fee_fixed, $remainingRatio, 2);
     }
 }

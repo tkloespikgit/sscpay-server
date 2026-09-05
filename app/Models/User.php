@@ -10,6 +10,7 @@ use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -56,10 +57,59 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
     /**
      * 平台超级管理员：merchant_id 为 NULL。
      * 普通商户用户：merchant_id 必须指向所属商户。
+     * 商户级管理员：merchant_id 也为 NULL，但 is_super_admin = false，
+     * 通过 ownedMerchants() 名下的商户集合来限定可管理范围（见 isMerchantManager()）。
      */
     public function merchant(): BelongsTo
     {
         return $this->belongsTo(Merchant::class);
+    }
+
+    /**
+     * 商户级管理员名下的商户（merchants.owner_id 指向本用户）。
+     */
+    public function ownedMerchants(): HasMany
+    {
+        return $this->hasMany(Merchant::class, 'owner_id');
+    }
+
+    /**
+     * 商户级管理员：平台侧账号（不挂靠具体商户），但不是无限制的超级管理员，
+     * 只能管理 ownedMerchants() 名下的商户及其业务数据。
+     */
+    public function isMerchantManager(): bool
+    {
+        return ! $this->is_super_admin && is_null($this->merchant_id);
+    }
+
+    /**
+     * 平台侧账号（超级管理员 或 商户级管理员），区别于绑定单一商户的普通商户用户。
+     * 各 Resource 里"是否展示归属商户列/筛选/可自由选择商户"这类 UI 判断统一走这个方法，
+     * 而不是零散地各写一遍 is_super_admin || isMerchantManager()。
+     */
+    public function isPlatformStaff(): bool
+    {
+        return $this->is_super_admin || $this->isMerchantManager();
+    }
+
+    /**
+     * 该用户可管理的商户 ID 集合。
+     * 返回 null 代表"不限"（超级管理员），调用方看到 null 就不加 whereIn 限制；
+     * 否则返回具体的商户 ID 数组（商户级管理员为名下商户，普通商户用户为自己所在的那一个）。
+     *
+     * @return array<int>|null
+     */
+    public function manageableMerchantIds(): ?array
+    {
+        if ($this->is_super_admin) {
+            return null;
+        }
+
+        if ($this->isMerchantManager()) {
+            return $this->ownedMerchants()->pluck('id')->all();
+        }
+
+        return [$this->merchant_id];
     }
 
     /**
@@ -68,7 +118,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
      */
     public function canAccessPanel(Panel $panel): bool
     {
-        if ($this->is_super_admin) {
+        if ($this->is_super_admin || $this->isMerchantManager()) {
             return true;
         }
 

@@ -50,21 +50,38 @@ class ApplicationResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        $isViewerSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
+        $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
             Section::make(__('admin.application.sections.basic_info'))->schema([
-                TextInput::make('name')->label(__('admin.application.fields.name'))->required()->maxLength(100),
-                TextInput::make('website')->label(__('admin.application.fields.website'))->maxLength(255)->placeholder('hat.com'),
+
                 Select::make('merchant_id')
                     ->label(__('admin.application.fields.merchant'))
-                    ->options(fn () => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                    ->options(function () use ($isViewerMerchantManager, $viewer) {
+                        if ($isViewerMerchantManager) {
+                            return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                        }
+                        return Merchant::query()->where('status', true)->pluck('name', 'id');
+                    })
                     ->required()
                     ->searchable()
-                    ->disabled(! $isViewerSuperAdmin)
-                    ->default(fn () => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
+                    // 商户级管理员和超管一样可以在自己的商户范围内自由选择，
+                    // 只有绑定单一商户的普通商户用户才锁死成自己那一个。
+                    ->disabled(! $canPickMerchant)
+                    ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                     ->dehydrated(),
-                Toggle::make('status')->label(__('admin.application.fields.status'))->default(true),
+
+                TextInput::make('name')->label(__('admin.application.fields.name'))->required()->maxLength(100),
+                TextInput::make('website')
+                    ->label(__('admin.application.fields.website'))
+                    ->maxLength(255)
+                    ->required()
+                    ->placeholder('hat.com'),
+
+                Toggle::make('status')->label(__('admin.application.fields.status'))->default(true)->inline(false),
                 // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
                 // 不选就直接建，会导致 merchant_id 外键列为空。见 BelongsToMerchant：
                 // 自动回填 merchant_id 只对非超管用户生效，超管必须在这里显式选。

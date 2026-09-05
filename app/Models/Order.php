@@ -76,6 +76,9 @@ class Order extends Model
         'surcharge_type',
         'surcharge_amount',
         'surcharge_fee',
+        'fee_percent_amount',
+        'fee_fixed_amount',
+        'settlement_amount',
         'customer_first_name',
         'customer_last_name',
         'customer_email',
@@ -126,6 +129,9 @@ class Order extends Model
             'surcharge_percent' => 'decimal:4',
             'surcharge_amount' => 'decimal:6',
             'surcharge_fee' => 'decimal:2',
+            'fee_percent_amount' => 'decimal:2',
+            'fee_fixed_amount' => 'decimal:2',
+            'settlement_amount' => 'decimal:2',
         ];
     }
 

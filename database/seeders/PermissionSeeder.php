@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Services\PlatformRoleProvisioningService;
 use App\Support\Permissions;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -19,5 +20,8 @@ class PermissionSeeder extends Seeder
                 'guard_name' => 'web',
             ]);
         }
+
+        // 平台级"商户级管理员"角色也在这里种好，必须晚于上面的权限记录创建。
+        app(PlatformRoleProvisioningService::class)->provisionMerchantManagerRole();
     }
 }

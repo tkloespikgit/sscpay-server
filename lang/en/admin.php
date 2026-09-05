@@ -27,7 +27,6 @@ return [
         'model_label_plural' => 'Merchants',
         'sections' => [
             'basic_info' => 'Basic Information',
-            'security' => 'Security Settings',
             'remark' => 'Remark',
         ],
         'fields' => [
@@ -37,13 +36,15 @@ return [
             'contact_email' => 'Contact Email',
             'status' => 'Enabled',
             'remark' => 'Remark',
-            'allowed_domains' => 'Allowed Callback Domains',
             'applications_count' => 'Applications',
             'created_at' => 'Created At',
+            'owner' => 'Merchant Manager',
         ],
         'help' => [
-            'allowed_domains' => 'The host of notify_url / return_url / cancel_url must be in this whitelist, otherwise order creation will be rejected.',
-            'allowed_domains_placeholder' => 'e.g. hat.com',
+            'owner' => 'Leave blank if this merchant is managed directly by platform super admins, not owned by any merchant manager.',
+        ],
+        'placeholders' => [
+            'owner_platform' => 'Platform-managed',
         ],
     ],
 
@@ -117,6 +118,9 @@ return [
             'max_amount_per_month' => 'Max Monthly Total Amount',
             'refund_fee' => 'Refund Fee',
             'chargeback_fee' => 'Chargeback Fee',
+            'fee_percent' => 'Transaction Fee (Percent)',
+            'fee_fixed' => 'Transaction Fee (Fixed)',
+            'min_transaction_amount' => 'Minimum Transaction Amount',
         ],
         'help' => [
             'risk_control' => 'Enter 0 for no limit',
@@ -132,6 +136,10 @@ return [
             'sync_logistics' => 'Whether to sync logistics info (carrier and tracking number) to the corresponding site after an order is shipped.',
             'allow_returned_source' => 'Whether the customer may be redirected back to the source site after payment. Forced to disallowed when the order platform is invoice, which takes priority over this setting.',
             'fees' => 'Fixed fee (USD) charged on refund/chargeback, deducted from the merchant balance; enter 0 for none',
+            'transaction_fees' => 'On every successful payment, the percent + fixed fee is deducted from the order amount before crediting the merchant: settlement amount = order amount (USD) - percent fee - fixed fee. Orders are validated against the minimum transaction amount at checkout and rejected if they fall short.',
+            'min_transaction_amount' => 'With the current fee settings, the minimum transaction amount is about $:amount (USD); orders below this are rejected',
+            'min_transaction_amount_none' => 'Fixed fee is 0, so there is no minimum transaction amount',
+            'min_transaction_amount_undefined' => 'Percent fee is 100% or more — no amount can cover the fee, please adjust the rate',
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
@@ -359,6 +367,9 @@ return [
             'original_exchange_rate' => 'Original Rate',
             'surcharge_percent' => 'Surcharge %',
             'surcharge_fee' => 'Surcharge Fee (USD)',
+            'fee_percent_amount' => 'Percent Fee (USD)',
+            'fee_fixed_amount' => 'Fixed Fee (USD)',
+            'settlement_amount' => 'Settlement Amount (USD)',
             'customer_first_name' => 'First Name',
             'customer_last_name' => 'Last Name',
             'customer_email' => 'Email',
@@ -656,6 +667,7 @@ return [
             'email' => 'Email',
             'password' => 'Password',
             'is_super_admin' => 'Super Admin',
+            'is_merchant_manager' => 'Merchant Manager',
             'merchant' => 'Merchant',
             'roles' => 'Roles',
             'created_at' => 'Created At',
@@ -663,6 +675,7 @@ return [
         'help' => [
             'password_edit' => 'Leave blank to keep the current password',
             'is_super_admin' => 'Super admins do not belong to any merchant and have platform-wide access',
+            'is_merchant_manager' => 'Merchant managers do not belong to any merchant, but can only manage merchants they own and their business data — not other merchants or other admin accounts',
             'roles' => 'The role list updates based on the merchant selected above',
         ],
         'placeholders' => [

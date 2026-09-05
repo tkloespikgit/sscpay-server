@@ -1,8 +1,8 @@
 # 多商户跨境收款订单系统（Order System）
 
-面向跨境电商场景的**多商户收款中台**：商户的电商站点（WordPress / WooCommerce、Shopyy、Shopline、OpenCart、手工发票等）通过签名 API 下单，系统完成汇率换算、支付渠道路由与风控、远程建单、托管收银页、状态回调、资金入账、物流回传与商户通知的全链路编排；平台方（超级管理员）统一管理商户、支付渠道、汇率、系统配置与资金审核。
+面向跨境电商场景的**多商户收款中台**：商户的电商站点（WordPress / WooCommerce、Shopyy、Shopline、OpenCart、手工发票等）通过签名 API 下单，系统完成汇率换算、支付渠道路由与风控、远程建单、托管收银页、状态回调、资金入账、物流回传与商户通知的全链路编排；平台方统一管理商户、支付渠道、汇率、系统配置与资金审核，平台侧账号分**超级管理员**（全平台不受限）与**商户级管理员**（只能管理自己名下的商户及其业务数据）两级。
 
-后台基于 Filament v5，一套代码同时服务平台超管与多个商户，数据通过 `merchant_id` 做行级隔离。
+后台基于 Filament v5，一套代码同时服务平台侧账号（超级管理员 / 商户级管理员）与多个商户自己的用户，数据通过 `merchant_id` 做行级隔离。
 
 ---
 
@@ -30,7 +30,7 @@
 商户电商站点（WordPress 插件 / 自建系统）              本系统                        WordPress 支付网关聚合插件（PGA）
 ──────────────────────────────────          ──────────────────────              ──────────────────────────────
 1. 结账 → POST /api/order/create  ────────►  验签 → 幂等检查 → 金额校验
-                                             → 回调域名白名单校验
+                                             → 回跳域名一致性校验
                                              → 汇率 + 汇损快照（折算 USD）
                                              → 支付组内加权路由 + 风控阈值筛选
                                              → 锁定唯一支付方式
@@ -67,7 +67,7 @@
 |---|---|
 | 语言 / 框架 | PHP **8.2+**（必需 `ext-bcmath`）、Laravel **12** |
 | 后台面板 | Filament **v5**（含 App Authentication TOTP 多因素认证） |
-| 权限 | `spatie/laravel-permission` v6（角色按 `roles.merchant_id` 归属商户，未启用官方 teams 模式） |
+| 权限 | `spatie/laravel-permission` v6（角色按 `roles.merchant_id` 归属商户，未启用官方 teams 模式；`merchant_id = NULL` 表示平台级角色，目前只有一个全平台共享的"商户级管理员"角色用到这个位置） |
 | 数据库 | **MySQL 8.0**（迁移大量使用 `virtualAs('IF(...)')` 虚拟生成列做软删除安全的唯一约束，**不兼容 SQLite**） |
 | 缓存 / 会话 / 队列 | Redis |
 | 对象存储 | 阿里云 OSS（`alphasnow/aliyun-oss-laravel`）——数据库备份、争议附件转存 |
@@ -83,8 +83,8 @@
 
 单库共享 schema，所有业务表带 `merchant_id`：
 
-- `App\Models\Concerns\BelongsToMerchant` trait：自动注册全局 Scope、创建时回填 `merchant_id`、提供 `scopeForMerchant()`。
-- `App\Models\Scopes\MerchantScope`：**仅在有登录后台用户时生效**，按该用户的 `merchant_id` 过滤；超级管理员（`is_super_admin = true`）不受限。
+- `App\Models\Concerns\BelongsToMerchant` trait：自动注册全局 Scope、创建时回填 `merchant_id`（仅对绑定单一商户的普通商户用户生效）、提供 `scopeForMerchant()`。
+- `App\Models\Scopes\MerchantScope`：**仅在有登录后台用户时生效**，按该用户的 `App\Models\User::manageableMerchantIds()` 过滤——超级管理员返回 `null` 表示不受限，商户级管理员返回其 `ownedMerchants()` 的 ID 集合，普通商户用户返回自己的 `merchant_id`。这一处改动会自动传导到所有用 `BelongsToMerchant` 的模型（Order / Application / PaymentMethod / PaymentGroup / MerchantWithdrawal / MerchantBalanceTransaction / OrderDisputeEvent / TelegramBot 等），无需逐个模型适配。
 
 系统存在三条请求路径，隔离方式不同，改动代码时务必区分：
 
@@ -96,11 +96,14 @@
 
 > ⚠️ 在 API / 队列 / 命令上下文里 `MerchantScope` 不会介入。`withoutGlobalScopes()` 之后**必须**自己补 `merchant_id` 条件，否则会跨商户读写数据。
 
-### 3.2 超级管理员
+### 3.2 平台侧账号：超级管理员与商户级管理员
 
-`users.is_super_admin = true` 且 `merchant_id` 为 `NULL`。`AppServiceProvider` 里用 `Gate::before()` 短路所有权限判断，因此各 Resource 只需声明具体权限，不用重复写 `|| is_super_admin`。
+平台侧账号统一特征是 `merchant_id` 为 `NULL`（不绑定单一商户），按 `is_super_admin` 分两级，`App\Models\User::isPlatformStaff()` 判断"是否属于这两级之一"：
 
-只能通过 `php artisan make:super-admin` 创建（**不要用 `make:filament-user`**，它不认识 `is_super_admin` 字段，建出来的账号登录后什么都看不到）。
+- **超级管理员**（`is_super_admin = true`）：`AppServiceProvider` 里用 `Gate::before()` 短路所有权限判断，不受任何限制——管理全平台商户、全部管理员账号（含商户级管理员）、以及系统配置 / 承运商 / 汇率 / 日志查看器等纯平台级基础设施。只能通过 `php artisan make:super-admin` 创建（**不要用 `make:filament-user`**，它不认识 `is_super_admin` 字段，建出来的账号登录后什么都看不到）。
+- **商户级管理员**（`is_super_admin = false` 且 `merchant_id` 为 `NULL`，`User::isMerchantManager()` 判断）：只能管理**自己名下**（`merchants.owner_id` 指向自己，一对多）的商户及其全部业务数据——订单、支付方式、支付组、应用、提现、余额流水、争议、Telegram 机器人配置，也能在名下商户创建/管理用户账号；看不到其他商户级管理员或超管账号，也碰不到系统配置 / 承运商库 / 汇率等纯平台基础设施。可以自行创建新商户，创建时自动把 `owner_id` 落成自己。持有全平台共享的一个 Spatie 角色（`roles.merchant_id = NULL`，名字固定为"商户级管理员"），权限集为全部商户级权限 + `merchants.manage`（`App\Support\Permissions::platformMerchantManager()`），由 `App\Services\PlatformRoleProvisioningService` 幂等 provision（`PermissionSeeder` 会调用一次）。通过后台"用户管理"里的"设为商户级管理员"开关创建，或 `php artisan make:merchant-manager`。
+
+`User::manageableMerchantIds()` 是唯一的判断入口：超管返回 `null`（不限），商户级管理员返回 `ownedMerchants()->pluck('id')`，普通商户用户返回 `[$this->merchant_id]`。`MerchantScope`、`MerchantResource` / `UserResource` 的 `getEloquentQuery()`、以及各 Resource 表单里的商户选择器都统一调这个方法做行级隔离，不需要在每处各写一遍判断。
 
 ### 3.3 资金单一入口
 
@@ -121,11 +124,13 @@
 
 ## 4. 功能模块
 
-### 4.1 平台管理（超级管理员专属）
+### 4.1 平台管理
+
+商户管理向超级管理员和商户级管理员开放（后者范围限定在自己名下的商户，见 [3.2](#32-平台侧账号超级管理员与商户级管理员)）；系统配置、支付类型配置模板、承运商管理、日志查看仍为**超级管理员专属**。
 
 | 模块 | 说明 |
 |---|---|
-| **商户管理** | 商户基本信息、联系人、**回调域名白名单** `allowed_domains`（TagsInput 逐条录入，下单时校验 `notify_url`/`return_url`/`cancel_url`，防 SSRF 与跳站）、启用状态、余额 / 冻结余额、备注。新建商户时 `MerchantObserver` 自动开通 5 个默认角色 |
+| **商户管理** | 商户基本信息、联系人、启用状态、余额 / 冻结余额、备注、`owner_id`（所属商户级管理员，仅超管可见可改，留空表示平台直管）。新建商户时 `MerchantObserver` 自动开通 5 个默认角色；商户级管理员创建商户时 `owner_id` 自动落成自己，只能编辑/查看自己名下的商户，不能删除（删除始终仅超管） |
 | **系统配置** | 白名单化的 `config_key`（不允许在后台随手加野生 key），按 `value_type`（string / number / json / boolean / image）渲染对应控件，读取带 1 小时缓存，写入时同步清缓存 |
 | **支付类型配置模板** | 全平台共享的 Stripe / PayPal / Airwallex 等网关配置模板（含 `payment_config_tag`），商户建支付方式时套用模板再填各自的 `config` 值 |
 | **承运商管理** | 系统支持的物流承运商清单，`CarrierSeeder` 预置 **1088** 条。API 发货、手工录入、CSV 批量导入三个入口都校验 `carrier_code` 必须在此表内 |
@@ -136,7 +141,7 @@
 | 模块 | 说明 |
 |---|---|
 | **应用管理** | 商户的接入应用：`app_id` + `api_key`（`encrypted` cast 加密存储）、绑定网站、订单邮件开关、发件人邮箱 / 名称、启用状态。列表支持商户筛选（超管可见）、App ID 模糊搜索、**一键复制**（自动处理 `app_id` 冲突） |
-| **用户与角色** | 用户挂 `merchant_id`，分配该商户名下的角色；支持界面语言 `language_code`、MFA 绑定。角色由商户自建，权限项从平台统一定义的清单里勾选 |
+| **用户与角色** | 用户挂 `merchant_id`，分配该商户名下的角色；支持界面语言 `language_code`、MFA 绑定。角色由商户自建，权限项从平台统一定义的清单里勾选。超级管理员在这里还能勾选"设为超级管理员"/"设为商户级管理员"两个开关创建平台侧账号（互斥，均只对超管可见）；商户级管理员登录后看到的是自己名下商户的用户列表，创建用户时只能从名下商户里选 |
 
 商户新建时自动开通 5 个默认角色：**商户管理员**（全部商户级权限）、**订单管理员**、**物流管理员**、**网站应用管理员**、**财务管理员**。`MerchantRoleProvisioningService` 用 `firstOrCreate` + `syncPermissions` 实现，可反复执行。
 
@@ -207,9 +212,9 @@
 - **支付成功率**（口径 1，订单维度）：分母 = 时间窗内**已到达终态**的订单（排除 `pending`），分子 = 其中**曾支付成功**的订单（含 `shipped` / `completed` / `refunded` / `partially_refunded` / `chargeback`）。支持时间窗（7 / 30 / 90 天）与支付方式筛选实时联动，按区间着色（≥90% 绿、70~90% 黄、<70% 红）
 - **订单趋势图**：按日订单数与成交额（USD）
 - **支付方式占比**：已支付订单按渠道分布
-- **商户销售排行榜**：跨商户数据，**仅超管可见**
+- **商户销售排行榜**：跨商户数据，**仅超管可见**（不下放给商户级管理员——它本质是平台视角的横向对比）
 
-商户用户只能看到自己商户的数据；超管 `merchant_id` 为 NULL，看到全平台汇总。
+商户用户只能看到自己商户的数据；超管看到全平台汇总；商户级管理员看到的是名下商户范围内的汇总（底层统计查询走的是 `Order` 等模型，自动继承 `MerchantScope` 的 `manageableMerchantIds()` 过滤，仪表盘代码本身不需要感知这三层区别）。
 
 ### 4.10 汇率
 
@@ -225,7 +230,7 @@
 
 - **API 鉴权**：`App-ID` + `Timestamp`（±5 分钟）+ `X-Nonce`（5 分钟内不可重复，防重放）三件套 Header，签名放请求体 `sign` 字段。规范化算法：移除 `sign` → 关联数组递归 ksort（数字索引列表保持原序）→ `json_encode(JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)` → 三段式 StringToSign 做 HMAC-SHA256
 - **Webhook 验签**：网关回调走独立的 `X-PGA-Signature`（预共享 `PGA_WEBHOOK_SECRET`），不套用 API 鉴权中间件
-- **回调域名白名单**：三个回跳地址的域名必须在商户 `allowed_domains` 内；指定 `payment_method_key` 时还额外要求与该渠道绑定站点域名一致（忽略大小写、`www.` 前缀与端口）
+- **回跳域名一致性**：三个回跳地址（`notify_url`/`return_url`/`cancel_url`）的域名必须与本次下单所用应用绑定的网站域名（`applications.website`）一致，不一致直接拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`），应用未绑定域名时传任一非空回跳地址也会被拒；指定 `payment_method_key` 时还额外要求与该渠道绑定站点域名一致（两者均忽略大小写、`www.` 前缀与端口）
 - **后台 MFA**：Filament App Authentication（TOTP），支持恢复码；资金操作再叠加一次性验证码（见 3.3）
 - **富文本过滤**：争议理由等富文本经 `RichTextSanitizer` 做 XSS 过滤；附件转存 OSS
 
@@ -278,7 +283,7 @@
 | 422 | （标准校验错误） | 字段格式问题 |
 | 422 | `AMOUNT_MISMATCH` | `amount` 与 `subtotal + shipping_fee - discount + tax` 差 > 0.01 |
 | 422 | `ITEMS_SUBTOTAL_MISMATCH` | `subtotal` 与明细之和不符 |
-| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | 回跳地址域名不在商户白名单 |
+| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | 回跳地址域名与下单应用绑定域名（`applications.website`）不一致 |
 | 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | 指定的 `payment_method_key` 不存在或已停用 |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | 指定渠道时回跳地址缺失或域名与渠道绑定站点不一致 |
 | 409 | `NO_AVAILABLE_PAYMENT_METHOD` | 支付组内所有渠道被风控拦截，或支付组不存在 / 未启用 |
@@ -305,7 +310,7 @@
 
 **平台级（超管专属，不出现在商户角色的可选范围）**：`merchants.manage`、`system_configs.manage`
 
-**商户级（19 项）**：
+**商户级（20 项）**：
 
 | 分组 | 权限 |
 |---|---|
@@ -314,7 +319,9 @@
 | 资金 | `finance.view`、`withdrawals.request`、`withdrawals.review`、`balance.adjust`、`orders.refund`、`orders.chargeback` |
 | 争议 | `order_disputes.view`、`order_disputes.open`、`order_disputes.reply`、`order_disputes.close` |
 
-**后台导航分组**：平台管理 / 商户配置 / 支付配置 / 订单管理 / 资金管理。列表页约定：筛选器常驻表格上方；商户名称等跨租户敏感列与筛选器**仅超管可见**（商户用户的数据本身已被 Scope 隔离，对其无意义）。
+**后台导航分组**：平台管理 / 商户配置 / 支付配置 / 订单管理 / 资金管理。列表页约定：筛选器常驻表格上方；商户名称等跨租户敏感列与筛选器**仅平台侧账号可见**（`User::isPlatformStaff()`，即超管或商户级管理员——商户用户的数据本身已被 Scope 隔离，对其无意义）。
+
+**平台级角色**：`商户级管理员`（`roles.merchant_id = NULL`，全平台共享同一条记录，见 [3.2](#32-平台侧账号超级管理员与商户级管理员)），权限集固定为全部 20 项商户级权限 + `merchants.manage`（共 21 项）。这是目前唯一用到"平台级角色"位置的角色；超级管理员不走角色/权限判断，而是 `Gate::before()` 整体短路。
 
 ---
 
@@ -374,6 +381,7 @@
 | 命令 | 说明 |
 |---|---|
 | `make:super-admin` | 创建平台超级管理员（支持 `--name` / `--email` / `--password` 非交互） |
+| `make:merchant-manager` | 创建商户级管理员（同上支持三个非交互参数），自动赋平台级"商户级管理员"角色 |
 | `merchants:provision-roles {merchant_id?}` | 给存量商户补建 / 刷新默认角色，幂等 |
 | `permissions:rollout-order-disputes` | 一次性命令：用 `givePermissionTo()` **增量**给存量商户的默认角色补发争议相关的 4 个权限（不覆盖商户自定义权限）。仅精确匹配默认角色名，商户改过名字或自建角色的不在覆盖范围 |
 
@@ -383,9 +391,9 @@
 
 ```
 app/
-  Console/Commands/       9 个命令（汇率、备份、日志同步、通知重试、争议关闭/提醒、超管、角色补建、权限补发）
+  Console/Commands/       10 个命令（汇率、备份、日志同步、通知重试、争议关闭/提醒、超管、商户级管理员、角色补建、权限补发）
   Events/                 OrderStatusChanged / LogisticsImportCompleted / OrderEventsSyncCompleted
-  Exceptions/             7 个业务异常（金额不符、余额操作、域名白名单、渠道不可用等）
+  Exceptions/             7 个业务异常（金额不符、余额操作、回跳域名不符、渠道不可用等）
   Filament/
     Pages/                AdminDashboard（仪表盘）、TelegramSettings（单例设置页）、ExchangeRateTrends（汇率趋势，仅超管）
     Resources/            13 个资源 + Pages / RelationManagers
@@ -402,7 +410,8 @@ app/
   Observers/              MerchantObserver（自动建角色）、OrderShippingObserver（发货状态自动机）
   Providers/              AppServiceProvider（Gate::before）、EventServiceProvider、Filament/AdminPanelProvider
   Services/               核心业务：下单、路由风控、商品匹配、支付状态、资金账务、争议、通知、物流、
-                          商品同步、仪表盘统计、Telegram、角色开通 + PaymentGateway/（PGA 客户端封装）
+                          商品同步、仪表盘统计、Telegram、商户角色开通、平台级角色开通
+                          （PlatformRoleProvisioningService）+ PaymentGateway/（PGA 客户端封装）
   Support/                Permissions、RichTextSanitizer、SignatureCanonicalizer
 config/                   payment_gateway.php（PGA 客户端）、filesystems.php（oss 磁盘）、services.php（汇率/翻译）
 database/
@@ -567,7 +576,7 @@ environment=APP_ENV="production"
 
 8. **迁移编号不连续**：`2026_07_05_000016` 被跳过（早期规划后作废，未压号）。Laravel 按文件名排序执行，不影响迁移。
 
-9. **权限粒度到 Resource 级**：目前只控制"能不能进这个功能模块"，没有行级权限（如"订单管理员只能看自己创建的订单"）。需要时在各 Resource 的 `getEloquentQuery()` 里加过滤。
+9. **权限粒度到 Resource 级**：目前只控制"能不能进这个功能模块"。平台侧账号的行级隔离（超级管理员 / 商户级管理员按 `manageableMerchantIds()` 限定到自己名下的商户）以及商户内部按角色控制"能不能进模块"都已支持，但**同一商户内部**没有再细分的行级权限（如"订单管理员只能看自己创建的订单"）。需要时在各 Resource 的 `getEloquentQuery()` 里加过滤。
 
 10. **`GET /sync/products/{paymentMethod}` 无鉴权**：这是一个手动触发同步的调试入口，且带路由模型绑定，**生产环境应当移除或加权限中间件**。
 

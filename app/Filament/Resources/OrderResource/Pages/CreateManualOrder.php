@@ -44,12 +44,27 @@ class CreateManualOrder extends Page
     public ?array $data = [];
 
     /**
+     * 手工建单功能总开关。当前按需求临时关闭整个后台手工建单入口
+     * （列表页「手工建单」按钮 + 本页面路由访问）。恢复时只需把这里
+     * 改回 true，下面的权限校验逻辑（orders.create_manual）原样保留、
+     * 无需改动。列表页按钮的显隐也统一走 canAccess()，翻这一个开关即可。
+     */
+    protected static bool $featureEnabled = false;
+
+    /**
      * 需要 orders.create_manual 权限（默认"商户管理员"和"订单管理员"角色
      * 拥有，见 MerchantRoleProvisioningService）。没有权限直接 403，
      * 而不是让用户看到表单再在提交时才发现自己没权限。
+     *
+     * 功能总开关 $featureEnabled 为 false 时，无条件返回 false：
+     * 既隐藏入口，也让直接访问 create-manual 路由被 Filament 拦成 403。
      */
     public static function canAccess(array $parameters = []): bool
     {
+        if (! static::$featureEnabled) {
+            return false;
+        }
+
         return (bool) auth()->user()?->can(Permissions::ORDERS_CREATE_MANUAL);
     }
 
@@ -60,16 +75,18 @@ class CreateManualOrder extends Page
         $this->form->fill([
             'currency' => 'USD',
             'items' => [[]],
-            // 商户用户直接预填自己的商户；超级管理员这里是 null，
+            // 商户用户直接预填自己的商户；平台侧账号（超管、商户级管理员）这里是 null，
             // 表单上会显示为"请选择"，强制他们主动选一个商户，
             // 不会因为默认值是 null 而在没选的情况下悄悄往下走。
-            'merchant_id' => $user->is_super_admin ? null : $user->merchant_id,
+            'merchant_id' => $user->isPlatformStaff() ? null : $user->merchant_id,
         ]);
     }
 
     public function form(Schema $schema): Schema
     {
-        $isSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $canPickMerchant = (bool) $viewer?->isPlatformStaff();
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
         $currencies = SystemConfig::getArray('exchange.supported_currencies', ['EUR', 'JPY', 'GBP']);
 
         return $schema
@@ -78,13 +95,19 @@ class CreateManualOrder extends Page
                     Grid::make(2)->schema([
                         Select::make('merchant_id')
                             ->label(__('admin.create_manual_order.fields.merchant'))
-                            ->options(fn () => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                            ->options(function () use ($isViewerMerchantManager, $viewer) {
+                                if ($isViewerMerchantManager) {
+                                    return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                                }
+
+                                return Merchant::query()->where('status', true)->pluck('name', 'id');
+                            })
                             ->required()
                             ->live()
                             ->searchable()
                             // 商户用户锁死成自己所在商户，不能替别的商户下单；
-                            // 只有超级管理员能自由选择。
-                            ->disabled(! $isSuperAdmin)
+                            // 超级管理员、商户级管理员都能在自己可管理的范围内自由选择。
+                            ->disabled(! $canPickMerchant)
                             ->dehydrated(),
                         // 选项来自系统配置 order.platforms；手工建单没有真实的电商网站
                         // 来源，不强制填写（API 下单则必传）。
@@ -194,7 +217,7 @@ class CreateManualOrder extends Page
             $order = $service->createOrder(
                 data: $data,
                 merchant: $merchant,
-                applicationId: $this->resolveDefaultApplicationId($merchant->id),
+                application: $this->resolveDefaultApplication($merchant->id),
                 operatorId: auth()->id(),
             );
         } catch (\Throwable $e) {
@@ -220,16 +243,19 @@ class CreateManualOrder extends Page
      * 第一个启用中的 Application 作为归属。如果商户有多个 Application 且
      * 希望手工建单能指定归属，这里需要改成一个显式的 Select 字段。
      *
-     * 如果该商户下一个启用中的 Application 都没有，这里会返回 null，
-     * 传给 OrderCreationService 会在写库时因为 application_id 外键约束
-     * 直接报错——这种情况本质上是数据没配全（商户必须先有至少一个
-     * Application 才能下单，无论是 API 还是手工），报错本身是合理的信号。
+     * 回跳域名要与这个应用绑定的 website 一致（OrderCreationService 第 4 步），
+     * 所以返回完整的 Application 实例而不只是 id。
+     *
+     * 如果该商户下一个启用中的 Application 都没有，firstOrFail() 会抛
+     * ModelNotFoundException，被 create() 的 catch 兜住并提示建单失败——
+     * 这种情况本质上是数据没配全（商户必须先有至少一个 Application 才能
+     * 下单，无论是 API 还是手工），报错本身是合理的信号。
      */
-    private function resolveDefaultApplicationId(int $merchantId): ?int
+    private function resolveDefaultApplication(int $merchantId): Application
     {
         return Application::query()
             ->where('merchant_id', $merchantId)
             ->where('status', true)
-            ->value('id');
+            ->firstOrFail();
     }
 }

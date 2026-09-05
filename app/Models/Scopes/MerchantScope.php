@@ -13,7 +13,9 @@ use Illuminate\Database\Eloquent\Scope;
  * 原因是本系统有两条完全不同的请求路径：
  *
  *   1. Filament 后台（Web 会话登录）：这里天然有 auth()->user()，Scope 据此按
- *      该用户的 merchant_id 自动过滤，超级管理员（is_super_admin = true）不受限制。
+ *      User::manageableMerchantIds() 过滤——平台超级管理员返回 null 代表不受限制，
+ *      商户级管理员（merchant_id 为 NULL 但非超管）返回其 ownedMerchants() 的 ID 集合，
+ *      普通商户用户返回自己的 merchant_id 单值。
  *
  *   2. 对外 API（App-ID + 签名鉴权，见 ApiAuthentication 中间件）：这条路径根本
  *      没有"登录用户"，merchant_id 是中间件验签后从 Application 记录里查出来
@@ -37,11 +39,14 @@ class MerchantScope implements Scope
 
         $user = auth()->user();
 
-        if ($user->is_super_admin) {
+        $merchantIds = $user->manageableMerchantIds();
+
+        if ($merchantIds === null) {
+            // 平台超级管理员：不限制。
             return;
         }
 
-        $builder->where($model->getTable().'.merchant_id', $user->merchant_id);
+        $builder->whereIn($model->getTable().'.merchant_id', $merchantIds);
     }
 
     /**

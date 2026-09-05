@@ -210,7 +210,7 @@ POST {BASE_URL}/api/order/create
 | `items[].product_description` | string | 否 | 商品描述                                                                                       |
 | `items[].unit_price` | string(数字) | ✅ | 单价                                                                                         |
 | `items[].quantity` | integer ≥1 | ✅ | 数量                                                                                         |
-| `notify_url` | url ≤500 | 条件必填 | 交易结果异步回调地址，域名须在商户回调域名白名单内；传了 `payment_method_key` 时必填且域名须与该渠道绑定站点一致                        |
+| `notify_url` | url ≤500 | 条件必填 | 交易结果异步回调地址，域名须与下单所用应用绑定的网站域名一致；传了 `payment_method_key` 时必填且域名须与该渠道绑定站点一致                        |
 | `return_url` | url ≤500 | 条件必填 | 支付成功跳转地址，规则同上                                                                              |
 | `cancel_url` | url ≤500 | 条件必填 | 取消/失败跳转地址，规则同上                                                                             |
 | `sign` | string | ✅ | 见[签名算法](#鉴权与签名三个接口通用)                                                                      |
@@ -513,7 +513,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | `App-ID` / `API Key` | 系统后台"应用管理"创建应用后自动生成，`App-ID` 明文可见，`API Key` 只在创建时展示一次，请通过安全渠道（不要用邮件明文）交给对接方 |
 | `group_key` | 系统后台"支付组"配置的支付组标识，需要提前建好并告知对接方 |
 | `payment_method_key`（可选） | 仅当对接方需要指定固定渠道收款时才用，取值为后台"支付方式"的 `method_code` |
-| 回调域名白名单 | 需要超级管理员把对接方的 `notify_url`/`return_url`/`cancel_url` 域名加入该商户的 `allowed_domains` 白名单，否则下单直接被拒（`CALLBACK_DOMAIN_NOT_ALLOWED`）。**这是精确字符串匹配**（按 `parse_url` 解析出的 host 比较），不做大小写/`www.`/端口号归一化，添加时要和实际回调地址的 host 完全一致 |
+| 回跳域名一致性 | 对接方下单时传的 `notify_url`/`return_url`/`cancel_url` 域名必须与本次调用所用应用（`App-ID`）在后台绑定的网站域名一致，否则下单直接被拒（`CALLBACK_DOMAIN_NOT_ALLOWED`）。域名比对会忽略大小写、`www.` 前缀与端口号，并兼容裸域名与带路径写法；应用未绑定网站域名时，只要传了任一非空回跳地址就会被拒 |
 | 支持的 `platform` / `currency` 取值 | 由系统配置动态维护，请在后台确认当前实际配置的枚举值后告知对接方，不要凭文档示例假设 |
 
 ---
@@ -523,7 +523,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 1. **金额字段一律传字符串**（如 `"190.00"` 而不是 `190.00`），避免序列化差异导致签名或金额校验出错。
 2. **签名规范化算法必须和服务端逐字节一致**：出站请求（调用 create/query/ship）和系统推给你的 webhook 验签是**同一套算法**（递归排序 + 三段 StringToSign），你只需要实现一次就能两边复用，但规范化规则（关联数组递归 ksort、列表保持原序、`JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES`）本身仍然是最容易出错的地方。
 3. **服务器时钟需要与标准时间同步**：调用我们接口时 `Timestamp` 误差超过 5 分钟会被直接拒绝（401），排查签名问题时先确认这一点；但反过来验证我们推给你的 webhook 时，**不建议**对 `Timestamp` 做同样的过期校验（见第 6 节说明，重试会导致 `Timestamp` 是之后现算的）。
-4. **`notify_url`/`return_url`/`cancel_url` 要提前加入回调域名白名单**，且是精确 host 匹配，不做归一化。
+4. **`notify_url`/`return_url`/`cancel_url` 的域名必须与下单所用应用绑定的网站域名一致**（忽略大小写、`www.` 前缀与端口号），不一致会被拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`）。
 5. **`/order/create` 和 `/order/ship` 的幂等语义不同**：前者"重复提交=原样返回，不覆盖"；后者"重复提交=直接覆盖旧物流记录"。
 6. **只有 `paid` 状态会触发 webhook**，`shipped`/`refunded`/`cancelled` 等状态变化都不会主动通知，需要轮询 `/order/query` 兜底。
 7. Webhook 接收端处理要快（系统侧超时判定是 10 秒），耗时逻辑放异步队列处理，并保证按 `order_no` 幂等（因为失败会自动重试最多 5 次，且每次重试的签名 Header 都不同）。

@@ -7,13 +7,15 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * 用于所有带 merchant_id 字段的业务 Model（Application、PaymentMethod、PaymentGroup、
- * Order、OrderShipping、OrderEvent、LogisticsImportTask、TelegramBot）。
+ * Order、OrderShipping、OrderEvent、LogisticsImportTask、TelegramBot、
+ * MerchantWithdrawal、MerchantBalanceTransaction、OrderDisputeEvent）。
  *
  * 提供：
  *   1. 自动注册 MerchantScope 全局 Scope（详见该类注释：仅在已登录 Web 用户时生效）。
- *   2. 创建记录时，若调用方没有显式传 merchant_id，且当前有已登录的非超管用户，
- *      自动回填为该用户的 merchant_id —— 主要方便 Filament 后台的表单提交场景，
- *      不需要每个 Resource 都手动 set 一遍。
+ *   2. 创建记录时，若调用方没有显式传 merchant_id，且当前登录用户只挂靠单一商户
+ *      （即普通商户用户，非超管、非商户级管理员），自动回填为该用户的 merchant_id
+ *      —— 主要方便 Filament 后台的表单提交场景，不需要每个 Resource 都手动 set 一遍。
+ *      超管和商户级管理员名下都可能有多个商户，必须在表单里显式选择，不做自动回填。
  *   3. scopeForMerchant()：显式按商户 ID 过滤，绕开登录态判断，专供 API / 队列 /
  *      命令行等没有 auth 用户的上下文使用。
  */
@@ -24,7 +26,7 @@ trait BelongsToMerchant
         static::addGlobalScope(new MerchantScope);
 
         static::creating(function ($model) {
-            if (empty($model->merchant_id) && auth()->check() && ! auth()->user()->is_super_admin) {
+            if (empty($model->merchant_id) && auth()->check() && ! auth()->user()->is_super_admin && ! auth()->user()->isMerchantManager()) {
                 $model->merchant_id = auth()->user()->merchant_id;
             }
         });
