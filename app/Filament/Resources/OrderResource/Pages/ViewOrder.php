@@ -19,6 +19,7 @@ use App\Models\OrderDisputeEvent;
 use App\Models\OrderShipping;
 use App\Services\BalanceService;
 use App\Services\OrderDisputeService;
+use App\Services\OrderEventSyncService;
 use App\Services\OrderShippingService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -56,6 +57,10 @@ class ViewOrder extends ViewRecord
                         ->copyable()
                         ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('created_at')->label(__('admin.order.fields.created_at'))->dateTime(),
+                    // 支付成功时间：网关首次把订单推进到已收款状态族时落的快照
+                    // （见 OrderPaymentStatusService::applyStatus()），历史订单为空。
+                    TextEntry::make('paid_at')->label(__('admin.order.fields.paid_at'))->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
                 ]),
             ]),
 
@@ -193,6 +198,7 @@ class ViewOrder extends ViewRecord
     {
         return [
             OrderResource::queryStatusAction(),
+            $this->syncOrderEventsAction(),
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
@@ -267,6 +273,70 @@ class ViewOrder extends ViewRecord
 
                 Notification::make()->title(__('admin.order.actions.manual_status_change_success'))->success()->send();
                 $this->record->refresh();
+            });
+    }
+
+    /**
+     * 手动同步订单事件（order_events 时间线）：立刻调用插件 POST /order-logs
+     * 拉取这笔订单在插件侧的完整日志并幂等落库，效果等同于定时任务
+     * SyncOrderEvents 跑到这一笔订单，用于「时间线没跟上 / 想马上看到最新事件」
+     * 的排查场景，不用等下一轮调度。
+     *
+     * 复用 OrderEventSyncService::syncOrderNow()，不另写一份请求/落库逻辑；
+     * 该方法内部已经捕获 PaymentGatewayException（计入 orders_failed 而不抛出），
+     * 所以这里只需要按返回的 stats 分派通知。
+     *
+     * 与「查询订单」一样属于只读拉取动作：只归档日志，不改订单状态、不触发入账
+     * （状态流转由 payment_status webhook 驱动），因此不需要 2FA。
+     */
+    private function syncOrderEventsAction(): Action
+    {
+        return Action::make('syncOrderEvents')
+            ->label(__('admin.order.actions.sync_events'))
+            ->icon('heroicon-o-arrow-path-rounded-square')
+            ->color('gray')
+            ->visible(fn () => (bool) auth()->user()?->can(Permissions::ORDER_EVENTS_VIEW))
+            ->action(function (OrderEventSyncService $service) {
+                $stats = $service->syncOrderNow($this->record);
+
+                if ($stats['orders_skipped_no_credentials'] > 0) {
+                    Notification::make()
+                        ->title(__('admin.order.actions.sync_events_no_credentials'))
+                        ->warning()
+                        ->send();
+
+                    return;
+                }
+
+                if ($stats['orders_failed'] > 0) {
+                    Notification::make()
+                        ->title(__('admin.order.actions.sync_events_failed'))
+                        ->danger()
+                        ->send();
+
+                    return;
+                }
+
+                if ($stats['logs_fetched'] === 0) {
+                    Notification::make()
+                        ->title(__('admin.order.actions.sync_events_empty'))
+                        ->warning()
+                        ->send();
+
+                    return;
+                }
+
+                Notification::make()
+                    ->title(__('admin.order.actions.sync_events_success', [
+                        'written' => $stats['logs_written'],
+                        'skipped' => $stats['logs_skipped'],
+                    ]))
+                    ->success()
+                    ->send();
+
+                // 成功后硬跳转刷新详情页：事件时间线是 RelationManager（独立的
+                // Livewire 子组件），只刷新当前页面组件不会重新拉取子组件数据。
+                $this->redirect(static::getUrl(['record' => $this->record]));
             });
     }
 

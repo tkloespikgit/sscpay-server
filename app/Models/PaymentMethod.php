@@ -40,10 +40,9 @@ class PaymentMethod extends Model
         'domain',
         'domain_client_id',
         'domain_client_sk',
-        'order_account',
-        'order_password',
-        'config_account',
-        'config_password',
+        // order_account / order_password / config_account / config_password 已弃用：
+        // 支付插件的所有接口统一改用上面的 WooCommerce REST API 密钥（Consumer Key / Secret）
+        // 做 Basic Auth。数据库列暂时保留，但不再参与批量赋值与任何认证流程。
         'payment_config_id',
         'product_match_mode',
         'invoice_prefix',

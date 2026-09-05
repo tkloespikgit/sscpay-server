@@ -74,11 +74,11 @@ class PaymentMethodResource extends Resource
                         ->columnSpanFull(),
                     Select::make('merchant_id')
                         ->label(__('admin.payment_method.fields.merchant'))
-                        ->options(fn() => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                        ->options(fn () => Merchant::query()->where('status', true)->pluck('name', 'id'))
                         ->required()
                         ->searchable()
-                        ->disabled(!$isViewerSuperAdmin)
-                        ->default(fn() => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
+                        ->disabled(! $isViewerSuperAdmin)
+                        ->default(fn () => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
                         ->dehydrated()
                         ->columnSpanFull(),
                     TextInput::make('method_code')->label(__('admin.payment_method.fields.method_code'))->required()->maxLength(50)->placeholder('paypal / stripe'),
@@ -115,7 +115,7 @@ class PaymentMethodResource extends Resource
                         ->regex('#^https://#i')
                         ->validationMessages([
                             'regex' => __('admin.payment_method.validation.domain_format'),
-                            'url'   => __('admin.payment_method.validation.domain_format'),
+                            'url' => __('admin.payment_method.validation.domain_format'),
                         ])->columnSpanFull(),
 
                     TextInput::make('domain_client_id')
@@ -128,27 +128,17 @@ class PaymentMethodResource extends Resource
                         ->placeholder('cs_xxxxxxxx')
                         ->required()
                         ->maxLength(255),
-                    TextInput::make('order_account')
-                        ->label(__('admin.payment_method.fields.order_account'))
-                        ->maxLength(255),
-                    TextInput::make('order_password')
-                        ->label(__('admin.payment_method.fields.order_password'))
-                        ->maxLength(255),
-                    TextInput::make('config_account')
-                        ->label(__('admin.payment_method.fields.config_account'))
-                        ->maxLength(255),
-                    TextInput::make('config_password')
-                        ->label(__('admin.payment_method.fields.config_password'))
-                        ->maxLength(255),
+                    // 支付插件的所有接口（/pay /sync-tracking /gateway-config /order-logs 等）
+                    // 统一用上面这对 WooCommerce REST API 密钥做 Basic Auth；
+                    // 原「订单账号/密码」「配置账号/密码」四个字段已弃用。
                     TextInput::make('payment_config_id')
                         ->label(__('admin.payment_method.fields.payment_config_id'))
                         ->maxLength(255),
 
-
                     Select::make('product_match_mode')
                         ->label(__('admin.payment_method.fields.product_match_mode'))
                         // 选项来自系统配置 payment.product_match_modes（见 PaymentMethod::supportedProductMatchModes()）
-                        ->options(fn() => static::matchModeOptions())
+                        ->options(fn () => static::matchModeOptions())
                         ->default('MATCH')
                         ->columnSpanFull()
                         ->required(),
@@ -159,7 +149,6 @@ class PaymentMethodResource extends Resource
                         ->label(__('admin.payment_method.fields.virtual_product_prefix'))
                         ->maxLength(50),
 
-
                 ])->columns(2)->columnSpan(2),
             ]),
             Grid::make(1)->schema([
@@ -167,19 +156,19 @@ class PaymentMethodResource extends Resource
                     ->schema([
                         Select::make('config_map_id')
                             ->label(__('admin.payment_method.fields.config_map'))
-                            ->options(fn() => PaymentMethodConfigMap::query()->where('is_active',
+                            ->options(fn () => PaymentMethodConfigMap::query()->where('is_active',
                                 true)->pluck('name',
-                                'id'))
+                                    'id'))
                             ->searchable()
                             ->live()
                             // 换了模板之后，上一个模板残留的 config.* 值没有意义，清掉避免脏数据。
-                            ->afterStateUpdated(fn(Set $set) => $set('config', [])),
+                            ->afterStateUpdated(fn (Set $set) => $set('config', [])),
 
                         // 选完模板后动态展示 webhook 地址：域名取自当前表单的 domain，
                         // 路径尾段 {gateway} 用所选模板的 payment_config_tag 替换。
                         Placeholder::make('webhook_url')
                             ->label(__('admin.payment_method.fields.webhook_url'))
-                            ->visible(fn(Get $get) => filled($get('config_map_id')))
+                            ->visible(fn (Get $get) => filled($get('config_map_id')))
                             ->content(function (Get $get) {
                                 $configMap = $get('config_map_id')
                                     ? PaymentMethodConfigMap::find($get('config_map_id'))
@@ -200,12 +189,12 @@ class PaymentMethodResource extends Resource
                                 ? PaymentMethodConfigMap::find($get('config_map_id'))
                                 : null;
 
-                            if (!$configMap) {
+                            if (! $configMap) {
                                 return [];
                             }
 
                             return collect($configMap->fields)
-                                ->map(fn(array $field) => TextInput::make('config.'.$field['key'])
+                                ->map(fn (array $field) => TextInput::make('config.'.$field['key'])
                                     ->label($field['label'])
                                     ->required((bool) ($field['required'] ?? false)))
                                 ->all();
@@ -249,7 +238,7 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('product_match_mode')
                     ->label(__('admin.payment_method.columns.product_match_mode'))
                     ->badge()
-                    ->formatStateUsing(fn(?string $state) => blank($state) ? '—' : static::matchModeLabel($state)),
+                    ->formatStateUsing(fn (?string $state) => blank($state) ? '—' : static::matchModeLabel($state)),
                 TextColumn::make('site_products_count')
                     ->label(__('admin.payment_method.columns.site_products_count'))
                     ->counts('siteProducts')
@@ -280,7 +269,7 @@ class PaymentMethodResource extends Resource
     protected static function matchModeOptions(): array
     {
         return collect(PaymentMethod::supportedProductMatchModes())
-            ->mapWithKeys(fn(string $mode) => [$mode => static::matchModeLabel($mode)])
+            ->mapWithKeys(fn (string $mode) => [$mode => static::matchModeLabel($mode)])
             ->all();
     }
 
@@ -336,8 +325,8 @@ class PaymentMethodResource extends Resource
             ->action(function (PaymentMethod $record) {
                 // method_code_uniq 是虚拟生成列，不能出现在 INSERT 里，
                 // replicate 默认会把它复制过来，必须显式排除。
-                $copy              = $record->replicate(['method_code_uniq']);
-                $copy->is_active   = false;
+                $copy = $record->replicate(['method_code_uniq']);
+                $copy->is_active = false;
                 $copy->method_code = static::nextCopyCode($record);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
 
@@ -372,9 +361,9 @@ class PaymentMethodResource extends Resource
     public static function getPages(): array
     {
         return [
-            'index'  => Pages\ListPaymentMethods::route('/'),
+            'index' => Pages\ListPaymentMethods::route('/'),
             'create' => Pages\CreatePaymentMethod::route('/create'),
-            'edit'   => Pages\EditPaymentMethod::route('/{record}/edit'),
+            'edit' => Pages\EditPaymentMethod::route('/{record}/edit'),
         ];
     }
 

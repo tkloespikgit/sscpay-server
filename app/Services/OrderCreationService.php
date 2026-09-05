@@ -4,9 +4,11 @@ namespace App\Services;
 
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
+use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
+use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -45,8 +47,7 @@ class OrderCreationService
         private readonly PaymentService $paymentService,
         private readonly PaymentGatewayService $paymentGateway,
         private readonly OrderItemService $orderItemService,
-    ) {
-    }
+    ) {}
 
     /**
      * @param  array  $data  已经过 FormRequest / 手工建单表单校验和字段展平的数据，
@@ -62,7 +63,7 @@ class OrderCreationService
      * @throws PaymentMethodNotAvailableException 指定的 payment_method_key 不存在/不属于该商户/已停用
      * @throws PaymentMethodDomainMismatchException 指定渠道时回跳地址与该渠道绑定域名不一致
      * @throws PaymentGatewayException 远程创建支付订单失败（站点/凭证未配齐或插件返回业务错误）
-     * @throws \App\Exceptions\NoAvailablePaymentMethodException
+     * @throws NoAvailablePaymentMethodException
      */
     public function createOrder(
         array $data,
@@ -107,7 +108,7 @@ class OrderCreationService
         }
 
         // 2. 金额公式铁律
-        if (!Order::isAmountValid($data['subtotal'], $data['shipping_fee'], $data['discount'], $data['tax'],
+        if (! Order::isAmountValid($data['subtotal'], $data['shipping_fee'], $data['discount'], $data['tax'],
             $data['amount'])) {
             $expected = bcadd(bcsub(bcadd((string) $data['subtotal'], (string) $data['shipping_fee'], 2),
                 (string) $data['discount'], 2), (string) $data['tax'], 2);
@@ -123,20 +124,20 @@ class OrderCreationService
 
         // 4. 回调域名白名单
         foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
-            if (!empty($data[$field]) && !$merchant->isDomainAllowed($data[$field])) {
+            if (! empty($data[$field]) && ! $merchant->isDomainAllowed($data[$field])) {
                 throw new CallbackDomainNotAllowedException($field, $data[$field]);
             }
         }
 
         // 5. 汇率 + 汇损快照
-        $rate = \App\Models\ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
+        $rate = ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
 
-        $convertedAmount      = bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
-        $subtotalConverted    = bcmul((string) $data['subtotal'], (string) $rate['actual_rate'], 2);
+        $convertedAmount = bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
+        $subtotalConverted = bcmul((string) $data['subtotal'], (string) $rate['actual_rate'], 2);
         $shippingFeeConverted = bcmul((string) $data['shipping_fee'], (string) $rate['actual_rate'], 2);
-        $discountConverted    = bcmul((string) $data['discount'], (string) $rate['actual_rate'], 2);
-        $taxConverted         = bcmul((string) $data['tax'], (string) $rate['actual_rate'], 2);
-        $surchargeFee         = bcmul((string) $data['amount'], (string) $rate['surcharge_amount'], 2);
+        $discountConverted = bcmul((string) $data['discount'], (string) $rate['actual_rate'], 2);
+        $taxConverted = bcmul((string) $data['tax'], (string) $rate['actual_rate'], 2);
+        $surchargeFee = bcmul((string) $data['amount'], (string) $rate['surcharge_amount'], 2);
 
         // 6. 锁定唯一支付方式。group_key 两种模式下都必填：即便商户点名了渠道，
         // 也仍然校验支付组存在且启用，并把组 ID 记在订单上（对账/统计口径不变）。
@@ -170,63 +171,63 @@ class OrderCreationService
             $surchargeFee
         ) {
             $order = Order::createWithGeneratedIdentifiers([
-                'merchant_id'            => $merchant->id,
-                'application_id'         => $applicationId,
-                'payment_group_id'       => $group->id,
-                'merchant_order_no'      => $data['merchant_order_no'],
-                'source'                 => $source,
+                'merchant_id' => $merchant->id,
+                'application_id' => $applicationId,
+                'payment_group_id' => $group->id,
+                'merchant_order_no' => $data['merchant_order_no'],
+                'source' => $source,
                 // 电商网站平台类型（API 下单必传；手工建单可选，没传就是 null）
-                'platform'               => $data['platform'] ?? null,
-                'currency'               => $data['currency'],
-                'subtotal'               => $data['subtotal'],
-                'shipping_fee'           => $data['shipping_fee'],
-                'discount'               => $data['discount'],
-                'tax'                    => $data['tax'],
-                'amount'                 => $data['amount'],
-                'converted_currency'     => 'USD',
-                'converted_amount'       => $convertedAmount,
-                'subtotal_converted'     => $subtotalConverted,
+                'platform' => $data['platform'] ?? null,
+                'currency' => $data['currency'],
+                'subtotal' => $data['subtotal'],
+                'shipping_fee' => $data['shipping_fee'],
+                'discount' => $data['discount'],
+                'tax' => $data['tax'],
+                'amount' => $data['amount'],
+                'converted_currency' => 'USD',
+                'converted_amount' => $convertedAmount,
+                'subtotal_converted' => $subtotalConverted,
                 'shipping_fee_converted' => $shippingFeeConverted,
-                'discount_converted'     => $discountConverted,
-                'tax_converted'          => $taxConverted,
-                'exchange_rate'          => $rate['actual_rate'],
+                'discount_converted' => $discountConverted,
+                'tax_converted' => $taxConverted,
+                'exchange_rate' => $rate['actual_rate'],
                 'original_exchange_rate' => $rate['original_rate'],
-                'surcharge_percent'      => $rate['surcharge_percent'],
-                'surcharge_type'         => $rate['surcharge_type'],
-                'surcharge_amount'       => $rate['surcharge_amount'],
-                'surcharge_fee'          => $surchargeFee,
-                'customer_first_name'    => $data['customer_first_name'],
-                'customer_last_name'     => $data['customer_last_name'],
-                'customer_email'         => $data['customer_email'],
-                'customer_phone'         => $data['customer_phone'],
+                'surcharge_percent' => $rate['surcharge_percent'],
+                'surcharge_type' => $rate['surcharge_type'],
+                'surcharge_amount' => $rate['surcharge_amount'],
+                'surcharge_fee' => $surchargeFee,
+                'customer_first_name' => $data['customer_first_name'],
+                'customer_last_name' => $data['customer_last_name'],
+                'customer_email' => $data['customer_email'],
+                'customer_phone' => $data['customer_phone'],
                 'shipping_address_line1' => $data['shipping_address_line1'],
                 'shipping_address_line2' => $data['shipping_address_line2'] ?? null,
-                'shipping_city'          => $data['shipping_city'],
-                'shipping_state'         => $data['shipping_state'] ?? null,
-                'shipping_country'       => $data['shipping_country'],
-                'shipping_zip'           => $data['shipping_zip'],
-                'payment_method'         => $paymentMethod->method_code,
-                'payment_method_id'      => $paymentMethod->id,
-                'customer_ip'            => $data['customer_ip'] ?? null,
-                'user_agent'             => $data['user_agent'] ?? null,
-                'accept_language'        => $data['accept_language'] ?? null,
-                'notify_url'             => $data['notify_url'] ?? null,
-                'return_url'             => $data['return_url'] ?? null,
-                'cancel_url'             => $data['cancel_url'] ?? null,
-                'status'                 => 'pending',
-                'remark'                 => $data['remark'] ?? null,
+                'shipping_city' => $data['shipping_city'],
+                'shipping_state' => $data['shipping_state'] ?? null,
+                'shipping_country' => $data['shipping_country'],
+                'shipping_zip' => $data['shipping_zip'],
+                'payment_method' => $paymentMethod->method_code,
+                'payment_method_id' => $paymentMethod->id,
+                'customer_ip' => $data['customer_ip'] ?? null,
+                'user_agent' => $data['user_agent'] ?? null,
+                'accept_language' => $data['accept_language'] ?? null,
+                'notify_url' => $data['notify_url'] ?? null,
+                'return_url' => $data['return_url'] ?? null,
+                'cancel_url' => $data['cancel_url'] ?? null,
+                'status' => 'pending',
+                'remark' => $data['remark'] ?? null,
             ]);
 
             foreach ($data['items'] as $item) {
                 $order->items()->create([
-                    'product_sku'          => $item['product_sku'] ?? null,
-                    'product_id'           => $item['product_id'],
-                    'product_url'          => $item['product_url'],
-                    'product_name'         => $item['product_name'],
-                    'product_description'  => $item['product_description'] ?? null,
-                    'unit_price'           => $item['unit_price'],
-                    'quantity'             => $item['quantity'],
-                    'total_price'          => bcmul((string) $item['unit_price'], (string) $item['quantity'], 2),
+                    'product_sku' => $item['product_sku'] ?? null,
+                    'product_id' => $item['product_id'],
+                    'product_url' => $item['product_url'],
+                    'product_name' => $item['product_name'],
+                    'product_description' => $item['product_description'] ?? null,
+                    'unit_price' => $item['unit_price'],
+                    'quantity' => $item['quantity'],
+                    'total_price' => bcmul((string) $item['unit_price'], (string) $item['quantity'], 2),
                     'converted_unit_price' => bcmul((string) $item['unit_price'], (string) $rate['actual_rate'], 2),
                 ]);
             }
@@ -285,7 +286,7 @@ class OrderCreationService
 
     /**
      * 调支付网关插件 POST /pay 在站点侧远程创建支付订单，把返回的收银台地址（pay_url）
-     * 与 WordPress 订单 ID 回填到本地订单。用"创建订单账户/密码"做 Basic Auth。
+     * 与 WordPress 订单 ID 回填到本地订单。用站点的 WooCommerce REST API 密钥（Consumer Key / Secret）做 Basic Auth。
      *
      * 远程创建前按支付方式的商品匹配模式准备一份明细（存 order_matched_items，
      * 与商户下单时传的真实明细分开存放），把明细同步给 WordPress：
@@ -298,11 +299,11 @@ class OrderCreationService
      *
      * 插件对同一 s_order_id（传系统订单号）幂等，失败重试安全。
      *
-     * @throws PaymentGatewayException 站点地址/订单账号未配齐，或插件返回业务错误。
+     * @throws PaymentGatewayException 站点地址/WooCommerce REST API 密钥未配齐，或插件返回业务错误。
      */
     private function createRemotePayment(Order $order, ?PaymentMethod $paymentMethod): void
     {
-        if (!$paymentMethod) {
+        if (! $paymentMethod) {
             throw new PaymentGatewayException('订单锁定的支付方式已不存在，无法远程创建支付订单', -1);
         }
 
@@ -314,8 +315,8 @@ class OrderCreationService
                 -1);
         }
 
-        if (blank($paymentMethod->domain) || blank($paymentMethod->order_account) || blank($paymentMethod->order_password)) {
-            throw new PaymentGatewayException("支付方式 {$paymentMethod->method_code} 未配齐站点域名/创建订单账户/创建订单密码，无法远程创建支付订单",
+        if (blank($paymentMethod->domain) || blank($paymentMethod->domain_client_id) || blank($paymentMethod->domain_client_sk)) {
+            throw new PaymentGatewayException("支付方式 {$paymentMethod->method_code} 未配齐站点域名/WooCommerce REST API 密钥，无法远程创建支付订单",
                 -1);
         }
 
@@ -342,13 +343,13 @@ class OrderCreationService
         // 保留字段以免后续匹配规则再引入溢出折扣。
         // 发票号与订单主题随支付方式配置生成，落库后随 payload 一并同步给 WordPress。
         $invoiceNumber = $this->buildInvoiceNumber($order, $paymentMethod);
-        $subject       = $this->buildSubject($order, $paymentMethod);
+        $subject = $this->buildSubject($order, $paymentMethod);
         $allowReturnedSource = $this->resolveAllowReturnedSource($order, $paymentMethod);
 
         $order->update([
             'matched_discount' => $matched['overflow'],
-            'invoice_number'   => $invoiceNumber,
-            'subject'          => $subject,
+            'invoice_number' => $invoiceNumber,
+            'subject' => $subject,
         ]);
 
         // 先清掉旧的匹配明细，保证幂等补单重试时不会残留上一次的匹配结果。
@@ -356,66 +357,66 @@ class OrderCreationService
 
         foreach ($matched['items'] as $matchedItem) {
             $order->matchedItems()->create([
-                'product_sku'          => $matchedItem['product_sku'],
-                'product_id'           => $matchedItem['product_id'],
-                'product_url'          => $matchedItem['product_url'],
-                'product_name'         => $matchedItem['product_name'],
-                'product_description'  => $matchedItem['product_description'],
-                'unit_price'           => $matchedItem['unit_price'],
-                'quantity'             => $matchedItem['quantity'],
-                'total_price'          => $matchedItem['total_price'],
+                'product_sku' => $matchedItem['product_sku'],
+                'product_id' => $matchedItem['product_id'],
+                'product_url' => $matchedItem['product_url'],
+                'product_name' => $matchedItem['product_name'],
+                'product_description' => $matchedItem['product_description'],
+                'unit_price' => $matchedItem['unit_price'],
+                'quantity' => $matchedItem['quantity'],
+                'total_price' => $matchedItem['total_price'],
                 'converted_unit_price' => $matchedItem['converted_unit_price'],
                 // CREATE 模式扩展字段（匹配/直连分支不携带，落默认值）。
-                'source_variation_id'  => $matchedItem['source_variation_id'] ?? null,
-                'auto_created'         => $matchedItem['auto_created'] ?? false,
+                'source_variation_id' => $matchedItem['source_variation_id'] ?? null,
+                'auto_created' => $matchedItem['auto_created'] ?? false,
             ]);
         }
 
         $payload = [
-            's_order_id'       => $order->order_no,
+            's_order_id' => $order->order_no,
             // 按客户原始币种收款（订单上的原币种金额）
-            'amount'           => (float) $order->amount,
-            'subtotal'         => (float) $order->subtotal,
-            'currency'         => $order->currency,
-            'payment_method'   => $tag,
+            'amount' => (float) $order->amount,
+            'subtotal' => (float) $order->subtotal,
+            'currency' => $order->currency,
+            'payment_method' => $tag,
             // 发票号与订单主题（invoice 前缀 / 虚拟商品前缀拼接系统订单号）
-            'invoice_number'   => $order->invoice_number,
-            'subject'          => $order->subject,
+            'invoice_number' => $order->invoice_number,
+            'subject' => $order->subject,
             // 支付方式的商品匹配模式作为交易类型透传给商城系统
-            'trans_type'       => $mode,
+            'trans_type' => $mode,
             // 是否允许支付完成后返回源站，Y/N；platform=invoice 强制 N，优先级高于支付方式配置。
             'allow_returned_source' => $allowReturnedSource,
-            'callback_url'     => url('/api/webhooks/payment-gateway/status'),
+            'callback_url' => url('/api/webhooks/payment-gateway/status'),
             // TODO: 支付状态回调路由（PaymentGatewayWebhookController）待实现
-            'return_url'       => $order->return_url ?: url('/payment/'.$order->payment_link_token),
-            'cancel_url'       => $order->cancel_url ?: url('/payment/'.$order->payment_link_token),
-            'customer'         => [
-                'name'  => trim($order->customer_first_name.' '.$order->customer_last_name),
+            'return_url' => $order->return_url ?: url('/payment/'.$order->payment_link_token),
+            'cancel_url' => $order->cancel_url ?: url('/payment/'.$order->payment_link_token),
+            'customer' => [
+                'name' => trim($order->customer_first_name.' '.$order->customer_last_name),
                 'email' => $order->customer_email,
                 'phone' => $order->customer_phone,
             ],
             // 本系统只采集收货地址，账单地址与收货地址同值。
-            'billing_address'  => $address = [
+            'billing_address' => $address = [
                 'country' => $order->shipping_country,
-                'state'   => $order->shipping_state,
-                'city'    => $order->shipping_city,
+                'state' => $order->shipping_state,
+                'city' => $order->shipping_city,
                 'address' => trim($order->shipping_address_line1.' '.$order->shipping_address_line2),
-                'zip'     => $order->shipping_zip,
+                'zip' => $order->shipping_zip,
             ],
             'shipping_address' => $address,
             // 商品明细用匹配/创建/直连结果（而非商户下单时传的明细）同步给 WordPress。
-            'items'            => collect($matched['items'])->map(fn(array $matchedItem) => [
-                'sku'         => $matchedItem['product_sku'],
-                'product_id'  => $matchedItem['product_id'],
+            'items' => collect($matched['items'])->map(fn (array $matchedItem) => [
+                'sku' => $matchedItem['product_sku'],
+                'product_id' => $matchedItem['product_id'],
                 'product_url' => $matchedItem['product_url'],
-                'name'        => $matchedItem['product_name'],
-                'quantity'    => (int) $matchedItem['quantity'],
-                'price'       => (float) $matchedItem['unit_price'],
+                'name' => $matchedItem['product_name'],
+                'quantity' => (int) $matchedItem['quantity'],
+                'price' => (float) $matchedItem['unit_price'],
             ])->all(),
-            'shipping_fee'     => (float) $order->shipping_fee,
-            'tax_fee'          => (float) $order->tax,
+            'shipping_fee' => (float) $order->shipping_fee,
+            'tax_fee' => (float) $order->tax,
             // 自动匹配商品溢出产生的折扣（订单原币种）
-            'discount_fee'     => (float) ($order->matched_discount + $order->discount),
+            'discount_fee' => (float) ($order->matched_discount + $order->discount),
         ];
 
         // 优先引用已注册的网关配置（见「同步支付配置」按钮）；尚未同步过时退化为内联明文配置。
@@ -428,13 +429,13 @@ class OrderCreationService
         $result = $this->paymentGateway
             ->withConnection(
                 rtrim((string) $paymentMethod->domain, '/').'/wp-json/payment-plugin/v1',
-                (string) $paymentMethod->order_account,
-                (string) $paymentMethod->order_password,
+                (string) $paymentMethod->domain_client_id,
+                (string) $paymentMethod->domain_client_sk,
             )
             ->createPayment($payload);
 
         $order->update([
-            'pay_url'     => $result['pay_url'] ?? null,
+            'pay_url' => $result['pay_url'] ?? null,
             'wp_order_id' => $result['wp_order_id'] ?? null,
         ]);
     }
@@ -460,7 +461,7 @@ class OrderCreationService
      */
     private function buildSubject(Order $order, PaymentMethod $paymentMethod): string
     {
-        return trim((string) $paymentMethod->virtual_product_prefix)." ".$order->order_no;
+        return trim((string) $paymentMethod->virtual_product_prefix).' '.$order->order_no;
     }
 
     /**

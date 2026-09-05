@@ -31,7 +31,7 @@ class EditPaymentMethod extends EditRecord
 
     /**
      * 同步支付配置：把当前表单里的网关配置提交到站点的支付插件
-     * （POST /gateway-config，用"创建配置账户/密码"做 Basic Auth），
+     * （POST /gateway-config，用站点的 WooCommerce REST API 密钥 Consumer Key / Secret 做 Basic Auth），
      * 成功后把返回的 data.config_id 回填到"支付配置 ID"。
      * 同一个 config_key 重复同步是幂等覆盖（插件侧保证）。
      */
@@ -52,7 +52,7 @@ class EditPaymentMethod extends EditRecord
                     ? PaymentMethodConfigMap::find($data['config_map_id'])
                     : null;
 
-                if (!$configMap || blank($configMap->payment_config_tag)) {
+                if (! $configMap || blank($configMap->payment_config_tag)) {
                     Notification::make()
                         ->warning()
                         ->title(__('admin.payment_method.actions.sync_gateway_config_missing_tag'))
@@ -61,7 +61,7 @@ class EditPaymentMethod extends EditRecord
                     return;
                 }
 
-                if (blank($data['config_account'] ?? null) || blank($data['config_password'] ?? null)) {
+                if (blank($data['domain_client_id'] ?? null) || blank($data['domain_client_sk'] ?? null)) {
                     Notification::make()
                         ->warning()
                         ->title(__('admin.payment_method.actions.sync_gateway_config_missing_credentials'))
@@ -82,8 +82,8 @@ class EditPaymentMethod extends EditRecord
                     $result = app(PaymentGatewayService::class)
                         ->withConnection(
                             rtrim((string) $data['domain'], '/').'/wp-json/payment-plugin/v1',
-                            (string) $data['config_account'],
-                            (string) $data['config_password'],
+                            (string) $data['domain_client_id'],
+                            (string) $data['domain_client_sk'],
                         )
                         ->registerGatewayConfig(
                             $configKey,

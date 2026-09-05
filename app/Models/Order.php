@@ -99,12 +99,14 @@ class Order extends Model
         'wp_order_id',
         'transaction_id',
         'status',
+        'paid_at',
         'remark',
     ];
 
     protected function casts(): array
     {
         return [
+            'paid_at' => 'datetime',
             'payment_link_sent_at' => 'datetime',
             'wp_order_id' => 'integer',
             'subtotal' => 'decimal:2',
@@ -169,7 +171,6 @@ class Order extends Model
     {
         return $this->belongsTo(PaymentMethod::class)->withTrashed();
     }
-
 
     public function items(): HasMany
     {

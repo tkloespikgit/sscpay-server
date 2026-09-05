@@ -45,6 +45,13 @@ class SystemConfigSeeder extends Seeder
                 'description' => '固定汇损值（当 surcharge_type = fixed 时生效）',
             ],
             [
+                'config_key' => 'exchange.history_retention_days',
+                'config_value' => '120',
+                'value_type' => 'number',
+                'group' => 'exchange',
+                'description' => '汇率历史快照保留天数（exchange_rate_histories，0 或负数表示不清理；需大于后台趋势页最长的 90 天窗口）',
+            ],
+            [
                 'config_key' => 'order.platforms',
                 'config_value' => json_encode(['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart']),
                 'value_type' => 'json',

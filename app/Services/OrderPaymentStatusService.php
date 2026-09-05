@@ -123,15 +123,15 @@ class OrderPaymentStatusService
     {
         $method = $order->paymentMethodConfig();
 
-        if (! $method || empty($method->domain) || empty($method->order_account) || empty($method->order_password)) {
-            throw new \RuntimeException('该订单锁定的支付方式未配置查询所需的订单账户（域名/订单账号/订单密码）。');
+        if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
+            throw new \RuntimeException('该订单锁定的支付方式未配置查询所需的凭证（域名/WooCommerce REST API 密钥）。');
         }
 
         $data = $this->paymentGateway
             ->withConnection(
                 rtrim($method->domain, '/').'/wp-json/payment-plugin/v1',
-                $method->order_account,
-                $method->order_password,
+                $method->domain_client_id,
+                $method->domain_client_sk,
             )
             ->orderQuery($order->order_no);
 
@@ -183,6 +183,15 @@ class OrderPaymentStatusService
             }
 
             $locked->status = $targetStatus;
+
+            // 支付成功时间：首次进入"已收款状态族"时落一次快照，之后永不覆盖。
+            // 用状态族而不是只判断 targetStatus === 'paid'，是因为网关可能直接
+            // 推送 paid 之后的状态（如争议/退款），这些状态同样意味着钱已经收到过。
+            // 争议胜诉回退到 paid（BalanceService::releaseForDisputeEvent）不会走到这里，
+            // 即便走到，empty() 判断也保证不会把首次支付时间改写成回退时间。
+            if (empty($locked->paid_at) && in_array($targetStatus, self::PAID_FAMILY_STATUSES, true)) {
+                $locked->paid_at = now();
+            }
 
             if (empty($locked->wp_order_id) && ! empty($payload['wp_order_id'])) {
                 $locked->wp_order_id = (int) $payload['wp_order_id'];

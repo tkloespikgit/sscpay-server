@@ -29,9 +29,7 @@ class SyncOrderTrackingJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    public function __construct(public readonly int $orderShippingId)
-    {
-    }
+    public function __construct(public readonly int $orderShippingId) {}
 
     public function handle(PaymentGatewayService $paymentGateway): void
     {
@@ -58,10 +56,10 @@ class SyncOrderTrackingJob implements ShouldQueue
             return;
         }
 
-        if (blank($paymentMethod->domain) || blank($paymentMethod->order_account) || blank($paymentMethod->order_password)) {
+        if (blank($paymentMethod->domain) || blank($paymentMethod->domain_client_id) || blank($paymentMethod->domain_client_sk)) {
             $shipping->update([
                 'sync_status' => OrderShipping::SYNC_STATUS_FAILED,
-                'sync_message' => '支付方式未配齐站点域名/创建订单账户/创建订单密码',
+                'sync_message' => '支付方式未配齐站点域名/WooCommerce REST API 密钥',
             ]);
 
             return;
@@ -88,8 +86,8 @@ class SyncOrderTrackingJob implements ShouldQueue
             $data = $paymentGateway
                 ->withConnection(
                     rtrim((string) $paymentMethod->domain, '/').'/wp-json/payment-plugin/v1',
-                    (string) $paymentMethod->order_account,
-                    (string) $paymentMethod->order_password,
+                    (string) $paymentMethod->domain_client_id,
+                    (string) $paymentMethod->domain_client_sk,
                 )
                 ->syncTracking($payload);
         } catch (\Throwable $e) {
