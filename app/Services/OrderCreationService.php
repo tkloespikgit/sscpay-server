@@ -23,7 +23,9 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）和商户后台手工建单共用同一套流程，
- * 只是 $source 不同（api / manual）、调用方后续动作不同（手工建单还要发付款链接邮件）。
+ * 只是 $source 不同（api / manual）。是否发送付款链接邮件由调用方在拿到返回的
+ * Order 后自行判断 $order->wasRecentlyCreated && $order->send_mail 再决定要不要
+ * dispatch(SendPaymentLinkJob)——本方法只负责把这份"是否发送"的意图落库。
  *
  * 执行顺序（对应文档 2.x 节的铁律）：
  *   1. 幂等检查（merchant_id + merchant_order_no）—— 命中直接返回已存在订单，不新建。
@@ -129,15 +131,22 @@ class OrderCreationService
             throw new OrderItemsMismatchException((string) $data['subtotal'], $itemsSum);
         }
 
-        // 4. 回跳域名必须与本次下单所属应用绑定的域名一致（notify_url / return_url / cancel_url）。
-        //    商户维度的 allowed_domains 白名单已废弃，改为直接比对 applications.website，
-        //    复用与「指定渠道」校验同一套 normalizeHost()/isSameHost() 归一化规则
-        //    （忽略大小写、www. 前缀、端口，兼容裸域名与带路径写法）。
-        //    应用未绑定 website 时 $boundDomain 为空串，任一非空回跳地址都会判为不一致而拒单。
-        $boundDomain = (string) $application->website;
-        foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
-            if (! empty($data[$field]) && ! $this->isSameHost($data[$field], $boundDomain)) {
-                throw new CallbackDomainNotAllowedException($field, $data[$field], $boundDomain);
+        // 4. 回跳域名校验（notify_url / return_url / cancel_url），比对基准「二选一」：
+        //    - 指定了 payment_method_key：跳过本步，三个回跳链接改由第 6 步
+        //      resolveDesignatedPaymentMethod() 直接与该渠道绑定的 payment_methods.domain 比对，
+        //      不再叠加应用域名校验（商户点名渠道时，回跳域名只以渠道 domain 为准）；
+        //    - 未指定 payment_method_key：与本次下单所属应用绑定的 applications.website 比对
+        //      （商户维度的 allowed_domains 白名单已废弃）。
+        //    归一化规则统一走 normalizeHost()/isSameHost()（忽略大小写、www. 前缀、端口，
+        //    兼容裸域名与带路径写法）。三个回跳地址均必填（CreateOrderRequest 已强制），
+        //    与 resolveDesignatedPaymentMethod() 对称：空值同样视为不匹配而拒单；
+        //    应用未绑定 website 时 $boundDomain 为空串，任一回跳地址都会判为不一致而拒单。
+        if (! filled($data['payment_method_key'] ?? null)) {
+            $boundDomain = (string) $application->website;
+            foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
+                if (! $this->isSameHost($data[$field] ?? null, $boundDomain)) {
+                    throw new CallbackDomainNotAllowedException($field, (string) ($data[$field] ?? ''), $boundDomain);
+                }
             }
         }
 
@@ -178,6 +187,11 @@ class OrderCreationService
 
         $settlementAmount = bcsub($convertedAmount, $totalFee, 2);
 
+        // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
+        // 手工建单固定传布尔 true（保持"手工建单必发"的既有行为）。落库而不是只在
+        // 调用方内存里判断——后台订单详情页的"立即重发"按钮要按这个字段决定是否展示。
+        $sendMail = in_array($data['send_mail'] ?? null, ['Y', true], true);
+
         // 8. 事务内创建订单 + 商品明细；第 9 步（远程创建支付订单）在事务外执行，
         // 避免 HTTP 调用占用事务时间。
         $order = DB::transaction(function () use (
@@ -194,6 +208,7 @@ class OrderCreationService
             $discountConverted,
             $taxConverted,
             $surchargeFee,
+            $sendMail,
             $feePercentAmount,
             $feeFixedAmount,
             $settlementAmount
@@ -247,7 +262,9 @@ class OrderCreationService
                 'cancel_url' => $data['cancel_url'] ?? null,
                 'status' => 'pending',
                 'remark' => $data['remark'] ?? null,
-            ]);
+                'send_mail' => $sendMail,
+                'ad_params' => $data['ad_params'] ?? null,
+            ], 3, $paymentMethod);
 
             foreach ($data['items'] as $item) {
                 $order->items()->create([
@@ -281,7 +298,8 @@ class OrderCreationService
      *   2. 作为跳过风控的对价，强制要求 notify_url / return_url / cancel_url 三个地址
      *      都存在，且域名都与该渠道绑定的电商网站域名（payment_methods.domain）一致，
      *      任一缺失或不匹配都直接拒单，避免"指定渠道"被当成任意站点收款的口子。
-     *      （第 4 步的"回跳域名 = 应用绑定域名"校验仍然照跑，两道关卡叠加。）
+     *      （此时第 4 步的"回跳域名 = 应用绑定域名 applications.website"校验会跳过，
+     *       回跳域名只以本渠道的 payment_methods.domain 为准，二者是"二选一"而非叠加。）
      *
      * 渠道必须属于当前商户且处于启用状态；不要求它一定挂在 group_key 对应的支付组里
      * （group_key 只用于校验归属并记录到订单上）。

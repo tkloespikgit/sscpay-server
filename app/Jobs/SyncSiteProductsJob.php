@@ -30,6 +30,7 @@ class SyncSiteProductsJob implements ShouldQueue
 
     public function __construct(public readonly int $paymentMethodId)
     {
+        $this->onQueue('low');
     }
 
     public function handle(

@@ -16,3 +16,7 @@ Schedule::command('order-notifications:process-due')->everyMinute()->withoutOver
 Schedule::command('order-disputes:close-due')->everyFiveMinutes()->withoutOverlapping();
 
 Schedule::command('order-disputes:send-reminders')->everyFiveMinutes()->withoutOverlapping();
+
+Schedule::command('ad-conversions:process-due')->everyMinute()->withoutOverlapping();
+
+Schedule::command('fund-freezes:release-due')->everyFiveMinutes()->withoutOverlapping();

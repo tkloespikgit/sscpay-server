@@ -25,7 +25,10 @@ class SendOrderNotificationJob implements ShouldQueue
 
     public int $tries = 1;
 
-    public function __construct(public readonly int $attemptId) {}
+    public function __construct(public readonly int $attemptId)
+    {
+        $this->onQueue('notifications');
+    }
 
     public function handle(OrderNotificationService $service): void
     {

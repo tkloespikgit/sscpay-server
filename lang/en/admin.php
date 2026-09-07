@@ -27,6 +27,7 @@ return [
         'model_label_plural' => 'Merchants',
         'sections' => [
             'basic_info' => 'Basic Information',
+            'preferences' => 'Preferences',
             'remark' => 'Remark',
         ],
         'fields' => [
@@ -35,6 +36,7 @@ return [
             'contact_phone' => 'Contact Phone',
             'contact_email' => 'Contact Email',
             'status' => 'Enabled',
+            'timezone' => 'Timezone',
             'remark' => 'Remark',
             'applications_count' => 'Applications',
             'created_at' => 'Created At',
@@ -42,6 +44,7 @@ return [
         ],
         'help' => [
             'owner' => 'Leave blank if this merchant is managed directly by platform super admins, not owned by any merchant manager.',
+            'timezone' => 'Timezone used to display times in the admin panel for this merchant\'s users. Leave empty to use the system default timezone.',
         ],
         'placeholders' => [
             'owner_platform' => 'Platform-managed',
@@ -63,8 +66,7 @@ return [
             'website' => 'Website Domain',
             'status' => 'Enabled (API calls are rejected while disabled)',
             'is_order_email_enabled' => 'Enable Order Emails',
-            'sender_email' => 'Sender Email',
-            'sender_name' => 'Sender Name',
+            'payment_link_mail_template' => 'Payment Link Email Body',
             'remark' => 'Remark',
             'app_id' => 'App ID',
             'api_key' => 'API Key',
@@ -72,11 +74,98 @@ return [
         ],
         'help' => [
             'api_key' => 'Merchants use this to sign requests. Keep it secret — do not share it with anyone who does not need it.',
+            'payment_link_mail_template' => 'Leave blank to use the system default template. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved. Different applications under the same merchant can each have their own body.',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
         'actions' => [
             'regenerate_api_key' => 'Regenerate API Key',
             'regenerate_api_key_confirm' => 'The old API key will stop working immediately, and any request the merchant signs with it will start failing signature verification. Make sure the merchant is aware and ready to update their configuration before continuing.',
             'regenerate_api_key_success' => 'API credentials regenerated',
+        ],
+        'filters' => [
+            'merchant' => 'Merchant',
+            'app_id' => 'App ID',
+            'website' => 'Website Domain',
+        ],
+    ],
+
+    // Shared "mail sending configuration" modal for Application / PaymentMethod
+    // (App\Filament\Support\MailCredentialsAction): sender identity + own ESP
+    // credentials bundled into one edit flow, reused by both Edit pages'
+    // header actions.
+    'mail_credentials' => [
+        'summary' => 'Mail Sending - Sender Email: :email',
+        'not_configured' => 'Mail Sending - Not Configured',
+        'modal_heading' => 'Mail Sending Configuration',
+        'modal_description' => 'Configure this channel\'s own sender identity and ESP credentials — payment link emails will be sent through this account. Leaving it unconfigured means sending fails; it will not fall back to the platform\'s own account.',
+        'saved' => 'Mail sending configuration saved',
+        'send_failed_no_sender' => 'No mail sending account configured (neither the locked payment method nor the owning application), send skipped',
+        'fields' => [
+            'sender_email' => 'Sender Email',
+            'sender_name' => 'Sender Name',
+            'mail_driver' => 'Email Service Provider',
+            'token' => 'Server Token',
+            'ses_key' => 'AWS Access Key ID',
+            'ses_secret' => 'AWS Secret Access Key',
+            'ses_region' => 'AWS Region',
+            'smtp_host' => 'SMTP Host',
+            'smtp_port' => 'Port',
+            'smtp_username' => 'Username',
+            'smtp_password' => 'Password',
+            'smtp_encryption' => 'Encryption',
+        ],
+        'help' => [
+            'mail_driver' => 'Leave unselected to mean "not configured" — this channel will not be able to send email (it will not fall back to the platform account). If selected, the matching API credentials are required — the sending domain is already verified on this account, which improves deliverability over the platform account sending on behalf of arbitrary merchant domains, and does not consume the platform\'s sending quota.',
+            'mail_credentials_postmark' => 'The Server Token from the Postmark dashboard under "API Tokens", stored encrypted.',
+            'mail_credentials_ses' => 'Leave blank to default to us-east-1. Use an IAM sub-account with only ses:SendEmail permission for the Access Key ID / Secret Access Key, not your root account keys; both are stored encrypted.',
+            'mail_credentials_smtp' => 'Leave blank to auto-detect from the port (465 = implicit SSL, otherwise TLS/STARTTLS); username/password are stored encrypted.',
+        ],
+        'placeholders' => [
+            'mail_driver_none' => 'Not configured',
+            'smtp_encryption_auto' => 'Auto (based on port)',
+        ],
+    ],
+
+    // Application "ad conversion API credentials" modal (App\Filament\Support\AdCredentialsAction):
+    // per-platform (Meta/Google/TikTok) credentials used by AdConversionService to notify
+    // ad platforms server-side after payment succeeds, independent of whether the order's
+    // payment method allows returning to the source site.
+    'ad_credentials' => [
+        'summary' => 'Ad Conversion - Configured: :platforms',
+        'not_configured' => 'Ad Conversion - Not Configured',
+        'modal_heading' => 'Ad Conversion API Credentials',
+        'modal_description' => 'Configure per-platform conversion API credentials. As long as the order carries that platform\'s ad_params, the system calls this platform\'s server-side conversion API after payment succeeds to report the order as paid — independent of whether the payment method allows returning to the source site.',
+        'saved' => 'Ad conversion credentials saved',
+        'sections' => [
+            'meta' => 'Meta (Facebook) Conversions API',
+            'google' => 'Google Ads',
+            'tiktok' => 'TikTok Events API',
+        ],
+        'fields' => [
+            'meta_pixel_id' => 'Pixel ID',
+            'meta_access_token' => 'Access Token',
+            'meta_test_event_code' => 'Test Event Code',
+            'meta_event_name' => 'Event Name',
+            'google_customer_id' => 'Customer ID',
+            'google_conversion_action_id' => 'Conversion Action ID',
+            'google_developer_token' => 'Developer Token',
+            'google_login_customer_id' => 'Login Customer ID (MCC)',
+            'google_client_id' => 'OAuth Client ID',
+            'google_client_secret' => 'OAuth Client Secret',
+            'google_refresh_token' => 'OAuth Refresh Token',
+            'tiktok_pixel_code' => 'Pixel Code',
+            'tiktok_access_token' => 'Access Token',
+            'tiktok_event_name' => 'Event Name',
+        ],
+        'help' => [
+            'meta_test_event_code' => 'Only used in Meta Events Manager\'s Test Events tool; leave blank in production.',
+            'meta_event_name' => 'The Conversions API event_name reported on payment success. Defaults to "Purchase" (Meta\'s standard e-commerce event) when left blank — only change this if your storefront already fires a client-side Pixel event under a different name and you need the two to match for deduplication.',
+            'google_customer_id' => 'The 10-digit Google Ads account ID (dashes optional), without "customers/".',
+            'google_login_customer_id' => 'Only required when accessing the customer account through a manager (MCC) account.',
+            'google_refresh_token' => 'A long-lived OAuth refresh token obtained via the Google Ads API OAuth flow; the system exchanges it for a short-lived access token as needed and caches it.',
+            'tiktok_event_name' => 'The Events API "event" reported on payment success. Defaults to "CompletePayment" (TikTok\'s standard e-commerce event) when left blank — only change this if your storefront already fires a client-side Pixel event under a different name and you need the two to match for deduplication.',
         ],
     ],
 
@@ -91,6 +180,7 @@ return [
             'product_matching' => 'Product Matching',
             'risk_control' => 'Risk Control Thresholds (USD)',
             'fees' => 'Fees (USD)',
+            'mail_template' => 'Payment Link Email Template',
         ],
         'fields' => [
             'merchant' => 'Merchant',
@@ -110,6 +200,9 @@ return [
             'product_match_mode' => 'Product Match Mode',
             'invoice_prefix' => 'Invoice Prefix',
             'virtual_product_prefix' => 'Virtual Product Prefix',
+            'order_no_prefix' => 'Order No. Prefix',
+            'order_no_format' => 'Order No. Format',
+            'order_no_length' => 'Order No. Random Segment Length',
             'sync_logistics' => 'Sync Logistics Info',
             'allow_returned_source' => 'Allow Return to Source Site',
             'max_amount_per_transaction' => 'Max Amount per Transaction',
@@ -133,6 +226,8 @@ return [
             'product_matching' => 'Choose how order items are matched against site products. Options are maintained in the payment.product_match_modes system config.',
             'invoice_prefix' => 'Name prefix used when generating invoice products. Leave empty for no prefix.',
             'virtual_product_prefix' => 'Name prefix used when generating virtual products. Leave empty for no prefix.',
+            'order_no_format' => 'Leave empty to use the system default order number format. Once set, the order number = prefix above + a random segment in the chosen format and length.',
+            'order_no_length' => 'Total order number length including the prefix, between 15 and 30.',
             'sync_logistics' => 'Whether to sync logistics info (carrier and tracking number) to the corresponding site after an order is shipped.',
             'allow_returned_source' => 'Whether the customer may be redirected back to the source site after payment. Forced to disallowed when the order platform is invoice, which takes priority over this setting.',
             'fees' => 'Fixed fee (USD) charged on refund/chargeback, deducted from the merchant balance; enter 0 for none',
@@ -140,6 +235,10 @@ return [
             'min_transaction_amount' => 'With the current fee settings, the minimum transaction amount is about $:amount (USD); orders below this are rejected',
             'min_transaction_amount_none' => 'Fixed fee is 0, so there is no minimum transaction amount',
             'min_transaction_amount_undefined' => 'Percent fee is 100% or more — no amount can cover the fee, please adjust the rate',
+            'payment_link_mail_template' => 'Leave blank to fall back to the owning Application\'s template; if both are blank, the system default template is used. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved.',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
@@ -148,6 +247,10 @@ return [
             'match' => 'Match',
             'create' => 'Create',
             'virtual' => 'Virtual',
+        ],
+        'order_no_formats' => [
+            'numeric' => 'Numeric only',
+            'alnum' => 'Uppercase letters + digits',
         ],
         'columns' => [
             'code' => 'Code',
@@ -343,6 +446,8 @@ return [
             'manual_status_change_desc' => 'For manual correction only when the automatic status flow (gateway callback/query) failed to apply. Use with care.',
             'manual_status_change_invalid' => 'The current order status does not allow manually changing to this target status',
             'manual_status_change_success' => 'Order status updated',
+            'resend_payment_link_mail' => 'Resend Payment Link Email',
+            'resend_payment_link_mail_queued' => 'Queued for sending',
         ],
         'sections' => [
             'order_info' => 'Order Information',
@@ -360,6 +465,9 @@ return [
             'transaction_id' => 'Transaction ID',
             'created_at' => 'Created At',
             'paid_at' => 'Paid At',
+            'send_mail' => 'Email Requested at Checkout',
+            'payment_link_sent_at' => 'Payment Link Email Sent At',
+            'payment_link_mail_failed_reason' => 'Mail Send Failure Reason',
             'currency' => 'Currency',
             'amount' => 'Amount Due',
             'converted_amount' => 'Converted (USD)',
@@ -572,6 +680,24 @@ return [
         ],
     ],
 
+    'ad_conversion' => [
+        'title' => 'Ad Conversion Notification Log',
+        'columns' => [
+            'platform' => 'Platform',
+            'attempt_number' => 'Attempt',
+            'status' => 'Status',
+            'http_status' => 'HTTP Status',
+            'duration_ms' => 'Duration (ms)',
+            'attempted_at' => 'Attempted At',
+            'next_retry_at' => 'Next Retry At',
+        ],
+        'view' => [
+            'request_payload' => 'Request Payload',
+            'response_body' => 'Platform Response',
+            'error_message' => 'Error Message',
+        ],
+    ],
+
     'create_manual_order' => [
         'sections' => [
             'merchant' => 'Merchant',
@@ -653,6 +779,30 @@ return [
         ],
     ],
 
+    'onboard_merchant' => [
+        'nav_label' => 'Merchant Onboarding',
+        'steps' => [
+            'merchant' => [
+                'label' => 'Merchant Info',
+                'description' => 'Basic information about the new merchant',
+            ],
+            'admin_account' => [
+                'label' => 'Admin Account',
+                'description' => 'The first user account for this merchant, automatically assigned the "Merchant Admin" role',
+            ],
+            'application' => [
+                'label' => 'Application',
+                'description' => 'The first application this merchant will use to accept orders',
+            ],
+        ],
+        'actions' => [
+            'submit' => 'Create Merchant',
+        ],
+        'notifications' => [
+            'created' => 'Merchant, admin account, and application created successfully',
+        ],
+    ],
+
     'user' => [
         'model_label' => 'User',
         'model_label_plural' => 'Users',
@@ -664,12 +814,13 @@ return [
         ],
         'fields' => [
             'name' => 'Name',
-            'email' => 'Email',
+            'account' => 'Account',
             'password' => 'Password',
             'is_super_admin' => 'Super Admin',
             'is_merchant_manager' => 'Merchant Manager',
             'merchant' => 'Merchant',
             'roles' => 'Roles',
+            'status' => 'Status',
             'created_at' => 'Created At',
         ],
         'help' => [
@@ -677,9 +828,45 @@ return [
             'is_super_admin' => 'Super admins do not belong to any merchant and have platform-wide access',
             'is_merchant_manager' => 'Merchant managers do not belong to any merchant, but can only manage merchants they own and their business data — not other merchants or other admin accounts',
             'roles' => 'The role list updates based on the merchant selected above',
+            'account' => 'No real email required — the system generates an internal login email from this account automatically. If you already have an email address, you can also type the full address here.',
+            'account_taken' => 'This account is already taken',
+            'status' => 'Disabling this account blocks it from logging into the admin panel, even with the correct password',
         ],
         'placeholders' => [
             'platform' => '— Platform —',
+        ],
+        'filters' => [
+            'merchant' => 'Merchant',
+            'account' => 'Login Account',
+        ],
+    ],
+
+    'admin' => [
+        'model_label' => 'Administrator',
+        'model_label_plural' => 'Administrators',
+        'nav_label' => 'Administrators',
+        'sections' => [
+            'account_info' => 'Account Information',
+            'account_type' => 'Account Type',
+        ],
+        'fields' => [
+            'name' => 'Name',
+            'account' => 'Account',
+            'password' => 'Password',
+            'is_super_admin' => 'Super Admin',
+            'type' => 'Type',
+            'status' => 'Status',
+            'created_at' => 'Created At',
+        ],
+        'help' => [
+            'password_edit' => 'Leave blank to keep the current password',
+            'is_super_admin' => 'Checked means Super Admin, with platform-wide access; unchecked means Merchant Manager, who can only manage merchants they own and their business data',
+            'account' => 'No real email required — the system generates an internal login email from this account automatically. If you already have an email address, you can also type the full address here.',
+            'status' => 'Disabling this account blocks it from logging into the admin panel, even with the correct password',
+        ],
+        'types' => [
+            'super_admin' => 'Super Admin',
+            'merchant_manager' => 'Merchant Manager',
         ],
     ],
 
@@ -824,6 +1011,31 @@ return [
                 'pending' => 'Pending Review',
                 'approved' => 'Paid',
                 'rejected' => 'Rejected',
+            ],
+        ],
+        'fund_freeze' => [
+            'model_label' => 'Fund Freeze',
+            'model_label_plural' => 'Fund Freezes',
+            'amount' => 'Freeze Amount',
+            'reason' => 'Freeze Reason',
+            'release_at' => 'Scheduled Release Time',
+            'release_at_help' => 'Leave blank for manual release only; if set, it will auto-release once due',
+            'manual_only' => 'Manual release only',
+            'create' => 'New Freeze',
+            'created' => 'Freeze created; the amount has been added to the frozen balance.',
+            'frozen_by' => 'Frozen By',
+            'frozen_at' => 'Frozen At',
+            'released_by' => 'Released By',
+            'released_at' => 'Released At',
+            'release' => 'Release',
+            'release_heading' => 'Confirm Release',
+            'release_desc' => 'Release $:amount (USD)? The frozen amount will be returned to available balance.',
+            'release_remark' => 'Release Remark',
+            'released' => 'Released; the frozen amount has been returned to available balance.',
+            'already_released' => 'This freeze has already been released; no action needed.',
+            'statuses' => [
+                'frozen' => 'Frozen',
+                'released' => 'Released',
             ],
         ],
         'txn' => [

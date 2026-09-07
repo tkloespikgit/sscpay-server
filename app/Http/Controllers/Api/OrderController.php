@@ -12,6 +12,7 @@ use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\CreateOrderRequest;
 use App\Http\Requests\Api\SyncOrderShippingRequest;
+use App\Jobs\SendPaymentLinkJob;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Services\OrderCreationService;
@@ -37,7 +38,8 @@ class OrderController extends Controller
     {
         $merchant = Merchant::query()->findOrFail($request->attributes->get('merchant_id'));
         // application 实例由 ApiAuthentication 中间件验签通过后注入（见中间件末尾）；
-        // 回跳域名要与它绑定的 website 一致（OrderCreationService 第 4 步校验）。
+        // 回跳域名校验「二选一」：未传 payment_method_key 时与它绑定的 website 比对
+        // （OrderCreationService 第 4 步）；传了则改与该渠道的 payment_methods.domain 比对。
         $application = $request->attributes->get('application');
 
         try {
@@ -62,6 +64,12 @@ class OrderController extends Controller
         } catch (PaymentGatewayException $e) {
             // 远程创建支付订单失败：订单已落库，用同一商户单号重试可自动补创建。
             return $this->errorResponse('GATEWAY_ERROR', $e->getMessage(), 502);
+        }
+
+        // 幂等命中已存在订单时 wasRecentlyCreated 为 false，不重复发送；
+        // 只有这次真正新建、且请求里 send_mail=Y 的订单才推付款链接邮件。
+        if ($order->wasRecentlyCreated && $order->send_mail) {
+            SendPaymentLinkJob::dispatch($order->id);
         }
 
         return response()->json([

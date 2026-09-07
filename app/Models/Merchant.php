@@ -21,6 +21,7 @@ class Merchant extends Model
         'contact_phone',
         'contact_email',
         'status',
+        'timezone',
         'balance',
         'frozen_balance',
         'remark',
@@ -41,6 +42,14 @@ class Merchant extends Model
     public function availableBalance(): string
     {
         return bcsub((string) $this->balance, (string) $this->frozen_balance, 2);
+    }
+
+    /**
+     * 后台时间显示时区，留空回退系统时区（与 PaymentGroup::effectiveTimezone() 同一模式）。
+     */
+    public function effectiveTimezone(): string
+    {
+        return $this->timezone ?: (string) config('app.timezone', 'UTC');
     }
 
     public function balanceTransactions(): HasMany

@@ -34,9 +34,39 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
         'merchant_id',
         'name',
         'email',
+        'email_verified_at',
         'password',
         'is_super_admin',
+        'status',
     ];
+
+    /**
+     * 后台"建用户"的地方统一只填一个"账号"，不要求真实邮箱：账号里没带 @ 就
+     * 自动拼上这个内部域名存进 email 列；账号里已经带 @（比如历史上的真实邮箱
+     * 账号）就原样当邮箱用，不做二次改写——这样老账号（比如现有的超级管理员）
+     * 不会因为这次改造被锁死登不进去，不需要额外写数据迁移。
+     */
+    public const ACCOUNT_EMAIL_DOMAIN = 'test.example.com';
+
+    public static function emailForAccount(string $account): string
+    {
+        return str_contains($account, '@') ? $account : "{$account}@".self::ACCOUNT_EMAIL_DOMAIN;
+    }
+
+    /**
+     * emailForAccount() 的反函数，供编辑页把已存的 email 回填成 account 输入框：
+     * 匹配内部域名后缀就拆出账号部分，否则（历史真实邮箱账号）原样整个显示。
+     */
+    public static function accountFromEmail(?string $email): string
+    {
+        if (! $email) {
+            return '';
+        }
+
+        $suffix = '@'.self::ACCOUNT_EMAIL_DOMAIN;
+
+        return str_ends_with($email, $suffix) ? substr($email, 0, -strlen($suffix)) : $email;
+    }
 
     protected $hidden = [
         'password',
@@ -51,6 +81,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_super_admin' => 'boolean',
+            'status' => 'boolean',
         ];
     }
 
@@ -113,15 +144,30 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
     }
 
     /**
-     * Filament 面板访问权限判断（如需限制哪些用户能进后台可在此扩展，
-     * 例如要求商户 status = true 才能登录）。
+     * Filament 面板访问权限判断。账号自身 status = false（被禁用）一律拒绝登录，
+     * 不区分超级管理员/商户级管理员/普通商户用户——账号状态是比角色更基础的一道闸门。
+     *
+     * 平台侧账号（超级管理员/商户级管理员）和普通商户账号分属两个不同的面板
+     * （分别绑定不同域名，见 AdminPanelProvider/MerchantPanelProvider 的 ->domain()），
+     * 这里按 $panel->getId() 再收窄一层账号类型——即使有人绕过域名限制直接访问
+     * 某个面板的 /admin/login（比如内网直连 IP），账号类型和面板对不上也一样登不进去，
+     * 域名限制和这里的角色限制是两道独立的闸，不是互相替代。
+     *
+     * 普通商户用户还要再叠加一层：所属商户本身 status = false（商户被整体禁用）
+     * 时也不能登录，即便账号自身状态是启用的。
      */
     public function canAccessPanel(Panel $panel): bool
     {
-        if ($this->is_super_admin || $this->isMerchantManager()) {
-            return true;
+        if (! $this->status) {
+            return false;
         }
 
-        return $this->merchant()->exists() && (bool) $this->merchant?->status;
+        $isPlatformAccount = $this->is_super_admin || $this->isMerchantManager();
+
+        if ($panel->getId() === 'admin') {
+            return $isPlatformAccount;
+        }
+
+        return (! $isPlatformAccount) && $this->merchant()->exists() && (bool) $this->merchant?->status;
     }
 }

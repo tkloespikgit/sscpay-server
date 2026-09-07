@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
+use App\Filament\Support\MailCredentialsAction;
 use App\Models\PaymentMethodConfigMap;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
@@ -18,7 +19,7 @@ class EditPaymentMethod extends EditRecord
 
     protected function getHeaderActions(): array
     {
-        return [DeleteAction::make()];
+        return [MailCredentialsAction::make(), DeleteAction::make()];
     }
 
     protected function getFormActions(): array

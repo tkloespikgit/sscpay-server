@@ -103,6 +103,8 @@
 - **超级管理员**（`is_super_admin = true`）：`AppServiceProvider` 里用 `Gate::before()` 短路所有权限判断，不受任何限制——管理全平台商户、全部管理员账号（含商户级管理员）、以及系统配置 / 承运商 / 汇率 / 日志查看器等纯平台级基础设施。只能通过 `php artisan make:super-admin` 创建（**不要用 `make:filament-user`**，它不认识 `is_super_admin` 字段，建出来的账号登录后什么都看不到）。
 - **商户级管理员**（`is_super_admin = false` 且 `merchant_id` 为 `NULL`，`User::isMerchantManager()` 判断）：只能管理**自己名下**（`merchants.owner_id` 指向自己，一对多）的商户及其全部业务数据——订单、支付方式、支付组、应用、提现、余额流水、争议、Telegram 机器人配置，也能在名下商户创建/管理用户账号；看不到其他商户级管理员或超管账号，也碰不到系统配置 / 承运商库 / 汇率等纯平台基础设施。可以自行创建新商户，创建时自动把 `owner_id` 落成自己。持有全平台共享的一个 Spatie 角色（`roles.merchant_id = NULL`，名字固定为"商户级管理员"），权限集为全部商户级权限 + `merchants.manage`（`App\Support\Permissions::platformMerchantManager()`），由 `App\Services\PlatformRoleProvisioningService` 幂等 provision（`PermissionSeeder` 会调用一次）。通过后台"用户管理"里的"设为商户级管理员"开关创建，或 `php artisan make:merchant-manager`。
 
+平台侧账号（超级管理员 + 商户级管理员）与商户自己的普通管理员现在分属两个不同的 Filament 面板（`AdminPanelProvider` / `MerchantPanelProvider`），各自只能在配置好的域名下登录，`User::canAccessPanel()` 按 `$panel->getId()` 再收一道账号类型的闸，见 [11.3 环境变量](#113-环境变量)。
+
 `User::manageableMerchantIds()` 是唯一的判断入口：超管返回 `null`（不限），商户级管理员返回 `ownedMerchants()->pluck('id')`，普通商户用户返回 `[$this->merchant_id]`。`MerchantScope`、`MerchantResource` / `UserResource` 的 `getEloquentQuery()`、以及各 Resource 表单里的商户选择器都统一调这个方法做行级隔离，不需要在每处各写一遍判断。
 
 ### 3.3 资金单一入口
@@ -230,7 +232,7 @@
 
 - **API 鉴权**：`App-ID` + `Timestamp`（±5 分钟）+ `X-Nonce`（5 分钟内不可重复，防重放）三件套 Header，签名放请求体 `sign` 字段。规范化算法：移除 `sign` → 关联数组递归 ksort（数字索引列表保持原序）→ `json_encode(JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)` → 三段式 StringToSign 做 HMAC-SHA256
 - **Webhook 验签**：网关回调走独立的 `X-PGA-Signature`（预共享 `PGA_WEBHOOK_SECRET`），不套用 API 鉴权中间件
-- **回跳域名一致性**：三个回跳地址（`notify_url`/`return_url`/`cancel_url`）的域名必须与本次下单所用应用绑定的网站域名（`applications.website`）一致，不一致直接拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`），应用未绑定域名时传任一非空回跳地址也会被拒；指定 `payment_method_key` 时还额外要求与该渠道绑定站点域名一致（两者均忽略大小写、`www.` 前缀与端口）
+- **回跳域名一致性**：三个回跳地址（`notify_url`/`return_url`/`cancel_url`）**均必填**，域名比对按是否指定渠道「二选一」——未指定 `payment_method_key` 时必须与本次下单所用应用绑定的网站域名（`applications.website`）一致，不一致直接拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`），应用未绑定域名时传任何回跳地址都会被拒；指定 `payment_method_key` 时改为必须与该渠道绑定站点域名（`payment_methods.domain`）一致（`PAYMENT_METHOD_DOMAIN_MISMATCH`），不再叠加应用域名校验（两者均忽略大小写、`www.` 前缀与端口）
 - **后台 MFA**：Filament App Authentication（TOTP），支持恢复码；资金操作再叠加一次性验证码（见 3.3）
 - **富文本过滤**：争议理由等富文本经 `RichTextSanitizer` 做 XSS 过滤；附件转存 OSS
 
@@ -263,6 +265,8 @@
 
 ## 6. 对外接口
 
+> `routes/api.php` 整个文件（含下面 6.1 的商户 API 和 6.3 的支付网关 webhook）限定在 `API_DOMAIN` 域名下才能访问，未配置时不限制域名，见 [11.3 环境变量](#113-环境变量)。
+
 ### 6.1 商户 API（`api.auth` 中间件：App-ID + 签名）
 
 | 方法 & 路径 | 说明 |
@@ -273,7 +277,7 @@
 
 下单请求关键字段：`merchant_order_no`（幂等键）、`platform`（枚举由系统配置 `order.platforms` 维护）、`currency`、`group_key`（支付组，必填）、`payment_method_key`（可选，指定渠道）、金额五项（`subtotal` / `shipping_fee` / `discount` / `tax` / `amount`）、`customer.*`、`shipping_address.*`、`items[]`（含 `product_id` / `product_url`）、三个回跳地址、`sign`。
 
-**指定 `payment_method_key` 的行为变化**：跳过支付组路由与限额风控，直接用该渠道；代价是三个回跳地址全部必填且域名必须与该渠道绑定站点一致。适用于"下单请求就来自该渠道绑定的站点本身"的同站点直连场景。
+**指定 `payment_method_key` 的行为变化**：跳过支付组路由与限额风控，直接用该渠道；此时三个回跳地址（本就必填）的域名校验基准从“应用绑定域名”切换为“该渠道绑定站点域名”，不再校验应用绑定域名。适用于“下单请求就来自该渠道绑定的站点本身”的同站点直连场景。
 
 ### 6.2 错误码
 
@@ -283,7 +287,7 @@
 | 422 | （标准校验错误） | 字段格式问题 |
 | 422 | `AMOUNT_MISMATCH` | `amount` 与 `subtotal + shipping_fee - discount + tax` 差 > 0.01 |
 | 422 | `ITEMS_SUBTOTAL_MISMATCH` | `subtotal` 与明细之和不符 |
-| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | 回跳地址域名与下单应用绑定域名（`applications.website`）不一致 |
+| 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | 未指定渠道时，回跳地址缺失或域名与下单应用绑定域名（`applications.website`）不一致 |
 | 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | 指定的 `payment_method_key` 不存在或已停用 |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | 指定渠道时回跳地址缺失或域名与渠道绑定站点不一致 |
 | 409 | `NO_AVAILABLE_PAYMENT_METHOD` | 支付组内所有渠道被风控拦截，或支付组不存在 / 未启用 |
@@ -297,8 +301,9 @@
 | `GET /payment/{token}` | 无（token 不可猜测 + 状态须 `pending` + 未过期） | 托管收银页 |
 | `POST /payment/{token}/confirm` | 同上 | 确认支付（**当前为骨架实现**，见 [12. 已知限制](#12-已知限制与注意事项)） |
 | `GET /payment/expired` | 无 | 链接失效页 |
-| `GET /admin` | 后台登录 | Filament 管理面板 |
-| `GET /` | 无 | 首页 |
+| `GET /admin` | 后台登录 | 平台面板（超级管理员 + 商户级管理员），限 `FILAMENT_PLATFORM_DOMAIN` 域名 |
+| `GET /merchant` | 后台登录 | 商户面板（商户自己的管理员），限 `FILAMENT_MERCHANT_DOMAIN` 域名 |
+| `GET /` | 无 | 首页（`www`/裸域名，不受上述域名限制影响） |
 | `GET /sync/products/{paymentMethod}` | 无 | 手动触发站点商品同步（同步执行，商品多时耗时很长） |
 | `GET /up` | 无 | 健康检查 |
 
@@ -476,6 +481,12 @@ composer dev
 # 基础
 APP_URL=https://pay.example.com
 APP_LOCALE=zh_CN                    # 后台默认语言，可选 en
+
+# 后台登录 / 对外 API 域名限制（留空则不限制域名，本地开发可不填）
+FILAMENT_PLATFORM_DOMAIN=sma.example.com   # 平台面板：超级管理员 + 商户级管理员登录
+FILAMENT_MERCHANT_DOMAIN=applo.example.com # 商户面板：商户自己的管理员登录
+API_DOMAIN=apios.example.com               # 对外 API：下单/查询/发货、支付网关 webhook
+
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -530,28 +541,50 @@ BAIDU_TRANSLATE_SECRET_KEY=…
 * * * * * cd /path/to/order-system && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
 ```
 
-**Supervisor 队列 Worker**：
+**Supervisor 队列 Worker**（按优先级拆成快/慢两个独立进程池，避免商品同步等长任务占满 worker 导致订单通知/支付链接被卡住）：
+
+| 队列名 | Job | 优先级 |
+| --- | --- | --- |
+| `notifications` | `SendOrderNotificationJob` | 最高，专用 worker，永不被慢任务阻塞 |
+| `payment-links` | `SendPaymentLinkJob` | 次高，专用 worker |
+| `low` | `ProcessLogisticsImportJob` / `SyncOrderTrackingJob` / `SyncSiteProductsJob` | 慢任务，单独 worker，不占用快车道资源 |
+| `default` | `App\Listeners\SendTelegramNotification`（队列化监听器，未单独分类） | 随快车道顺带处理 |
 
 ```ini
-[program:order-system-worker]
+[program:order-system-worker-fast]
 process_name=%(program_name)s_%(process_num)02d
-command=/usr/bin/php8.2 /path/to/order-system/artisan queue:work redis --sleep=3 --tries=1 --timeout=1800
+command=/usr/bin/php8.2 /path/to/order-system/artisan queue:work redis --queue=notifications,payment-links,default --sleep=3 --tries=1 --timeout=120
 autostart=true
 autorestart=true
 user=www-data
-numprocs=4
+numprocs=3
 redirect_stderr=true
-stdout_logfile=/var/log/order-system/worker.log
+stdout_logfile=/var/log/order-system/worker-fast.log
+stopwaitsecs=150
+environment=APP_ENV="production"
+
+[program:order-system-worker-slow]
+process_name=%(program_name)s_%(process_num)02d
+command=/usr/bin/php8.2 /path/to/order-system/artisan queue:work redis --queue=low --sleep=3 --tries=1 --timeout=1800
+autostart=true
+autorestart=true
+user=www-data
+numprocs=1
+redirect_stderr=true
+stdout_logfile=/var/log/order-system/worker-slow.log
 stopwaitsecs=1830
 environment=APP_ENV="production"
 ```
 
-- `--timeout` **必须 ≥ 1800 秒**：WooCommerce 商品同步最坏情况约 18 分钟，默认 60 秒会直接杀死任务；
-- `stopwaitsecs` **必须 ≥ `--timeout`**：否则优雅停机时正在执行的任务会被 SIGKILL 强杀，导致数据不一致；
+- 快车道按 `notifications` → `payment-links` → `default` 的顺序取任务（Laravel `--queue` 列表就是优先级顺序，前一个队列取空了才会看下一个），且**完全独立的进程**，不会被 `low` 队列里的长任务占用；
+- 慢车道（`low`）只负责 WooCommerce 商品同步 / 物流同步 / 物流导入，`numprocs` 按需要的并发量调整，不影响快车道吞吐；
+- `--timeout` **必须 ≥ 1800 秒**（慢车道）：WooCommerce 商品同步最坏情况约 18 分钟，默认 60 秒会直接杀死任务；
+- `stopwaitsecs` **必须 ≥ 对应 `--timeout`**：否则优雅停机时正在执行的任务会被 SIGKILL 强杀，导致数据不一致；
+- ⚠️ **`REDIS_QUEUE_RETRY_AFTER` 必须大于慢车道的 `--timeout`**（例如设为 `1900`），否则 Redis 会在任务还没跑完时就认为它「丢失」并重新派发给别的 worker，导致同一个商品同步任务被并发执行两次。当前 `.env` 未设置此项，使用的是框架默认值 `90` 秒，**上线前务必显式配置**；
 - `numprocs`：每个 Worker 独占一个 MySQL 连接，按服务器规格与连接数上限规划；
 - `environment` 必须显式设置 `APP_ENV="production"`；
 - PHP 用**绝对路径**（`which php8.2` 确认），多版本环境下默认 `php` 可能是旧版本；
-- 零停机发布：`php artisan queue:restart`（写时间戳到 Redis cache，Worker 处理完当前 Job 自行退出后由 Supervisor 拉起；**依赖 Redis 连通性**）；
+- 零停机发布：`php artisan queue:restart`（写时间戳到 Redis cache，Worker 处理完当前 Job 自行退出后由 Supervisor 拉起；**依赖 Redis 连通性**）；两个进程池都要重启，`queue:restart` 会对所有 worker 生效；
 - 配置 `/etc/logrotate.d/order-system` 做日志轮转，轮转后确保新文件属主为 `www-data`。
 
 **部署后检查清单**：`php artisan config:cache && route:cache && view:cache`、`php artisan filament:upgrade`、`storage:link`（如使用 public 磁盘）、确认 `APP_KEY` 与生产环境一致（换了 key 会导致已加密的 `api_key` 无法解密）。

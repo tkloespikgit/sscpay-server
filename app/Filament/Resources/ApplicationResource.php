@@ -9,6 +9,7 @@ use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
@@ -18,7 +19,11 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
+use Filament\Tables\Filters\Filter;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * 应用管理（4.2 节）。app_id / api_key 只读展示（生成逻辑见
@@ -50,10 +55,10 @@ class ApplicationResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        $viewer = auth()->user();
-        $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
+        $viewer                  = auth()->user();
+        $isViewerSuperAdmin      = (bool) $viewer?->is_super_admin;
         $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
-        $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
+        $canPickMerchant         = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
             Section::make(__('admin.application.sections.basic_info'))->schema([
@@ -70,8 +75,8 @@ class ApplicationResource extends Resource
                     ->searchable()
                     // 商户级管理员和超管一样可以在自己的商户范围内自由选择，
                     // 只有绑定单一商户的普通商户用户才锁死成自己那一个。
-                    ->disabled(! $canPickMerchant)
-                    ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
+                    ->disabled(!$canPickMerchant)
+                    ->default(fn() => $canPickMerchant ? null : $viewer->merchant_id)
                     ->dehydrated(),
 
                 TextInput::make('name')->label(__('admin.application.fields.name'))->required()->maxLength(100),
@@ -85,17 +90,19 @@ class ApplicationResource extends Resource
                 // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
                 // 不选就直接建，会导致 merchant_id 外键列为空。见 BelongsToMerchant：
                 // 自动回填 merchant_id 只对非超管用户生效，超管必须在这里显式选。
+                Textarea::make('remark')->label(__('admin.application.fields.remark'))->rows(3),
+
 
             ])->columns(2),
 
             Section::make(__('admin.application.sections.mail_settings'))->schema([
-                Toggle::make('is_order_email_enabled')->label(__('admin.application.fields.is_order_email_enabled'))->default(true),
-                TextInput::make('sender_email')->label(__('admin.application.fields.sender_email'))->email()->maxLength(255)->placeholder('notify@hat.com'),
-                TextInput::make('sender_name')->label(__('admin.application.fields.sender_name'))->maxLength(255)->placeholder('Hat Shop Support'),
-            ])->columns(3),
-
-            Section::make(__('admin.application.sections.remark'))->schema([
-                Textarea::make('remark')->label(__('admin.application.fields.remark'))->rows(3),
+                Toggle::make('is_order_email_enabled')->label(__('admin.application.fields.is_order_email_enabled'))->default(true)->columnSpanFull(),
+                RichEditor::make('payment_link_mail_template')
+                    ->label(__('admin.application.fields.payment_link_mail_template'))
+                    ->helperText(__('admin.application.help.payment_link_mail_template'))
+                    ->placeholder(__('admin.application.placeholders.payment_link_mail_template'))
+                    ->extraInputAttributes(['style' => 'min-height: 20rem;'])
+                    ->columnSpanFull(),
             ]),
         ]);
     }
@@ -105,12 +112,57 @@ class ApplicationResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('name')->label(__('admin.application.fields.name'))->searchable(),
+                // 商户用户自己看到的应用本来就只属于自己商户，这一列只对平台侧账号
+                // （超管、商户级管理员）有意义，见 isPlatformStaff()。
+                TextColumn::make('merchant.name')->label(__('admin.application.fields.merchant'))
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
+                    ->searchable(),
                 TextColumn::make('app_id')->label(__('admin.application.fields.app_id'))->copyable()->searchable(),
-                TextColumn::make('website')->label(__('admin.application.fields.website')),
+                TextColumn::make('website')->label(__('admin.application.fields.website'))->searchable(),
                 IconColumn::make('is_order_email_enabled')->label(__('admin.application.fields.is_order_email_enabled'))->boolean(),
+                TextColumn::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('status')->label(__('admin.application.fields.status'))->boolean(),
                 TextColumn::make('created_at')->label(__('admin.application.fields.created_at'))->dateTime()->sortable(),
             ])
+            ->filters([
+                // Application 自带 MerchantScope，商户用户只会看到自己名下的应用，
+                // 这个筛选只对能看到多个商户的平台侧账号（超管、商户级管理员）有意义。
+                SelectFilter::make('merchant_id')
+                    ->label(__('admin.application.filters.merchant'))
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
+                    ->options(function () {
+                        $user = auth()->user();
+
+                        if ($user->isMerchantManager()) {
+                            return $user->ownedMerchants()->orderBy('name')->pluck('name', 'id');
+                        }
+
+                        return Merchant::query()->orderBy('name')->pluck('name', 'id');
+                    })
+                    ->searchable(),
+
+                Filter::make('app_id')
+                    ->label(__('admin.application.filters.app_id'))
+                    ->schema([
+                        TextInput::make('app_id')->label(__('admin.application.filters.app_id')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['app_id'] ?? null,
+                        fn ($q, $appId) => $q->where('app_id', 'like', '%'.$appId.'%')
+                    )),
+
+                Filter::make('website')
+                    ->label(__('admin.application.filters.website'))
+                    ->schema([
+                        TextInput::make('website')->label(__('admin.application.filters.website')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['website'] ?? null,
+                        fn ($q, $website) => $q->where('website', 'like', '%'.$website.'%')
+                    )),
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(3)
             ->recordActions([
                 ViewAction::make(),
                 EditAction::make(),
@@ -122,10 +174,10 @@ class ApplicationResource extends Resource
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListApplications::route('/'),
+            'index'  => Pages\ListApplications::route('/'),
             'create' => Pages\CreateApplication::route('/create'),
-            'view' => Pages\ViewApplication::route('/{record}'),
-            'edit' => Pages\EditApplication::route('/{record}/edit'),
+            'view'   => Pages\ViewApplication::route('/{record}'),
+            'edit'   => Pages\EditApplication::route('/{record}/edit'),
         ];
     }
 

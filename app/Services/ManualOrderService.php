@@ -25,6 +25,10 @@ class ManualOrderService
      */
     public function createOrder(array $data, Merchant $merchant, Application $application, int $operatorId): Order
     {
+        // 手工建单目前没有对应的"是否发送"表单开关，维持一直以来的既有行为：
+        // 手工建的订单总是要发付款链接邮件。
+        $data['send_mail'] = true;
+
         $order = $this->orderCreationService->createOrder(
             data: $data,
             merchant: $merchant,

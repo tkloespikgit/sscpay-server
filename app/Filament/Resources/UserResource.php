@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\UserResource\Pages;
 use App\Models\Merchant;
 use App\Models\User;
+use App\Rules\UniqueAccountEmail;
 use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -17,8 +18,13 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\FiltersLayout;
+use Filament\Tables\Filters\Filter;
+use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Spatie\Permission\Models\Role;
 
 /**
@@ -79,8 +85,13 @@ class UserResource extends Resource
         return $schema->components([
             Section::make(__('admin.user.sections.account_info'))->schema([
                 TextInput::make('name')->label(__('admin.user.fields.name'))->required()->maxLength(255),
-                TextInput::make('email')->label(__('admin.user.fields.email'))->email()->required()->maxLength(255)
-                    ->unique(ignoreRecord: true),
+                TextInput::make('account')
+                    ->label(__('admin.user.fields.account'))
+                    ->helperText(__('admin.user.help.account'))
+                    ->required()
+                    ->maxLength(190)
+                    ->regex('/^\S+$/')
+                    ->rule(fn (?Model $record) => new UniqueAccountEmail($record?->getKey())),
                 TextInput::make('password')
                     ->label(__('admin.user.fields.password'))
                     ->password()
@@ -89,27 +100,12 @@ class UserResource extends Resource
                     ->dehydrated(fn ($state) => filled($state))
                     ->helperText(fn (string $operation) => $operation === 'edit' ? __('admin.user.help.password_edit') : null)
                     ->minLength(8),
+                Toggle::make('status')
+                    ->label(__('admin.user.fields.status'))
+                    ->helperText(__('admin.user.help.status'))
+                    ->default(true),
             ])->columns(2),
 
-            // 只有真超管能创建/编辑"超级管理员"或"商户级管理员"这两类平台侧账号——
-            // 商户级管理员自己不能再往下发一级商户级管理员。
-            Section::make(__('admin.user.sections.platform_permissions'))
-                ->visible($isViewerSuperAdmin)
-                ->schema([
-                    Toggle::make('is_super_admin')
-                        ->label(__('admin.user.fields.is_super_admin'))
-                        ->helperText(__('admin.user.help.is_super_admin'))
-                        ->live()
-                        ->default(false),
-                    // 虚拟字段，不对应真实列：merchant_id 为 NULL 且 is_super_admin 为 false
-                    // 就是"商户级管理员"，具体落库逻辑见 CreateUser/EditUser 页面。
-                    Toggle::make('is_merchant_manager')
-                        ->label(__('admin.user.fields.is_merchant_manager'))
-                        ->helperText(__('admin.user.help.is_merchant_manager'))
-                        ->live()
-                        ->visible(fn (Get $get) => ! $get('is_super_admin'))
-                        ->default(false),
-                ]),
 
             Section::make(__('admin.user.sections.merchant_and_roles'))
                 ->visible(fn (Get $get) => ! $get('is_super_admin') && ! $get('is_merchant_manager'))
@@ -155,12 +151,45 @@ class UserResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('name')->label(__('admin.user.fields.name'))->searchable(),
-                TextColumn::make('email')->label(__('admin.user.fields.email'))->searchable(),
+                TextColumn::make('email')
+                    ->label(__('admin.user.fields.account'))
+                    ->formatStateUsing(fn (string $state): string => User::accountFromEmail($state))
+                    ->searchable(),
                 TextColumn::make('merchant.name')->label(__('admin.user.fields.merchant'))->placeholder(__('admin.user.placeholders.platform')),
                 TextColumn::make('roles.name')->label(__('admin.user.fields.roles'))->badge(),
-                IconColumn::make('is_super_admin')->label(__('admin.user.fields.is_super_admin'))->boolean(),
+                IconColumn::make('status')->label(__('admin.user.fields.status'))->boolean(),
                 TextColumn::make('created_at')->label(__('admin.user.fields.created_at'))->dateTime()->sortable(),
             ])
+            ->filters([
+                // 归属商户筛选：超管看全平台商户，商户级管理员只看自己名下的商户
+                // （列表本身已经被 getEloquentQuery() 限定，这里只是收窄选项范围）。
+                SelectFilter::make('merchant_id')
+                    ->label(__('admin.user.filters.merchant'))
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
+                    ->options(function () {
+                        $user = auth()->user();
+
+                        if ($user->isMerchantManager()) {
+                            return $user->ownedMerchants()->orderBy('name')->pluck('name', 'id');
+                        }
+
+                        return Merchant::query()->orderBy('name')->pluck('name', 'id');
+                    })
+                    ->searchable(),
+
+                Filter::make('account')
+                    ->label(__('admin.user.filters.account'))
+                    ->schema([
+                        TextInput::make('account')->label(__('admin.user.filters.account')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['account'] ?? null,
+                        fn ($q, $account) => $q->where('email', 'like', '%'.$account.'%')
+                    )),
+
+                TernaryFilter::make('status')->label(__('admin.user.fields.status')),
+            ], layout: FiltersLayout::AboveContent)
+            ->filtersFormColumns(3)
             ->recordActions([
                 EditAction::make(),
                 DeleteAction::make(),
@@ -171,14 +200,15 @@ class UserResource extends Resource
     /**
      * User 模型没有走 BelongsToMerchant 那套全局 Scope（它是认证模型，
      * 处理方式特殊），这里手动补一层：
-     *   - 商户级管理员：只能看到自己名下商户（ownedMerchants()）下的用户；
-     *     这个 whereIn 天然排除了 merchant_id 为 NULL 的账号（其他商户级管理员/超管），
-     *     符合"商户级管理员管不了其他管理员账号"的要求。
+     *   - 这个页面是"商户配置"下的用户管理，只展示挂靠具体商户的用户，
+     *     不展示平台侧账号（超级管理员 / 商户级管理员，merchant_id 均为 NULL）——
+     *     那些账号不属于任何商户，不应该出现在这个列表里。
+     *   - 商户级管理员：只能看到自己名下商户（ownedMerchants()）下的用户。
      *   - 普通商户用户：维持原逻辑，只看自己商户下的用户。
      */
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery();
+        $query = parent::getEloquentQuery()->whereNotNull('merchant_id');
         $user = auth()->user();
 
         if ($user?->is_super_admin) {

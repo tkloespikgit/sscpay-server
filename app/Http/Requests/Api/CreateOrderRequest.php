@@ -73,12 +73,22 @@ class CreateOrderRequest extends FormRequest
             'items.*.unit_price' => ['required', 'numeric', 'min:0'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
 
-            // 指定支付渠道时三个回跳地址全部必填（域名一致性在 OrderCreationService 里校验）：
-            // 跳过风控的对价就是这笔交易必须完整落在该渠道绑定的站点上，缺任何一个都拒单。
-            // required_with 是隐式规则，即使同时标了 nullable 也照样执行。
-            'notify_url' => ['required_with:payment_method_key', 'nullable', 'url', 'max:500'],
-            'return_url' => ['required_with:payment_method_key', 'nullable', 'url', 'max:500'],
-            'cancel_url' => ['required_with:payment_method_key', 'nullable', 'url', 'max:500'],
+            // 三个回跳地址无条件必填（无论是否指定 payment_method_key），域名一致性
+            // 在 OrderCreationService 里校验：未指定渠道时比对 applications.website，
+            // 指定渠道时比对 payment_methods.domain。缺任何一个都在此拦成 422 校验错误。
+            'notify_url' => ['required', 'url', 'max:500'],
+            'return_url' => ['required', 'url', 'max:500'],
+            'cancel_url' => ['required', 'url', 'max:500'],
+
+            // 是否给客户发送付款链接邮件：Y 发送，N（或不传）不发送。
+            'send_mail' => ['nullable', 'string', Rule::in(['Y', 'N'])],
+
+            // 广告追踪参数：通用透传，按广告平台分 key（如 meta/google/tiktok），
+            // 系统不解析里面的具体字段，原样落库、原样转发给对应平台的转化 API
+            // （见 OrderPaymentStatusService -> AdConversionService）。只要传了某个
+            // 平台的参数、且该平台在后台配置了转化 API 凭证，就会触发转化通知，
+            // 与支付方式是否允许返回源站无关。
+            'ad_params' => ['nullable', 'array'],
         ];
     }
 

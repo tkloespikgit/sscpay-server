@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
+use App\Support\MailerCredentials;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -57,6 +58,8 @@ class Order extends Model
         'platform',
         'payment_link_token',
         'payment_link_sent_at',
+        'send_mail',
+        'payment_link_mail_failed_reason',
         'currency',
         'subtotal',
         'shipping_fee',
@@ -104,6 +107,7 @@ class Order extends Model
         'status',
         'paid_at',
         'remark',
+        'ad_params',
     ];
 
     protected function casts(): array
@@ -111,6 +115,7 @@ class Order extends Model
         return [
             'paid_at' => 'datetime',
             'payment_link_sent_at' => 'datetime',
+            'send_mail' => 'boolean',
             'wp_order_id' => 'integer',
             'subtotal' => 'decimal:2',
             'shipping_fee' => 'decimal:2',
@@ -132,6 +137,7 @@ class Order extends Model
             'fee_percent_amount' => 'decimal:2',
             'fee_fixed_amount' => 'decimal:2',
             'settlement_amount' => 'decimal:2',
+            'ad_params' => 'array',
         ];
     }
 
@@ -215,6 +221,11 @@ class Order extends Model
         return $this->hasMany(OrderNotificationAttempt::class);
     }
 
+    public function adConversionAttempts(): HasMany
+    {
+        return $this->hasMany(AdConversionAttempt::class);
+    }
+
     public function refunds(): HasMany
     {
         return $this->hasMany(OrderRefund::class);
@@ -249,6 +260,51 @@ class Order extends Model
             ->where('merchant_id', $this->merchant_id)
             ->where('method_code', $this->payment_method)
             ->first();
+    }
+
+    /**
+     * 解析这笔订单实际要用来发付款链接邮件的"发信身份"：发件人（sender_email/
+     * sender_name）+ 自有 ESP 驱动/凭证（mail_driver/mail_credentials），
+     * 优先级锁定的支付方式 > 所属 Application，两处配置互不混用、不做字段级
+     * 拼接——只要选中的那一级凑不满足"能发信"的最低要求（sender_email +
+     * 完整的 ESP 凭证），就换下一级；两级都不满足则返回 null，调用方
+     * （SendPaymentLinkJob）据此判定发送失败，不允许回退平台自己的发信账号。
+     *
+     * @return array{sender_email: string, sender_name: ?string, mail_driver: string, mail_credentials: array<string, mixed>}|null
+     */
+    public function resolveMailSender(): ?array
+    {
+        foreach ([$this->paymentMethodConfig(), $this->application] as $source) {
+            if (! $source || blank($source->sender_email)) {
+                continue;
+            }
+
+            if (! MailerCredentials::overridesFor($source->mail_driver, $source->mail_credentials)) {
+                continue;
+            }
+
+            return [
+                'sender_email' => $source->sender_email,
+                'sender_name' => $source->sender_name,
+                'mail_driver' => $source->mail_driver,
+                'mail_credentials' => $source->mail_credentials,
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * 解析付款链接邮件正文模板：优先级锁定的支付方式 > 所属 Application，
+     * 与 resolveMailSender() 的优先顺序一致，但两者互相独立判定——即便这一级
+     * 没有自己的 ESP 凭证（要靠另一级的账号发信），也可以单独有自己的文案，
+     * 内容和发信基础设施不绑定。两处都没配则返回 null，调用方回退系统默认模板。
+     */
+    public function resolveMailTemplate(): ?string
+    {
+        return $this->paymentMethodConfig()?->payment_link_mail_template
+            ?: $this->application?->payment_link_mail_template
+            ?: null;
     }
 
     /**
@@ -317,17 +373,58 @@ class Order extends Model
     }
 
     /**
-     * 系统订单号：ORD + yyyymmdd + 随机段。唯一性最终由数据库唯一索引
-     * （order_no_uniq 生成列）兜底，配合 createWithGeneratedIdentifiers()
-     * 的冲突重试使用。
+     * 系统订单号：默认 ORD + yyyymmdd + 随机段；若传入的支付方式配置了
+     * order_no_format（numeric/alnum），改用其自定义前缀 + 随机段，
+     * 二者拼接后的总长度即 order_no_length（15-30，由 Filament 表单校验）。
+     * 唯一性最终由数据库唯一索引（order_no_uniq 生成列）兜底，配合
+     * createWithGeneratedIdentifiers() 的冲突重试使用。
      *
-     * 注意：这不是真正的 Snowflake ID，只是格式上向其对齐（有序前缀 + 随机段）。
+     * 注意：默认格式不是真正的 Snowflake ID，只是格式上向其对齐（有序前缀 + 随机段）。
      * 如果未来需要严格递增、可反解时间戳的 ID，建议换成
      * godruoyi/php-snowflake 之类的专业实现。
      */
-    public static function generateOrderNo(): string
+    public static function generateOrderNo(?PaymentMethod $paymentMethod = null): string
     {
+        if ($paymentMethod && filled($paymentMethod->order_no_format) && $paymentMethod->order_no_length) {
+            $prefix = (string) ($paymentMethod->order_no_prefix ?? '');
+            // 总长度需含前缀；表单已保证前缀（≤10）+ 最短总长度（15）不会让随机段为负,
+            // 这里的 max(1, ...) 只是防御性兜底，避免绕过表单直接写库时随机段变成 0。
+            $randomLength = max(1, (int) $paymentMethod->order_no_length - strlen($prefix));
+
+            return $prefix.($paymentMethod->order_no_format === 'alnum'
+                ? static::randomAlnumOrderSegment($randomLength)
+                : static::randomDigitsOrderSegment($randomLength));
+        }
+
         return 'ORD'.now()->format('Ymd').now()->format('His').random_int(1000, 9999);
+    }
+
+    /**
+     * 纯数字随机段，逐位生成，不含前导零之外的其他限制。
+     */
+    protected static function randomDigitsOrderSegment(int $length): string
+    {
+        $segment = '';
+        for ($i = 0; $i < $length; $i++) {
+            $segment .= random_int(0, 9);
+        }
+
+        return $segment;
+    }
+
+    /**
+     * 大写字母+数字混合随机段：每位从 A-Z0-9 中独立随机取，
+     * 不强制同时出现字母和数字。
+     */
+    protected static function randomAlnumOrderSegment(int $length): string
+    {
+        $pool = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        $segment = '';
+        for ($i = 0; $i < $length; $i++) {
+            $segment .= $pool[random_int(0, 35)];
+        }
+
+        return $segment;
     }
 
     /**
@@ -342,12 +439,15 @@ class Order extends Model
      * 推荐的创建入口：自动生成 order_no / payment_link_token，
      * 若命中唯一索引冲突（极小概率的同毫秒碰撞）自动重新生成并重试。
      */
-    public static function createWithGeneratedIdentifiers(array $attributes, int $maxAttempts = 3): self
-    {
+    public static function createWithGeneratedIdentifiers(
+        array $attributes,
+        int $maxAttempts = 3,
+        ?PaymentMethod $paymentMethod = null
+    ): self {
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 return static::create(array_merge($attributes, [
-                    'order_no' => static::generateOrderNo(),
+                    'order_no' => static::generateOrderNo($paymentMethod),
                     'payment_link_token' => static::generatePaymentLinkToken(),
                 ]));
             } catch (QueryException $e) {

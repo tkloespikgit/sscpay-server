@@ -26,6 +26,10 @@ class Application extends Model
         'is_order_email_enabled',
         'sender_email',
         'sender_name',
+        'payment_link_mail_template',
+        'mail_driver',
+        'mail_credentials',
+        'ad_platform_credentials',
         'status',
     ];
 
@@ -39,6 +43,14 @@ class Application extends Model
             // 注意：ApiAuthentication 中间件里直接访问 $application->api_key 拿到的
             // 就已经是明文，不要再对它调用 decrypt()。
             'api_key' => 'encrypted',
+            // 商户自带 ESP 凭证：不同驱动的凭证形状不一样（postmark 只要一个 token，
+            // ses 要 key/secret/region 三项），统一存成数组，业务代码/表单里直接当
+            // PHP 数组读写（如 mail_credentials['token']、mail_credentials['key']），
+            // encrypted:array 会自动做 json 编解码 + 加解密，不需要手写。
+            'mail_credentials' => 'encrypted:array',
+            // 广告平台（meta/google/tiktok）转化 API 凭证，形状同 mail_credentials：
+            // 按平台分 key 存一个数组，加解密由 cast 自动完成。
+            'ad_platform_credentials' => 'encrypted:array',
         ];
     }
 
@@ -76,6 +88,17 @@ class Application extends Model
             $data,
             $credentials
         ));
+    }
+
+    /**
+     * 某个广告平台（meta/google/tiktok）配置好的凭证，未配置该平台或凭证为空
+     * 数组时返回 null，调用方（AdConversionService）据此判定跳过该平台的转化通知。
+     */
+    public function adCredentialsFor(string $platform): ?array
+    {
+        $credentials = (array) ($this->ad_platform_credentials[$platform] ?? []);
+
+        return $credentials === [] ? null : $credentials;
     }
 
     /**

@@ -6,12 +6,14 @@ use App\Events\OrderStatusChanged;
 use App\Exceptions\BalanceOperationException;
 use App\Filament\Resources\OrderDisputeEventResource;
 use App\Filament\Resources\OrderResource;
+use App\Filament\Resources\OrderResource\RelationManagers\AdConversionAttemptsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderDisputeEventsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderEventsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderMatchedItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttemptsRelationManager;
 use App\Filament\Support\FinanceSecurity;
+use App\Jobs\SendPaymentLinkJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
 use App\Models\Order;
@@ -29,6 +31,7 @@ use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Infolists\Components\IconEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
@@ -61,6 +64,14 @@ class ViewOrder extends ViewRecord
                     // （见 OrderPaymentStatusService::applyStatus()），历史订单为空。
                     TextEntry::make('paid_at')->label(__('admin.order.fields.paid_at'))->dateTime()
                         ->placeholder(__('admin.order.placeholders.none')),
+                    IconEntry::make('send_mail')->label(__('admin.order.fields.send_mail'))->boolean(),
+                    TextEntry::make('payment_link_sent_at')->label(__('admin.order.fields.payment_link_sent_at'))->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('payment_link_mail_failed_reason')
+                        ->label(__('admin.order.fields.payment_link_mail_failed_reason'))
+                        ->visible(fn ($record) => filled($record->payment_link_mail_failed_reason))
+                        ->badge()
+                        ->color('danger'),
                 ]),
             ]),
 
@@ -202,6 +213,7 @@ class ViewOrder extends ViewRecord
         return [
             OrderResource::queryStatusAction(),
             $this->syncOrderEventsAction(),
+            $this->resendPaymentLinkMailAction(),
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
@@ -340,6 +352,32 @@ class ViewOrder extends ViewRecord
                 // 成功后硬跳转刷新详情页：事件时间线是 RelationManager（独立的
                 // Livewire 子组件），只刷新当前页面组件不会重新拉取子组件数据。
                 $this->redirect(static::getUrl(['record' => $this->record]));
+            });
+    }
+
+    /**
+     * 立即重发付款链接邮件：只有下单时选择了发送（$record->send_mail 为真，
+     * 见 OrderController::store()/ManualOrderService）的订单才展示这个入口。
+     * 只读操作（不改订单状态、不涉及金额），复用 SendPaymentLinkJob，权限对齐
+     * "能看订单详情就能重发"，不需要 2FA。
+     */
+    private function resendPaymentLinkMailAction(): Action
+    {
+        return Action::make('resendPaymentLinkMail')
+            ->label(__('admin.order.actions.resend_payment_link_mail'))
+            ->icon('heroicon-o-envelope')
+            ->color('gray')
+            ->requiresConfirmation()
+            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDERS_VIEW)
+                && $record->send_mail
+                && filled($record->customer_email))
+            ->action(function (Order $record) {
+                SendPaymentLinkJob::dispatch($record->id);
+
+                Notification::make()
+                    ->title(__('admin.order.actions.resend_payment_link_mail_queued'))
+                    ->success()
+                    ->send();
             });
     }
 
@@ -519,6 +557,7 @@ class ViewOrder extends ViewRecord
             OrderEventsRelationManager::class,
             OrderDisputeEventsRelationManager::class,
             OrderNotificationAttemptsRelationManager::class,
+            AdConversionAttemptsRelationManager::class,
         ];
     }
 

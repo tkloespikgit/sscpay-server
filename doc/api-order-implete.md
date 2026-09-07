@@ -7,13 +7,14 @@
 1. [对接流程总览](#对接流程总览)
 2. [鉴权与签名（三个接口通用）](#鉴权与签名三个接口通用)
 3. [POST /order/create（创建订单）](#post-ordercreate创建订单)
-4. [POST /order/ship（同步物流信息）](#post-ordership同步物流信息)
-5. [POST /order/query（查询订单）](#post-orderquery查询订单)
-6. [Webhook：交易结果通知](#webhook交易结果通知)
-7. [订单状态枚举](#订单状态枚举)
-8. [错误码汇总](#错误码汇总)
-9. [对接前需要准备的信息](#对接前需要准备的信息)
-10. [常见对接问题](#常见对接问题)
+4. [广告转化通知（可选）](#广告转化通知可选)
+5. [POST /order/ship（同步物流信息）](#post-ordership同步物流信息)
+6. [POST /order/query（查询订单）](#post-orderquery查询订单)
+7. [Webhook：交易结果通知](#webhook交易结果通知)
+8. [订单状态枚举](#订单状态枚举)
+9. [错误码汇总](#错误码汇总)
+10. [对接前需要准备的信息](#对接前需要准备的信息)
+11. [常见对接问题](#常见对接问题)
 
 ---
 
@@ -177,6 +178,11 @@ POST {BASE_URL}/api/order/create
   "notify_url": "https://merchant.example.com/api/payment/callback",
   "return_url": "https://merchant.example.com/order/success",
   "cancel_url": "https://merchant.example.com/order/cancel",
+  "ad_params": {
+    "meta": { "fbc": "fb.1.1700000000000.abc123", "fbp": "fb.1.1700000000000.xyz789" },
+    "google": { "gclid": "Cj0KCQiA..." },
+    "tiktok": { "ttclid": "ttclid.abc123" }
+  },
   "sign": "…"
 }
 ```
@@ -210,9 +216,11 @@ POST {BASE_URL}/api/order/create
 | `items[].product_description` | string | 否 | 商品描述                                                                                       |
 | `items[].unit_price` | string(数字) | ✅ | 单价                                                                                         |
 | `items[].quantity` | integer ≥1 | ✅ | 数量                                                                                         |
-| `notify_url` | url ≤500 | 条件必填 | 交易结果异步回调地址，域名须与下单所用应用绑定的网站域名一致；传了 `payment_method_key` 时必填且域名须与该渠道绑定站点一致                        |
-| `return_url` | url ≤500 | 条件必填 | 支付成功跳转地址，规则同上                                                                              |
-| `cancel_url` | url ≤500 | 条件必填 | 取消/失败跳转地址，规则同上                                                                             |
+| `notify_url` | url ≤500 | ✅ | 交易结果异步回调地址，**必填**。域名比对二选一：未传 `payment_method_key` 时须与下单所用应用绑定的网站域名一致；传了则须与该渠道绑定站点域名一致                        |
+| `return_url` | url ≤500 | ✅ | 支付成功跳转地址，**必填**，域名规则同上                                                                              |
+| `cancel_url` | url ≤500 | ✅ | 取消/失败跳转地址，**必填**，域名规则同上                                                                             |
+| `send_mail` | string，`Y`/`N` | 否 | 是否给客户发送付款链接邮件，`Y` 发送、`N` 或不传不发送。邮件正文里的付款链接固定用本次下单返回的 `pay_url`                                          |
+| `ad_params` | object | 否 | 广告追踪参数，按广告平台分 key 透传（目前支持 `meta`/`google`/`tiktok`），用于[广告转化通知](#广告转化通知可选)，系统原样落库、不校验里面的具体字段 |
 | `sign` | string | ✅ | 见[签名算法](#鉴权与签名三个接口通用)                                                                      |
 
 ### 成功响应（HTTP 200）
@@ -248,6 +256,61 @@ POST {BASE_URL}/api/order/create
 ### 幂等性
 
 `merchant_order_no` 是幂等键。同一 `merchant_order_no` 重复提交：若订单已存在，直接原样返回该订单信息，不重复创建、不重新计算汇率、不重新走风控。**超时重试时应复用同一个 `merchant_order_no`**（但要重新生成 `Timestamp`/`X-Nonce`/`sign`）。
+
+---
+
+## 广告转化通知（可选）
+
+下单时如果传了 `ad_params`，系统会在订单**首次变为已支付**时，由服务端直接调用对应广告平台的转化 API（Meta Conversions API / Google Ads Click Conversion / TikTok Events API），告知广告方"这笔订单已支付成功"。
+
+**触发条件只有两个，同时满足即直接同步，和支付方式是否配置"允许返回源站"（`allow_returned_source`）没有关系**：
+
+1. 下单时 `ad_params` 传了某个广告平台的追踪参数；
+2. 该笔订单所属的应用（`App-ID`）在系统后台"应用管理"里配置了该平台的转化 API 凭证。
+
+两者缺一都不会触发——某个平台没配凭证时，即使传了该平台的 `ad_params` 也不会上报（也不会报错，直接静默跳过）。
+
+### `ad_params` 结构
+
+按广告平台分 key，value 是该平台需要的追踪参数：
+
+```json
+{
+  "ad_params": {
+    "meta": { "fbc": "fb.1.1700000000000.abc123", "fbp": "fb.1.1700000000000.xyz789" },
+    "google": { "gclid": "Cj0KCQiA..." },
+    "tiktok": { "ttclid": "ttclid.abc123" }
+  }
+}
+```
+
+系统只会按需读取以下字段，其余字段会原样存下来但不会使用：
+
+| 平台 | 字段 | 说明 |
+|---|---|---|
+| `meta` | `fbc` / `fbp` | Facebook Click ID / Browser ID，取自客户浏览器的 `_fbc`/`_fbp` cookie |
+| `google` | `gclid` | Google Ads 点击 ID，**缺失时无法归因**，系统会跳过该笔订单的 Google 转化上报 |
+| `tiktok` | `ttclid` | TikTok 点击 ID |
+
+即使追踪 ID 缺失，Meta/TikTok 仍会用订单的 `customer.email`/`customer.phone`（哈希后）作为兜底归因信号一并上报；Google 强依赖 `gclid`，缺失时直接不生成本次上报。
+
+### 凭证配置（与下单接口无关，由商户在后台单独维护）
+
+三个平台各自的转化 API 凭证需要商户在后台"应用管理"对应应用的编辑页里配置：
+
+| 平台 | 需要的凭证 |
+|---|---|
+| Meta | Pixel ID、Access Token（可选：Test Event Code、事件名称，事件名称留空默认 `Purchase`） |
+| Google Ads | Customer ID、Conversion Action ID、Developer Token、OAuth Client ID/Secret/Refresh Token（可选：Login Customer ID，仅 MCC 经理账号场景需要）。Google 没有单独的"事件名称"配置——`Conversion Action ID` 本身就是在 Google Ads 后台建号时定义好的具体转化事件，已经等价于事件类型 |
+| TikTok | Pixel Code、Access Token（可选：事件名称，留空默认 `CompletePayment`） |
+
+Meta/TikTok 的"事件名称"只有在商户前端页面**同时**用像素上报了同一笔订单的转化事件、且需要和这次服务端上报按事件名去重匹配时才需要修改；多数场景保持默认值（`Purchase`/`CompletePayment`）即可。
+
+### 重试与可靠性
+
+- 上报失败会自动重试，最多 **5 次**，间隔 **30 秒 → 5 分钟 → 30 分钟 → 1 小时**，5 次仍失败后放弃，不再重试。
+- 广告转化通知与订单本身的支付状态完全独立：上报失败**不会**影响订单状态、不会影响 [Webhook 交易结果通知](#webhook交易结果通知)的投递，两者互不阻塞。
+- 目前没有对接方可查询的接口——如果需要核对某笔订单的广告转化上报结果，请联系系统管理员在后台"订单详情 → 广告转化通知记录"里查看。
 
 ---
 
@@ -513,7 +576,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | `App-ID` / `API Key` | 系统后台"应用管理"创建应用后自动生成，`App-ID` 明文可见，`API Key` 只在创建时展示一次，请通过安全渠道（不要用邮件明文）交给对接方 |
 | `group_key` | 系统后台"支付组"配置的支付组标识，需要提前建好并告知对接方 |
 | `payment_method_key`（可选） | 仅当对接方需要指定固定渠道收款时才用，取值为后台"支付方式"的 `method_code` |
-| 回跳域名一致性 | 对接方下单时传的 `notify_url`/`return_url`/`cancel_url` 域名必须与本次调用所用应用（`App-ID`）在后台绑定的网站域名一致，否则下单直接被拒（`CALLBACK_DOMAIN_NOT_ALLOWED`）。域名比对会忽略大小写、`www.` 前缀与端口号，并兼容裸域名与带路径写法；应用未绑定网站域名时，只要传了任一非空回跳地址就会被拒 |
+| 回跳域名一致性 | 对接方下单时传的 `notify_url`/`return_url`/`cancel_url` **三个都必填**，域名比对按是否指定渠道二选一：未指定 `payment_method_key` 时必须与本次调用所用应用（`App-ID`）在后台绑定的网站域名一致，否则拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`）；指定 `payment_method_key` 时改为必须与该渠道绑定的站点域名一致（`PAYMENT_METHOD_DOMAIN_MISMATCH`），不再校验应用绑定域名。域名比对会忽略大小写、`www.` 前缀与端口号，并兼容裸域名与带路径写法；应用未绑定网站域名且未指定渠道时，回跳地址会被判为不一致而拒单 |
 | 支持的 `platform` / `currency` 取值 | 由系统配置动态维护，请在后台确认当前实际配置的枚举值后告知对接方，不要凭文档示例假设 |
 
 ---
@@ -523,7 +586,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 1. **金额字段一律传字符串**（如 `"190.00"` 而不是 `190.00`），避免序列化差异导致签名或金额校验出错。
 2. **签名规范化算法必须和服务端逐字节一致**：出站请求（调用 create/query/ship）和系统推给你的 webhook 验签是**同一套算法**（递归排序 + 三段 StringToSign），你只需要实现一次就能两边复用，但规范化规则（关联数组递归 ksort、列表保持原序、`JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES`）本身仍然是最容易出错的地方。
 3. **服务器时钟需要与标准时间同步**：调用我们接口时 `Timestamp` 误差超过 5 分钟会被直接拒绝（401），排查签名问题时先确认这一点；但反过来验证我们推给你的 webhook 时，**不建议**对 `Timestamp` 做同样的过期校验（见第 6 节说明，重试会导致 `Timestamp` 是之后现算的）。
-4. **`notify_url`/`return_url`/`cancel_url` 的域名必须与下单所用应用绑定的网站域名一致**（忽略大小写、`www.` 前缀与端口号），不一致会被拒单（`CALLBACK_DOMAIN_NOT_ALLOWED`）。
+4. **`notify_url`/`return_url`/`cancel_url` 三个都必填**，域名比对二选一：未指定 `payment_method_key` 时须与下单所用应用绑定的网站域名一致（不一致拒单 `CALLBACK_DOMAIN_NOT_ALLOWED`）；指定渠道时须与该渠道绑定站点域名一致（`PAYMENT_METHOD_DOMAIN_MISMATCH`）。比对忽略大小写、`www.` 前缀与端口号。
 5. **`/order/create` 和 `/order/ship` 的幂等语义不同**：前者"重复提交=原样返回，不覆盖"；后者"重复提交=直接覆盖旧物流记录"。
 6. **只有 `paid` 状态会触发 webhook**，`shipped`/`refunded`/`cancelled` 等状态变化都不会主动通知，需要轮询 `/order/query` 兜底。
 7. Webhook 接收端处理要快（系统侧超时判定是 10 秒），耗时逻辑放异步队列处理，并保证按 `order_no` 幂等（因为失败会自动重试最多 5 次，且每次重试的签名 Header 都不同）。

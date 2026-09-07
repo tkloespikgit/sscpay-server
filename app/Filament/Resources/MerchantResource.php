@@ -71,7 +71,7 @@ class MerchantResource extends Resource
                 TextInput::make('contact_person')->label(__('admin.merchant.fields.contact_person'))->required()->maxLength(100),
                 TextInput::make('contact_phone')->label(__('admin.merchant.fields.contact_phone'))->required()->maxLength(30),
                 TextInput::make('contact_email')->label(__('admin.merchant.fields.contact_email'))->email()->required()->maxLength(255),
-                Toggle::make('status')->label(__('admin.merchant.fields.status'))->default(true),
+                Toggle::make('status')->label(__('admin.merchant.fields.status'))->default(true)->inline(false),
                 // 商户归属哪个商户级管理员，只有真超管能看/能改（用来重新指派归属）；
                 // 商户级管理员自己建的商户，归属在 CreateMerchant 页面里自动落成自己，不需要也不允许在这里选。
                 Select::make('owner_id')
@@ -82,6 +82,15 @@ class MerchantResource extends Resource
                     ->searchable()
                     ->placeholder(__('admin.merchant.placeholders.owner_platform')),
             ])->columns(2),
+
+            Section::make(__('admin.merchant.sections.preferences'))->schema([
+                Select::make('timezone')
+                    ->label(__('admin.merchant.fields.timezone'))
+                    ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
+                    ->searchable()
+                    ->default(fn () => (string) config('app.timezone', 'UTC'))
+                    ->helperText(__('admin.merchant.help.timezone')),
+            ]),
 
             Section::make(__('admin.merchant.sections.remark'))->schema([
                 Textarea::make('remark')->label(__('admin.merchant.fields.remark'))->rows(3),

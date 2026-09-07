@@ -52,14 +52,14 @@ use Illuminate\Support\Facades\Log;
 class OrderPaymentStatusService
 {
     private const STATUS_MAP = [
-        'pending' => 'pending',
-        'paid' => 'paid',
-        'failed' => 'failed',
+        'pending'   => 'pending',
+        'paid'      => 'paid',
+        'failed'    => 'failed',
         'cancelled' => 'cancelled',
-        'expired' => 'expired',
-        'refunded' => 'refunded',
+        'expired'   => 'expired',
+        'refunded'  => 'refunded',
         'disputing' => 'disputing',
-        'confused' => 'chargeback',
+        'confused'  => 'chargeback',
     ];
 
     /**
@@ -83,17 +83,19 @@ class OrderPaymentStatusService
         private readonly BalanceService $balanceService,
         private readonly OrderNotificationService $notificationService,
         private readonly PaymentGatewayService $paymentGateway,
-    ) {}
+        private readonly AdConversionService $adConversionService,
+    ) {
+    }
 
     /**
      * @param  array  $payload  已通过签名验证的 payment_status 回调 body（字段见文档第二节）
      */
     public function handle(array $payload): void
     {
-        $sOrderId = (string) ($payload['s_order_id'] ?? '');
+        $sOrderId     = (string) ($payload['s_order_id'] ?? '');
         $pluginStatus = (string) ($payload['status'] ?? '');
 
-        if ($sOrderId === '' || ! isset(self::STATUS_MAP[$pluginStatus])) {
+        if ($sOrderId === '' || !isset(self::STATUS_MAP[$pluginStatus])) {
             Log::warning('payment_status webhook: 缺少 s_order_id 或未知 status，忽略', $payload);
 
             return;
@@ -101,7 +103,7 @@ class OrderPaymentStatusService
 
         $order = Order::query()->withoutGlobalScopes()->where('order_no', $sOrderId)->first();
 
-        if (! $order) {
+        if (!$order) {
             Log::warning('payment_status webhook: 找不到对应订单，忽略', ['s_order_id' => $sOrderId]);
 
             return;
@@ -123,7 +125,7 @@ class OrderPaymentStatusService
     {
         $method = $order->paymentMethodConfig();
 
-        if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
+        if (!$method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
             throw new \RuntimeException('该订单锁定的支付方式未配置查询所需的凭证（域名/WooCommerce REST API 密钥）。');
         }
 
@@ -138,30 +140,30 @@ class OrderPaymentStatusService
         $pluginStatus = (string) ($data['status'] ?? '');
         $beforeStatus = $order->status;
 
-        if (! isset(self::STATUS_MAP[$pluginStatus])) {
+        if (!isset(self::STATUS_MAP[$pluginStatus])) {
             Log::warning('order-query: 返回未知 status，忽略状态更新', [
                 'order_no' => $order->order_no,
-                'status' => $pluginStatus,
+                'status'   => $pluginStatus,
             ]);
 
             return [
                 'queried_status' => $pluginStatus,
-                'mapped_status' => null,
-                'old_status' => $beforeStatus,
-                'new_status' => $beforeStatus,
-                'changed' => false,
+                'mapped_status'  => null,
+                'old_status'     => $beforeStatus,
+                'new_status'     => $beforeStatus,
+                'changed'        => false,
             ];
         }
 
         $targetStatus = self::STATUS_MAP[$pluginStatus];
-        $oldStatus = $this->applyStatus($order, $targetStatus, $data);
+        $oldStatus    = $this->applyStatus($order, $targetStatus, $data);
 
         return [
             'queried_status' => $pluginStatus,
-            'mapped_status' => $targetStatus,
-            'old_status' => $oldStatus ?? $beforeStatus,
-            'new_status' => $order->status,
-            'changed' => $oldStatus !== null,
+            'mapped_status'  => $targetStatus,
+            'old_status'     => $oldStatus ?? $beforeStatus,
+            'new_status'     => $order->status,
+            'changed'        => $oldStatus !== null,
         ];
     }
 
@@ -176,9 +178,9 @@ class OrderPaymentStatusService
     {
         $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload) {
             $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
-            $old = $locked->status;
+            $old    = $locked->status;
 
-            if (! $this->shouldApply($old, $targetStatus)) {
+            if (!$this->shouldApply($old, $targetStatus)) {
                 return null;
             }
 
@@ -193,14 +195,14 @@ class OrderPaymentStatusService
                 $locked->paid_at = now();
             }
 
-            if (empty($locked->wp_order_id) && ! empty($payload['wp_order_id'])) {
+            if (empty($locked->wp_order_id) && !empty($payload['wp_order_id'])) {
                 $locked->wp_order_id = (int) $payload['wp_order_id'];
             }
 
             // 三方交易号：直接以网关这次返回的为准覆盖（不是只在为空时回填）——
             // 同一订单后续事件通常复用同一个交易号（见文档第四节示例），网关侧
             // 是这个值的权威来源，没有理由保留本地的旧值。
-            if (! empty($payload['transaction_id'])) {
+            if (!empty($payload['transaction_id'])) {
                 $locked->transaction_id = (string) $payload['transaction_id'];
             }
 
@@ -220,6 +222,9 @@ class OrderPaymentStatusService
         if ($targetStatus === 'paid' && $oldStatus !== 'disputing') {
             $this->balanceService->creditForPaidOrder($order);
             $this->notificationService->dispatchInitial($order);
+            // 订单带了广告追踪参数且对应平台配置了转化 API 凭证时，服务端直接同步
+            // 转化事件给广告方，与支付方式是否允许返回源站无关（见 AdConversionService 注释）。
+            $this->adConversionService->dispatchInitial($order);
         }
 
         if (in_array($targetStatus, self::ALERT_STATUSES, true)) {
@@ -244,7 +249,7 @@ class OrderPaymentStatusService
         // 负责改回 paid，不经过这里。
         if ($oldStatus === Order::STATUS_DISPUTE_REVIEW) {
             Log::warning('payment_status: 订单当前处于人工发起的争议审核事件中，忽略网关状态覆盖，人工审核结果优先', [
-                'old_status' => $oldStatus,
+                'old_status'    => $oldStatus,
                 'target_status' => $targetStatus,
             ]);
 
@@ -253,7 +258,7 @@ class OrderPaymentStatusService
 
         if (in_array($oldStatus, self::TERMINAL_STATUSES, true)) {
             Log::warning('payment_status: 订单已是终态，忽略状态覆盖', [
-                'old_status' => $oldStatus,
+                'old_status'    => $oldStatus,
                 'target_status' => $targetStatus,
             ]);
 
@@ -263,7 +268,7 @@ class OrderPaymentStatusService
         if (in_array($oldStatus, self::PAID_FAMILY_STATUSES, true)
             && in_array($targetStatus, ['pending', 'failed', 'cancelled', 'expired'], true)) {
             Log::warning('payment_status: 已收款订单不允许被回退为未支付/失败/取消/过期，忽略', [
-                'old_status' => $oldStatus,
+                'old_status'    => $oldStatus,
                 'target_status' => $targetStatus,
             ]);
 

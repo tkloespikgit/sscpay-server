@@ -29,7 +29,10 @@ class SyncOrderTrackingJob implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    public function __construct(public readonly int $orderShippingId) {}
+    public function __construct(public readonly int $orderShippingId)
+    {
+        $this->onQueue('low');
+    }
 
     public function handle(PaymentGatewayService $paymentGateway): void
     {

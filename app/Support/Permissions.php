@@ -38,6 +38,13 @@ final class Permissions
 
     public const USERS_MANAGE = 'users.manage';
 
+    // 通用人工资金冻结（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
+    public const FUND_FREEZES_VIEW = 'fund_freezes.view';
+
+    public const FUND_FREEZES_CREATE = 'fund_freezes.create';
+
+    public const FUND_FREEZES_RELEASE = 'fund_freezes.release';
+
     // 资金管理（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
     public const FINANCE_VIEW = 'finance.view';               // 查看余额与流水台账
 
@@ -81,6 +88,9 @@ final class Permissions
             self::ORDER_EVENTS_VIEW,
             self::TELEGRAM_MANAGE,
             self::USERS_MANAGE,
+            self::FUND_FREEZES_VIEW,
+            self::FUND_FREEZES_CREATE,
+            self::FUND_FREEZES_RELEASE,
             self::FINANCE_VIEW,
             self::WITHDRAWALS_REQUEST,
             self::WITHDRAWALS_REVIEW,

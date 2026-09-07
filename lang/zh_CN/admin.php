@@ -25,6 +25,7 @@ return [
         'model_label_plural' => '商户',
         'sections' => [
             'basic_info' => '基本信息',
+            'preferences' => '偏好设置',
             'remark' => '备注',
         ],
         'fields' => [
@@ -33,6 +34,7 @@ return [
             'contact_phone' => '联系电话',
             'contact_email' => '联系邮箱',
             'status' => '启用',
+            'timezone' => '时区',
             'remark' => '备注',
             'applications_count' => '应用数',
             'created_at' => '创建时间',
@@ -40,6 +42,7 @@ return [
         ],
         'help' => [
             'owner' => '不选表示由平台超级管理员直接管理，不属于任何商户级管理员名下。',
+            'timezone' => '决定该商户下用户在后台看到的时间所用时区，留空则使用系统默认时区',
         ],
         'placeholders' => [
             'owner_platform' => '平台直管',
@@ -61,8 +64,7 @@ return [
             'website' => '官网域名',
             'status' => '状态',
             'is_order_email_enabled' => '邮件通知',
-            'sender_email' => '发件人邮箱',
-            'sender_name' => '发件人名称',
+            'payment_link_mail_template' => '付款链接邮件正文',
             'remark' => '备注',
             'app_id' => 'App ID',
             'api_key' => 'API Key',
@@ -70,11 +72,95 @@ return [
         ],
         'help' => [
             'api_key' => '商户端签名请求时需要用到这个值，请妥善保管，不要泄露给无关人员。',
+            'payment_link_mail_template' => '留空则使用系统默认模板。支持变量 {customer_name}（客户姓名）、{payment_link}（付款链接），发送时会自动替换为实际内容；纯文本，换行会保留。同一商户下不同应用可以各自配置不同的正文。',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "示例：\n{customer_name} 您好，\n请点击以下链接完成付款：\n{payment_link}",
         ],
         'actions' => [
             'regenerate_api_key' => '重新生成 API 密钥',
             'regenerate_api_key_confirm' => '旧的 API 密钥会立即失效，商户端所有用旧密钥签名的请求都会开始验签失败，请确认商户已知情并准备好更新配置。',
             'regenerate_api_key_success' => 'API 凭证已重新生成',
+        ],
+        'filters' => [
+            'merchant' => '所属商户',
+            'app_id' => 'App ID',
+            'website' => '官网域名',
+        ],
+    ],
+
+    // Application / PaymentMethod 共用的"邮件发送配置"弹框（App\Filament\Support\MailCredentialsAction）：
+    // 发件人 + 自有 ESP 凭证四个字段打包一起编辑，两边的编辑页各自在 header action 里复用同一份。
+    'mail_credentials' => [
+        'summary' => '邮件发送 - 发信邮箱：:email',
+        'not_configured' => '邮件发送 - 没有配置',
+        'modal_heading' => '邮件发送配置',
+        'modal_description' => '配置这个渠道自己的发件人和 ESP 凭证，付款链接邮件会用这里的账号发送；不配置就无法发送，不会回退平台自己的账号。',
+        'saved' => '邮件发送配置已保存',
+        'send_failed_no_sender' => '未配置邮件发送账号（下单锁定的支付方式与所属应用均未配置），已跳过发送',
+        'fields' => [
+            'sender_email' => '发件人邮箱',
+            'sender_name' => '发件人名称',
+            'mail_driver' => '发信服务商',
+            'token' => 'Server Token',
+            'ses_key' => 'AWS Access Key ID',
+            'ses_secret' => 'AWS Secret Access Key',
+            'ses_region' => 'AWS Region',
+            'smtp_host' => 'SMTP 主机地址',
+            'smtp_port' => '端口',
+            'smtp_username' => '用户名',
+            'smtp_password' => '密码',
+            'smtp_encryption' => '加密方式',
+        ],
+        'help' => [
+            'mail_driver' => '不选表示未配置，这个渠道会用不了邮件发送（不会回退平台账号）。选了就必须填对应的 API 凭证——发件域名在这个账号里已经验证过，送达率比平台账号统一帮所有商户发任意域名更高，也不占平台的发信配额。',
+            'mail_credentials_postmark' => 'Postmark 后台「API Tokens」里的 Server Token，加密存储。',
+            'mail_credentials_ses' => '留空默认 us-east-1。Access Key ID / Secret Access Key 建议用只有 ses:SendEmail 权限的 IAM 子账号，不要用主账号密钥；均加密存储。',
+            'mail_credentials_smtp' => '留空按端口自动判断（465 走隐式 SSL，其余走 TLS/STARTTLS）；账号密码加密存储。',
+        ],
+        'placeholders' => [
+            'mail_driver_none' => '未配置',
+            'smtp_encryption_auto' => '自动（按端口判断）',
+        ],
+    ],
+
+    // Application 的"广告转化 API 凭证"弹框（App\Filament\Support\AdCredentialsAction）：
+    // 按平台（Meta/Google/TikTok）配置凭证，供 AdConversionService 在支付成功后
+    // 调用对应平台的转化 API 通知，与支付方式是否允许返回源站无关。
+    'ad_credentials' => [
+        'summary' => '广告转化 - 已配置：:platforms',
+        'not_configured' => '广告转化 - 没有配置',
+        'modal_heading' => '广告转化 API 凭证',
+        'modal_description' => '按平台配置转化 API 凭证。只要订单带了该平台的 ad_params，支付成功后系统就会调用这里配置的转化 API，告知广告方这笔订单已支付成功，与支付方式是否允许返回源站无关。',
+        'saved' => '广告转化凭证已保存',
+        'sections' => [
+            'meta' => 'Meta（Facebook）Conversions API',
+            'google' => 'Google Ads',
+            'tiktok' => 'TikTok Events API',
+        ],
+        'fields' => [
+            'meta_pixel_id' => 'Pixel ID',
+            'meta_access_token' => 'Access Token',
+            'meta_test_event_code' => '测试事件代码',
+            'meta_event_name' => '事件名称',
+            'google_customer_id' => 'Customer ID',
+            'google_conversion_action_id' => 'Conversion Action ID',
+            'google_developer_token' => 'Developer Token',
+            'google_login_customer_id' => 'Login Customer ID（经理账号）',
+            'google_client_id' => 'OAuth Client ID',
+            'google_client_secret' => 'OAuth Client Secret',
+            'google_refresh_token' => 'OAuth Refresh Token',
+            'tiktok_pixel_code' => 'Pixel Code',
+            'tiktok_access_token' => 'Access Token',
+            'tiktok_event_name' => '事件名称',
+        ],
+        'help' => [
+            'meta_test_event_code' => '仅用于 Meta 事件管理工具的「测试事件」功能，正式环境留空。',
+            'meta_event_name' => '支付成功时上报给 Conversions API 的 event_name，留空默认 "Purchase"（Meta 标准电商事件）。只有当商户前端页面已经用像素上报了不同名称的事件、且需要和这次服务端上报去重匹配时，才需要改成一致的名称。',
+            'google_customer_id' => '10 位数字的 Google Ads 账号 ID（带不带中划线均可），不用带 "customers/" 前缀。',
+            'google_login_customer_id' => '仅通过 MCC 经理账号访问客户账号时才需要填写。',
+            'google_refresh_token' => '通过 Google Ads API OAuth 授权流程获取的长期 refresh token；系统会按需换取短期 access token 并缓存，不需要手动刷新。',
+            'tiktok_event_name' => '支付成功时上报给 Events API 的 event，留空默认 "CompletePayment"（TikTok 标准电商事件）。只有当商户前端页面已经用像素上报了不同名称的事件、且需要和这次服务端上报去重匹配时，才需要改成一致的名称。',
         ],
     ],
 
@@ -89,6 +175,7 @@ return [
             'product_matching' => '商品匹配配置',
             'risk_control' => '风控阈值（USD）',
             'fees' => '手续费（USD）',
+            'mail_template' => '付款链接邮件模版',
         ],
         'fields' => [
             'merchant' => '所属商户',
@@ -108,6 +195,9 @@ return [
             'product_match_mode' => '商品匹配模式',
             'invoice_prefix' => 'Invoice 前缀',
             'virtual_product_prefix' => '虚拟商品前缀',
+            'order_no_prefix' => '系统订单号前缀',
+            'order_no_format' => '系统订单号格式',
+            'order_no_length' => '系统订单号随机部分长度',
             'sync_logistics' => '同步物流信息',
             'allow_returned_source' => '允许返回源站',
             'max_amount_per_transaction' => '单笔交易金额上限',
@@ -131,6 +221,8 @@ return [
             'product_matching' => '选择订单商品与站点商品的匹配模式，可选项由系统配置 payment.product_match_modes 维护',
             'invoice_prefix' => '生成 invoice 商品时使用的名称前缀，留空表示不加前缀',
             'virtual_product_prefix' => '生成虚拟商品时使用的名称前缀，留空表示不加前缀',
+            'order_no_format' => '留空则使用系统默认订单号格式；选择后，系统订单号 = 上方前缀 + 指定格式与长度的随机字符',
+            'order_no_length' => '系统订单号总长度（含前缀），15-30 位之间',
             'sync_logistics' => '订单发货后，是否将物流信息（物流公司、运单号）同步到对应站点',
             'allow_returned_source' => '支付完成后是否允许返回源站；订单平台为 invoice 时强制不允许，优先级高于此配置',
             'fees' => '退款/拒付时按此固定金额（USD）收取手续费，从商户余额扣除；填 0 表示不收取',
@@ -138,6 +230,10 @@ return [
             'min_transaction_amount' => '当前费率组合下，最小交易金额约为 $:amount（USD），低于此金额的订单会被拒绝',
             'min_transaction_amount_none' => '固定手续费为 0，无最小交易金额限制',
             'min_transaction_amount_undefined' => '百分比手续费 ≥ 100%，任何金额都无法覆盖手续费，请调整费率',
+            'payment_link_mail_template' => '留空则回退使用所属 Application 的模板，两处都留空则使用系统默认模板。支持变量 {customer_name}（客户姓名）、{payment_link}（付款链接），发送时会自动替换为实际内容；纯文本，换行会保留。',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "示例：\n{customer_name} 您好，\n请点击以下链接完成付款：\n{payment_link}",
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
@@ -146,6 +242,10 @@ return [
             'match' => '匹配',
             'create' => '创建',
             'virtual' => '虚拟',
+        ],
+        'order_no_formats' => [
+            'numeric' => '纯数字',
+            'alnum' => '大写字母+数字组合',
         ],
         'columns' => [
             'code' => '代码',
@@ -341,6 +441,8 @@ return [
             'manual_status_change_desc' => '仅用于自动状态流转（网关回调/查询）因异常未能生效时的人工兜底纠正，请谨慎操作。',
             'manual_status_change_invalid' => '当前订单状态不允许手动改为该目标状态',
             'manual_status_change_success' => '订单状态已更新',
+            'resend_payment_link_mail' => '立即重发付款链接邮件',
+            'resend_payment_link_mail_queued' => '已加入发送队列',
         ],
         'sections' => [
             'order_info' => '订单信息',
@@ -358,6 +460,9 @@ return [
             'transaction_id' => '三方交易号',
             'created_at' => '创建时间',
             'paid_at' => '支付成功时间',
+            'send_mail' => '下单时请求发送邮件',
+            'payment_link_sent_at' => '付款链接邮件发送时间',
+            'payment_link_mail_failed_reason' => '邮件发送失败原因',
             'currency' => '币种',
             'amount' => '应付总额',
             'converted_amount' => '折算 USD',
@@ -570,6 +675,24 @@ return [
         ],
     ],
 
+    'ad_conversion' => [
+        'title' => '广告转化通知记录',
+        'columns' => [
+            'platform' => '广告平台',
+            'attempt_number' => '第几次',
+            'status' => '状态',
+            'http_status' => 'HTTP 状态码',
+            'duration_ms' => '耗时(ms)',
+            'attempted_at' => '尝试时间',
+            'next_retry_at' => '下次重试时间',
+        ],
+        'view' => [
+            'request_payload' => '发送内容',
+            'response_body' => '广告平台响应内容',
+            'error_message' => '异常信息',
+        ],
+    ],
+
     'create_manual_order' => [
         'sections' => [
             'merchant' => '订单归属商户',
@@ -651,6 +774,30 @@ return [
         ],
     ],
 
+    'onboard_merchant' => [
+        'nav_label' => '商户入驻向导',
+        'steps' => [
+            'merchant' => [
+                'label' => '商户信息',
+                'description' => '新商户的基本信息',
+            ],
+            'admin_account' => [
+                'label' => '管理员账号',
+                'description' => '该商户的第一个用户账号，创建后自动赋予"商户管理员"角色',
+            ],
+            'application' => [
+                'label' => '创建应用',
+                'description' => '该商户用来接收订单的第一个应用',
+            ],
+        ],
+        'actions' => [
+            'submit' => '创建商户',
+        ],
+        'notifications' => [
+            'created' => '商户、管理员账号、应用均已创建成功',
+        ],
+    ],
+
     'user' => [
         'model_label' => '用户',
         'model_label_plural' => '用户',
@@ -662,12 +809,13 @@ return [
         ],
         'fields' => [
             'name' => '姓名',
-            'email' => '登录邮箱',
+            'account' => '登录账号',
             'password' => '密码',
             'is_super_admin' => '设为超级管理员',
             'is_merchant_manager' => '设为商户级管理员',
             'merchant' => '所属商户',
             'roles' => '角色',
+            'status' => '状态',
             'created_at' => '创建时间',
         ],
         'help' => [
@@ -675,9 +823,45 @@ return [
             'is_super_admin' => '超级管理员不属于任何商户，拥有全平台权限',
             'is_merchant_manager' => '商户级管理员不属于任何商户，但只能管理自己名下的商户及其业务数据，看不到其他商户/其他管理员',
             'roles' => '角色列表根据上面选择的商户动态变化',
+            'account' => '不需要真实邮箱，系统会自动用这个账号生成内部登录邮箱；如果本来就有可用邮箱，也可以直接填完整邮箱地址。',
+            'account_taken' => '该账号已被使用',
+            'status' => '禁用后该账号将无法登录后台，即使密码正确',
         ],
         'placeholders' => [
             'platform' => '— 平台 —',
+        ],
+        'filters' => [
+            'merchant' => '所属商户',
+            'account' => '登录账号',
+        ],
+    ],
+
+    'admin' => [
+        'model_label' => '管理员',
+        'model_label_plural' => '管理员',
+        'nav_label' => '管理员',
+        'sections' => [
+            'account_info' => '账号信息',
+            'account_type' => '账号类型',
+        ],
+        'fields' => [
+            'name' => '姓名',
+            'account' => '登录账号',
+            'password' => '密码',
+            'is_super_admin' => '设为超级管理员',
+            'type' => '账号类型',
+            'status' => '状态',
+            'created_at' => '创建时间',
+        ],
+        'help' => [
+            'password_edit' => '留空表示不修改密码',
+            'is_super_admin' => '勾选为超级管理员，拥有全平台权限；不勾选则为商户级管理员，只能管理自己名下的商户及其业务数据',
+            'account' => '不需要真实邮箱，系统会自动用这个账号生成内部登录邮箱；如果本来就有可用邮箱，也可以直接填完整邮箱地址。',
+            'status' => '禁用后该账号将无法登录后台，即使密码正确',
+        ],
+        'types' => [
+            'super_admin' => '超级管理员',
+            'merchant_manager' => '商户级管理员',
         ],
     ],
 
@@ -822,6 +1006,31 @@ return [
                 'pending' => '待审核',
                 'approved' => '已放款',
                 'rejected' => '已驳回',
+            ],
+        ],
+        'fund_freeze' => [
+            'model_label' => '资金冻结',
+            'model_label_plural' => '资金冻结',
+            'amount' => '冻结金额',
+            'reason' => '冻结理由',
+            'release_at' => '计划解冻时间',
+            'release_at_help' => '留空表示只能人工解冻；设置后到期会自动解冻',
+            'manual_only' => '需人工解冻',
+            'create' => '新建冻结',
+            'created' => '冻结已创建，相应金额已计入冻结余额。',
+            'frozen_by' => '操作人',
+            'frozen_at' => '冻结时间',
+            'released_by' => '解冻人',
+            'released_at' => '解冻时间',
+            'release' => '解冻',
+            'release_heading' => '确认解冻',
+            'release_desc' => '确认解冻 $:amount（USD）？冻结金额将释放回可用余额。',
+            'release_remark' => '解冻备注',
+            'released' => '已解冻，冻结金额已释放回可用余额。',
+            'already_released' => '该冻结记录已被解冻，无需重复操作。',
+            'statuses' => [
+                'frozen' => '冻结中',
+                'released' => '已解冻',
             ],
         ],
         'txn' => [

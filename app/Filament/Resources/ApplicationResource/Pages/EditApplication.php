@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\ApplicationResource\Pages;
 
 use App\Filament\Resources\ApplicationResource;
+use App\Filament\Support\AdCredentialsAction;
+use App\Filament\Support\MailCredentialsAction;
 use App\Models\Application;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -16,6 +18,8 @@ class EditApplication extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            MailCredentialsAction::make(),
+            AdCredentialsAction::make(),
             Action::make('regenerateApiKey')
                 ->label(__('admin.application.actions.regenerate_api_key'))
                 ->color('danger')

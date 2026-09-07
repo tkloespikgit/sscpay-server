@@ -13,10 +13,14 @@ class CreateUser extends CreateRecord
     protected static string $resource = UserResource::class;
 
     /**
-     * 'roles' 和 'is_merchant_manager' 都不是 users 表的真实字段，是表单里的
-     * 虚拟字段，创建用户前必须先摘掉，否则 User::create() 会因为多出不存在的
+     * 'roles'、'is_merchant_manager'、'account' 都不是 users 表的真实字段，是表单里的
+     * 虚拟字段，创建用户前必须先摘掉/转换，否则 User::create() 会因为多出不存在的
      * 字段报错（即使 $fillable 里没写它，Eloquent 在某些配置下仍可能尝试写入
      * 未知属性）。
+     *
+     * 'account' 转成落库用的 email（见 User::emailForAccount()），并直接标记
+     * email_verified_at——这个"邮箱"本来就是内部合成出来的，不需要真的走一遍
+     * 邮件验证流程。
      *
      * 商户级管理员（is_merchant_manager 勾选）没有走"选商户下的角色"这条线——
      * 它们是平台侧账号，统一赋 PlatformRoleProvisioningService 里那个全平台共享的
@@ -41,6 +45,10 @@ class CreateUser extends CreateRecord
         if ($isMerchantManager) {
             $data['merchant_id'] = null;
         }
+
+        $data['email'] = User::emailForAccount($data['account']);
+        $data['email_verified_at'] = now();
+        unset($data['account']);
 
         /** @var User $user */
         $user = static::getModel()::create($data);

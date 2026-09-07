@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Exceptions\BalanceOperationException;
 use App\Models\Merchant;
 use App\Models\MerchantBalanceTransaction;
+use App\Models\MerchantFundFreeze;
 use App\Models\MerchantWithdrawal;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
@@ -410,6 +411,80 @@ class BalanceService
 
         if ($released) {
             $event->refresh();
+        }
+
+        return $released;
+    }
+
+    /**
+     * 通用人工冻结（与订单/提现无关）：amount 冻结进 merchants.frozen_balance，
+     * reason 必填，operator 记录操作人。releaseAt 为 null 表示只能人工解冻，
+     * 否则由 fund-freezes:release-due 命令到期自动释放（见 releaseFundFreeze()）。
+     * 不校验可用余额上限——允许超冻，与争议审核冻结（freezeForDisputeEvent）行为一致。
+     */
+    public function freezeFunds(Merchant $merchant, string|float $amount, User $operator, string $reason, ?\DateTimeInterface $releaseAt = null): MerchantFundFreeze
+    {
+        $amount = $this->normalize($amount);
+
+        if (bccomp($amount, '0', 2) <= 0) {
+            throw new BalanceOperationException('冻结金额必须大于 0。');
+        }
+
+        if (trim($reason) === '') {
+            throw new BalanceOperationException('冻结必须填写理由。');
+        }
+
+        return $this->mutate($merchant->id, function (Merchant $locked) use ($amount, $operator, $reason, $releaseAt) {
+            $freeze = MerchantFundFreeze::query()->create([
+                'merchant_id' => $locked->id,
+                'amount' => $amount,
+                'status' => MerchantFundFreeze::STATUS_FROZEN,
+                'reason' => $reason,
+                'release_at' => $releaseAt,
+                'frozen_by' => $operator->id,
+                'frozen_at' => now(),
+            ]);
+
+            $locked->frozen_balance = bcadd((string) $locked->frozen_balance, $amount, 2);
+            $locked->save();
+
+            return $freeze;
+        });
+    }
+
+    /**
+     * 释放一笔人工资金冻结（人工手动或到期自动均走这里）：释放 frozen_balance，
+     * 事件状态置为 released。$operator 为 null 表示系统自动解冻（released_by 落 NULL）。
+     *
+     * 幂等：记录已不是 frozen 时静默返回 false，不抛异常——手动解冻与到期自动解冻
+     * 的定时任务可能并发碰到同一条记录，不应该让后到达的一方看到报错
+     * （同 releaseForDisputeEvent() 的既有约定）。
+     */
+    public function releaseFundFreeze(MerchantFundFreeze $freeze, ?User $operator, string $releaseType, ?string $remark = null): bool
+    {
+        $released = $this->mutate($freeze->merchant_id, function (Merchant $merchant) use ($freeze, $operator, $releaseType, $remark) {
+            $fresh = MerchantFundFreeze::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($freeze->id);
+
+            if (! $fresh->isFrozen()) {
+                return false;
+            }
+
+            $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, (string) $fresh->amount, 2);
+            $merchant->save();
+
+            $fresh->update([
+                'status' => MerchantFundFreeze::STATUS_RELEASED,
+                'released_by' => $operator?->id,
+                'released_at' => now(),
+                'release_type' => $releaseType,
+                'release_remark' => $remark,
+            ]);
+
+            return true;
+        });
+
+        if ($released) {
+            $freeze->refresh();
         }
 
         return $released;

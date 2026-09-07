@@ -47,6 +47,9 @@ class PaymentMethod extends Model
         'product_match_mode',
         'invoice_prefix',
         'virtual_product_prefix',
+        'order_no_prefix',
+        'order_no_format',
+        'order_no_length',
         'sync_logistics',
         'allow_returned_source',
         'max_amount_per_transaction',
@@ -57,6 +60,11 @@ class PaymentMethod extends Model
         'chargeback_fee',
         'fee_percent',
         'fee_fixed',
+        'sender_email',
+        'sender_name',
+        'mail_driver',
+        'mail_credentials',
+        'payment_link_mail_template',
     ];
 
     protected function casts(): array
@@ -69,11 +77,15 @@ class PaymentMethod extends Model
             'max_amount_per_transaction' => 'decimal:2',
             'max_amount_per_day' => 'decimal:2',
             'max_count_per_day' => 'integer',
+            'order_no_length' => 'integer',
             'max_amount_per_month' => 'decimal:2',
             'refund_fee' => 'decimal:2',
             'chargeback_fee' => 'decimal:2',
             'fee_percent' => 'decimal:4',
             'fee_fixed' => 'decimal:2',
+            // 支付方式自有 ESP 凭证，与 Application::mail_credentials 是各自独立的
+            // 两份配置（见 Order::resolveMailSender()），同样用 encrypted:array 存储。
+            'mail_credentials' => 'encrypted:array',
         ];
     }
 

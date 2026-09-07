@@ -12,6 +12,7 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -157,6 +158,27 @@ class PaymentMethodResource extends Resource
                     TextInput::make('virtual_product_prefix')
                         ->label(__('admin.payment_method.fields.virtual_product_prefix'))
                         ->maxLength(50),
+                    TextInput::make('order_no_prefix')
+                        ->label(__('admin.payment_method.fields.order_no_prefix'))
+                        ->maxLength(10)
+                        ->placeholder('PAY'),
+                    Select::make('order_no_format')
+                        ->label(__('admin.payment_method.fields.order_no_format'))
+                        ->options([
+                            'numeric' => __('admin.payment_method.order_no_formats.numeric'),
+                            'alnum' => __('admin.payment_method.order_no_formats.alnum'),
+                        ])
+                        ->native(false)
+                        ->live()
+                        ->helperText(__('admin.payment_method.help.order_no_format')),
+                    TextInput::make('order_no_length')
+                        ->label(__('admin.payment_method.fields.order_no_length'))
+                        ->numeric()
+                        ->minValue(15)
+                        ->maxValue(30)
+                        ->default(20)
+                        ->required(fn (Get $get) => filled($get('order_no_format')))
+                        ->helperText(__('admin.payment_method.help.order_no_length')),
 
                 ])->columns(2)->columnSpan(2),
             ]),
@@ -262,6 +284,16 @@ class PaymentMethodResource extends Resource
                                 return __('admin.payment_method.help.min_transaction_amount', ['amount' => $minAmount]);
                             }),
                     ])->columns(2),
+
+                Section::make(__('admin.payment_method.sections.mail_template'))
+                    ->description(__('admin.payment_method.help.payment_link_mail_template'))
+                    ->schema([
+                        RichEditor::make('payment_link_mail_template')
+                            ->hiddenLabel()
+                            ->extraInputAttributes(['style' => 'min-height: 20rem;'])
+                            ->placeholder(__('admin.payment_method.placeholders.payment_link_mail_template')),
+                    ]),
+
             ])->columnSpan(1),
         ]);
     }
@@ -297,6 +329,8 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))->suffix('%')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),

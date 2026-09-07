@@ -26,11 +26,15 @@ class EditUser extends EditRecord
      *
      * 'is_merchant_manager' 同样是虚拟字段，根据当前记录反推：
      * merchant_id 为空且不是超管，就是商户级管理员。
+     *
+     * 'account' 也是虚拟字段，从已存的 email 反推回填（见 User::accountFromEmail()）：
+     * 内部合成邮箱能拆出账号原样显示，历史上的真实邮箱账号就整个显示。
      */
     protected function mutateFormDataBeforeFill(array $data): array
     {
         $data['roles'] = $this->record->roles()->pluck('roles.id')->toArray();
         $data['is_merchant_manager'] = $this->record->isMerchantManager();
+        $data['account'] = User::accountFromEmail($this->record->email);
 
         return $data;
     }
@@ -55,6 +59,9 @@ class EditUser extends EditRecord
         if ($isMerchantManager) {
             $data['merchant_id'] = null;
         }
+
+        $data['email'] = User::emailForAccount($data['account']);
+        unset($data['account']);
 
         $record->update($data);
 
