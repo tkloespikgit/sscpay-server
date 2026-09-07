@@ -7,6 +7,8 @@ use App\Jobs\SyncSiteProductsJob;
 use App\Models\Merchant;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
+use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -141,9 +143,8 @@ class PaymentMethodResource extends Resource
                     // 支付插件的所有接口（/pay /sync-tracking /gateway-config /order-logs 等）
                     // 统一用上面这对 WooCommerce REST API 密钥做 Basic Auth；
                     // 原「订单账号/密码」「配置账号/密码」四个字段已弃用。
-                    TextInput::make('payment_config_id')
-                        ->label(__('admin.payment_method.fields.payment_config_id'))
-                        ->maxLength(255),
+                    // payment_config_id 由保存后的自动同步（syncGatewayConfigAndNotify）回填，
+                    // 不再作为可编辑字段展示。
 
                     Select::make('product_match_mode')
                         ->label(__('admin.payment_method.fields.product_match_mode'))
@@ -358,6 +359,89 @@ class PaymentMethodResource extends Resource
     protected static function matchModeLabel(string $mode): string
     {
         return __('admin.payment_method.match_modes.'.strtolower($mode)).'（'.$mode.'）';
+    }
+
+    /**
+     * 同步支付配置的核心逻辑：POST /gateway-config 到站点的支付插件，成功后把返回的
+     * config_id 落库到 payment_config_id。Edit 页面的手动同步按钮（用未保存的表单状态）
+     * 和保存后的自动同步（用刚落库的 $record）共用这份实现，只是 $data 的来源不同。
+     */
+    public static function syncGatewayConfigFromData(PaymentMethod $record, array $data): array
+    {
+        $configMap = filled($data['config_map_id'] ?? null)
+            ? PaymentMethodConfigMap::find($data['config_map_id'])
+            : null;
+
+        if (! $configMap || blank($configMap->payment_config_tag)) {
+            return ['success' => false, 'reason' => 'missing_tag'];
+        }
+
+        if (blank($data['domain_client_id'] ?? null) || blank($data['domain_client_sk'] ?? null)) {
+            return ['success' => false, 'reason' => 'missing_credentials'];
+        }
+
+        // config_key 插件要求字母数字下划线中划线且 ≤64 字符；
+        // 按 支付方式ID + 支付类型标签 生成，重复同步时幂等覆盖旧配置。
+        $configKey = Str::limit(
+            preg_replace('/[^A-Za-z0-9_-]/', '_', 'pm_'.$record->id.'_'.$configMap->payment_config_tag),
+            64,
+            ''
+        );
+
+        try {
+            $result = app(PaymentGatewayService::class)
+                ->withConnection(
+                    rtrim((string) $data['domain'], '/').'/wp-json/payment-plugin/v1',
+                    (string) $data['domain_client_id'],
+                    (string) $data['domain_client_sk'],
+                )
+                ->registerGatewayConfig(
+                    $configKey,
+                    $configMap->payment_config_tag,
+                    (array) ($data['config'] ?? []),
+                );
+        } catch (PaymentGatewayException $e) {
+            return ['success' => false, 'reason' => 'api_error', 'message' => $e->getMessage()];
+        }
+
+        $configId = (string) ($result['config_id'] ?? '');
+        $record->update(['payment_config_id' => $configId]);
+
+        return ['success' => true, 'config_id' => $configId];
+    }
+
+    /**
+     * 用 $record 自身已落库的字段做同步，供创建/编辑保存后的自动同步调用。
+     */
+    public static function syncGatewayConfig(PaymentMethod $record): array
+    {
+        return static::syncGatewayConfigFromData(
+            $record,
+            $record->only(['domain', 'domain_client_id', 'domain_client_sk', 'config_map_id', 'config'])
+        );
+    }
+
+    /**
+     * 保存（创建/编辑）后自动触发一次同步，并按用户可读的统一文案提示保存+同步的结果：
+     * 同步成功提示已同步，失败提示已保存但同步失败，不打断保存本身。
+     */
+    public static function syncGatewayConfigAndNotify(PaymentMethod $record): void
+    {
+        $result = static::syncGatewayConfig($record);
+
+        if ($result['success']) {
+            Notification::make()
+                ->success()
+                ->title(__('admin.payment_method.actions.save_sync_success'))
+                ->send();
+
+            return;
+        }
+
+        Notification::make()
+            ->warning()
+            ->title(__('admin.payment_method.actions.save_sync_failed'))
+            ->send();
     }
 
     /**

@@ -367,6 +367,7 @@
 | `SyncOrderTrackingJob` | 1 | 回传物流给插件 `/sync-tracking`，失败交人工在后台判断后手动重试 |
 | `ProcessLogisticsImportJob` | 3 | 处理物流批量导入任务 |
 | `SyncSiteProductsJob` | 3 | 站点商品同步（**最坏情况约 18 分钟**，Worker `--timeout` 必须覆盖） |
+| `NotifyAdConversionJob` | 1 | 发起广告转化通知（走 `low` 队列，重试由 `ad-conversions:process-due` 调度驱动） |
 
 > ⚠️ 修改任何 Job / 队列相关代码后**必须重启 Worker**（`php artisan queue:restart`），否则常驻进程仍跑旧代码。
 
@@ -380,6 +381,8 @@
 | `order-notifications:process-due` | 每分钟（`withoutOverlapping`） | 扫描到期的失败通知记录并发起下一次尝试 |
 | `order-disputes:close-due` | 每 5 分钟（`withoutOverlapping`） | 自动结束已到期的争议事件（释放冻结资金） |
 | `order-disputes:send-reminders` | 每 5 分钟（`withoutOverlapping`） | 24 小时内到期的争议事件发 Telegram 提醒（`reminded_at` 置位后不重发） |
+| `ad-conversions:process-due` | 每分钟（`withoutOverlapping`） | 扫描到期的广告转化通知重试记录并发起下一次尝试 |
+| `fund-freezes:release-due` | 每 5 分钟（`withoutOverlapping`） | 扫描到期的资金冻结记录并自动释放 |
 
 ### 9.3 运维命令
 
@@ -396,7 +399,7 @@
 
 ```
 app/
-  Console/Commands/       10 个命令（汇率、备份、日志同步、通知重试、争议关闭/提醒、超管、商户级管理员、角色补建、权限补发）
+  Console/Commands/       13 个命令（汇率、备份、日志同步、通知重试、广告转化重试、争议关闭/提醒、资金冻结释放、超管、商户级管理员、角色补建、权限补发）
   Events/                 OrderStatusChanged / LogisticsImportCompleted / OrderEventsSyncCompleted
   Exceptions/             7 个业务异常（金额不符、余额操作、回跳域名不符、渠道不可用等）
   Filament/
@@ -408,7 +411,7 @@ app/
     Controllers/          HomeController、PaymentPageController、PaymentGatewayWebhookController、Api/OrderController
     Middleware/           ApiAuthentication（App-ID + 签名验签）
     Requests/Api/         CreateOrderRequest、SyncOrderShippingRequest
-  Jobs/                   5 个队列任务
+  Jobs/                   6 个队列任务
   Listeners/              SendTelegramNotification
   Mail/                   PaymentLinkMail
   Models/                 25 个模型 + Concerns/BelongsToMerchant + Scopes/MerchantScope
@@ -535,6 +538,8 @@ BAIDU_TRANSLATE_SECRET_KEY=…
 
 ### 11.4 生产部署要点
 
+> 📘 更完整的上线运维配置（www-data 运行身份、目录权限、Crontab、Supervisor、logrotate、Nginx/PHP-FPM、发布流程与检查清单）见 [`doc/deployment.md`](doc/deployment.md)。
+
 **Crontab**（Laravel 调度入口）：
 
 ```cron
@@ -625,4 +630,5 @@ environment=APP_ENV="production"
 | `doc/s-system-payment-status-notify.md` | 支付状态回调说明（payload、状态清单、主动查询接口、订单日志接口） |
 | `doc/s-system-sync-tracking.md` | 物流同步接口说明（参数、承运商字段、各渠道支持情况、幂等性、升级检查清单） |
 | `doc/i18n.md` | 多语言支持现状与新增语言步骤 |
+| `doc/deployment.md` | 生产环境部署与运维配置（www-data 运行身份、目录权限、Crontab 调度、Supervisor 队列 Worker、logrotate、Nginx/PHP-FPM、首次部署与零停机发布、上线检查清单） |
 | `postman/README.md` | Postman 集合使用说明（签名预请求脚本、`merchant_order_no` 写 `AUTO` 的技巧） |

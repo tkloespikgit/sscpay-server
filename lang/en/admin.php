@@ -279,6 +279,8 @@ return [
             'sync_gateway_config_missing_credentials' => 'Cannot sync: please fill in the config creation account and password first',
             'sync_gateway_config_failed' => 'Gateway config sync failed',
             'sync_gateway_config_success' => 'Gateway config synced. Payment Config ID updated.',
+            'save_sync_success' => 'Saved and synced to the e-commerce site.',
+            'save_sync_failed' => 'Saved, but syncing to the e-commerce site failed. Please check the config and retry.',
         ],
     ],
 

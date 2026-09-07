@@ -274,6 +274,8 @@ return [
             'sync_gateway_config_missing_credentials' => '无法同步：请先填写创建配置账户与创建配置密码',
             'sync_gateway_config_failed' => '支付配置同步失败',
             'sync_gateway_config_success' => '支付配置同步成功，支付配置 ID 已更新',
+            'save_sync_success' => '配置已保存并同步到电商网站',
+            'save_sync_failed' => '配置已保存，同步电商网站失败，请检查配置之后重试',
         ],
     ],
 
