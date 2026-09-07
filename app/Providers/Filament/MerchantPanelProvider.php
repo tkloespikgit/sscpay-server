@@ -32,11 +32,13 @@ class MerchantPanelProvider extends PanelProvider
 
     public function panel(Panel $panel): Panel
     {
-        $panel = $this->applySharedSettings($panel);
-
-        return $panel
+        // id()/path()/domain() 必须先于 applySharedSettings() 里的 discoverResources() 等
+        // 调用——原因见 AdminPanelProvider::panel() 的同名注释。
+        $panel = $panel
             ->id('merchant')
             ->path('merchant')
             ->domain(config('app.merchant_domain'));
+
+        return $this->applySharedSettings($panel);
     }
 }

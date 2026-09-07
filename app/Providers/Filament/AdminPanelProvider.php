@@ -22,13 +22,16 @@ class AdminPanelProvider extends PanelProvider
 
     public function panel(Panel $panel): Panel
     {
-        $panel = $this->applySharedSettings($panel);
-
-        return $panel
+        // id()/path()/domain() 必须先于 applySharedSettings() 里的 discoverResources() 等
+        // 调用——discoverResources() 内部会检查缓存路径（键里带 getId()），id() 没设置就调用
+        // getId() 会抛 LogicException("A panel has been registered without an `id()`.")。
+        $panel = $panel
             ->default()
             ->id('admin')
             ->path('admin')
-            ->domain(config('app.platform_domain'))
+            ->domain(config('app.platform_domain'));
+
+        return $this->applySharedSettings($panel)
             ->plugins([
                 // Laravel 日志查看（achyutn/filament-log-viewer）：挂在"平台管理"分组下，仅超管可见。
                 // 导航分组/标签用闭包传入，保证在请求期解析，走 admin.nav / admin.log_viewer 翻译键。
