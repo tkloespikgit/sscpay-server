@@ -62,22 +62,22 @@
 
 ```bash
 # 1. 代码与依赖目录整体归属 www-data
-sudo chown -R www-data:www-data /var/www/order-system
+sudo chown -R www-data:www-data /var/www/sscpay-server
 
 # 2. 需要可写的目录（日志、缓存、上传、备份临时文件）
-sudo find /var/www/order-system/storage -type d -exec chmod 775 {} \;
-sudo find /var/www/order-system/storage -type f -exec chmod 664 {} \;
-sudo chmod -R ug+rwx /var/www/order-system/bootstrap/cache
+sudo find /var/www/sscpay-server/storage -type d -exec chmod 775 {} \;
+sudo find /var/www/sscpay-server/storage -type f -exec chmod 664 {} \;
+sudo chmod -R ug+rwx /var/www/sscpay-server/bootstrap/cache
 
 # 3. Worker / 备份日志目录
-sudo mkdir -p /var/log/order-system
-sudo chown -R www-data:www-data /var/log/order-system
+sudo mkdir -p /var/log/sscpay-server
+sudo chown -R www-data:www-data /var/log/sscpay-server
 ```
 
 要点：
 
 - `storage/app/backups/` 由备份命令按需创建，属主必须是 `www-data`（cron 以 www-data 运行才能写入）。
-- `.env` 含密钥，权限收紧：`sudo chmod 640 /var/www/order-system/.env && sudo chown www-data:www-data /var/www/order-system/.env`。
+- `.env` 含密钥，权限收紧：`sudo chmod 640 /var/www/sscpay-server/.env && sudo chown www-data:www-data /var/www/sscpay-server/.env`。
 - **禁止用 root 跑 artisan / queue:work**，否则会在 `storage/` 里生成 root 属主文件，后续 www-data 进程写入时报权限错误。
 
 ---
@@ -156,8 +156,8 @@ sudo crontab -u www-data -e
 写入（把 `APP_PATH` / `PHP_BIN` 换成实际值）：
 
 ```cron
-* * * * * cd /var/www/order-system && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
-* * * * * cd /var/www/order-system && /usr/bin/php8.2 artisan schedule:finish >> /dev/null 2>&1
+* * * * * cd /var/www/sscpay-server && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /var/www/sscpay-server && /usr/bin/php8.2 artisan schedule:finish >> /dev/null 2>&1
 ```
 
 - `schedule:run`：每分钟触发一次，Laravel 按 `APP_TIMEZONE`（PRC）判断哪些任务到期。
@@ -166,7 +166,7 @@ sudo crontab -u www-data -e
 - cron 环境 `PATH` 精简（通常 `/usr/bin:/bin`），`db:backup:upload` 内部调用的 `mysqldump` 需在此 `PATH` 中；不在时在命令里写绝对路径或补充 `PATH=`。
 
 > 备选：若不便用 www-data 的 crontab，可放 root crontab 并显式降权：
-> `* * * * * cd /var/www/order-system && sudo -u www-data /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1`
+> `* * * * * cd /var/www/sscpay-server && sudo -u www-data /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1`
 
 ### 4.2 已配置的调度任务清单
 
@@ -212,34 +212,34 @@ sudo -u www-data /usr/bin/php8.2 artisan schedule:list
 
 ### 5.2 配置文件
 
-`/etc/supervisor/conf.d/order-system-worker.conf`（替换 `APP_PATH` / `PHP_BIN`）：
+`/etc/supervisor/conf.d/sscpay-server-worker.conf`（替换 `APP_PATH` / `PHP_BIN`）：
 
 ```ini
 ; ---- 快车道：订单通知 / 支付链接 / Telegram，永不被慢任务阻塞 ----
-[program:order-system-worker-fast]
+[program:sscpay-server-worker-fast]
 process_name=%(program_name)s_%(process_num)02d
-command=/usr/bin/php8.2 /var/www/order-system/artisan queue:work redis --queue=notifications,payment-links,default --sleep=3 --tries=1 --timeout=120 --max-time=3600
+command=/usr/bin/php8.2 /var/www/sscpay-server/artisan queue:work redis --queue=notifications,payment-links,default --sleep=3 --tries=1 --timeout=120 --max-time=3600
 autostart=true
 autorestart=true
 user=www-data
 numprocs=3
 redirect_stderr=true
-stdout_logfile=/var/log/order-system/worker-fast.log
+stdout_logfile=/var/log/sscpay-server/worker-fast.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=5
 stopwaitsecs=150
 environment=APP_ENV="production"
 
 ; ---- 慢车道：商品同步 / 物流同步 / 物流导入 / 广告转化 ----
-[program:order-system-worker-slow]
+[program:sscpay-server-worker-slow]
 process_name=%(program_name)s_%(process_num)02d
-command=/usr/bin/php8.2 /var/www/order-system/artisan queue:work redis --queue=low --sleep=3 --tries=1 --timeout=1800 --max-time=7200
+command=/usr/bin/php8.2 /var/www/sscpay-server/artisan queue:work redis --queue=low --sleep=3 --tries=1 --timeout=1800 --max-time=7200
 autostart=true
 autorestart=true
 user=www-data
 numprocs=1
 redirect_stderr=true
-stdout_logfile=/var/log/order-system/worker-slow.log
+stdout_logfile=/var/log/sscpay-server/worker-slow.log
 stdout_logfile_maxbytes=50MB
 stdout_logfile_backups=5
 stopwaitsecs=1830
@@ -265,21 +265,21 @@ sudo supervisorctl update
 sudo supervisorctl status                       # 确认两池 RUNNING
 
 # 单独重启某一池
-sudo supervisorctl restart order-system-worker-fast:*
-sudo supervisorctl restart order-system-worker-slow:*
+sudo supervisorctl restart sscpay-server-worker-fast:*
+sudo supervisorctl restart sscpay-server-worker-slow:*
 
 # 查看实时日志
-sudo tail -f /var/log/order-system/worker-slow.log
+sudo tail -f /var/log/sscpay-server/worker-slow.log
 ```
 
 ---
 
 ## 6. 日志轮转（logrotate）
 
-`/etc/logrotate.d/order-system`（只管 Laravel 应用日志）：
+`/etc/logrotate.d/sscpay-server`（只管 Laravel 应用日志）：
 
 ```
-/var/www/order-system/storage/logs/*.log {
+/var/www/sscpay-server/storage/logs/*.log {
     daily
     rotate 14
     compress
@@ -293,7 +293,7 @@ sudo tail -f /var/log/order-system/worker-slow.log
 
 - **`copytruncate`**：先复制旧日志再原地清空，文件 inode 不变，常驻进程（Monolog）无需重开句柄就能继续写入。**不要用 `create`**——那样 logrotate 把旧文件移走后，Monolog 仍写已被移走的旧 inode，新日志文件会一直是空的。
 - **`su www-data www-data`**：以 www-data 身份执行轮转，保证属主一致；若 logrotate 以 root 运行时报父目录权限错误，这一行可解决。
-- **Worker 日志不纳入这里**：`/var/log/order-system/*.log` 已由 Supervisor 的 `stdout_logfile_maxbytes=50MB` / `stdout_logfile_backups=5`（见 5.2）自行轮转，两处同时轮转会冲突，交给 Supervisor 即可。
+- **Worker 日志不纳入这里**：`/var/log/sscpay-server/*.log` 已由 Supervisor 的 `stdout_logfile_maxbytes=50MB` / `stdout_logfile_backups=5`（见 5.2）自行轮转，两处同时轮转会冲突，交给 Supervisor 即可。
 
 ---
 
@@ -318,13 +318,13 @@ pm.min_spare_servers = 2
 pm.max_spare_servers = 6
 ```
 
-### 7.2 Nginx 站点（`/etc/nginx/sites-available/order-system.conf`）
+### 7.2 Nginx 站点（`/etc/nginx/sites-available/sscpay-server.conf`）
 
 ```nginx
 server {
     listen 80;
     server_name pay.example.com sma.example.com applo.example.com apios.example.com;
-    root /var/www/order-system/public;
+    root /var/www/sscpay-server/public;
     index index.php;
 
     client_max_body_size 20M;   # 物流批量导入 CSV 上传
@@ -355,7 +355,7 @@ server {
 ## 8. 首次部署流程
 
 ```bash
-cd /var/www/order-system
+cd /var/www/sscpay-server
 
 # 1. 依赖（PHP 用绝对路径，Node 仅构建期需要）
 composer install --no-dev --optimize-autoloader
@@ -383,8 +383,8 @@ cp .env.example .env                    # 按第 3 节填写生产配置
 /usr/bin/php8.2 artisan storage:link    # 如使用 public 磁盘
 
 # 7. 权限归位（部署过程可能产生非 www-data 文件）
-sudo chown -R www-data:www-data /var/www/order-system
-sudo chmod -R ug+rwx /var/www/order-system/storage /var/www/order-system/bootstrap/cache
+sudo chown -R www-data:www-data /var/www/sscpay-server
+sudo chmod -R ug+rwx /var/www/sscpay-server/storage /var/www/sscpay-server/bootstrap/cache
 
 # 8. 拉起 Worker + 配置 cron（第 4、5 节）
 sudo supervisorctl reread && sudo supervisorctl update
@@ -396,7 +396,7 @@ sudo crontab -u www-data -e
 ## 9. 日常发布（零停机）
 
 ```bash
-cd /var/www/order-system
+cd /var/www/sscpay-server
 sudo -u www-data git pull                # 或 rsync 部署产物
 
 composer install --no-dev --optimize-autoloader
@@ -412,7 +412,7 @@ npm run build                            # 前端有变更时
 /usr/bin/php8.2 artisan queue:restart
 ```
 
-- `queue:restart` 对**所有** Worker 生效，依赖 Redis 连通性；若 Redis 认证失败（如 `WRONGPASS`）则不生效，此时改用 `sudo supervisorctl restart order-system-worker-fast:* order-system-worker-slow:*`。
+- `queue:restart` 对**所有** Worker 生效，依赖 Redis 连通性；若 Redis 认证失败（如 `WRONGPASS`）则不生效，此时改用 `sudo supervisorctl restart sscpay-server-worker-fast:* sscpay-server-worker-slow:*`。
 - `--max-time` 是兜底：即使漏跑 `queue:restart`，Worker 也会在运行满设定秒数后自动重启加载新代码。
 
 ---
@@ -427,7 +427,7 @@ npm run build                            # 前端有变更时
 - [ ] `sudo -u www-data php artisan schedule:list` 列出全部 8 个调度任务
 - [ ] `sudo supervisorctl status` 两池均 `RUNNING`，且 `user=www-data`
 - [ ] `mysqldump` 在 cron 的 `PATH` 内，`db:backup:upload` 手动跑一次能上传到 OSS
-- [ ] `/etc/logrotate.d/order-system` 已配置（`copytruncate` + `su www-data www-data`）
+- [ ] `/etc/logrotate.d/sscpay-server` 已配置（`copytruncate` + `su www-data www-data`）
 - [ ] Nginx `root` 指向 `public/`，`.env` / `.git` 被 deny
 - [ ] `php artisan config:cache && route:cache && view:cache && filament:upgrade` 已执行
 - [ ] 健康检查 `GET /up` 返回 200
