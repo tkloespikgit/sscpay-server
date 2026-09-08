@@ -64,7 +64,9 @@ class WooCommerceProductSyncService
             throw new RuntimeException('站点配置不完整：缺少网站域名或 WooCommerce REST API 密钥');
         }
 
-        $http = Http::withBasicAuth($paymentMethod->domain_client_id, $paymentMethod->domain_client_sk)
+        // 站点侧认证插件（WooKeyAuthenticator）不认标准 HTTP Basic Auth（Authorization: Basic <base64>），
+        // 只认 "Authorization: ck:cs" 明文格式或 query 参数，见 PaymentGatewayService::client() 的注释。
+        $http = Http::withHeaders(['Authorization' => "{$paymentMethod->domain_client_id}:{$paymentMethod->domain_client_sk}"])
             ->withoutVerifying()
             ->acceptJson()
             ->timeout(self::HTTP_TIMEOUT);

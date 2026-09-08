@@ -51,9 +51,9 @@ class PaymentGatewayService
      * 适用于每个支付方式对接各自 WordPress 站点、凭证存在支付方式记录里（而不是全局 .env）的场景，
      * 如 PaymentMethodResource 的「同步支付配置」按钮。
      *
-     * WordPress 侧已支持 WooCommerce 创建的 REST API 认证方式：统一用站点的
-     * Consumer Key / Secret 做 Basic Auth，不再区分「订单账号」「配置账号」
-     * 这两套 WordPress 应用密码（已弃用）。
+     * WordPress 侧统一用站点的 Consumer Key / Secret 认证，不再区分「订单账号」「配置账号」
+     * 这两套 WordPress 应用密码（已弃用）。注意插件侧的 WooKeyAuthenticator 不认标准 HTTP
+     * Basic Auth（见 client() 方法注释），传输格式是 "Authorization: ck:cs" 明文，不是 Basic Auth。
      *
      * @param  string  $baseUrl  形如 https://example.com/wp-json/payment-plugin/v1
      * @param  string  $consumerKey  WooCommerce REST API Consumer Key（ck_xxx）
@@ -277,7 +277,12 @@ class PaymentGatewayService
 
     private function client(string $username, string $password): PendingRequest
     {
-        return Http::withBasicAuth($username, $password)
+        // 站点侧认证插件（WooKeyAuthenticator）明确排除标准 HTTP Basic Auth
+        // （代码里判定 Authorization 头含 "Basic" 字样就直接跳过，视为未提供凭据），
+        // 只认 "Authorization: ck:cs" 明文格式（不带 Basic 前缀、不 base64）或 query 参数。
+        // 用 withBasicAuth() 发出的标准 Basic Auth 头会被它无视，永远 401——这是插件侧的自定义行为，
+        // 不是标准 WooCommerce REST API 认证方式，对接这个插件时不能沿用常规 Basic Auth 习惯。
+        return Http::withHeaders(['Authorization' => "{$username}:{$password}"])
             ->acceptJson()
             ->withoutVerifying()
             ->timeout((int) ($this->config['timeout'] ?? 15))
