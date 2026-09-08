@@ -6,13 +6,11 @@
 |--------------------------------------------------------------------------
 |
 | 全局默认值，供 PaymentGatewayService 使用。本系统里每个支付方式对接
-| 各自的 WordPress 站点、凭证存在 PaymentMethod 记录里，实际调用时通过
-| $service->withConnection($baseUrl, $consumerKey, $consumerSecret) 按记录覆盖，
-| 这里的 env 默认值仅作兜底（如站点地址未覆盖时）。
-|
-| WordPress 侧已支持 WooCommerce 创建的 REST API 认证方式，统一用站点的
-| Consumer Key / Secret 做 Basic Auth；原先区分「订单账号」「配置账号」两套
-| WordPress 应用密码的方式已弃用。
+| 各自的 WordPress 站点，认证凭证（domain_client_id / domain_client_sk，即该站点的
+| WooCommerce REST API Consumer Key / Secret）只存在 PaymentMethod 记录里，
+| 调用时必须通过 $service->withConnection($baseUrl, $consumerKey, $consumerSecret) 显式传入——
+| 不提供全局兜底凭证：不同支付方式对接不同站点，一把全局共享的 key 兜底
+| 只会在配置遗漏时悄悄拿错站点的密钥去认证，把问题从"报错拒绝"变成"用错凭证"。
 |
 */
 
@@ -29,11 +27,4 @@ return [
 
     // 验证插件回调签名（X-PGA-Signature）用的密钥
     'webhook_secret' => env('PGA_WEBHOOK_SECRET', ''),
-
-    // 全局兜底凭证：WooCommerce REST API Consumer Key / Secret
-    // （所有接口统一用它做 Basic Auth，不再区分订单账号 / 配置账号）
-    'woocommerce' => [
-        'username' => env('PGA_WOO_CONSUMER_KEY', ''),
-        'password' => env('PGA_WOO_CONSUMER_SECRET', ''),
-    ],
 ];

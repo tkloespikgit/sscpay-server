@@ -525,7 +525,8 @@ PGA_TIMEOUT=15
 PGA_RETRY_TIMES=2
 PGA_RETRY_SLEEP_MS=300
 PGA_WEBHOOK_SECRET=…                # 校验回调 X-PGA-Signature，必须与插件侧一致
-PGA_WOO_CONSUMER_KEY=…  PGA_WOO_CONSUMER_SECRET=…  # 全局兜底 WooCommerce REST API 密钥（实际按支付方式记录的 domain_client_id / domain_client_sk 覆盖）
+# 认证凭证不走全局 env：每个支付方式各自的 WooCommerce REST API 密钥存在
+# payment_methods.domain_client_id / domain_client_sk，调用时按记录传入，没有全局兜底
 
 # 汇率 API（exchange:fetch）
 EXCHANGE_RATE_URL=…

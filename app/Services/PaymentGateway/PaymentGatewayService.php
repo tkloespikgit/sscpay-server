@@ -203,12 +203,13 @@ class PaymentGatewayService
             throw new PaymentGatewayException('未配置支付网关站点地址（payment_gateway.base_url 或 withConnection 传入）', -1);
         }
 
-        $credentials = $this->credentialsOverride ?? ($this->config['woocommerce'] ?? []);
+        // 认证凭证只认 withConnection() 传入的支付方式站点凭证（domain_client_id/domain_client_sk），
+        // 不再有全局兜底：不同支付方式对接不同 WordPress 站点，用全局共享的一把 key 兜底
+        // 反而会在配置遗漏时悄悄拿错站点的密钥去认证，把问题从"报错拒绝"变成"用错凭证"。
+        $credentials = $this->credentialsOverride ?? [];
         if (empty($credentials['username']) || empty($credentials['password'])) {
             throw new PaymentGatewayException(
-                $this->credentialsOverride === null
-                    ? '未配置 payment_gateway.woocommerce 的 WooCommerce REST API 密钥'
-                    : '未提供支付网关凭证（WooCommerce REST API Consumer Key / Secret）',
+                '未提供支付网关凭证：必须先调用 withConnection() 传入该支付方式的 domain_client_id / domain_client_sk',
                 -1
             );
         }

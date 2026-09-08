@@ -13,6 +13,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -524,7 +525,7 @@ class OrderItemService
         $base = rtrim((string) $paymentMethod->domain, '/').'/wp-json/wc/v3';
 
         // 复制源 = 模板变体所属的父商品（变体商品取父商品的描述/图片/分类）。
-        $source = $this->remoteGetJson($http, "{$base}/products/{$template->siteProduct->woo_product_id}");
+        $source = $this->remoteGetJson($http, "{$base}/products/{$template->siteProduct->woo_product_id}", $paymentMethod);
 
         $payload = [
             'name' => $this->resolveProductName($paymentMethod, $source),
@@ -587,6 +588,8 @@ class OrderItemService
                 continue;
             }
 
+            $this->logRemoteFailure('WooCommerce 创建商品失败', $paymentMethod, $base, $response->status(), $response->body());
+
             throw new RuntimeException(sprintf(
                 'WooCommerce 创建商品失败（%d）：%s',
                 $response->status(),
@@ -618,7 +621,7 @@ class OrderItemService
     }
 
     /** GET 读取远端商品；连接异常/非 2xx 直接报错，避免拿到空模板创建出残缺商品。 */
-    private function remoteGetJson(PendingRequest $http, string $url): array
+    private function remoteGetJson(PendingRequest $http, string $url, PaymentMethod $paymentMethod): array
     {
         try {
             $response = $http->get($url);
@@ -627,6 +630,8 @@ class OrderItemService
         }
 
         if (! $response->successful()) {
+            $this->logRemoteFailure('WooCommerce 读取源商品失败', $paymentMethod, $url, $response->status(), $response->body());
+
             throw new RuntimeException(sprintf(
                 'WooCommerce 读取源商品失败（%d）：%s',
                 $response->status(),
@@ -635,6 +640,34 @@ class OrderItemService
         }
 
         return $response->json() ?? [];
+    }
+
+    /**
+     * 请求 WordPress/WooCommerce 站点失败时统一打日志：凭证只记指纹（首尾各 4 位 + 长度），
+     * 不落明文，方便核对"这次用的到底是哪个支付方式配的哪一把 ck/cs"，而不用去猜是不是配错了。
+     */
+    private function logRemoteFailure(string $reason, PaymentMethod $paymentMethod, string $url, int $status, string $body): void
+    {
+        Log::warning($reason, [
+            'payment_method' => $paymentMethod->method_code,
+            'url' => $url,
+            'consumer_key_fingerprint' => $this->credentialFingerprint((string) $paymentMethod->domain_client_id),
+            'consumer_secret_fingerprint' => $this->credentialFingerprint((string) $paymentMethod->domain_client_sk),
+            'http_status' => $status,
+            'response_body' => mb_substr($body, 0, 500),
+        ]);
+    }
+
+    /** 凭证指纹：只保留首尾各 4 位和长度，既能核对"是不是同一把 key"，又不落明文。 */
+    private function credentialFingerprint(string $value): string
+    {
+        $length = strlen($value);
+
+        if ($length <= 8) {
+            return str_repeat('*', $length);
+        }
+
+        return substr($value, 0, 4).str_repeat('*', $length - 8).substr($value, -4)." (len={$length})";
     }
 
     /** 按 SKU 查远端商品，返回第一条（找不到/请求失败返回 null，仅供幂等确认用）。 */
