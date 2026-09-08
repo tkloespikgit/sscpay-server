@@ -8,6 +8,7 @@ use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * WordPress支付网关聚合插件的客户端封装。
@@ -237,6 +238,19 @@ class PaymentGatewayService
         }
 
         if ((int) $body['code'] !== 0) {
+            // WordPress 侧站点认证类失败（如 WooCommerce REST API 密钥错误/被禁用/权限不足）
+            // 单独打日志：只记凭证长度和首尾几位做指纹比对，不记完整明文，
+            // 方便核对"这次用的到底是哪个支付方式的哪一把 key/secret"，而不用去猜。
+            Log::warning('支付网关插件请求业务失败', [
+                'path' => $path,
+                'base_url' => $baseUrl,
+                'username_fingerprint' => $this->credentialFingerprint($credentials['username']),
+                'password_fingerprint' => $this->credentialFingerprint($credentials['password']),
+                'http_status' => $response->status(),
+                'code' => $body['code'],
+                'message' => $body['message'] ?? null,
+            ]);
+
             throw new PaymentGatewayException(
                 (string) ($body['message'] ?? '未知错误'),
                 (int) $body['code'],
@@ -246,6 +260,18 @@ class PaymentGatewayService
         }
 
         return $body['data'] ?? [];
+    }
+
+    /** 凭证指纹：只保留首尾各 4 位和长度，既能核对"是不是同一把 key"，又不落明文。 */
+    private function credentialFingerprint(string $value): string
+    {
+        $length = strlen($value);
+
+        if ($length <= 8) {
+            return str_repeat('*', $length);
+        }
+
+        return substr($value, 0, 4).str_repeat('*', $length - 8).substr($value, -4)." (len={$length})";
     }
 
     private function client(string $username, string $password): PendingRequest

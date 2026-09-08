@@ -201,13 +201,14 @@ POST {BASE_URL}/api/order/create
 | `discount` | string(数字) | ✅ | 折扣（正数表示减免）                                                                                 |
 | `tax` | string(数字) | ✅ | 税金                                                                                         |
 | `amount` | string(数字) | ✅ | 应付总额，必须严格等于 `subtotal + shipping_fee - discount + tax`，误差超过 0.01 直接拒单                      |
-| `customer.first_name`/`last_name`/`email`/`phone` | string | ✅ | 客户信息                                                                                       |
+| `customer.first_name`/`last_name`/`email` | string | ✅ | 客户信息                                                                                       |
+| `customer.phone` | string ≤30 | 否 | 客户手机号，部分电商网站结账页不采集该字段时可不传                                                                    |
 | `shipping_address.line1` | string ≤255 | ✅ | 地址行 1                                                                                      |
 | `shipping_address.line2` | string ≤255 | 否 | 地址行 2                                                                                      |
 | `shipping_address.city` | string ≤100 | ✅ | 城市                                                                                         |
 | `shipping_address.state` | string ≤100 | 否 | 州/省                                                                                        |
 | `shipping_address.country` | string(2) | ✅ | ISO 3166-1 alpha-2（如 `DE`、`US`）                                                            |
-| `shipping_address.zip` | string ≤20 | ✅ | 邮编                                                                                         |
+| `shipping_address.zip` | string ≤20 | 否 | 邮编，部分电商网站结账页不采集该字段时可不传                                                                    |
 | `items` | array ≥1 | ✅ | 商品明细                                                                                       |
 | `items[].product_sku` | string ≤64 | 否 | 商户侧商品编号                                                                                    |
 | `items[].product_id` | string ≤64 | ✅ | 商户侧商品唯一标识,wordpress 传入 商品 的product_id                                                      |
