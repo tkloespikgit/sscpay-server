@@ -323,6 +323,15 @@ class PaymentMethodResource extends Resource
                     ->counts('siteProducts')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('site_products_exists')
+                    ->label(__('admin.payment_method.columns.sync_status'))
+                    ->exists('siteProducts')
+                    ->badge()
+                    ->formatStateUsing(fn (bool $state) => $state
+                        ? __('admin.payment_method.sync_statuses.synced')
+                        : __('admin.payment_method.sync_statuses.not_synced'))
+                    ->color(fn (bool $state) => $state ? 'success' : 'gray')
+                    ->action(static::viewSyncStatusAction()),
                 TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_day')->label(__('admin.payment_method.columns.daily_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
@@ -474,6 +483,38 @@ class PaymentMethodResource extends Resource
                     ->title(__('admin.payment_method.actions.sync_products_dispatched'))
                     ->send();
             });
+    }
+
+    /**
+     * 列表页"商品同步状态"列点击弹窗：展示该网站已同步商品的统计信息
+     * （数量、最高/最低价格、上次同步时间）。未同步（site_products 无记录）
+     * 时禁用点击，列文案已显示"未同步"，无需弹出空弹窗。
+     */
+    public static function viewSyncStatusAction(): Action
+    {
+        return Action::make('viewSyncStatus')
+            ->label(__('admin.payment_method.columns.sync_status'))
+            ->modalHeading(__('admin.payment_method.modals.sync_status_heading'))
+            ->modalSubmitAction(false)
+            ->modalCancelAction(fn (Action $action) => $action->label(__('admin.payment_method.modals.close')))
+            ->disabled(fn (PaymentMethod $record) => ! $record->site_products_exists)
+            ->schema([
+                TextEntry::make('site_products_summary_count')
+                    ->label(__('admin.payment_method.fields.site_products_summary_count'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->count()),
+                TextEntry::make('site_products_summary_price_max')
+                    ->label(__('admin.payment_method.fields.site_products_summary_price_max'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->max('price_max'))
+                    ->money('usd'),
+                TextEntry::make('site_products_summary_price_min')
+                    ->label(__('admin.payment_method.fields.site_products_summary_price_min'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->min('price_min'))
+                    ->money('usd'),
+                TextEntry::make('site_products_summary_synced_at')
+                    ->label(__('admin.payment_method.fields.site_products_summary_synced_at'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->max('synced_at'))
+                    ->dateTime(),
+            ]);
     }
 
     /**

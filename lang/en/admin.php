@@ -214,6 +214,10 @@ return [
             'fee_percent' => 'Transaction Fee (Percent)',
             'fee_fixed' => 'Transaction Fee (Fixed)',
             'min_transaction_amount' => 'Minimum Transaction Amount',
+            'site_products_summary_count' => 'Product Count',
+            'site_products_summary_price_max' => 'Highest Price',
+            'site_products_summary_price_min' => 'Lowest Price',
+            'site_products_summary_synced_at' => 'Last Synced At',
         ],
         'help' => [
             'risk_control' => 'Enter 0 for no limit',
@@ -256,11 +260,20 @@ return [
             'code' => 'Code',
             'product_match_mode' => 'Match Mode',
             'site_products_count' => 'Site Products',
+            'sync_status' => 'Product Sync Status',
             'per_transaction_limit' => 'Per-Transaction Limit',
             'daily_limit' => 'Daily Limit',
             'monthly_limit' => 'Monthly Limit',
             'sync_logistics' => 'Sync Logistics',
             'allow_returned_source' => 'Allow Return to Source',
+        ],
+        'sync_statuses' => [
+            'synced' => 'Synced',
+            'not_synced' => 'Not Synced',
+        ],
+        'modals' => [
+            'sync_status_heading' => 'Product Sync Details',
+            'close' => 'Close',
         ],
         'actions' => [
             'duplicate' => 'Duplicate',

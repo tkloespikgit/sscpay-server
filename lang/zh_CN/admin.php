@@ -209,6 +209,10 @@ return [
             'fee_percent' => '交易百分比手续费',
             'fee_fixed' => '交易固定手续费',
             'min_transaction_amount' => '最小交易金额',
+            'site_products_summary_count' => '商品数量',
+            'site_products_summary_price_max' => '最高价格',
+            'site_products_summary_price_min' => '最低价格',
+            'site_products_summary_synced_at' => '上次同步时间',
         ],
         'help' => [
             'risk_control' => '填 0 表示该项不限制',
@@ -251,11 +255,20 @@ return [
             'code' => '代码',
             'product_match_mode' => '匹配模式',
             'site_products_count' => '站点商品数',
+            'sync_status' => '商品同步状态',
             'per_transaction_limit' => '单笔上限',
             'daily_limit' => '单日上限',
             'monthly_limit' => '单月上限',
             'sync_logistics' => '同步物流',
             'allow_returned_source' => '允许返回源站',
+        ],
+        'sync_statuses' => [
+            'synced' => '已同步',
+            'not_synced' => '未同步',
+        ],
+        'modals' => [
+            'sync_status_heading' => '商品同步详情',
+            'close' => '关闭',
         ],
         'actions' => [
             'duplicate' => '复制',
