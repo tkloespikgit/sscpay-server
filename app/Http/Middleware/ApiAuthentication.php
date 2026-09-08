@@ -45,7 +45,16 @@ class ApiAuthentication
         $timestamp = $request->header('Timestamp');
         $nonce = $request->header('X-Nonce');
 
-        $body = $request->json()->all();
+        // 必须从原始请求体重新解码，不能用 $request->json()->all()：框架默认全局中间件
+        // ConvertEmptyStringsToNull 会在路由中间件之前把 JSON body 里的空字符串字段
+        // 递归改写成 null，商户端签名时用的却是原始值（如 phone: ""），
+        // 用被改写过的数组验签会导致签名永远对不上。
+        $body = json_decode($request->getContent(), true);
+
+        if (! is_array($body)) {
+            return $this->reject('Request body must be valid JSON.');
+        }
+
         $sign = $body['sign'] ?? null;
 
         if (! $appId || ! $timestamp || ! $nonce || ! $sign) {
