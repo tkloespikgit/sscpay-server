@@ -55,7 +55,7 @@ class WooCommerceProductSyncService
     private const BAIDU_TOKEN_CACHE_KEY = 'baidu_translate_access_token';
 
     /**
-     * @return array{total: int, created: int, updated: int, deleted: int}
+     * @return array{total: int, created: int, updated: int, deleted: int, skipped: int}
      */
     public function sync(PaymentMethod $paymentMethod): array
     {
@@ -82,8 +82,23 @@ class WooCommerceProductSyncService
         $syncedIds = [];
         $created = 0;
         $updated = 0;
+        $skipped = 0;
 
         foreach ($products as $index => $product) {
+            // 售价为 0（过滤后没有任何有效变体）的商品直接跳过，不写入 site_products；
+            // 也不计入 syncedIds，因此这类商品若之前已入库，会在下方清理逻辑中被移除。
+            if ($product['variations'] === []) {
+                $skipped++;
+
+                Log::info('Skip zero-priced product during sync', [
+                    'payment_method_id' => $paymentMethod->id,
+                    'woo_product_id' => $product['woo_product_id'],
+                    'name' => $product['name'],
+                ]);
+
+                continue;
+            }
+
             // 商品与其变体在同一事务内写入，保证两边数据一致。
             $row = DB::transaction(function () use ($paymentMethod, $product, $names, $translations, $index, $now) {
                 $row = SiteProduct::query()->updateOrCreate(
@@ -136,6 +151,7 @@ class WooCommerceProductSyncService
             'created' => $created,
             'updated' => $updated,
             'deleted' => $deleted,
+            'skipped' => $skipped,
         ];
     }
 
@@ -180,24 +196,29 @@ class WooCommerceProductSyncService
         $isVariable = $variations !== [];
 
         if ($isVariable) {
-            // 变体商品的销售价格范围取所有变体的实际售价。
-            $prices = array_map(fn (array $v) => $v['price'], $variations);
-            $priceMin = min($prices);
-            $priceMax = max($prices);
+            // 变体商品：过滤掉售价为 0（或异常负值）的变体，这类变体不可用于
+            // 下单匹配，一律不入库；价格范围只按剩余的有效变体重新计算。
+            $variations = $this->rejectZeroPriced($variations);
         } else {
             // 无变体（variations 为空）视为简单商品：price 是插件给出的当前售价，
             // 缺失时回退原价；单值商品上下限相同。
             $price = (float) (($item['price'] ?? '') !== '' ? $item['price'] : ($item['regular_price'] ?? 0));
-            $priceMin = $priceMax = $price;
 
             // 简单商品没有变体，把主商品自身作为唯一一条变体写入，
-            // 变体 ID 直接用主商品 ID（同一商品下依然唯一）。
-            $variations = [[
+            // 变体 ID 直接用主商品 ID（同一商品下依然唯一）。售价为 0 的简单商品
+            // 会被 rejectZeroPriced 过滤成空列表，从而在 sync() 中整条跳过、不入库。
+            $variations = $this->rejectZeroPriced([[
                 'id' => (int) $item['id'],
                 'sku' => ($item['sku'] ?? '') !== '' ? $item['sku'] : null,
                 'price' => $price,
-            ]];
+            ]]);
         }
+
+        // 价格上下限统一按过滤后的有效变体计算；变体全被过滤时置 0，
+        // sync() 据此判定该商品无有效售价并跳过。
+        $prices = array_map(fn (array $v) => $v['price'], $variations);
+        $priceMin = $prices !== [] ? min($prices) : 0.0;
+        $priceMax = $prices !== [] ? max($prices) : 0.0;
 
         return [
             'woo_product_id' => (int) $item['id'],
@@ -210,6 +231,21 @@ class WooCommerceProductSyncService
             'image_url' => ($item['image'] ?? '') !== '' ? $item['image'] : null,
             'permalink' => $item['permalink'] ?? null,
         ];
+    }
+
+    /**
+     * 过滤掉售价 <= 0 的变体：价格为 0（或异常负值）的商品 / 变体不可用于下单
+     * 匹配，一律不入库。返回重新索引后的列表（可能为空）。
+     *
+     * @param  list<array{id: int, sku: string|null, price: float}>  $variations
+     * @return list<array{id: int, sku: string|null, price: float}>
+     */
+    private function rejectZeroPriced(array $variations): array
+    {
+        return array_values(array_filter(
+            $variations,
+            fn (array $variation) => (float) $variation['price'] > 0
+        ));
     }
 
     /**

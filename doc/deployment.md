@@ -157,11 +157,10 @@ sudo crontab -u www-data -e
 
 ```cron
 * * * * * cd /var/www/sscpay-server && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
-* * * * * cd /var/www/sscpay-server && /usr/bin/php8.2 artisan schedule:finish >> /dev/null 2>&1
 ```
 
-- `schedule:run`：每分钟触发一次，Laravel 按 `APP_TIMEZONE`（PRC）判断哪些任务到期。
-- `schedule:finish`：调度收尾，清理 `withoutOverlapping()` 互斥锁、触发 `->then()` 回调；本系统大量使用 `withoutOverlapping()`，建议保留这一行。
+- `schedule:run`：每分钟触发一次，Laravel 按 `APP_TIMEZONE`（PRC）判断哪些任务到期。`withoutOverlapping()` 互斥锁的清理与 `->then()` 回调都由它在本进程内完成，**cron 里只需要这一条**。
+- ⚠️ **不要把 `schedule:finish` 单独写进 crontab**：它是框架内部命令（`hidden=true`），签名为 `schedule:finish {id} {code=0}`，`{id}` 是调度事件的互斥名（`mutexName()`）。仅当某个调度事件使用 `->runInBackground()` 时，`schedule:run` 才会自动带参派生出 `schedule:finish "<mutexName>" "$?"`（见 `CommandBuilder::buildBackgroundCommand()`）。手动裸跑缺少必填参数 `id`，会直接报 `Not enough arguments (missing: "id")`。本项目所有调度任务只用 `withoutOverlapping()`、未用 `runInBackground()`，因此**根本不需要这一行**。
 - **必须用 `crontab -u www-data`**，让定时任务以 www-data 身份运行，写入 `storage/` 的文件属主才与 Web / Worker 一致。
 - cron 环境 `PATH` 精简（通常 `/usr/bin:/bin`），`db:backup:upload` 内部调用的 `mysqldump` 需在此 `PATH` 中；不在时在命令里写绝对路径或补充 `PATH=`。
 
@@ -423,7 +422,7 @@ npm run build                            # 前端有变更时
 - [ ] `QUEUE_CONNECTION=redis` / `CACHE_STORE=redis` / `SESSION_DRIVER=redis`
 - [ ] **`REDIS_QUEUE_RETRY_AFTER=1900`**（> 慢车道 `--timeout=1800`）
 - [ ] `storage/`、`bootstrap/cache/`、`storage/app/backups/` 属主为 `www-data` 且可写
-- [ ] `crontab -u www-data -l` 含 `schedule:run`（+ `schedule:finish`）
+- [ ] `crontab -u www-data -l` 含且仅含 `schedule:run`（**不要**放 `schedule:finish`，裸跑会报 `missing: "id"`，见 4.1）
 - [ ] `sudo -u www-data php artisan schedule:list` 列出全部 8 个调度任务
 - [ ] `sudo supervisorctl status` 两池均 `RUNNING`，且 `user=www-data`
 - [ ] `mysqldump` 在 cron 的 `PATH` 内，`db:backup:upload` 手动跑一次能上传到 OSS

@@ -48,12 +48,13 @@ class SyncSiteProductsJob implements ShouldQueue
 
         if ($paymentMethod->merchant_id) {
             $telegram->send($paymentMethod->merchant_id, sprintf(
-                "✅ 站点商品同步完成：%s\n共同步 %d 个商品（新增 %d / 更新 %d / 清理 %d）",
+                "✅ 站点商品同步完成：%s\n共同步 %d 个商品（新增 %d / 更新 %d / 清理 %d / 跳过 0 价 %d）",
                 $paymentMethod->domain,
                 $stats['total'],
                 $stats['created'],
                 $stats['updated'],
                 $stats['deleted'],
+                $stats['skipped'] ?? 0,
             ));
         }
 
