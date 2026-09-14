@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\PaymentMethod;
+use App\Models\ReplaceKeyword;
 use App\Models\SiteProduct;
 use App\Models\SiteProductVariation;
 use App\Models\SystemConfig;
@@ -13,6 +14,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -42,6 +44,12 @@ use RuntimeException;
  *     允许不超过 5% 的汇率折算差额；找不到就取"价格更高且最接近"的变体作模板，
  *     复制一份改价并在 WordPress 站点上同步创建同价商品（变体商品的复制体一律作为简单商品）；
  *   - 因为 /pay 远程建单需要传真实的商品 ID / 链接，创建必须在下单时同步完成，不走队列。
+ *
+ * COPY 模式（copyItems）：
+ *   - 先用商户配置的关键词替换表（ReplaceKeyword）把订单明细商品名忽略大小写替换一遍
+ *     （如 Mechanical → MAD），再按"替换后名称完全相同 + USD 折算价 5% 容差内"在站点
+ *     商品变体中找同名同价商品；找不到就取"价格相等或更高且最接近"的变体作模板，
+ *     复制一份改名（换成替换后的名称）、改价并同步创建，SKU 规则与 CREATE 一致（随机生成）。
  */
 class OrderItemService
 {
@@ -256,6 +264,132 @@ class OrderItemService
                 ];
             } else {
                 $created = $createdThisRun[$targetUsd] = $this->createRemoteProduct($paymentMethod, $template, $targetUsd);
+            }
+
+            $items[] = $this->buildLineFromOrderItem($orderItem, [
+                'product_sku' => $created['sku'],
+                'product_id' => (string) $created['woo_product_id'],
+                'product_url' => $created['permalink'],
+                'product_name' => $created['name'],
+            ], $template->id, true);
+        }
+
+        return ['items' => $items, 'subtotal' => $subtotal, 'overflow' => '0'];
+    }
+
+    /**
+     * COPY 模式：先用商户配置的关键词替换表把订单明细商品名忽略大小写替换一遍，
+     * 再按"替换后名称完全相同 + USD 折算价 5% 容差内"在站点商品变体中找同名同价商品；
+     * 找不到就取"价格相等或更高且最接近"的变体作模板，复制一份改成替换后的名称、
+     * 改价并在 WordPress 站点上同步创建（SKU 随机生成，规则与 CREATE 一致）。
+     * 返回结构与 createItems() 一致，明细额外携带 source_variation_id / auto_created 两个字段。
+     *
+     * @param  PaymentMethod  $paymentMethod  选定的支付方式（商品按其站点配置同步/创建）
+     * @param  Order  $order  订单（取商户下单明细，明细自带下单时快照的 USD 折算价）
+     * @param  Collection<int, \App\Models\OrderMatchedItem>|null  $reusableCreated
+     *         幂等补单重试时上一轮已自动创建的商品行，按"USD 单价 + 替换后名称"复合键复用，
+     *         避免站点堆积重复商品；不同名字的商品即使同价也不能互相顶替，所以不能像 CREATE
+     *         那样只按价格复用。
+     */
+    public function copyItems(PaymentMethod $paymentMethod, Order $order, ?Collection $reusableCreated = null): array
+    {
+        $orderItems = $order->items()->get();
+
+        if ($orderItems->isEmpty()) {
+            throw new RuntimeException('订单没有商品明细，COPY 模式无法匹配商品');
+        }
+
+        $candidates = SiteProductVariation::query()
+            ->whereHas('siteProduct', fn ($query) => $query->where('payment_method_id', $paymentMethod->id))
+            ->where('price', '>', 0)
+            ->with('siteProduct')
+            ->get();
+
+        if ($candidates->isEmpty()) {
+            throw new RuntimeException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品，请先同步商品");
+        }
+
+        // 补单重试复用池：按"USD 单价 + 替换后名称（忽略大小写）"复合键索引上一轮已创建的商品行。
+        $reusable = collect();
+
+        foreach ($reusableCreated ?? [] as $row) {
+            if (filled($row->product_id)) {
+                $key = number_format((float) $row->converted_unit_price, 2, '.', '').'|'.mb_strtolower((string) $row->product_name);
+                $reusable->put($key, $row);
+            }
+        }
+
+        $createdThisRun = []; // 本次运行内同名同价商品复用（复合键 => 创建结果）
+        $items = [];
+        $subtotal = '0';
+
+        foreach ($orderItems as $orderItem) {
+            $targetUsd = number_format((float) $orderItem->converted_unit_price, 2, '.', '');
+
+            if (bccomp($targetUsd, '0', 2) <= 0) {
+                throw new RuntimeException('订单明细折算后的美金单价必须大于 0，COPY 模式无法匹配商品');
+            }
+
+            $subtotal = bcadd($subtotal, (string) $orderItem->total_price, 2);
+
+            $replacedName = mb_substr(
+                $this->cleanName(ReplaceKeyword::applyReplacements($orderItem->product_name, $paymentMethod->merchant_id)),
+                0,
+                255
+            );
+
+            // 1. 同名 + 同价匹配：先按替换后名称过滤，再复用 CREATE 同样的价差排序规则——
+            // 打乱后按价差升序排，价格完全相等的候选天然排最前，取价差在容差内且最小的一个。
+            $diff = fn (SiteProductVariation $variation) => abs((float) $variation->price - (float) $targetUsd);
+
+            $hit = $candidates
+                ->filter(fn (SiteProductVariation $variation) => mb_strtolower($variation->siteProduct->name) === mb_strtolower($replacedName))
+                ->shuffle()
+                ->sortBy($diff)
+                ->first(fn (SiteProductVariation $variation) => $diff($variation) <= (float) $targetUsd * self::CREATE_PRICE_TOLERANCE);
+
+            if ($hit !== null) {
+                $items[] = $this->buildLineFromOrderItem($orderItem, [
+                    'product_sku' => $hit->sku,
+                    'product_id' => (string) $hit->woo_variation_id,
+                    'product_url' => $hit->siteProduct->permalink,
+                    'product_name' => $hit->siteProduct->name,
+                ], $hit->id, false);
+
+                continue;
+            }
+
+            // 2. 找不到同名同价：取价格相等或更高且最接近的变体作复制模板；没有更贵的直接报错。
+            $template = $candidates
+                ->filter(fn (SiteProductVariation $variation) => bccomp($this->variationPrice($variation), $targetUsd, 2) >= 0)
+                ->sortBy(fn (SiteProductVariation $variation) => (float) $variation->price)
+                ->first();
+
+            if ($template === null) {
+                throw new RuntimeException("支付方式 {$paymentMethod->method_code} 站点没有单价不低于 {$targetUsd} 美金的商品，COPY 模式无法复制改价创建商品");
+            }
+
+            // 3. 复用顺序：本次运行内同名同价已创建的（多行补单时后续行必须指向同一商品）
+            // > 补单重试上一轮已创建的 > 真正调站点 API 新建。
+            $reuseKey = $targetUsd.'|'.mb_strtolower($replacedName);
+            $reuseRow = $reusable->get($reuseKey);
+
+            if (isset($createdThisRun[$reuseKey])) {
+                $created = $createdThisRun[$reuseKey];
+            } elseif ($reuseRow !== null) {
+                $created = [
+                    'woo_product_id' => (int) $reuseRow->product_id,
+                    'sku' => $reuseRow->product_sku,
+                    'name' => $reuseRow->product_name,
+                    'permalink' => $reuseRow->product_url,
+                ];
+            } else {
+                $created = $createdThisRun[$reuseKey] = $this->remoteCreateProduct(
+                    $paymentMethod,
+                    $template,
+                    $targetUsd,
+                    fn () => $replacedName,
+                );
             }
 
             $items[] = $this->buildLineFromOrderItem($orderItem, [
@@ -502,21 +636,45 @@ class OrderItemService
     }
 
     /**
-     * 在支付方式对应的 WordPress 站点上创建一个简单商品（WooCommerce REST API
-     * /wc/v3/products，用站点配置的 ck/cs 密钥）：复制模板所属父商品的描述/图片/分类，
-     * 名称沿用源商品真实名称（空名称才回退"虚拟商品前缀 + 随机串"），SKU 重新生成，
-     * 价格改为目标美金价。源商品是变体商品时，复制体也一律按简单商品创建。
-     * 创建成功后把新商品回写本地快照表，之后的订单可直接匹配到它。
+     * CREATE 模式的远程创建：名称沿用源商品真实名称（空名称才回退"虚拟商品前缀 + 随机串"），
+     * 其余委托给 remoteCreateProduct()。
      *
      * @return array{woo_product_id: int, sku: string, name: string, permalink: string, image_url: string|null}
      */
     private function createRemoteProduct(PaymentMethod $paymentMethod, SiteProductVariation $template, string $targetUsd): array
     {
+        return $this->remoteCreateProduct(
+            $paymentMethod,
+            $template,
+            $targetUsd,
+            fn (array $source) => $this->resolveProductName($paymentMethod, $source),
+        );
+    }
+
+    /**
+     * 在支付方式对应的 WordPress 站点上创建一个简单商品（WooCommerce REST API
+     * /wc/v3/products，用站点配置的 ck/cs 密钥）：复制模板所属父商品的描述/图片/分类，
+     * 名称由调用方通过 $resolveName 决定（CREATE 模式沿用源商品真实名称；COPY 模式固定用
+     * 关键词替换后的名称），SKU 随机生成，价格改为目标美金价。源商品是变体商品时，
+     * 复制体也一律按简单商品创建。创建成功后把新商品回写本地快照表，之后的订单可直接匹配到它。
+     * CREATE / COPY 两种模式共用这份 HTTP 创建逻辑，只有名称来源不同。
+     *
+     * @param  callable(array): string  $resolveName  接收远端源商品数据，返回新商品名称
+     * @return array{woo_product_id: int, sku: string, name: string, permalink: string, image_url: string|null}
+     */
+    private function remoteCreateProduct(PaymentMethod $paymentMethod, SiteProductVariation $template, string $targetUsd, callable $resolveName): array
+    {
         if (blank($paymentMethod->domain) || blank($paymentMethod->domain_client_id) || blank($paymentMethod->domain_client_sk)) {
             throw new RuntimeException("支付方式 {$paymentMethod->method_code} 站点配置不完整：缺少网站域名或 WooCommerce REST API 密钥，无法创建商品");
         }
 
-        $http = Http::withBasicAuth((string) $paymentMethod->domain_client_id, (string) $paymentMethod->domain_client_sk)
+        // 站点侧认证插件（WooKeyAuthenticator）不认标准 HTTP Basic Auth，明文 Authorization 头
+        // 也可能被本地/反代环境的 Web 服务器不转发给 PHP，改用 query 参数最可靠，
+        // 见 PaymentGatewayService::client() 的注释。
+        $http = Http::withOptions(['query' => [
+            'consumer_key' => (string) $paymentMethod->domain_client_id,
+            'consumer_secret' => (string) $paymentMethod->domain_client_sk,
+        ]])
             ->withoutVerifying()
             ->acceptJson()
             ->timeout(self::CREATE_HTTP_TIMEOUT);
@@ -524,10 +682,10 @@ class OrderItemService
         $base = rtrim((string) $paymentMethod->domain, '/').'/wp-json/wc/v3';
 
         // 复制源 = 模板变体所属的父商品（变体商品取父商品的描述/图片/分类）。
-        $source = $this->remoteGetJson($http, "{$base}/products/{$template->siteProduct->woo_product_id}");
+        $source = $this->remoteGetJson($http, "{$base}/products/{$template->siteProduct->woo_product_id}", $paymentMethod);
 
         $payload = [
-            'name' => $this->resolveProductName($paymentMethod, $source),
+            'name' => mb_substr($resolveName($source), 0, 255),
             // 无论源商品是不是变体商品，复制体一律作为简单商品创建。
             'type' => 'simple',
             'status' => 'publish',
@@ -587,6 +745,8 @@ class OrderItemService
                 continue;
             }
 
+            $this->logRemoteFailure('WooCommerce 创建商品失败', $paymentMethod, $base, $response->status(), $response->body());
+
             throw new RuntimeException(sprintf(
                 'WooCommerce 创建商品失败（%d）：%s',
                 $response->status(),
@@ -618,7 +778,7 @@ class OrderItemService
     }
 
     /** GET 读取远端商品；连接异常/非 2xx 直接报错，避免拿到空模板创建出残缺商品。 */
-    private function remoteGetJson(PendingRequest $http, string $url): array
+    private function remoteGetJson(PendingRequest $http, string $url, PaymentMethod $paymentMethod): array
     {
         try {
             $response = $http->get($url);
@@ -627,6 +787,8 @@ class OrderItemService
         }
 
         if (! $response->successful()) {
+            $this->logRemoteFailure('WooCommerce 读取源商品失败', $paymentMethod, $url, $response->status(), $response->body());
+
             throw new RuntimeException(sprintf(
                 'WooCommerce 读取源商品失败（%d）：%s',
                 $response->status(),
@@ -635,6 +797,34 @@ class OrderItemService
         }
 
         return $response->json() ?? [];
+    }
+
+    /**
+     * 请求 WordPress/WooCommerce 站点失败时统一打日志：凭证只记指纹（首尾各 4 位 + 长度），
+     * 不落明文，方便核对"这次用的到底是哪个支付方式配的哪一把 ck/cs"，而不用去猜是不是配错了。
+     */
+    private function logRemoteFailure(string $reason, PaymentMethod $paymentMethod, string $url, int $status, string $body): void
+    {
+        Log::warning($reason, [
+            'payment_method' => $paymentMethod->method_code,
+            'url' => $url,
+            'consumer_key_fingerprint' => $this->credentialFingerprint((string) $paymentMethod->domain_client_id),
+            'consumer_secret_fingerprint' => $this->credentialFingerprint((string) $paymentMethod->domain_client_sk),
+            'http_status' => $status,
+            'response_body' => mb_substr($body, 0, 500),
+        ]);
+    }
+
+    /** 凭证指纹：只保留首尾各 4 位和长度，既能核对"是不是同一把 key"，又不落明文。 */
+    private function credentialFingerprint(string $value): string
+    {
+        $length = strlen($value);
+
+        if ($length <= 8) {
+            return str_repeat('*', $length);
+        }
+
+        return substr($value, 0, 4).str_repeat('*', $length - 8).substr($value, -4)." (len={$length})";
     }
 
     /** 按 SKU 查远端商品，返回第一条（找不到/请求失败返回 null，仅供幂等确认用）。 */
@@ -673,11 +863,11 @@ class OrderItemService
         return mb_substr($prefix !== '' ? $prefix.' '.$random : $random, 0, 255);
     }
 
-    /** 生成一个本地变体池中尚未使用的唯一 SKU。 */
+    /** 生成一个本地变体池中尚未使用的唯一 SKU（CREATE / COPY 两种模式共用）。 */
     private function generateUniqueSku(): string
     {
         for ($i = 0; $i < 5; $i++) {
-            $sku = strtoupper(Str::random(12));
+            $sku = strtoupper(Str::random(10));
 
             if (! SiteProductVariation::query()->where('sku', $sku)->exists()) {
                 return $sku;

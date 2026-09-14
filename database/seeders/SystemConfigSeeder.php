@@ -45,6 +45,13 @@ class SystemConfigSeeder extends Seeder
                 'description' => '固定汇损值（当 surcharge_type = fixed 时生效）',
             ],
             [
+                'config_key' => 'exchange.history_retention_days',
+                'config_value' => '120',
+                'value_type' => 'number',
+                'group' => 'exchange',
+                'description' => '汇率历史快照保留天数（exchange_rate_histories，0 或负数表示不清理；需大于后台趋势页最长的 90 天窗口）',
+            ],
+            [
                 'config_key' => 'order.platforms',
                 'config_value' => json_encode(['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart']),
                 'value_type' => 'json',
@@ -88,10 +95,10 @@ class SystemConfigSeeder extends Seeder
             ],
             [
                 'config_key' => 'payment.product_match_modes',
-                'config_value' => json_encode(['MATCH', 'CREATE', 'VIRTUAL']),
+                'config_value' => json_encode(['MATCH', 'CREATE', 'VIRTUAL', 'COPY']),
                 'value_type' => 'json',
                 'group' => 'payment',
-                'description' => '支付方式商品匹配模式枚举（JSON 数组）：MATCH 匹配 / CREATE 创建 / VIRTUAL 虚拟（等同 MATCH）；回跳地址与站点同域名时自动走直连',
+                'description' => '支付方式商品匹配模式枚举（JSON 数组）：MATCH 匹配 / CREATE 创建 / VIRTUAL 虚拟（等同 MATCH）/ COPY 关键词替换后按名称复制；回跳地址与站点同域名时自动走直连',
             ],
             [
                 'config_key' => 'payment_link.expire_days',

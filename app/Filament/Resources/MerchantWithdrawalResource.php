@@ -51,7 +51,7 @@ class MerchantWithdrawalResource extends Resource
             ->columns([
                 TextColumn::make('id')->label('#')->sortable(),
                 TextColumn::make('merchant.name')->label(__('admin.finance.fields.merchant'))->searchable()
-                    ->visible(fn () => (bool) auth()->user()?->is_super_admin),
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff()),
                 TextColumn::make('amount')->label(__('admin.finance.withdrawal.amount'))->money('usd')->sortable(),
                 TextColumn::make('status')->label(__('admin.finance.fields.status'))->badge()
                     ->formatStateUsing(fn (string $state) => __('admin.finance.withdrawal.statuses.'.$state))

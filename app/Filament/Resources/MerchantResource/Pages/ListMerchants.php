@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\MerchantResource\Pages;
 
 use App\Filament\Resources\MerchantResource;
-use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
 class ListMerchants extends ListRecords
@@ -12,8 +11,6 @@ class ListMerchants extends ListRecords
 
     protected function getHeaderActions(): array
     {
-        return [
-            CreateAction::make(),
-        ];
+        return [];
     }
 }

@@ -20,14 +20,19 @@ class PaymentMethod extends Model
      * 商品匹配模式兜底列表；允许取值以系统配置 payment.product_match_modes（JSON 数组）为准。
      * DIRECT（直连）已从枚举移除：回跳地址与站点同域名时由下单流程自动走直连分支。
      */
-    public const PRODUCT_MATCH_MODES_FALLBACK = ['MATCH', 'CREATE', 'VIRTUAL'];
+    public const PRODUCT_MATCH_MODES_FALLBACK = ['MATCH', 'CREATE', 'VIRTUAL', 'COPY'];
 
-    /** 已实现的匹配模式：MATCH 存量商品凑单；CREATE 同价匹配 + 复制改价建站创建；VIRTUAL 等同 MATCH。 */
+    /**
+     * 已实现的匹配模式：MATCH 存量商品凑单；CREATE 同价匹配 + 复制改价建站创建；
+     * VIRTUAL 等同 MATCH；COPY 关键词替换商品名后按名称+同价匹配，找不到才复制改价创建。
+     */
     public const MODE_MATCH = 'MATCH';
 
     public const MODE_CREATE = 'CREATE';
 
     public const MODE_VIRTUAL = 'VIRTUAL';
+
+    public const MODE_COPY = 'COPY';
 
     protected $fillable = [
         'merchant_id',
@@ -40,14 +45,16 @@ class PaymentMethod extends Model
         'domain',
         'domain_client_id',
         'domain_client_sk',
-        'order_account',
-        'order_password',
-        'config_account',
-        'config_password',
+        // order_account / order_password / config_account / config_password 已弃用：
+        // 支付插件的所有接口统一改用上面的 WooCommerce REST API 密钥（Consumer Key / Secret）
+        // 做 Basic Auth。数据库列暂时保留，但不再参与批量赋值与任何认证流程。
         'payment_config_id',
         'product_match_mode',
         'invoice_prefix',
         'virtual_product_prefix',
+        'order_no_prefix',
+        'order_no_format',
+        'order_no_length',
         'sync_logistics',
         'allow_returned_source',
         'max_amount_per_transaction',
@@ -56,6 +63,13 @@ class PaymentMethod extends Model
         'max_amount_per_month',
         'refund_fee',
         'chargeback_fee',
+        'fee_percent',
+        'fee_fixed',
+        'sender_email',
+        'sender_name',
+        'mail_driver',
+        'mail_credentials',
+        'payment_link_mail_template',
     ];
 
     protected function casts(): array
@@ -68,9 +82,15 @@ class PaymentMethod extends Model
             'max_amount_per_transaction' => 'decimal:2',
             'max_amount_per_day' => 'decimal:2',
             'max_count_per_day' => 'integer',
+            'order_no_length' => 'integer',
             'max_amount_per_month' => 'decimal:2',
             'refund_fee' => 'decimal:2',
             'chargeback_fee' => 'decimal:2',
+            'fee_percent' => 'decimal:4',
+            'fee_fixed' => 'decimal:2',
+            // 支付方式自有 ESP 凭证，与 Application::mail_credentials 是各自独立的
+            // 两份配置（见 Order::resolveMailSender()），同样用 encrypted:array 存储。
+            'mail_credentials' => 'encrypted:array',
         ];
     }
 
@@ -124,5 +144,21 @@ class PaymentMethod extends Model
     {
         return ! $this->isUnlimited('max_amount_per_transaction')
             && $amountUsd > (float) $this->max_amount_per_transaction;
+    }
+
+    /**
+     * 该支付方式扣完百分比+固定手续费后到账金额仍 >= 0 所需的最小订单金额（USD）。
+     * fee_percent 存的是百分比数值（如 3.5 表示 3.5%），公式：fee_fixed / (1 - fee_percent/100)。
+     * 百分比费率 >= 100% 时无解（怎么收都会倒贴），返回 null。
+     */
+    public function minTransactionAmount(): ?string
+    {
+        $remainingRatio = bcsub('1', bcdiv((string) $this->fee_percent, '100', 6), 6);
+
+        if (bccomp($remainingRatio, '0', 6) <= 0) {
+            return null;
+        }
+
+        return bcdiv((string) $this->fee_fixed, $remainingRatio, 2);
     }
 }

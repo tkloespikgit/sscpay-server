@@ -29,9 +29,6 @@ class SendTelegramNotification implements ShouldQueue
         // "来自网关通知"这类措辞是安全的；如果未来后台人工操作也开始 fire
         // 这个事件，需要回头看看这几条文案是否还准确。
         $message = match ($event->newStatus) {
-            'paid' => $this->paidMessage($event),
-            'shipped' => $this->shippedMessage($event),
-            'cancelled', 'failed' => $this->failedMessage($event),
             'disputing' => $this->disputingMessage($event),
             'refunded' => $this->refundedMessage($event),
             'chargeback' => $this->chargebackMessage($event),
@@ -65,41 +62,6 @@ class SendTelegramNotification implements ShouldQueue
             OrderStatusChanged::class => 'handleOrderStatusChanged',
             LogisticsImportCompleted::class => 'handleLogisticsImportCompleted',
         ];
-    }
-
-    private function paidMessage(OrderStatusChanged $event): string
-    {
-        $order = $event->order;
-
-        // 从 disputing 回退到 paid 是"争议胜诉"，不是首次支付成功，用不同文案区分。
-        if ($event->oldStatus === 'disputing') {
-            return __('admin.telegram_notification.order_dispute_resolved', [
-                'order_no' => $order->order_no,
-            ]);
-        }
-
-        return __('admin.telegram_notification.order_paid', [
-            'order_no' => $order->order_no,
-            'currency' => $order->currency,
-            'amount' => $order->amount,
-            'converted_amount' => $order->converted_amount,
-            'payment_method' => $order->payment_method,
-        ]);
-    }
-
-    private function shippedMessage(OrderStatusChanged $event): string
-    {
-        return __('admin.telegram_notification.order_shipped', [
-            'order_no' => $event->order->order_no,
-        ]);
-    }
-
-    private function failedMessage(OrderStatusChanged $event): string
-    {
-        return __('admin.telegram_notification.order_failed', [
-            'order_no' => $event->order->order_no,
-            'status' => __('admin.order.statuses.'.$event->newStatus),
-        ]);
     }
 
     private function disputingMessage(OrderStatusChanged $event): string

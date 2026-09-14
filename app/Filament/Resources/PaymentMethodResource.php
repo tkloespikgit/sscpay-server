@@ -7,11 +7,14 @@ use App\Jobs\SyncSiteProductsJob;
 use App\Models\Merchant;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
+use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -58,7 +61,10 @@ class PaymentMethodResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        $isViewerSuperAdmin = (bool) auth()->user()?->is_super_admin;
+        $viewer = auth()->user();
+        $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
+        $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
+        $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
             // 整体两栏布局：基本信息占左侧 2/3，网关配置、风控阈值、手续费三个面板堆叠在最右侧。
@@ -74,11 +80,17 @@ class PaymentMethodResource extends Resource
                         ->columnSpanFull(),
                     Select::make('merchant_id')
                         ->label(__('admin.payment_method.fields.merchant'))
-                        ->options(fn() => Merchant::query()->where('status', true)->pluck('name', 'id'))
+                        ->options(function () use ($isViewerMerchantManager, $viewer) {
+                            if ($isViewerMerchantManager) {
+                                return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                            }
+
+                            return Merchant::query()->where('status', true)->pluck('name', 'id');
+                        })
                         ->required()
                         ->searchable()
-                        ->disabled(!$isViewerSuperAdmin)
-                        ->default(fn() => $isViewerSuperAdmin ? null : auth()->user()->merchant_id)
+                        ->disabled(! $canPickMerchant)
+                        ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
                         ->columnSpanFull(),
                     TextInput::make('method_code')->label(__('admin.payment_method.fields.method_code'))->required()->maxLength(50)->placeholder('paypal / stripe'),
@@ -115,7 +127,7 @@ class PaymentMethodResource extends Resource
                         ->regex('#^https://#i')
                         ->validationMessages([
                             'regex' => __('admin.payment_method.validation.domain_format'),
-                            'url'   => __('admin.payment_method.validation.domain_format'),
+                            'url' => __('admin.payment_method.validation.domain_format'),
                         ])->columnSpanFull(),
 
                     TextInput::make('domain_client_id')
@@ -128,27 +140,16 @@ class PaymentMethodResource extends Resource
                         ->placeholder('cs_xxxxxxxx')
                         ->required()
                         ->maxLength(255),
-                    TextInput::make('order_account')
-                        ->label(__('admin.payment_method.fields.order_account'))
-                        ->maxLength(255),
-                    TextInput::make('order_password')
-                        ->label(__('admin.payment_method.fields.order_password'))
-                        ->maxLength(255),
-                    TextInput::make('config_account')
-                        ->label(__('admin.payment_method.fields.config_account'))
-                        ->maxLength(255),
-                    TextInput::make('config_password')
-                        ->label(__('admin.payment_method.fields.config_password'))
-                        ->maxLength(255),
-                    TextInput::make('payment_config_id')
-                        ->label(__('admin.payment_method.fields.payment_config_id'))
-                        ->maxLength(255),
-
+                    // 支付插件的所有接口（/pay /sync-tracking /gateway-config /order-logs 等）
+                    // 统一用上面这对 WooCommerce REST API 密钥做 Basic Auth；
+                    // 原「订单账号/密码」「配置账号/密码」四个字段已弃用。
+                    // payment_config_id 由保存后的自动同步（syncGatewayConfigAndNotify）回填，
+                    // 不再作为可编辑字段展示。
 
                     Select::make('product_match_mode')
                         ->label(__('admin.payment_method.fields.product_match_mode'))
                         // 选项来自系统配置 payment.product_match_modes（见 PaymentMethod::supportedProductMatchModes()）
-                        ->options(fn() => static::matchModeOptions())
+                        ->options(fn () => static::matchModeOptions())
                         ->default('MATCH')
                         ->columnSpanFull()
                         ->required(),
@@ -158,7 +159,27 @@ class PaymentMethodResource extends Resource
                     TextInput::make('virtual_product_prefix')
                         ->label(__('admin.payment_method.fields.virtual_product_prefix'))
                         ->maxLength(50),
-
+                    TextInput::make('order_no_prefix')
+                        ->label(__('admin.payment_method.fields.order_no_prefix'))
+                        ->maxLength(10)
+                        ->placeholder('PAY'),
+                    Select::make('order_no_format')
+                        ->label(__('admin.payment_method.fields.order_no_format'))
+                        ->options([
+                            'numeric' => __('admin.payment_method.order_no_formats.numeric'),
+                            'alnum' => __('admin.payment_method.order_no_formats.alnum'),
+                        ])
+                        ->native(false)
+                        ->live()
+                        ->helperText(__('admin.payment_method.help.order_no_format')),
+                    TextInput::make('order_no_length')
+                        ->label(__('admin.payment_method.fields.order_no_length'))
+                        ->numeric()
+                        ->minValue(15)
+                        ->maxValue(30)
+                        ->default(20)
+                        ->required(fn (Get $get) => filled($get('order_no_format')))
+                        ->helperText(__('admin.payment_method.help.order_no_length')),
 
                 ])->columns(2)->columnSpan(2),
             ]),
@@ -167,19 +188,19 @@ class PaymentMethodResource extends Resource
                     ->schema([
                         Select::make('config_map_id')
                             ->label(__('admin.payment_method.fields.config_map'))
-                            ->options(fn() => PaymentMethodConfigMap::query()->where('is_active',
+                            ->options(fn () => PaymentMethodConfigMap::query()->where('is_active',
                                 true)->pluck('name',
-                                'id'))
+                                    'id'))
                             ->searchable()
                             ->live()
                             // 换了模板之后，上一个模板残留的 config.* 值没有意义，清掉避免脏数据。
-                            ->afterStateUpdated(fn(Set $set) => $set('config', [])),
+                            ->afterStateUpdated(fn (Set $set) => $set('config', [])),
 
                         // 选完模板后动态展示 webhook 地址：域名取自当前表单的 domain，
                         // 路径尾段 {gateway} 用所选模板的 payment_config_tag 替换。
                         Placeholder::make('webhook_url')
                             ->label(__('admin.payment_method.fields.webhook_url'))
-                            ->visible(fn(Get $get) => filled($get('config_map_id')))
+                            ->visible(fn (Get $get) => filled($get('config_map_id')))
                             ->content(function (Get $get) {
                                 $configMap = $get('config_map_id')
                                     ? PaymentMethodConfigMap::find($get('config_map_id'))
@@ -200,12 +221,12 @@ class PaymentMethodResource extends Resource
                                 ? PaymentMethodConfigMap::find($get('config_map_id'))
                                 : null;
 
-                            if (!$configMap) {
+                            if (! $configMap) {
                                 return [];
                             }
 
                             return collect($configMap->fields)
-                                ->map(fn(array $field) => TextInput::make('config.'.$field['key'])
+                                ->map(fn (array $field) => TextInput::make('config.'.$field['key'])
                                     ->label($field['label'])
                                     ->required((bool) ($field['required'] ?? false)))
                                 ->all();
@@ -226,7 +247,54 @@ class PaymentMethodResource extends Resource
                     ->schema([
                         TextInput::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->numeric()->default(0)->prefix('$'),
                         TextInput::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->numeric()->default(0)->prefix('$'),
+                        TextInput::make('fee_percent')
+                            ->label(__('admin.payment_method.fields.fee_percent'))
+                            ->helperText(__('admin.payment_method.help.transaction_fees'))
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->maxValue(100)
+                            ->suffix('%')
+                            ->live(onBlur: true),
+                        TextInput::make('fee_fixed')
+                            ->label(__('admin.payment_method.fields.fee_fixed'))
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->prefix('$')
+                            ->live(onBlur: true),
+                        Placeholder::make('min_transaction_amount')
+                            ->label(__('admin.payment_method.fields.min_transaction_amount'))
+                            ->columnSpanFull()
+                            ->content(function (Get $get) {
+                                $feePercent = (float) ($get('fee_percent') ?? 0);
+                                $feeFixed = (float) ($get('fee_fixed') ?? 0);
+
+                                if ($feeFixed <= 0) {
+                                    return __('admin.payment_method.help.min_transaction_amount_none');
+                                }
+
+                                $remainingRatio = 1 - $feePercent / 100;
+
+                                if ($remainingRatio <= 0) {
+                                    return __('admin.payment_method.help.min_transaction_amount_undefined');
+                                }
+
+                                $minAmount = number_format($feeFixed / $remainingRatio, 2);
+
+                                return __('admin.payment_method.help.min_transaction_amount', ['amount' => $minAmount]);
+                            }),
                     ])->columns(2),
+
+                Section::make(__('admin.payment_method.sections.mail_template'))
+                    ->description(__('admin.payment_method.help.payment_link_mail_template'))
+                    ->schema([
+                        RichEditor::make('payment_link_mail_template')
+                            ->hiddenLabel()
+                            ->extraInputAttributes(['style' => 'min-height: 20rem;'])
+                            ->placeholder(__('admin.payment_method.placeholders.payment_link_mail_template')),
+                    ]),
+
             ])->columnSpan(1),
         ]);
     }
@@ -236,8 +304,8 @@ class PaymentMethodResource extends Resource
         $columns = [];
 
         // 商户用户在全局 Scope 下只能看到自己的支付方式，商户列没有意义；
-        // 超管看全量数据时才需要展示归属商户。
-        if ((bool) auth()->user()?->is_super_admin) {
+        // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
+        if ((bool) auth()->user()?->isPlatformStaff()) {
             $columns[] = TextColumn::make('merchant.name')->label(__('admin.payment_method.fields.merchant'))->searchable()->sortable();
         }
 
@@ -249,17 +317,30 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('product_match_mode')
                     ->label(__('admin.payment_method.columns.product_match_mode'))
                     ->badge()
-                    ->formatStateUsing(fn(?string $state) => blank($state) ? '—' : static::matchModeLabel($state)),
+                    ->formatStateUsing(fn (?string $state) => blank($state) ? '—' : static::matchModeLabel($state)),
                 TextColumn::make('site_products_count')
                     ->label(__('admin.payment_method.columns.site_products_count'))
                     ->counts('siteProducts')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('site_products_exists')
+                    ->label(__('admin.payment_method.columns.sync_status'))
+                    ->exists('siteProducts')
+                    ->badge()
+                    ->formatStateUsing(fn (bool $state) => $state
+                        ? __('admin.payment_method.sync_statuses.synced')
+                        : __('admin.payment_method.sync_statuses.not_synced'))
+                    ->color(fn (bool $state) => $state ? 'success' : 'gray')
+                    ->action(static::viewSyncStatusAction()),
                 TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_day')->label(__('admin.payment_method.columns.daily_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
                 TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))->suffix('%')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),
@@ -280,13 +361,96 @@ class PaymentMethodResource extends Resource
     protected static function matchModeOptions(): array
     {
         return collect(PaymentMethod::supportedProductMatchModes())
-            ->mapWithKeys(fn(string $mode) => [$mode => static::matchModeLabel($mode)])
+            ->mapWithKeys(fn (string $mode) => [$mode => static::matchModeLabel($mode)])
             ->all();
     }
 
     protected static function matchModeLabel(string $mode): string
     {
         return __('admin.payment_method.match_modes.'.strtolower($mode)).'（'.$mode.'）';
+    }
+
+    /**
+     * 同步支付配置的核心逻辑：POST /gateway-config 到站点的支付插件，成功后把返回的
+     * config_id 落库到 payment_config_id。Edit 页面的手动同步按钮（用未保存的表单状态）
+     * 和保存后的自动同步（用刚落库的 $record）共用这份实现，只是 $data 的来源不同。
+     */
+    public static function syncGatewayConfigFromData(PaymentMethod $record, array $data): array
+    {
+        $configMap = filled($data['config_map_id'] ?? null)
+            ? PaymentMethodConfigMap::find($data['config_map_id'])
+            : null;
+
+        if (! $configMap || blank($configMap->payment_config_tag)) {
+            return ['success' => false, 'reason' => 'missing_tag'];
+        }
+
+        if (blank($data['domain_client_id'] ?? null) || blank($data['domain_client_sk'] ?? null)) {
+            return ['success' => false, 'reason' => 'missing_credentials'];
+        }
+
+        // config_key 插件要求字母数字下划线中划线且 ≤64 字符；
+        // 按 支付方式ID + 支付类型标签 生成，重复同步时幂等覆盖旧配置。
+        $configKey = Str::limit(
+            preg_replace('/[^A-Za-z0-9_-]/', '_', 'pm_'.$record->id.'_'.$configMap->payment_config_tag),
+            64,
+            ''
+        );
+
+        try {
+            $result = app(PaymentGatewayService::class)
+                ->withConnection(
+                    rtrim((string) $data['domain'], '/').'/wp-json/payment-plugin/v1',
+                    (string) $data['domain_client_id'],
+                    (string) $data['domain_client_sk'],
+                )
+                ->registerGatewayConfig(
+                    $configKey,
+                    $configMap->payment_config_tag,
+                    (array) ($data['config'] ?? []),
+                );
+        } catch (PaymentGatewayException $e) {
+            return ['success' => false, 'reason' => 'api_error', 'message' => $e->getMessage()];
+        }
+
+        $configId = (string) ($result['config_id'] ?? '');
+        $record->update(['payment_config_id' => $configId]);
+
+        return ['success' => true, 'config_id' => $configId];
+    }
+
+    /**
+     * 用 $record 自身已落库的字段做同步，供创建/编辑保存后的自动同步调用。
+     */
+    public static function syncGatewayConfig(PaymentMethod $record): array
+    {
+        return static::syncGatewayConfigFromData(
+            $record,
+            $record->only(['domain', 'domain_client_id', 'domain_client_sk', 'config_map_id', 'config'])
+        );
+    }
+
+    /**
+     * 保存（创建/编辑）后自动触发一次同步，并按用户可读的统一文案提示保存+同步的结果：
+     * 同步成功提示已同步，失败提示已保存但同步失败，不打断保存本身。
+     */
+    public static function syncGatewayConfigAndNotify(PaymentMethod $record): void
+    {
+        $result = static::syncGatewayConfig($record);
+
+        if ($result['success']) {
+            Notification::make()
+                ->success()
+                ->title(__('admin.payment_method.actions.save_sync_success'))
+                ->send();
+
+            return;
+        }
+
+        Notification::make()
+            ->warning()
+            ->title(__('admin.payment_method.actions.save_sync_failed'))
+            ->send();
     }
 
     /**
@@ -322,6 +486,38 @@ class PaymentMethodResource extends Resource
     }
 
     /**
+     * 列表页"商品同步状态"列点击弹窗：展示该网站已同步商品的统计信息
+     * （数量、最高/最低价格、上次同步时间）。未同步（site_products 无记录）
+     * 时禁用点击，列文案已显示"未同步"，无需弹出空弹窗。
+     */
+    public static function viewSyncStatusAction(): Action
+    {
+        return Action::make('viewSyncStatus')
+            ->label(__('admin.payment_method.columns.sync_status'))
+            ->modalHeading(__('admin.payment_method.modals.sync_status_heading'))
+            ->modalSubmitAction(false)
+            ->modalCancelAction(fn (Action $action) => $action->label(__('admin.payment_method.modals.close')))
+            ->disabled(fn (PaymentMethod $record) => ! $record->site_products_exists)
+            ->schema([
+                TextEntry::make('site_products_summary_count')
+                    ->label(__('admin.payment_method.fields.site_products_summary_count'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->count()),
+                TextEntry::make('site_products_summary_price_max')
+                    ->label(__('admin.payment_method.fields.site_products_summary_price_max'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->max('price_max'))
+                    ->money('usd'),
+                TextEntry::make('site_products_summary_price_min')
+                    ->label(__('admin.payment_method.fields.site_products_summary_price_min'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->min('price_min'))
+                    ->money('usd'),
+                TextEntry::make('site_products_summary_synced_at')
+                    ->label(__('admin.payment_method.fields.site_products_summary_synced_at'))
+                    ->state(fn (PaymentMethod $record) => $record->siteProducts()->max('synced_at'))
+                    ->dateTime(),
+            ]);
+    }
+
+    /**
      * 复制支付方式：整份配置原样复制，仅标识字段（代码/名称）追加 _copy，
      * 副本固定为禁用状态，避免直接可收款；风控阈值、手续费、商户保持不变。
      */
@@ -336,8 +532,8 @@ class PaymentMethodResource extends Resource
             ->action(function (PaymentMethod $record) {
                 // method_code_uniq 是虚拟生成列，不能出现在 INSERT 里，
                 // replicate 默认会把它复制过来，必须显式排除。
-                $copy              = $record->replicate(['method_code_uniq']);
-                $copy->is_active   = false;
+                $copy = $record->replicate(['method_code_uniq']);
+                $copy->is_active = false;
                 $copy->method_code = static::nextCopyCode($record);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
 
@@ -372,9 +568,9 @@ class PaymentMethodResource extends Resource
     public static function getPages(): array
     {
         return [
-            'index'  => Pages\ListPaymentMethods::route('/'),
+            'index' => Pages\ListPaymentMethods::route('/'),
             'create' => Pages\CreatePaymentMethod::route('/create'),
-            'edit'   => Pages\EditPaymentMethod::route('/{record}/edit'),
+            'edit' => Pages\EditPaymentMethod::route('/{record}/edit'),
         ];
     }
 

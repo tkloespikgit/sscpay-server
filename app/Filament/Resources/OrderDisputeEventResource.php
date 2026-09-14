@@ -111,7 +111,7 @@ class OrderDisputeEventResource extends Resource
                     ->options(function () {
                         $user = auth()->user();
 
-                        if (! $user?->is_super_admin) {
+                        if (! $user?->isPlatformStaff()) {
                             return PaymentMethod::query()->orderBy('sort_order')->pluck('method_name', 'method_code');
                         }
 

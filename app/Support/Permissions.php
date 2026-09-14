@@ -24,6 +24,8 @@ final class Permissions
 
     public const PAYMENT_GROUPS_MANAGE = 'payment_groups.manage';
 
+    public const REPLACE_KEYWORDS_MANAGE = 'replace_keywords.manage';
+
     public const ORDERS_VIEW = 'orders.view';
 
     public const ORDERS_CREATE_MANUAL = 'orders.create_manual';
@@ -37,6 +39,13 @@ final class Permissions
     public const TELEGRAM_MANAGE = 'telegram.manage';
 
     public const USERS_MANAGE = 'users.manage';
+
+    // 通用人工资金冻结（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
+    public const FUND_FREEZES_VIEW = 'fund_freezes.view';
+
+    public const FUND_FREEZES_CREATE = 'fund_freezes.create';
+
+    public const FUND_FREEZES_RELEASE = 'fund_freezes.release';
 
     // 资金管理（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
     public const FINANCE_VIEW = 'finance.view';               // 查看余额与流水台账
@@ -74,6 +83,7 @@ final class Permissions
             self::APPLICATIONS_MANAGE,
             self::PAYMENT_METHODS_MANAGE,
             self::PAYMENT_GROUPS_MANAGE,
+            self::REPLACE_KEYWORDS_MANAGE,
             self::ORDERS_VIEW,
             self::ORDERS_CREATE_MANUAL,
             self::ORDERS_SHIP,
@@ -81,6 +91,9 @@ final class Permissions
             self::ORDER_EVENTS_VIEW,
             self::TELEGRAM_MANAGE,
             self::USERS_MANAGE,
+            self::FUND_FREEZES_VIEW,
+            self::FUND_FREEZES_CREATE,
+            self::FUND_FREEZES_RELEASE,
             self::FINANCE_VIEW,
             self::WITHDRAWALS_REQUEST,
             self::WITHDRAWALS_REVIEW,
@@ -97,5 +110,15 @@ final class Permissions
     public static function all(): array
     {
         return array_merge(self::platformOnly(), self::merchantScoped());
+    }
+
+    /**
+     * 平台级"商户级管理员"角色的权限集：拥有全部商户级权限（可在名下任意商户上
+     * 操作业务数据）+ MERCHANTS_MANAGE（可管理/创建名下商户）。
+     * 不含 SYSTEM_CONFIGS_MANAGE —— 系统配置是纯平台基础设施，只有真正的超级管理员能碰。
+     */
+    public static function platformMerchantManager(): array
+    {
+        return array_merge(self::merchantScoped(), [self::MERCHANTS_MANAGE]);
     }
 }

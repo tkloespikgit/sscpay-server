@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\ExchangeRate;
+use App\Models\ExchangeRateHistory;
 use App\Models\SystemConfig;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
@@ -10,7 +11,13 @@ use Illuminate\Support\Facades\Http;
 
 /**
  * 拉取 exchange.supported_currencies 配置的币种列表对应的实时汇率，
- * 批量更新 exchange_rates 表（4.9 节，建议调度：每小时一次）。
+ * 批量更新 exchange_rates 表（4.9 节，建议调度：每小时一次），
+ * 并向 exchange_rate_histories 追加一批快照供后台「汇率趋势」页画图。
+ *
+ * 两张表的分工：exchange_rates 只保留当前值（(base, target) 唯一 + 原地覆盖），
+ * 是下单链路冻结汇率快照的数据源；exchange_rate_histories 是追加式的历史序列，
+ * 只服务于趋势展示，不参与任何资金计算。所以快照写入失败不应该影响主流程，
+ * 但也不能静默吞掉——单独 try/catch 后把错误打到日志，命令仍返回成功。
  *
  * 【需要你确认】文档没有指定具体用哪个汇率数据提供商，这里用
  * config('services.exchange_rate.url') + config('services.exchange_rate.key')
@@ -48,7 +55,37 @@ class FetchExchangeRates extends Command
 
         $this->info('Updated rates for: '.implode(', ', array_keys($rates)));
 
+        $this->recordHistory($rates);
+
         return self::SUCCESS;
+    }
+
+    /**
+     * 追加历史快照 + 按保留期清理旧数据。
+     *
+     * 整体包在 try/catch 里：exchange_rates 已经更新成功、下单链路不受影响，
+     * 历史表出问题（磁盘满、表被锁等）只应该让趋势页少一个点，不值得让整个
+     * 抓取任务失败并触发调度告警。错误走 error 输出，调度器会记进日志。
+     */
+    private function recordHistory(array $rates): void
+    {
+        try {
+            $written = ExchangeRateHistory::recordBatch($rates, 'USD');
+
+            $retentionDays = (int) SystemConfig::get(
+                'exchange.history_retention_days',
+                ExchangeRateHistory::DEFAULT_RETENTION_DAYS
+            );
+
+            // 保留期配置成 0 或负数视为「不清理」，避免误配置把历史一次性删光。
+            $pruned = $retentionDays > 0
+                ? ExchangeRateHistory::pruneBefore(now()->subDays($retentionDays)->startOfDay())
+                : 0;
+
+            $this->line("History snapshots written: {$written}, pruned: {$pruned} (retention: {$retentionDays}d).");
+        } catch (\Throwable $e) {
+            $this->error('Failed to record exchange rate history: '.$e->getMessage());
+        }
     }
 
     /**
@@ -57,7 +94,7 @@ class FetchExchangeRates extends Command
      */
     private function fetchRatesFromProvider(array $currencies): array
     {
-        $url    = config('services.exchange_rate.url');
+        $url = config('services.exchange_rate.url');
         $apiKey = config('services.exchange_rate.key');
 
         if (empty($url)) {
@@ -65,7 +102,6 @@ class FetchExchangeRates extends Command
 
             return [];
         }
-
 
         /*
          *
@@ -88,7 +124,7 @@ class FetchExchangeRates extends Command
             return [];
         }
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             return [];
         }
 

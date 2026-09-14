@@ -15,6 +15,8 @@ use Spatie\Permission\Models\Role;
  */
 class MerchantRoleProvisioningService
 {
+    public const MERCHANT_ADMIN_LABEL = '商户管理员';
+
     /**
      * @return array<string, Role> 角色标识 => Role 实例，方便调用方
      *                             （比如商户注册流程）直接把首个管理员用户
@@ -24,7 +26,7 @@ class MerchantRoleProvisioningService
     {
         $definitions = [
             'merchant_admin' => [
-                'label' => '商户管理员',
+                'label' => self::MERCHANT_ADMIN_LABEL,
                 'permissions' => Permissions::merchantScoped(), // 商户管理员拥有该商户下全部权限
             ],
             'order_admin' => [
@@ -85,5 +87,18 @@ class MerchantRoleProvisioningService
         }
 
         return $roles;
+    }
+
+    /**
+     * 查出某商户的"商户管理员"角色。要求 provisionDefaultRoles() 已经跑过
+     * （MerchantObserver::created() 在商户建好时同步触发），否则返回 null。
+     */
+    public function merchantAdminRole(Merchant $merchant): ?Role
+    {
+        return Role::query()->where([
+            'merchant_id' => $merchant->id,
+            'name' => self::MERCHANT_ADMIN_LABEL,
+            'guard_name' => 'web',
+        ])->first();
     }
 }

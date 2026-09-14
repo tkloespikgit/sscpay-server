@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
+use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
@@ -11,6 +12,7 @@ use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\CreateOrderRequest;
 use App\Http\Requests\Api\SyncOrderShippingRequest;
+use App\Jobs\SendPaymentLinkJob;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Services\OrderCreationService;
@@ -35,29 +37,39 @@ class OrderController extends Controller
     public function store(CreateOrderRequest $request): JsonResponse
     {
         $merchant = Merchant::query()->findOrFail($request->attributes->get('merchant_id'));
-        $applicationId = $request->attributes->get('application_id');
+        // application 实例由 ApiAuthentication 中间件验签通过后注入（见中间件末尾）；
+        // 回跳域名校验「二选一」：未传 payment_method_key 时与它绑定的 website 比对
+        // （OrderCreationService 第 4 步）；传了则改与该渠道的 payment_methods.domain 比对。
+        $application = $request->attributes->get('application');
 
         try {
             $order = $this->orderCreationService->createOrder(
                 data: $request->toOrderCreationData(),
                 merchant: $merchant,
-                applicationId: $applicationId,
+                application: $application,
                 source: 'api',
             );
         } catch (
             AmountMismatchException
             |OrderItemsMismatchException
             |CallbackDomainNotAllowedException
+            |MinimumAmountNotMetException
             |PaymentMethodNotAvailableException
             |PaymentMethodDomainMismatchException $e
         ) {
-            // 前三类是通用下单校验；后两类只在商户传了 payment_method_key（指定支付渠道）时出现。
+            // 前四类是通用下单校验；后两类只在商户传了 payment_method_key（指定支付渠道）时出现。
             return $this->errorResponse($e->errorCode(), $e->getMessage(), 422);
         } catch (NoAvailablePaymentMethodException $e) {
             return $this->errorResponse($e->errorCode(), $e->getMessage(), 409);
         } catch (PaymentGatewayException $e) {
             // 远程创建支付订单失败：订单已落库，用同一商户单号重试可自动补创建。
             return $this->errorResponse('GATEWAY_ERROR', $e->getMessage(), 502);
+        }
+
+        // 幂等命中已存在订单时 wasRecentlyCreated 为 false，不重复发送；
+        // 只有这次真正新建、且请求里 send_mail=Y 的订单才推付款链接邮件。
+        if ($order->wasRecentlyCreated && $order->send_mail) {
+            SendPaymentLinkJob::dispatch($order->id);
         }
 
         return response()->json([

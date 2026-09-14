@@ -20,7 +20,10 @@ class ProcessLogisticsImportJob implements ShouldQueue
 
     public array $backoff = [60, 300, 600]; // 1分钟、5分钟、10分钟（8.4 节）
 
-    public function __construct(public readonly int $taskId) {}
+    public function __construct(public readonly int $taskId)
+    {
+        $this->onQueue('low');
+    }
 
     public function handle(LogisticsImportService $service): void
     {

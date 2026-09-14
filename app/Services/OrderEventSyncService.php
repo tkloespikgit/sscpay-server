@@ -24,9 +24,9 @@ use Illuminate\Support\Facades\Log;
  * 取回的日志按 (order_no, external_log_id) 幂等写入。
  *
  * 鉴权用该订单锁定的支付方式（Order::payment_method -> PaymentMethod）上
- * 配置的"创建订单账户"（order_account / order_password，WordPress 应用密码 +
- * Basic Auth），因为不同支付方式可能对接不同的 WordPress 站点
- * （PaymentMethod::domain）。没有配置这三项的支付方式直接跳过，不重试。
+ * 配置的站点 WooCommerce REST API 密钥（domain_client_id / domain_client_sk，
+ * Consumer Key / Secret + Basic Auth），因为不同支付方式可能对接不同的 WordPress
+ * 站点（PaymentMethod::domain）。没有配置这三项的支付方式直接跳过，不重试。
  *
  * 【明确不做的事】order-logs 只返回人工可读的日志文本，没有结构化状态字段，
  * 不适合用来判断"订单是否已支付"。订单状态流转（pending -> paid 等）由
@@ -116,7 +116,7 @@ class OrderEventSyncService
 
         $method = $this->resolvePaymentMethod($order, $methodCache);
 
-        if (! $method || empty($method->domain) || empty($method->order_account) || empty($method->order_password)) {
+        if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
             $stats['orders_skipped_no_credentials']++;
 
             return;
@@ -126,8 +126,8 @@ class OrderEventSyncService
             $result = $this->paymentGateway
                 ->withConnection(
                     rtrim($method->domain, '/').'/wp-json/payment-plugin/v1',
-                    $method->order_account,
-                    $method->order_password,
+                    $method->domain_client_id,
+                    $method->domain_client_sk,
                 )
                 ->orderLogs($order->order_no);
         } catch (PaymentGatewayException $e) {

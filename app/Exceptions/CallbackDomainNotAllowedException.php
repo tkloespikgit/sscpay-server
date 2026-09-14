@@ -5,14 +5,16 @@ namespace App\Exceptions;
 use Exception;
 
 /**
- * 商户传入的 notify_url / return_url / cancel_url 域名不在该商户的
- * allowed_domains 白名单内。防止跳转/回调到非商户自己的域名（SSRF、钓鱼跳转等）。
+ * 商户传入的 notify_url / return_url / cancel_url 域名与本次下单所属应用绑定的
+ * 域名（applications.website）不一致。防止跳转/回调到非应用绑定站点（SSRF、钓鱼跳转等）。
  */
 class CallbackDomainNotAllowedException extends Exception
 {
-    public function __construct(public readonly string $field, public readonly string $url)
+    public function __construct(public readonly string $field, public readonly string $url, public readonly string $expectedDomain)
     {
-        parent::__construct("Callback URL not allowed: {$field}={$url} is not in merchant's allowed_domains whitelist");
+        parent::__construct($expectedDomain === ''
+            ? "Callback URL domain mismatch: {$field}={$url} but the application has no bound domain (website)"
+            : "Callback URL domain mismatch: {$field}={$url} does not match the application's bound domain '{$expectedDomain}'");
     }
 
     public function errorCode(): string

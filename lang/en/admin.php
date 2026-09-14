@@ -27,7 +27,7 @@ return [
         'model_label_plural' => 'Merchants',
         'sections' => [
             'basic_info' => 'Basic Information',
-            'security' => 'Security Settings',
+            'preferences' => 'Preferences',
             'remark' => 'Remark',
         ],
         'fields' => [
@@ -36,14 +36,18 @@ return [
             'contact_phone' => 'Contact Phone',
             'contact_email' => 'Contact Email',
             'status' => 'Enabled',
+            'timezone' => 'Timezone',
             'remark' => 'Remark',
-            'allowed_domains' => 'Allowed Callback Domains',
             'applications_count' => 'Applications',
             'created_at' => 'Created At',
+            'owner' => 'Merchant Manager',
         ],
         'help' => [
-            'allowed_domains' => 'The host of notify_url / return_url / cancel_url must be in this whitelist, otherwise order creation will be rejected.',
-            'allowed_domains_placeholder' => 'e.g. hat.com',
+            'owner' => 'Leave blank if this merchant is managed directly by platform super admins, not owned by any merchant manager.',
+            'timezone' => 'Timezone used to display times in the admin panel for this merchant\'s users. Leave empty to use the system default timezone.',
+        ],
+        'placeholders' => [
+            'owner_platform' => 'Platform-managed',
         ],
     ],
 
@@ -62,8 +66,7 @@ return [
             'website' => 'Website Domain',
             'status' => 'Enabled (API calls are rejected while disabled)',
             'is_order_email_enabled' => 'Enable Order Emails',
-            'sender_email' => 'Sender Email',
-            'sender_name' => 'Sender Name',
+            'payment_link_mail_template' => 'Payment Link Email Body',
             'remark' => 'Remark',
             'app_id' => 'App ID',
             'api_key' => 'API Key',
@@ -71,11 +74,116 @@ return [
         ],
         'help' => [
             'api_key' => 'Merchants use this to sign requests. Keep it secret — do not share it with anyone who does not need it.',
+            'payment_link_mail_template' => 'Leave blank to use the system default template. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved. Different applications under the same merchant can each have their own body.',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
         'actions' => [
             'regenerate_api_key' => 'Regenerate API Key',
             'regenerate_api_key_confirm' => 'The old API key will stop working immediately, and any request the merchant signs with it will start failing signature verification. Make sure the merchant is aware and ready to update their configuration before continuing.',
             'regenerate_api_key_success' => 'API credentials regenerated',
+        ],
+        'filters' => [
+            'merchant' => 'Merchant',
+            'app_id' => 'App ID',
+            'website' => 'Website Domain',
+        ],
+    ],
+
+    'replace_keyword' => [
+        'model_label' => 'Replace Keyword',
+        'model_label_plural' => 'Replace Keywords',
+        'fields' => [
+            'merchant' => 'Merchant',
+            'keyword' => 'Keyword',
+            'replacement' => 'Replacement',
+            'created_at' => 'Created At',
+        ],
+        'help' => [
+            'replacement' => 'Leave blank to delete the matched keyword from the product name instead of replacing it.',
+        ],
+        'import' => [
+            'completed_body' => ':count keyword(s) imported.',
+            'completed_body_failed' => ':count row(s) failed.',
+        ],
+    ],
+
+    // Shared "mail sending configuration" modal for Application / PaymentMethod
+    // (App\Filament\Support\MailCredentialsAction): sender identity + own ESP
+    // credentials bundled into one edit flow, reused by both Edit pages'
+    // header actions.
+    'mail_credentials' => [
+        'summary' => 'Mail Sending - Sender Email: :email',
+        'not_configured' => 'Mail Sending - Not Configured',
+        'modal_heading' => 'Mail Sending Configuration',
+        'modal_description' => 'Configure this channel\'s own sender identity and ESP credentials — payment link emails will be sent through this account. Leaving it unconfigured means sending fails; it will not fall back to the platform\'s own account.',
+        'saved' => 'Mail sending configuration saved',
+        'send_failed_no_sender' => 'No mail sending account configured (neither the locked payment method nor the owning application), send skipped',
+        'fields' => [
+            'sender_email' => 'Sender Email',
+            'sender_name' => 'Sender Name',
+            'mail_driver' => 'Email Service Provider',
+            'token' => 'Server Token',
+            'ses_key' => 'AWS Access Key ID',
+            'ses_secret' => 'AWS Secret Access Key',
+            'ses_region' => 'AWS Region',
+            'smtp_host' => 'SMTP Host',
+            'smtp_port' => 'Port',
+            'smtp_username' => 'Username',
+            'smtp_password' => 'Password',
+            'smtp_encryption' => 'Encryption',
+        ],
+        'help' => [
+            'mail_driver' => 'Leave unselected to mean "not configured" — this channel will not be able to send email (it will not fall back to the platform account). If selected, the matching API credentials are required — the sending domain is already verified on this account, which improves deliverability over the platform account sending on behalf of arbitrary merchant domains, and does not consume the platform\'s sending quota.',
+            'mail_credentials_postmark' => 'The Server Token from the Postmark dashboard under "API Tokens", stored encrypted.',
+            'mail_credentials_ses' => 'Leave blank to default to us-east-1. Use an IAM sub-account with only ses:SendEmail permission for the Access Key ID / Secret Access Key, not your root account keys; both are stored encrypted.',
+            'mail_credentials_smtp' => 'Leave blank to auto-detect from the port (465 = implicit SSL, otherwise TLS/STARTTLS); username/password are stored encrypted.',
+        ],
+        'placeholders' => [
+            'mail_driver_none' => 'Not configured',
+            'smtp_encryption_auto' => 'Auto (based on port)',
+        ],
+    ],
+
+    // Application "ad conversion API credentials" modal (App\Filament\Support\AdCredentialsAction):
+    // per-platform (Meta/Google/TikTok) credentials used by AdConversionService to notify
+    // ad platforms server-side after payment succeeds, independent of whether the order's
+    // payment method allows returning to the source site.
+    'ad_credentials' => [
+        'summary' => 'Ad Conversion - Configured: :platforms',
+        'not_configured' => 'Ad Conversion - Not Configured',
+        'modal_heading' => 'Ad Conversion API Credentials',
+        'modal_description' => 'Configure per-platform conversion API credentials. As long as the order carries that platform\'s ad_params, the system calls this platform\'s server-side conversion API after payment succeeds to report the order as paid — independent of whether the payment method allows returning to the source site.',
+        'saved' => 'Ad conversion credentials saved',
+        'sections' => [
+            'meta' => 'Meta (Facebook) Conversions API',
+            'google' => 'Google Ads',
+            'tiktok' => 'TikTok Events API',
+        ],
+        'fields' => [
+            'meta_pixel_id' => 'Pixel ID',
+            'meta_access_token' => 'Access Token',
+            'meta_test_event_code' => 'Test Event Code',
+            'meta_event_name' => 'Event Name',
+            'google_customer_id' => 'Customer ID',
+            'google_conversion_action_id' => 'Conversion Action ID',
+            'google_developer_token' => 'Developer Token',
+            'google_login_customer_id' => 'Login Customer ID (MCC)',
+            'google_client_id' => 'OAuth Client ID',
+            'google_client_secret' => 'OAuth Client Secret',
+            'google_refresh_token' => 'OAuth Refresh Token',
+            'tiktok_pixel_code' => 'Pixel Code',
+            'tiktok_access_token' => 'Access Token',
+            'tiktok_event_name' => 'Event Name',
+        ],
+        'help' => [
+            'meta_test_event_code' => 'Only used in Meta Events Manager\'s Test Events tool; leave blank in production.',
+            'meta_event_name' => 'The Conversions API event_name reported on payment success. Defaults to "Purchase" (Meta\'s standard e-commerce event) when left blank — only change this if your storefront already fires a client-side Pixel event under a different name and you need the two to match for deduplication.',
+            'google_customer_id' => 'The 10-digit Google Ads account ID (dashes optional), without "customers/".',
+            'google_login_customer_id' => 'Only required when accessing the customer account through a manager (MCC) account.',
+            'google_refresh_token' => 'A long-lived OAuth refresh token obtained via the Google Ads API OAuth flow; the system exchanges it for a short-lived access token as needed and caches it.',
+            'tiktok_event_name' => 'The Events API "event" reported on payment success. Defaults to "CompletePayment" (TikTok\'s standard e-commerce event) when left blank — only change this if your storefront already fires a client-side Pixel event under a different name and you need the two to match for deduplication.',
         ],
     ],
 
@@ -90,6 +198,7 @@ return [
             'product_matching' => 'Product Matching',
             'risk_control' => 'Risk Control Thresholds (USD)',
             'fees' => 'Fees (USD)',
+            'mail_template' => 'Payment Link Email Template',
         ],
         'fields' => [
             'merchant' => 'Merchant',
@@ -109,6 +218,9 @@ return [
             'product_match_mode' => 'Product Match Mode',
             'invoice_prefix' => 'Invoice Prefix',
             'virtual_product_prefix' => 'Virtual Product Prefix',
+            'order_no_prefix' => 'Order No. Prefix',
+            'order_no_format' => 'Order No. Format',
+            'order_no_length' => 'Order No. Random Segment Length',
             'sync_logistics' => 'Sync Logistics Info',
             'allow_returned_source' => 'Allow Return to Source Site',
             'max_amount_per_transaction' => 'Max Amount per Transaction',
@@ -117,6 +229,13 @@ return [
             'max_amount_per_month' => 'Max Monthly Total Amount',
             'refund_fee' => 'Refund Fee',
             'chargeback_fee' => 'Chargeback Fee',
+            'fee_percent' => 'Transaction Fee (Percent)',
+            'fee_fixed' => 'Transaction Fee (Fixed)',
+            'min_transaction_amount' => 'Minimum Transaction Amount',
+            'site_products_summary_count' => 'Product Count',
+            'site_products_summary_price_max' => 'Highest Price',
+            'site_products_summary_price_min' => 'Lowest Price',
+            'site_products_summary_synced_at' => 'Last Synced At',
         ],
         'help' => [
             'risk_control' => 'Enter 0 for no limit',
@@ -129,9 +248,19 @@ return [
             'product_matching' => 'Choose how order items are matched against site products. Options are maintained in the payment.product_match_modes system config.',
             'invoice_prefix' => 'Name prefix used when generating invoice products. Leave empty for no prefix.',
             'virtual_product_prefix' => 'Name prefix used when generating virtual products. Leave empty for no prefix.',
+            'order_no_format' => 'Leave empty to use the system default order number format. Once set, the order number = prefix above + a random segment in the chosen format and length.',
+            'order_no_length' => 'Total order number length including the prefix, between 15 and 30.',
             'sync_logistics' => 'Whether to sync logistics info (carrier and tracking number) to the corresponding site after an order is shipped.',
             'allow_returned_source' => 'Whether the customer may be redirected back to the source site after payment. Forced to disallowed when the order platform is invoice, which takes priority over this setting.',
             'fees' => 'Fixed fee (USD) charged on refund/chargeback, deducted from the merchant balance; enter 0 for none',
+            'transaction_fees' => 'On every successful payment, the percent + fixed fee is deducted from the order amount before crediting the merchant: settlement amount = order amount (USD) - percent fee - fixed fee. Orders are validated against the minimum transaction amount at checkout and rejected if they fall short.',
+            'min_transaction_amount' => 'With the current fee settings, the minimum transaction amount is about $:amount (USD); orders below this are rejected',
+            'min_transaction_amount_none' => 'Fixed fee is 0, so there is no minimum transaction amount',
+            'min_transaction_amount_undefined' => 'Percent fee is 100% or more — no amount can cover the fee, please adjust the rate',
+            'payment_link_mail_template' => 'Leave blank to fall back to the owning Application\'s template; if both are blank, the system default template is used. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved.',
+        ],
+        'placeholders' => [
+            'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
@@ -140,16 +269,30 @@ return [
             'match' => 'Match',
             'create' => 'Create',
             'virtual' => 'Virtual',
+            'copy' => 'Copy',
+        ],
+        'order_no_formats' => [
+            'numeric' => 'Numeric only',
+            'alnum' => 'Uppercase letters + digits',
         ],
         'columns' => [
             'code' => 'Code',
             'product_match_mode' => 'Match Mode',
             'site_products_count' => 'Site Products',
+            'sync_status' => 'Product Sync Status',
             'per_transaction_limit' => 'Per-Transaction Limit',
             'daily_limit' => 'Daily Limit',
             'monthly_limit' => 'Monthly Limit',
             'sync_logistics' => 'Sync Logistics',
             'allow_returned_source' => 'Allow Return to Source',
+        ],
+        'sync_statuses' => [
+            'synced' => 'Synced',
+            'not_synced' => 'Not Synced',
+        ],
+        'modals' => [
+            'sync_status_heading' => 'Product Sync Details',
+            'close' => 'Close',
         ],
         'actions' => [
             'duplicate' => 'Duplicate',
@@ -168,6 +311,8 @@ return [
             'sync_gateway_config_missing_credentials' => 'Cannot sync: please fill in the config creation account and password first',
             'sync_gateway_config_failed' => 'Gateway config sync failed',
             'sync_gateway_config_success' => 'Gateway config synced. Payment Config ID updated.',
+            'save_sync_success' => 'Saved and synced to the e-commerce site.',
+            'save_sync_failed' => 'Saved, but syncing to the e-commerce site failed. Please check the config and retry.',
         ],
     ],
 
@@ -314,9 +459,11 @@ return [
             'export_logistics_template' => 'Export Logistics Template',
             'upload_logistics' => 'Upload Tracking Numbers',
             'create_manual_order' => 'Create Paid Order',
-            'date_from' => 'Start Date',
-            'date_to' => 'End Date',
             'csv_file' => 'CSV File',
+            'merchant_required' => 'Please select a merchant in the filters above first',
+            'upload_forbidden' => 'Super admins cannot upload tracking numbers — please have a user of that merchant sign in and upload the file',
+            'upload_logistics_hint' => 'Download the CSV via "Export Logistics Template", fill in the logistics_company (carrier code), tracking_number and remark columns, then upload the file unchanged. Do not modify the other columns.',
+            'export_failed' => 'Export failed: unable to read the current list query, please refresh the page and try again',
             'upload_success' => 'File uploaded, processing in background. You will get a Telegram notification when it finishes.',
             'query_status' => 'Query Latest Status',
             'query_status_not_found' => 'This order does not exist on the plugin side — check whether the payment order was actually created',
@@ -324,10 +471,17 @@ return [
             'query_status_unknown' => 'The plugin returned an unrecognized status (:status). Logged for review, local status was not changed.',
             'query_status_changed' => 'Order status updated: :old → :new',
             'query_status_unchanged' => 'Order status unchanged (currently: :status)',
+            'sync_events' => 'Sync Order Events',
+            'sync_events_no_credentials' => 'Cannot sync: the payment method of this order has no site domain or WooCommerce REST API key configured',
+            'sync_events_failed' => 'Sync failed: the plugin log endpoint returned an error, see system logs for details',
+            'sync_events_empty' => 'The plugin returned no logs for this order',
+            'sync_events_success' => 'Sync completed: :written new event(s), :skipped already existed (skipped)',
             'manual_status_change' => 'Manually Change Status',
             'manual_status_change_desc' => 'For manual correction only when the automatic status flow (gateway callback/query) failed to apply. Use with care.',
             'manual_status_change_invalid' => 'The current order status does not allow manually changing to this target status',
             'manual_status_change_success' => 'Order status updated',
+            'resend_payment_link_mail' => 'Resend Payment Link Email',
+            'resend_payment_link_mail_queued' => 'Queued for sending',
         ],
         'sections' => [
             'order_info' => 'Order Information',
@@ -344,6 +498,10 @@ return [
             'payment_method' => 'Payment Method',
             'transaction_id' => 'Transaction ID',
             'created_at' => 'Created At',
+            'paid_at' => 'Paid At',
+            'send_mail' => 'Email Requested at Checkout',
+            'payment_link_sent_at' => 'Payment Link Email Sent At',
+            'payment_link_mail_failed_reason' => 'Mail Send Failure Reason',
             'currency' => 'Currency',
             'amount' => 'Amount Due',
             'converted_amount' => 'Converted (USD)',
@@ -351,6 +509,9 @@ return [
             'original_exchange_rate' => 'Original Rate',
             'surcharge_percent' => 'Surcharge %',
             'surcharge_fee' => 'Surcharge Fee (USD)',
+            'fee_percent_amount' => 'Percent Fee (USD)',
+            'fee_fixed_amount' => 'Fixed Fee (USD)',
+            'settlement_amount' => 'Settlement Amount (USD)',
             'customer_first_name' => 'First Name',
             'customer_last_name' => 'Last Name',
             'customer_email' => 'Email',
@@ -553,6 +714,24 @@ return [
         ],
     ],
 
+    'ad_conversion' => [
+        'title' => 'Ad Conversion Notification Log',
+        'columns' => [
+            'platform' => 'Platform',
+            'attempt_number' => 'Attempt',
+            'status' => 'Status',
+            'http_status' => 'HTTP Status',
+            'duration_ms' => 'Duration (ms)',
+            'attempted_at' => 'Attempted At',
+            'next_retry_at' => 'Next Retry At',
+        ],
+        'view' => [
+            'request_payload' => 'Request Payload',
+            'response_body' => 'Platform Response',
+            'error_message' => 'Error Message',
+        ],
+    ],
+
     'create_manual_order' => [
         'sections' => [
             'merchant' => 'Merchant',
@@ -634,6 +813,30 @@ return [
         ],
     ],
 
+    'onboard_merchant' => [
+        'nav_label' => 'Merchant Onboarding',
+        'steps' => [
+            'merchant' => [
+                'label' => 'Merchant Info',
+                'description' => 'Basic information about the new merchant',
+            ],
+            'admin_account' => [
+                'label' => 'Admin Account',
+                'description' => 'The first user account for this merchant, automatically assigned the "Merchant Admin" role',
+            ],
+            'application' => [
+                'label' => 'Application',
+                'description' => 'The first application this merchant will use to accept orders',
+            ],
+        ],
+        'actions' => [
+            'submit' => 'Create Merchant',
+        ],
+        'notifications' => [
+            'created' => 'Merchant, admin account, and application created successfully',
+        ],
+    ],
+
     'user' => [
         'model_label' => 'User',
         'model_label_plural' => 'Users',
@@ -645,20 +848,59 @@ return [
         ],
         'fields' => [
             'name' => 'Name',
-            'email' => 'Email',
+            'account' => 'Account',
             'password' => 'Password',
             'is_super_admin' => 'Super Admin',
+            'is_merchant_manager' => 'Merchant Manager',
             'merchant' => 'Merchant',
             'roles' => 'Roles',
+            'status' => 'Status',
             'created_at' => 'Created At',
         ],
         'help' => [
             'password_edit' => 'Leave blank to keep the current password',
             'is_super_admin' => 'Super admins do not belong to any merchant and have platform-wide access',
+            'is_merchant_manager' => 'Merchant managers do not belong to any merchant, but can only manage merchants they own and their business data — not other merchants or other admin accounts',
             'roles' => 'The role list updates based on the merchant selected above',
+            'account' => 'No real email required — the system generates an internal login email from this account automatically. If you already have an email address, you can also type the full address here.',
+            'account_taken' => 'This account is already taken',
+            'status' => 'Disabling this account blocks it from logging into the admin panel, even with the correct password',
         ],
         'placeholders' => [
             'platform' => '— Platform —',
+        ],
+        'filters' => [
+            'merchant' => 'Merchant',
+            'account' => 'Login Account',
+        ],
+    ],
+
+    'admin' => [
+        'model_label' => 'Administrator',
+        'model_label_plural' => 'Administrators',
+        'nav_label' => 'Administrators',
+        'sections' => [
+            'account_info' => 'Account Information',
+            'account_type' => 'Account Type',
+        ],
+        'fields' => [
+            'name' => 'Name',
+            'account' => 'Account',
+            'password' => 'Password',
+            'is_super_admin' => 'Super Admin',
+            'type' => 'Type',
+            'status' => 'Status',
+            'created_at' => 'Created At',
+        ],
+        'help' => [
+            'password_edit' => 'Leave blank to keep the current password',
+            'is_super_admin' => 'Checked means Super Admin, with platform-wide access; unchecked means Merchant Manager, who can only manage merchants they own and their business data',
+            'account' => 'No real email required — the system generates an internal login email from this account automatically. If you already have an email address, you can also type the full address here.',
+            'status' => 'Disabling this account blocks it from logging into the admin panel, even with the correct password',
+        ],
+        'types' => [
+            'super_admin' => 'Super Admin',
+            'merchant_manager' => 'Merchant Manager',
         ],
     ],
 
@@ -740,6 +982,7 @@ return [
         'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
         'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
         'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
+        'payment_method_forbidden' => "🚫 Payment channel disabled\n\nChannel: :method_name (:method_code)\nTriggered by order: :order_no\nThe gateway account can no longer accept payments, so this channel has been automatically disabled. Please check the account status and switch to another channel if needed.",
     ],
 
     'finance' => [
@@ -805,6 +1048,31 @@ return [
                 'rejected' => 'Rejected',
             ],
         ],
+        'fund_freeze' => [
+            'model_label' => 'Fund Freeze',
+            'model_label_plural' => 'Fund Freezes',
+            'amount' => 'Freeze Amount',
+            'reason' => 'Freeze Reason',
+            'release_at' => 'Scheduled Release Time',
+            'release_at_help' => 'Leave blank for manual release only; if set, it will auto-release once due',
+            'manual_only' => 'Manual release only',
+            'create' => 'New Freeze',
+            'created' => 'Freeze created; the amount has been added to the frozen balance.',
+            'frozen_by' => 'Frozen By',
+            'frozen_at' => 'Frozen At',
+            'released_by' => 'Released By',
+            'released_at' => 'Released At',
+            'release' => 'Release',
+            'release_heading' => 'Confirm Release',
+            'release_desc' => 'Release $:amount (USD)? The frozen amount will be returned to available balance.',
+            'release_remark' => 'Release Remark',
+            'released' => 'Released; the frozen amount has been returned to available balance.',
+            'already_released' => 'This freeze has already been released; no action needed.',
+            'statuses' => [
+                'frozen' => 'Frozen',
+                'released' => 'Released',
+            ],
+        ],
         'txn' => [
             'model_label' => 'Balance Transaction',
             'model_label_plural' => 'Balance Transactions',
@@ -824,6 +1092,58 @@ return [
                 'withdrawal' => 'Withdrawal',
                 'manual_adjust' => 'Manual Adjustment',
             ],
+        ],
+    ],
+
+    // Exchange rate trends page (super admin only): base currency is always USD,
+    // showing how each currency in exchange.supported_currencies moves against it.
+    'exchange_rate' => [
+        'nav_label' => 'Exchange Rate Trends',
+        'title' => 'Exchange Rate Trends',
+        'sync' => [
+            'section' => 'Sync Status',
+            'section_desc' => 'Rates are fetched automatically every hour by the exchange:fetch command; you can also trigger a run from the top right corner.',
+            'last_sync_at' => 'Last Sync',
+            'last_sync_ago' => 'Elapsed',
+            'never' => 'Never synced',
+            'supported_currencies' => 'Configured Currencies',
+            'supported_currencies_help' => 'Taken from the exchange.supported_currencies system config; the base currency is always USD.',
+            'not_configured' => 'Not configured (no rates will be fetched)',
+            'snapshot_count' => 'History Snapshots',
+            'retention_days' => 'History Retention',
+            'retention_days_value' => ':days day(s)',
+            'schedule' => 'Schedule',
+            'schedule_value' => 'Hourly',
+            'schedule_help' => 'The chart aggregates by daily average rate, so multiple runs within one day collapse into a single point.',
+        ],
+        'current' => [
+            'section' => 'Current Rates',
+            'section_desc' => 'The rates actually used when creating orders (1 target currency = ? :base, before surcharge).',
+            'rate_label' => ':currency / :base',
+            'retrieved_at' => 'Fetched at :time',
+            'empty' => 'No rate data yet. Configure the currencies to fetch and run a sync first.',
+        ],
+        'trend' => [
+            'heading' => 'Rate Trends',
+            'description' => 'Daily average rate of each currency against USD. Switch between the 7 / 30 / 90 day windows in the top right corner.',
+            'windows' => [
+                '7' => 'Last 7 days',
+                '30' => 'Last 30 days',
+                '90' => 'Last 90 days',
+            ],
+            'dataset_label' => ':currency / :base',
+            'y_axis' => '1 unit = ? :base',
+            'empty_heading' => 'No exchange rate history yet',
+            'empty_description' => 'History snapshots accumulate hourly from the moment this feature goes live. Run "Sync Now" in the top right corner first; sparse data points in the 7/30/90 day views are expected early on.',
+        ],
+        'actions' => [
+            'sync_now' => 'Sync Rates Now',
+            'sync_now_desc' => 'This immediately issues one fetch against the rate provider (executed synchronously, usually a few seconds up to half a minute). On success the current rates are updated and one history snapshot is appended.',
+            'sync_now_submit' => 'Start Sync',
+            'sync_now_success' => 'Rates synced successfully. Last sync: :time',
+            'sync_now_failed' => 'The sync did not produce any new data',
+            'sync_now_failed_hint' => 'Check that the exchange.supported_currencies system config is filled in, and that the services.exchange_rate endpoint URL and API key are correct.',
+            'sync_now_exception' => 'Rate sync failed with an exception: :error',
         ],
     ],
 

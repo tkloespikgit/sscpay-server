@@ -10,15 +10,21 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 | 商户对接接口全部走 App-ID + 签名鉴权（ApiAuthentication 中间件，别名 'api.auth'，
 | 见 bootstrap/app.php 里的中间件别名注册）。
+|
+| 整个文件限定在 config('app.api_domain')（.env 的 API_DOMAIN）域名下才能访问，
+| 未配置时为 null，Route::domain(null) 不限制域名，等价于改造前的行为，
+| 本地开发无需配置。
 */
 
-Route::middleware(['api.auth'])->prefix('order')->group(function () {
-    Route::post('/create', [OrderController::class, 'store']);
-    Route::post('/query', [OrderController::class, 'query']);
-    Route::post('/ship', [OrderController::class, 'ship']);
-});
+Route::domain(config('app.api_domain'))->group(function () {
+    Route::middleware(['api.auth'])->prefix('order')->group(function () {
+        Route::post('/create', [OrderController::class, 'store']);
+        Route::post('/query', [OrderController::class, 'query']);
+        Route::post('/ship', [OrderController::class, 'ship']);
+    });
 
-// 支付网关聚合插件的 payment_status 回调，走插件自己的 X-PGA-Signature 验签
-// （PaymentGatewayService::verifyWebhookSignature()），不套用上面商户那套 api.auth。
-Route::post('/webhooks/payment-gateway/status', [PaymentGatewayWebhookController::class, 'status'])
-    ->name('webhooks.payment-gateway.status');
+    // 支付网关聚合插件的 payment_status 回调，走插件自己的 X-PGA-Signature 验签
+    // （PaymentGatewayService::verifyWebhookSignature()），不套用上面商户那套 api.auth。
+    Route::post('/webhooks/payment-gateway/status', [PaymentGatewayWebhookController::class, 'status'])
+        ->name('webhooks.payment-gateway.status');
+});

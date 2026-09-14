@@ -65,7 +65,25 @@ return [
     |
     */
 
-    'timezone' => 'UTC',
+    'timezone' => env("APP_TIMEZONE",'PRC'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | 后台登录 / 对外 API 域名限制
+    |--------------------------------------------------------------------------
+    |
+    | 平台面板（超级管理员/商户级管理员）、商户面板（商户自己的管理员）、对外 API
+    | 各自只允许在对应域名下访问，见 AdminPanelProvider/MerchantPanelProvider 的
+    | ->domain() 与 routes/api.php 的 Route::domain()。留空（.env 未配置）表示
+    | 不限制域名，等价于改造前的行为，本地开发无需配置。
+    |
+    */
+
+    'platform_domain' => env('FILAMENT_PLATFORM_DOMAIN'),
+
+    'merchant_domain' => env('FILAMENT_MERCHANT_DOMAIN'),
+
+    'api_domain' => env('API_DOMAIN'),
 
     /*
     |--------------------------------------------------------------------------

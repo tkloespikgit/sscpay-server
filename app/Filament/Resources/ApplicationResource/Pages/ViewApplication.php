@@ -37,8 +37,9 @@ class ViewApplication extends ViewRecord
             Section::make(__('admin.merchant.sections.basic_info'))->schema([
                 TextEntry::make('name')->label(__('admin.application.fields.name')),
                 TextEntry::make('website')->label(__('admin.application.fields.website'))->placeholder('—'),
-                TextEntry::make('sender_email')->label(__('admin.application.fields.sender_email'))->placeholder('—'),
-                TextEntry::make('sender_name')->label(__('admin.application.fields.sender_name'))->placeholder('—'),
+                TextEntry::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—'),
+                TextEntry::make('sender_name')->label(__('admin.mail_credentials.fields.sender_name'))->placeholder('—'),
+                TextEntry::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—'),
                 TextEntry::make('created_at')->label(__('admin.application.fields.created_at'))->dateTime(),
                 IconEntry::make('status')
                     ->color(fn (int $state): string => match ($state) {

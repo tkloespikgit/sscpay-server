@@ -43,7 +43,7 @@ class MerchantBalanceTransactionResource extends Resource
             ->columns([
                 TextColumn::make('created_at')->label(__('admin.finance.fields.created_at'))->dateTime()->sortable(),
                 TextColumn::make('merchant.name')->label(__('admin.finance.fields.merchant'))->searchable()
-                    ->visible(fn () => (bool) auth()->user()?->is_super_admin),
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff()),
                 TextColumn::make('type')->label(__('admin.finance.txn.type'))->badge()
                     ->formatStateUsing(fn (string $state) => __('admin.finance.txn.types.'.$state))
                     ->color(fn (string $state) => match ($state) {

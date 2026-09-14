@@ -65,9 +65,9 @@ class OrderResource extends Resource
             // paymentMethod 用于把 payment_method 列从 method_code 换成 method_name 展示。
             ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent']))
             ->columns([
-                // 商户名称列仅超级管理员可见（商户用户本来就只看自己的订单）
+                // 商户名称列仅平台侧账号（超管、商户级管理员）可见（商户用户本来就只看自己的订单）
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
-                    ->visible(fn () => (bool) auth()->user()?->is_super_admin)
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
                     ->searchable(),
                 TextColumn::make('application.app_id')->label(__('admin.order.columns.application'))
                     ->formatStateUsing(fn ($record) => $record->application
@@ -138,11 +138,21 @@ class OrderResource extends Resource
             // contentFooter()——Table 自带的这两个扩展点只能落在"筛选栏上方"或
             // "表格 <tfoot>"，没有"搜索栏下方"这个位置。
             ->filters([
-                // 商户筛选仅超级管理员可见；商户用户的数据本身已被 MerchantScope 限制
+                // 商户筛选仅平台侧账号（超管、商户级管理员）可见；商户用户的数据本身已被 MerchantScope 限制。
+                // Merchant 模型本身不挂 MerchantScope（它就是"商户"，不隶属于商户），
+                // 这里手动把选项收窄到商户级管理员名下的商户，避免筛出自己管不到的商户。
                 SelectFilter::make('merchant_id')
                     ->label(__('admin.order.filters.merchant'))
-                    ->visible(fn () => (bool) auth()->user()?->is_super_admin)
-                    ->options(fn () => Merchant::orderBy('name')->pluck('name', 'id'))
+                    ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
+                    ->options(function () {
+                        $user = auth()->user();
+
+                        if ($user->isMerchantManager()) {
+                            return $user->ownedMerchants()->orderBy('name')->pluck('name', 'id');
+                        }
+
+                        return Merchant::orderBy('name')->pluck('name', 'id');
+                    })
                     ->searchable(),
 
                 // Application 自带 MerchantScope，商户用户只会看到自己名下的应用；
@@ -160,14 +170,16 @@ class OrderResource extends Resource
 
                         // 不加 withoutGlobalScopes()，交给 MerchantScope 自动隔离：
                         // 商户用户只会看到自己商户的支付方式，不会出现其他商户的配置。
-                        if (! $user?->is_super_admin) {
+                        if (! $user?->isPlatformStaff()) {
                             return PaymentMethod::query()
                                 ->orderBy('sort_order')
                                 ->pluck('method_name', 'method_code');
                         }
 
-                        // 超级管理员看到全部支付方式，按商户分组展示，便于区分不同商户
-                        // 配置的同名/同 code 支付方式（按 code 筛选时会同时命中这些商户的订单）。
+                        // 平台侧账号（超管、商户级管理员）看到的是（自己可管理范围内）全部支付方式，
+                        // 按商户分组展示，便于区分不同商户配置的同名/同 code 支付方式
+                        // （按 code 筛选时会同时命中这些商户的订单）。MerchantScope 已经把
+                        // 商户级管理员限制在自己名下的商户，这里不用再额外过滤。
                         return PaymentMethod::query()
                             ->with('merchant')
                             ->orderBy('sort_order')

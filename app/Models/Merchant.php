@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -14,12 +15,13 @@ class Merchant extends Model
     use SoftDeletes;
 
     protected $fillable = [
+        'owner_id',
         'name',
         'contact_person',
         'contact_phone',
         'contact_email',
-        'allowed_domains',
         'status',
+        'timezone',
         'balance',
         'frozen_balance',
         'remark',
@@ -28,7 +30,6 @@ class Merchant extends Model
     protected function casts(): array
     {
         return [
-            'allowed_domains' => 'array',
             'status' => 'boolean',
             'balance' => 'decimal:2',
             'frozen_balance' => 'decimal:2',
@@ -41,6 +42,14 @@ class Merchant extends Model
     public function availableBalance(): string
     {
         return bcsub((string) $this->balance, (string) $this->frozen_balance, 2);
+    }
+
+    /**
+     * 后台时间显示时区，留空回退系统时区（与 PaymentGroup::effectiveTimezone() 同一模式）。
+     */
+    public function effectiveTimezone(): string
+    {
+        return $this->timezone ?: (string) config('app.timezone', 'UTC');
     }
 
     public function balanceTransactions(): HasMany
@@ -56,6 +65,14 @@ class Merchant extends Model
     public function users(): HasMany
     {
         return $this->hasMany(User::class);
+    }
+
+    /**
+     * 所属商户级管理员（平台侧账号）。NULL 表示由平台超管直接管理。
+     */
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
     }
 
     public function applications(): HasMany
@@ -96,20 +113,5 @@ class Merchant extends Model
     public function telegramBot(): HasOne
     {
         return $this->hasOne(TelegramBot::class);
-    }
-
-    /**
-     * 校验回调域名是否在白名单内（用于校验 notify_url / return_url / cancel_url 等
-     * 商户传入的回跳地址是否合法，防止 SSRF 或跳转到非商户自己的域名）。
-     */
-    public function isDomainAllowed(string $url): bool
-    {
-        $host = parse_url($url, PHP_URL_HOST);
-
-        if (! $host) {
-            return false;
-        }
-
-        return in_array($host, $this->allowed_domains ?? [], true);
     }
 }
