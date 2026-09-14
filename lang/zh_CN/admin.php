@@ -977,6 +977,7 @@ return [
         'order_refund_gateway' => "💸 网关退款通知\n\n订单号：:order_no\n金额：:currency:amount\n此退款来自网关/商城系统主动发起，系统未自动扣减商户余额，请人工核实后在后台执行退款操作；已拉取最新订单日志，可在后台订单详情查看",
         'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统未自动扣减商户余额，请人工核实后处理资损；已拉取最新订单日志，可在后台订单详情查看",
         'order_dispute_due_soon' => "⏰ 争议审核事件即将到期\n\n订单号：:order_no\n事件编号：:event_no\n到期时间：:due_at\n请尽快处理，逾期将自动结束并释放冻结资金。",
+        'payment_method_forbidden' => "🚫 支付通道已自动禁用\n\n通道：:method_name（:method_code）\n触发订单：:order_no\n该通道对应的三方账号已无法下单支付，系统已自动禁用此通道，请核实账号状态，如有需要请切换其他通道。",
     ],
 
     'finance' => [

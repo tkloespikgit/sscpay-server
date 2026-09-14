@@ -982,6 +982,7 @@ return [
         'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
         'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
         'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
+        'payment_method_forbidden' => "🚫 Payment channel disabled\n\nChannel: :method_name (:method_code)\nTriggered by order: :order_no\nThe gateway account can no longer accept payments, so this channel has been automatically disabled. Please check the account status and switch to another channel if needed.",
     ],
 
     'finance' => [

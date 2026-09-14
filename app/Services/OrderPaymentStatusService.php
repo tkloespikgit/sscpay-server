@@ -6,6 +6,7 @@ use App\Events\OrderStatusChanged;
 use App\Models\Order;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Services\TelegramNotificationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -84,6 +85,7 @@ class OrderPaymentStatusService
         private readonly OrderNotificationService $notificationService,
         private readonly PaymentGatewayService $paymentGateway,
         private readonly AdConversionService $adConversionService,
+        private readonly TelegramNotificationService $telegram,
     ) {
     }
 
@@ -109,7 +111,44 @@ class OrderPaymentStatusService
             return;
         }
 
+        $this->disablePaymentMethodIfForbidden($order, $payload);
+
         $this->applyStatus($order, self::STATUS_MAP[$pluginStatus], $payload);
+    }
+
+    /**
+     * account_forbidden：插件侧标记该订单锁定支付方式对应的三方账号已无法下单支付
+     * （比如被网关封禁/限制），与订单状态迁移无关，收到即禁用本地这条支付通道配置，
+     * 避免后续订单继续路由到一个已经下不了单的通道。只在当前仍是启用状态时才处理+
+     * 告警，避免同一事件重试多次时重复发 Telegram。
+     */
+    private function disablePaymentMethodIfForbidden(Order $order, array $payload): void
+    {
+        if (empty($payload['account_forbidden'])) {
+            return;
+        }
+
+        $method = $order->paymentMethodConfig();
+
+        if (!$method || !$method->is_active) {
+            return;
+        }
+
+        $method->is_active = false;
+        $method->save();
+
+        Log::warning('payment_status webhook: 支付通道账号已被标记为不可用，自动禁用', [
+            'order_no'          => $order->order_no,
+            'merchant_id'       => $order->merchant_id,
+            'payment_method_id' => $method->id,
+            'method_code'       => $method->method_code,
+        ]);
+
+        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.payment_method_forbidden', [
+            'method_name' => $method->method_name,
+            'method_code' => $method->method_code,
+            'order_no'    => $order->order_no,
+        ]));
     }
 
     /**
