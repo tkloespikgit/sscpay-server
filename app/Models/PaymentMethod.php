@@ -20,14 +20,19 @@ class PaymentMethod extends Model
      * 商品匹配模式兜底列表；允许取值以系统配置 payment.product_match_modes（JSON 数组）为准。
      * DIRECT（直连）已从枚举移除：回跳地址与站点同域名时由下单流程自动走直连分支。
      */
-    public const PRODUCT_MATCH_MODES_FALLBACK = ['MATCH', 'CREATE', 'VIRTUAL'];
+    public const PRODUCT_MATCH_MODES_FALLBACK = ['MATCH', 'CREATE', 'VIRTUAL', 'COPY'];
 
-    /** 已实现的匹配模式：MATCH 存量商品凑单；CREATE 同价匹配 + 复制改价建站创建；VIRTUAL 等同 MATCH。 */
+    /**
+     * 已实现的匹配模式：MATCH 存量商品凑单；CREATE 同价匹配 + 复制改价建站创建；
+     * VIRTUAL 等同 MATCH；COPY 关键词替换商品名后按名称+同价匹配，找不到才复制改价创建。
+     */
     public const MODE_MATCH = 'MATCH';
 
     public const MODE_CREATE = 'CREATE';
 
     public const MODE_VIRTUAL = 'VIRTUAL';
+
+    public const MODE_COPY = 'COPY';
 
     protected $fillable = [
         'merchant_id',

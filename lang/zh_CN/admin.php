@@ -89,6 +89,24 @@ return [
         ],
     ],
 
+    'replace_keyword' => [
+        'model_label' => '关键词替换',
+        'model_label_plural' => '关键词替换',
+        'fields' => [
+            'merchant' => '所属商户',
+            'keyword' => '关键词',
+            'replacement' => '替换为',
+            'created_at' => '创建时间',
+        ],
+        'help' => [
+            'replacement' => '留空表示直接删除商品名中匹配到的关键词，而不是替换成别的文字。',
+        ],
+        'import' => [
+            'completed_body' => '成功导入 :count 条关键词。',
+            'completed_body_failed' => ':count 条导入失败。',
+        ],
+    ],
+
     // Application / PaymentMethod 共用的"邮件发送配置"弹框（App\Filament\Support\MailCredentialsAction）：
     // 发件人 + 自有 ESP 凭证四个字段打包一起编辑，两边的编辑页各自在 header action 里复用同一份。
     'mail_credentials' => [
@@ -246,6 +264,7 @@ return [
             'match' => '匹配',
             'create' => '创建',
             'virtual' => '虚拟',
+            'copy' => '复制',
         ],
         'order_no_formats' => [
             'numeric' => '纯数字',

@@ -43,6 +43,8 @@ class OnboardMerchant extends Page
 
     public ?array $data = [];
 
+    protected string|\Filament\Support\Enums\Width|null $maxContentWidth = '7xl';
+
     public static function getNavigationGroup(): ?string
     {
         return __('admin.nav.platform');
@@ -61,7 +63,6 @@ class OnboardMerchant extends Page
     public function mount(): void
     {
         $this->form->fill([
-            'merchant_status' => true,
             'merchant_timezone' => (string) config('app.timezone', 'UTC'),
             'app_is_order_email_enabled' => true,
         ]);
@@ -78,11 +79,6 @@ class OnboardMerchant extends Page
                         ->label(__('admin.onboard_merchant.steps.merchant.label'))
                         ->description(__('admin.onboard_merchant.steps.merchant.description'))
                         ->schema([
-                            TextInput::make('merchant_name')->label(__('admin.merchant.fields.name'))->required()->maxLength(100),
-                            TextInput::make('merchant_contact_person')->label(__('admin.merchant.fields.contact_person'))->required()->maxLength(100),
-                            TextInput::make('merchant_contact_phone')->label(__('admin.merchant.fields.contact_phone'))->required()->maxLength(30),
-                            TextInput::make('merchant_contact_email')->label(__('admin.merchant.fields.contact_email'))->email()->required()->maxLength(255),
-                            Toggle::make('merchant_status')->label(__('admin.merchant.fields.status'))->default(true)->inline(false),
                             Select::make('merchant_owner_id')
                                 ->label(__('admin.merchant.fields.owner'))
                                 ->helperText(__('admin.merchant.help.owner'))
@@ -134,6 +130,7 @@ class OnboardMerchant extends Page
                                 ->label(__('admin.application.fields.payment_link_mail_template'))
                                 ->helperText(__('admin.application.help.payment_link_mail_template'))
                                 ->placeholder(__('admin.application.placeholders.payment_link_mail_template'))
+                                ->extraInputAttributes(['style' => 'min-height: 20rem;'])
                                 ->columnSpanFull(),
                         ])->columns(2),
                 ])
@@ -154,13 +151,15 @@ class OnboardMerchant extends Page
         $merchant = DB::transaction(function () use ($data) {
             $user = auth()->user();
 
+            $merchantName = now()->format('Ymd').str_pad((string) random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+
             $merchant = Merchant::create([
                 'owner_id' => $user->isMerchantManager() ? $user->id : ($data['merchant_owner_id'] ?? null),
-                'name' => $data['merchant_name'],
-                'contact_person' => $data['merchant_contact_person'],
-                'contact_phone' => $data['merchant_contact_phone'],
-                'contact_email' => $data['merchant_contact_email'],
-                'status' => $data['merchant_status'],
+                'name' => $merchantName,
+                'contact_person' => $merchantName,
+                'contact_phone' => $merchantName,
+                'contact_email' => "{$merchantName}@test.example.com",
+                'status' => true,
                 'timezone' => $data['merchant_timezone'],
                 'remark' => $data['merchant_remark'],
             ]);

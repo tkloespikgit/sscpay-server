@@ -24,6 +24,8 @@ final class Permissions
 
     public const PAYMENT_GROUPS_MANAGE = 'payment_groups.manage';
 
+    public const REPLACE_KEYWORDS_MANAGE = 'replace_keywords.manage';
+
     public const ORDERS_VIEW = 'orders.view';
 
     public const ORDERS_CREATE_MANUAL = 'orders.create_manual';
@@ -81,6 +83,7 @@ final class Permissions
             self::APPLICATIONS_MANAGE,
             self::PAYMENT_METHODS_MANAGE,
             self::PAYMENT_GROUPS_MANAGE,
+            self::REPLACE_KEYWORDS_MANAGE,
             self::ORDERS_VIEW,
             self::ORDERS_CREATE_MANUAL,
             self::ORDERS_SHIP,

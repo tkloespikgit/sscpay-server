@@ -343,7 +343,9 @@ class OrderCreationService
      *     任何匹配模式都不走，直接用下单明细发起支付；
      *   - MATCH / VIRTUAL：按订单商品金额从站点商品变体贪心凑单（matchItems）；
      *   - CREATE：逐条按订单明细找同价商品，找不到就复制一份改价并在站点上
-     *     同步创建同价商品（createItems，/pay 需要真实的商品 ID / 链接）。
+     *     同步创建同价商品（createItems，/pay 需要真实的商品 ID / 链接）；
+     *   - COPY：先用商户关键词替换表洗一遍商品名，逐条按订单明细找同名同价商品，
+     *     找不到就复制一份改名改价并在站点上同步创建（copyItems，同样需要同步完成）。
      * 各分支均保证明细小计与订单商品金额完全一致（matched_discount 恒为 0）。
      *
      * 插件对同一 s_order_id（传系统订单号）幂等，失败重试安全。
@@ -374,7 +376,7 @@ class OrderCreationService
         // 直接把下单明细复制为匹配明细发起支付。
         $mode = (string) ($paymentMethod->product_match_mode ?: PaymentMethod::MODE_MATCH);
 
-        $reusableCreated = $mode === PaymentMethod::MODE_CREATE
+        $reusableCreated = in_array($mode, [PaymentMethod::MODE_CREATE, PaymentMethod::MODE_COPY], true)
             ? $order->matchedItems()->where('auto_created', true)->get()
             : null;
 
@@ -384,6 +386,7 @@ class OrderCreationService
             $mode === PaymentMethod::MODE_VIRTUAL => $this->orderItemService->matchItems($paymentMethod, (string) $order->subtotal,
                 (string) $order->exchange_rate),
             $mode === PaymentMethod::MODE_CREATE => $this->orderItemService->createItems($paymentMethod, $order, $reusableCreated),
+            $mode === PaymentMethod::MODE_COPY => $this->orderItemService->copyItems($paymentMethod, $order, $reusableCreated),
             default => throw new PaymentGatewayException("支付方式 {$paymentMethod->method_code} 的商品匹配模式 {$mode} 尚未实现，无法远程创建支付订单",
                 -1),
         };

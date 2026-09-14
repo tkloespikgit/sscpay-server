@@ -53,7 +53,8 @@ class PaymentGatewayService
      *
      * WordPress 侧统一用站点的 Consumer Key / Secret 认证，不再区分「订单账号」「配置账号」
      * 这两套 WordPress 应用密码（已弃用）。注意插件侧的 WooKeyAuthenticator 不认标准 HTTP
-     * Basic Auth（见 client() 方法注释），传输格式是 "Authorization: ck:cs" 明文，不是 Basic Auth。
+     * Basic Auth，也不能保证明文 Authorization 头能被转发到位，传输方式是 URL query 参数
+     * `consumer_key`/`consumer_secret`（见 client() 方法注释）。
      *
      * @param  string  $baseUrl  形如 https://example.com/wp-json/payment-plugin/v1
      * @param  string  $consumerKey  WooCommerce REST API Consumer Key（ck_xxx）
@@ -99,7 +100,21 @@ class PaymentGatewayService
      */
     public function createPayment(array $payload): array
     {
-        return $this->request('pay', $payload);
+        $result = $this->request('pay', $payload);
+
+        // 插件返回 code=0（业务成功）却没给 pay_url，本该是异常情况——之前这里
+        // 直接透传给调用方，OrderCreationService 用 ?? null 兜底，最终订单创建
+        // "成功"但 pay_url 是 null，商户和排查的人都看不出这一步其实失败了。
+        if (blank($result['pay_url'] ?? null)) {
+            Log::warning('支付网关插件 /pay 返回成功但缺少 pay_url', [
+                's_order_id' => $payload['s_order_id'] ?? null,
+                'response' => $result,
+            ]);
+
+            throw new PaymentGatewayException('支付网关插件 /pay 返回成功但未提供 pay_url，无法生成收银台链接', -1, 200, $result);
+        }
+
+        return $result;
     }
 
     /**
@@ -229,6 +244,16 @@ class PaymentGatewayService
 
         $body = $response->json();
 
+        // 不管成功失败都记一条原始响应：pay_url 为空但下单接口显示成功的情况
+        // （即插件返回了 200 + code 字段，但没给出预期的 pay_url）单靠上面的失败分支
+        // 日志看不到，必须有一条无条件的原始响应记录才能确认插件到底返回了什么结构。
+        Log::debug('支付网关插件请求响应', [
+            'path' => $path,
+            'base_url' => $baseUrl,
+            'http_status' => $response->status(),
+            'response_body' => mb_substr($response->body(), 0, 1000),
+        ]);
+
         if (! is_array($body) || ! array_key_exists('code', $body)) {
             throw new PaymentGatewayException(
                 "接口 /{$path} 返回了非预期的响应格式（HTTP {$response->status()}）",
@@ -238,7 +263,17 @@ class PaymentGatewayService
             );
         }
 
-        if ((int) $body['code'] !== 0) {
+        // (int) 强转非数字 code（如插件返回 "success" 这类非数字状态字符串）会被 PHP 转成 0，
+        // 跟真正的成功码 0 混为一谈——先判 is_numeric 排除这种误判为成功的情况，
+        // 而不是只用 (int) 转换后判断是否等于 0。
+        if (! is_numeric($body['code']) || (int) $body['code'] !== 0) {
+            // 鉴权失败等场景插件走的是 WordPress REST 框架原生的 WP_Error 响应格式：
+            // 顶层 code 是字符串 slug（如 "pga_auth_failed"），真正的业务数字码嵌在
+            // data.code 里（如 10004，PaymentGatewayException::isAuthFailure() 认的
+            // 就是这个数字）。顶层 code 本来就是数字时才直接用它，避免这种情况下
+            // (int) 顶层 code 恒等于 0，pgaCode 传出去全变成 -1，isAuthFailure() 永远判不出来。
+            $pgaCode = is_numeric($body['code']) ? (int) $body['code'] : (int) ($body['data']['code'] ?? -1);
+
             // WordPress 侧站点认证类失败（如 WooCommerce REST API 密钥错误/被禁用/权限不足）
             // 单独打日志：只记凭证长度和首尾几位做指纹比对，不记完整明文，
             // 方便核对"这次用的到底是哪个支付方式的哪一把 key/secret"，而不用去猜。
@@ -249,12 +284,13 @@ class PaymentGatewayService
                 'password_fingerprint' => $this->credentialFingerprint($credentials['password']),
                 'http_status' => $response->status(),
                 'code' => $body['code'],
+                'pga_code' => $pgaCode,
                 'message' => $body['message'] ?? null,
             ]);
 
             throw new PaymentGatewayException(
                 (string) ($body['message'] ?? '未知错误'),
-                (int) $body['code'],
+                $pgaCode,
                 $response->status(),
                 $body
             );
@@ -279,10 +315,12 @@ class PaymentGatewayService
     {
         // 站点侧认证插件（WooKeyAuthenticator）明确排除标准 HTTP Basic Auth
         // （代码里判定 Authorization 头含 "Basic" 字样就直接跳过，视为未提供凭据），
-        // 只认 "Authorization: ck:cs" 明文格式（不带 Basic 前缀、不 base64）或 query 参数。
-        // 用 withBasicAuth() 发出的标准 Basic Auth 头会被它无视，永远 401——这是插件侧的自定义行为，
-        // 不是标准 WooCommerce REST API 认证方式，对接这个插件时不能沿用常规 Basic Auth 习惯。
-        return Http::withHeaders(['Authorization' => "{$username}:{$password}"])
+        // 只认 "Authorization: ck:cs" 明文格式或 query 参数。改用 query 参数而不是明文
+        // Authorization 头：本地/部分反代环境的 Web 服务器默认不会把自定义 Authorization
+        // 头转发给 PHP-FPM（经典的 mod_fcgid/Nginx 陷阱，跟 Basic 前缀无关，服务器压根没转发
+        // 这个 header），实测明文 header 方式仍然 401；query 参数不依赖任何 header 转发配置，
+        // 一定能到达 PHP，是两种支持方式里更可靠的一个。
+        return Http::withOptions(['query' => ['consumer_key' => $username, 'consumer_secret' => $password]])
             ->acceptJson()
             ->withoutVerifying()
             ->timeout((int) ($this->config['timeout'] ?? 15))

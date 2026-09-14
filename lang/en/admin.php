@@ -91,6 +91,24 @@ return [
         ],
     ],
 
+    'replace_keyword' => [
+        'model_label' => 'Replace Keyword',
+        'model_label_plural' => 'Replace Keywords',
+        'fields' => [
+            'merchant' => 'Merchant',
+            'keyword' => 'Keyword',
+            'replacement' => 'Replacement',
+            'created_at' => 'Created At',
+        ],
+        'help' => [
+            'replacement' => 'Leave blank to delete the matched keyword from the product name instead of replacing it.',
+        ],
+        'import' => [
+            'completed_body' => ':count keyword(s) imported.',
+            'completed_body_failed' => ':count row(s) failed.',
+        ],
+    ],
+
     // Shared "mail sending configuration" modal for Application / PaymentMethod
     // (App\Filament\Support\MailCredentialsAction): sender identity + own ESP
     // credentials bundled into one edit flow, reused by both Edit pages'
@@ -251,6 +269,7 @@ return [
             'match' => 'Match',
             'create' => 'Create',
             'virtual' => 'Virtual',
+            'copy' => 'Copy',
         ],
         'order_no_formats' => [
             'numeric' => 'Numeric only',
