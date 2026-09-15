@@ -83,6 +83,8 @@ return [
 
     'merchant_domain' => env('FILAMENT_MERCHANT_DOMAIN'),
 
+    'observer_domain' => env('FILAMENT_OBSERVER_DOMAIN'),
+
     'api_domain' => env('API_DOMAIN'),
 
     /*

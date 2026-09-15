@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Observer;
 use App\Models\User;
 
 return [
@@ -42,6 +43,12 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        // 观察者账户面板专用 guard，见 App\Providers\Filament\ObserverPanelProvider。
+        'observer' => [
+            'driver' => 'session',
+            'provider' => 'observers',
+        ],
     ],
 
     /*
@@ -71,6 +78,11 @@ return [
         //     'driver' => 'database',
         //     'table' => 'users',
         // ],
+
+        'observers' => [
+            'driver' => 'eloquent',
+            'model' => Observer::class,
+        ],
     ],
 
     /*

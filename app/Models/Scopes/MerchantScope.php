@@ -2,6 +2,7 @@
 
 namespace App\Models\Scopes;
 
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Scope;
@@ -33,7 +34,16 @@ class MerchantScope implements Scope
 {
     public function apply(Builder $builder, Model $model): void
     {
-        if (! auth()->check()) {
+        // instanceof User：观察者面板（App\Models\Observer，独立 guard 'observer'，
+        // 见 ObserverPanelProvider）登录后，Filament 会把默认 guard 切到 'observer'，
+        // 这里的 auth()->check()/auth()->user() 就会解析成 Observer 实例而不是 User——
+        // Observer 没有 manageableMerchantIds()，会直接抛 BadMethodCallException
+        // （曾经在观察者订单列表页真实触发过：PaymentMethod/OrderShipping/
+        // OrderDisputeEvent 等一切挂了 BelongsToMerchant 的模型，只要被观察者面板
+        // 的任何关联/预加载碰到就会炸）。这个 Scope 的本意就是只对"已登录的 User
+        // 类型后台账号"生效（见类注释），加这层判断后 Observer 请求下直接跳过限制，
+        // 交给各自 Resource 显式按 payment_method_id 之类的方式控制可见范围。
+        if (! auth()->check() || ! (auth()->user() instanceof User)) {
             return;
         }
 
