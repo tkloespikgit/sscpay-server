@@ -14,6 +14,7 @@ return [
         'order_management' => '订单管理',
         'payment_settings' => '支付配置',
         'finance' => '资金管理',
+        'observer' => '观察者账户',
     ],
 
     'log_viewer' => [
@@ -445,6 +446,8 @@ return [
             'sync_status' => '物流同步状态',
             'customer_email' => '客户邮箱',
             'customer_email_placeholder' => '支持模糊搜索',
+            'order_no' => '系统订单号',
+            'order_no_placeholder' => '支持模糊搜索',
             'transaction_id' => '三方交易号',
             'transaction_id_placeholder' => '支持模糊搜索',
             'created_from' => '开始时间',
@@ -896,6 +899,33 @@ return [
         'types' => [
             'super_admin' => '超级管理员',
             'merchant_manager' => '商户级管理员',
+        ],
+    ],
+
+    'observer' => [
+        'model_label' => '观察者账户',
+        'model_label_plural' => '观察者账户',
+        'nav_label' => '观察者账户',
+        'sections' => [
+            'account_info' => '账号信息',
+            'payment_methods' => '绑定支付方式',
+            'display_ratio' => '金额显示比例',
+        ],
+        'fields' => [
+            'account' => '登录账号',
+            'password' => '密码',
+            'status' => '状态',
+            'payment_methods' => '绑定的支付方式',
+            'amount_display_ratio' => '金额显示比例',
+            'created_at' => '创建时间',
+        ],
+        'help' => [
+            'account' => '不需要真实邮箱，系统会自动用这个账号生成内部登录邮箱。',
+            'account_taken' => '该账号已被使用',
+            'password_edit' => '留空表示不修改密码',
+            'status' => '禁用后该账号将无法登录观察者面板，即使密码正确',
+            'payment_methods' => '该观察者登录后只能看到这些支付方式下产生的订单',
+            'amount_display_ratio' => '该观察者看到的所有交易金额都会按此比例折算展示（不影响真实数据），仅超级管理员可设置，商户级管理员新建的观察者账户固定为 100%（不折算）',
         ],
     ],
 

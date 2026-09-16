@@ -16,6 +16,7 @@ return [
         'order_management' => 'Order Management',
         'payment_settings' => 'Payment Settings',
         'finance' => 'Finance',
+        'observer' => 'Observer Accounts',
     ],
 
     'log_viewer' => [
@@ -450,6 +451,8 @@ return [
             'sync_status' => 'Tracking Sync Status',
             'customer_email' => 'Customer Email',
             'customer_email_placeholder' => 'Fuzzy search supported',
+            'order_no' => 'Order No.',
+            'order_no_placeholder' => 'Fuzzy search supported',
             'transaction_id' => 'Transaction ID',
             'transaction_id_placeholder' => 'Fuzzy search supported',
             'created_from' => 'Start Time',
@@ -901,6 +904,33 @@ return [
         'types' => [
             'super_admin' => 'Super Admin',
             'merchant_manager' => 'Merchant Manager',
+        ],
+    ],
+
+    'observer' => [
+        'model_label' => 'Observer Account',
+        'model_label_plural' => 'Observer Accounts',
+        'nav_label' => 'Observer Accounts',
+        'sections' => [
+            'account_info' => 'Account Information',
+            'payment_methods' => 'Bound Payment Methods',
+            'display_ratio' => 'Amount Display Ratio',
+        ],
+        'fields' => [
+            'account' => 'Login Account',
+            'password' => 'Password',
+            'status' => 'Status',
+            'payment_methods' => 'Bound Payment Methods',
+            'amount_display_ratio' => 'Amount Display Ratio',
+            'created_at' => 'Created At',
+        ],
+        'help' => [
+            'account' => 'No real email required — the system generates an internal login email from this account automatically.',
+            'account_taken' => 'This account is already taken',
+            'password_edit' => 'Leave blank to keep the current password',
+            'status' => 'Disabling this account blocks it from logging into the observer panel, even with the correct password',
+            'payment_methods' => 'This observer can only see orders placed through these payment methods after logging in',
+            'amount_display_ratio' => 'All transaction amounts this observer sees are scaled by this percentage for display only (the real data is unaffected). Only a super admin can set this; observers created by a merchant manager are fixed at 100% (no scaling)',
         ],
     ],
 
