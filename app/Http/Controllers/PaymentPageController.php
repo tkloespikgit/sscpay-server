@@ -27,6 +27,10 @@ class PaymentPageController extends Controller
             return view('payment.expired');
         }
 
+        if ($order->pay_url) {
+            return redirect()->away($order->pay_url);
+        }
+
         return view('payment.show', ['order' => $order]);
     }
 
