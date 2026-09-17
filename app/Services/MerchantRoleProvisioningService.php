@@ -7,11 +7,13 @@ use App\Support\Permissions;
 use Spatie\Permission\Models\Role;
 
 /**
- * 新商户入驻时自动建好 4 个默认角色（2.x 节列出的商户管理员/订单管理员/
- * 物流管理员/网站应用管理员），商户自己不需要从零开始逐个勾选权限——
- * 可以直接用这几个默认角色，也可以在此基础上再自建/调整。
+ * 新商户入驻时自动建好默认角色（商户管理员/订单管理员/物流管理员/
+ * 网站应用管理员/财务管理员/支付通道管理员），商户自己不需要从零开始逐个
+ * 勾选权限——可以直接用这几个默认角色，也可以在此基础上再自建/调整。
  *
- * 触发时机见 MerchantObserver::created()。
+ * 触发时机见 MerchantObserver::created()；新增角色定义后，已存在的商户
+ * 需要额外跑一次 `php artisan merchants:provision-roles` 补建
+ * （ProvisionMerchantRoles 命令，firstOrCreate + syncPermissions 天然幂等，可重复执行）。
  */
 class MerchantRoleProvisioningService
 {
@@ -68,6 +70,13 @@ class MerchantRoleProvisioningService
                     Permissions::ORDER_DISPUTES_VIEW,
                     Permissions::ORDER_DISPUTES_OPEN,
                     Permissions::ORDER_DISPUTES_CLOSE,
+                ],
+            ],
+            'payment_channel_admin' => [
+                'label' => '支付通道管理员',
+                'permissions' => [
+                    Permissions::PAYMENT_METHODS_MANAGE,
+                    Permissions::PAYMENT_GROUPS_MANAGE,
                 ],
             ],
         ];

@@ -307,19 +307,25 @@ class BalanceService
      * 先锁 Merchant（mutate()），闭包内再锁 Order，避免引入新的死锁风险。
      * 不写余额流水（冻结/释放不改变 balance 总额，同提现冻结的既有约定）。
      *
+     * 允许的起始状态：paid（正常已付款订单）、disputing（网关已推送争议中，
+     * 商户需要在这个窗口期提交申诉材料）。两者共用同一套冻结/回复/结束流程，
+     * 结束时统一回退为 paid（见 releaseForDisputeEvent()）——disputing 只是
+     * 多了一个允许进入的起点，不代表网关那边的争议已经有结果，真正的输赢
+     * 仍然要等网关后续状态或人工核实，本方法不对此做任何推断。
+     *
      * $attributes 需已完成校验/XSS 过滤/图片转存（由 OrderDisputeService 负责），
      * 这里只管钱和落库，期望包含：event_no, reason, images, final_action,
      * deadline_value, deadline_unit, deadline_hours。
      *
-     * @throws BalanceOperationException 订单状态不是 paid，或该订单已存在处理中的事件
+     * @throws BalanceOperationException 订单状态不是 paid/disputing，或该订单已存在处理中的事件
      */
     public function freezeForDisputeEvent(Order $order, User $operator, array $attributes): OrderDisputeEvent
     {
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $operator, $attributes) {
             $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
 
-            if ($fresh->status !== 'paid') {
-                throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可开立争议审核事件，只有已收款的订单才能开立。");
+            if (! in_array($fresh->status, ['paid', 'disputing'], true)) {
+                throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可开立争议审核事件，只有已收款或争议中的订单才能开立。");
             }
 
             $hasProcessing = OrderDisputeEvent::query()

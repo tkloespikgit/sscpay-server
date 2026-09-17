@@ -384,7 +384,8 @@ class ViewOrder extends ViewRecord
     /**
      * 开立争议审核事件（仅超级管理员/商户财务管理员）：冻结订单金额，
      * 订单状态改为 dispute_review。需要资金操作强制 2FA（同 refund/chargeback）。
-     * 只有已付款且当前没有处理中事件的订单才可见——前置条件在
+     * 已付款（paid）或网关已推送争议中（disputing，商户需要在这个窗口期
+     * 提交申诉材料）且当前没有处理中事件的订单才可见——前置条件在
      * BalanceService::freezeForDisputeEvent() 里还会再校验一遍，这里只是
      * 提前隐藏按钮，避免用户填完表单才被拒绝。
      */
@@ -395,7 +396,7 @@ class ViewOrder extends ViewRecord
             ->icon('heroicon-o-exclamation-triangle')
             ->color('danger')
             ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDER_DISPUTES_OPEN)
-                && $record->status === 'paid'
+                && in_array($record->status, ['paid', 'disputing'], true)
                 && ! $record->activeDisputeEvent)
             ->schema([
                 TextInput::make('event_no')

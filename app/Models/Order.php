@@ -39,8 +39,12 @@ class Order extends Model
 
     /**
      * 人工发起的争议审核事件占用的订单状态（见 OrderDisputeService）。
-     * 与网关 webhook 驱动的 'disputing' 是两套完全独立的机制，互不复用——
-     * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫。
+     * 与网关 webhook 驱动的 'disputing' 是两套独立的机制——状态本身互不复用，
+     * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫
+     * （一旦进入 dispute_review，后续网关消息一律忽略，人工审核结果优先）。
+     * 但 'disputing' 允许作为开立争议审核事件的起点之一（商户需要在网关争议
+     * 处理期间提交申诉材料），见 BalanceService::freezeForDisputeEvent()——
+     * 这只是放宽了开立时校验的起始状态，两套状态机的定义和驱动方式仍然独立。
      * status 列本身没有枚举 cast（其余状态值仍按历史习惯用字面量字符串），
      * 这里单独定义常量只是因为这个值需要被好几处新代码引用，避免手滑打错。
      */
@@ -94,6 +98,7 @@ class Order extends Model
         'shipping_zip',
         'payment_method',
         'payment_method_id',
+        'designated_payment_method_key',
         'refunded_amount',
         'customer_ip',
         'user_agent',

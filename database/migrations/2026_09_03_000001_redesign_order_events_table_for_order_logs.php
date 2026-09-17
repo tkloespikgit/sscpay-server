@@ -20,12 +20,15 @@ return new class extends Migration
     {
         Schema::table('order_events', function (Blueprint $table) {
             $table->dropUnique(['external_trace_id_uniq']);
+            // external_trace_id_uniq 必须先于 external_trace_id 被 drop：它是由后者算出来的
+            // 生成列（virtualAs），SQLite 在同一批 DROP COLUMN 里会按数组顺序执行，先删被依赖的
+            // 基础列会导致生成列表达式悬空报错（MySQL 不受这个顺序限制，本地/线上一直没跑出这个问题）。
             $table->dropColumn([
                 'event_type',
                 'event_status',
                 'event_description',
-                'external_trace_id',
                 'external_trace_id_uniq',
+                'external_trace_id',
             ]);
         });
 

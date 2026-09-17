@@ -4,6 +4,7 @@ namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Support\MailCredentialsAction;
+use App\Filament\Support\PaymentMethodProfileAction;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Notifications\Notification;
@@ -15,7 +16,7 @@ class EditPaymentMethod extends EditRecord
 
     protected function getHeaderActions(): array
     {
-        return [MailCredentialsAction::make(), DeleteAction::make()];
+        return [PaymentMethodProfileAction::make(), MailCredentialsAction::make(), DeleteAction::make()];
     }
 
     protected function getFormActions(): array

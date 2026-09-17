@@ -165,7 +165,7 @@
 | **订单列表** | 筛选器常驻表格上方（`FiltersLayout::AboveContent`）：商户（超管可见）、应用、支付方式、状态、发货状态（已发货 / 未发货）、物流同步状态、日期区间等；表格上方展示**本次查询的多币种金额统计条**；商户名等敏感列仅超管可见 |
 | **订单详情** | 完整 infolist + 5 个 RelationManager（商品明细、自动匹配明细、订单日志、通知尝试记录、争议审核事件）+ 行内动作：查询最新状态（主动调插件 `/order-query`）、**同步订单事件**（主动调插件 `/order-logs` 补齐时间线）、手动同步物流、退款、拒付、重发付款链接等 |
 | **订单日志** | 由 `order-events:sync` 逐笔调插件 `/order-logs` 拉取归档（下单、发起支付、回调、争议、重试等人工可读日志），按 `(order_no, external_log_id)` 幂等写入。订单详情页的「同步订单事件」按钮走同一套逻辑（`OrderEventSyncService::syncOrderNow()`），用于时间线没跟上时立刻补拉，不用等下一轮调度。**只做归档，不驱动状态流转** |
-| **争议审核事件** | 财务管理员对**已付款**订单开立争议 → 冻结该笔金额、订单转 `dispute_review`（同一订单同时只能有一条处理中事件）→ 订单管理员回复补充材料（富文本经 XSS 过滤、图片转存 OSS）→ 人工手动结束或到期自动结束（释放冻结资金、订单回退 `paid`，`close_type` 区分 manual / auto）；24 小时内到期的事件通过 Telegram 提醒。与网关 webhook 推的 `disputing` 是两套独立机制 |
+| **争议审核事件** | 财务管理员对**已付款（paid）或争议中（disputing）**订单开立争议 → 冻结该笔金额、订单转 `dispute_review`（同一订单同时只能有一条处理中事件）→ 订单管理员回复补充材料（富文本经 XSS 过滤、图片转存 OSS）→ 人工手动结束或到期自动结束（释放冻结资金、订单回退 `paid`，`close_type` 区分 manual / auto）；24 小时内到期的事件通过 Telegram 提醒。与网关 webhook 推的 `disputing` 状态机制独立，只是允许以它为起点开立 |
 | **退款 / 拒付** | `BalanceService::refund()`（支持部分退款，累计到 `refunded_amount`，状态转 `partially_refunded` / `refunded`）、`chargeback()`；按支付方式配置的 `refund_fee` / `chargeback_fee` 扣手续费。**两者都要求人工操作 + step-up 2FA**，webhook 收到 `refunded` / `chargeback` 状态时只更新订单、拉日志、发 Telegram 提醒，**不自动扣钱** |
 
 ### 4.5 资金管理

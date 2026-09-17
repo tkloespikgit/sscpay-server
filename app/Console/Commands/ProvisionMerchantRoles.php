@@ -17,7 +17,7 @@ class ProvisionMerchantRoles extends Command
 {
     protected $signature = 'merchants:provision-roles {merchant_id? : 只处理指定商户，不传则处理全部商户}';
 
-    protected $description = '为商户补建/刷新默认角色（商户管理员/订单管理员/物流管理员/网站应用管理员）';
+    protected $description = '为商户补建/刷新默认角色（商户管理员/订单管理员/物流管理员/网站应用管理员/财务管理员/支付通道管理员）';
 
     public function handle(MerchantRoleProvisioningService $service): int
     {

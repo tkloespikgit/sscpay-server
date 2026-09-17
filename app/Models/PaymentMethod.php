@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class PaymentMethod extends Model
@@ -117,6 +118,15 @@ class PaymentMethod extends Model
     public function siteProducts(): HasMany
     {
         return $this->hasMany(SiteProduct::class);
+    }
+
+    /**
+     * 信息附表：库存地址、公司/法人资料、供货商资料，只有超级管理员能维护
+     * （见 App\Filament\Support\PaymentMethodProfileAction）。
+     */
+    public function profile(): HasOne
+    {
+        return $this->hasOne(PaymentMethodProfile::class);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\DesignatedOrderCreated;
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
@@ -254,6 +255,7 @@ class OrderCreationService
                 'shipping_zip' => $data['shipping_zip'],
                 'payment_method' => $paymentMethod->method_code,
                 'payment_method_id' => $paymentMethod->id,
+                'designated_payment_method_key' => filled($data['payment_method_key'] ?? null) ? $data['payment_method_key'] : null,
                 'customer_ip' => $data['customer_ip'] ?? null,
                 'user_agent' => $data['user_agent'] ?? null,
                 'accept_language' => $data['accept_language'] ?? null,
@@ -283,7 +285,13 @@ class OrderCreationService
             return $order;
         });
 
-        // 8. 调支付网关插件 /pay 远程创建支付订单，获取收银台支付链接。
+        // 指定渠道（源网站直连）下单，落库成功即提醒商户——不等远程建支付单
+        // 这步（下面第 9 步，可能失败）结束，保持跟"订单已创建"的语义一致。
+        if (filled($order->designated_payment_method_key)) {
+            event(new DesignatedOrderCreated($order));
+        }
+
+        // 9. 调支付网关插件 /pay 远程创建支付订单，获取收银台支付链接。
         $this->createRemotePayment($order, $paymentMethod);
 
         return $order;

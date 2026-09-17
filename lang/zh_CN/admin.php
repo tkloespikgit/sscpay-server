@@ -146,6 +146,31 @@ return [
     // Application 的"广告转化 API 凭证"弹框（App\Filament\Support\AdCredentialsAction）：
     // 按平台（Meta/Google/TikTok）配置凭证，供 AdConversionService 在支付成功后
     // 调用对应平台的转化 API 通知，与支付方式是否允许返回源站无关。
+    // 支付方式"信息附表"弹框（App\Filament\Support\PaymentMethodProfileAction）：
+    // 库存地址、公司/法人资料、供货商资料，跟渠道接入配置无关，仅超级管理员可见可编辑。
+    'payment_method_profile' => [
+        'label' => '信息附表',
+        'modal_heading' => '信息附表',
+        'modal_description' => '库存地址、公司/法人资料、供货商资料，仅超级管理员可见可编辑，与支付渠道接入配置无关。',
+        'saved' => '信息附表已保存',
+        'fields' => [
+            'stock_addresses' => '库存地址',
+            'company_name' => '公司名称',
+            'company_address' => '公司地址',
+            'legal_representative_name' => '法人名字',
+            'legal_representative_phone' => '法人手机号',
+            'account_email' => '账户邮箱',
+            'supplier_name' => '供货商名称',
+            'supplier_contact_person' => '供货商联系人',
+            'supplier_phone' => '供货商联系电话',
+            'supplier_email' => '供货商联系邮箱',
+            'supplier_address' => '供货商地址',
+        ],
+        'actions' => [
+            'add_stock_address' => '添加库存地址',
+        ],
+    ],
+
     'ad_credentials' => [
         'summary' => '广告转化 - 已配置：:platforms',
         'not_configured' => '广告转化 - 没有配置',
@@ -1000,6 +1025,7 @@ return [
     'telegram_notification' => [
         'logistics_import_completed' => "📦 物流导入完成\n\n文件：:file_name\n总记录：:total\n成功：:success\n失败：:failed",
         'order_paid' => "✅ 支付成功通知\n\n订单号：:order_no\n金额：:currency:amount（≈ \$:converted_amount）\n支付方式：:payment_method",
+        'designated_order_created' => "🛒 源网站订单已创建\n\n订单号：:order_no\n商户订单号：:merchant_order_no\n客户邮箱：:customer_email\n金额：:currency:amount\n支付方式：:payment_method",
         'order_dispute_resolved' => "✅ 争议已解决，订单恢复为已支付\n\n订单号：:order_no",
         'order_shipped' => "🚚 订单已发货\n\n订单号：:order_no",
         'order_failed' => "❌ 支付失败/取消通知\n\n订单号：:order_no\n状态：:status",
@@ -1007,7 +1033,13 @@ return [
         'order_refund_gateway' => "💸 网关退款通知\n\n订单号：:order_no\n金额：:currency:amount\n此退款来自网关/商城系统主动发起，系统未自动扣减商户余额，请人工核实后在后台执行退款操作；已拉取最新订单日志，可在后台订单详情查看",
         'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统未自动扣减商户余额，请人工核实后处理资损；已拉取最新订单日志，可在后台订单详情查看",
         'order_dispute_due_soon' => "⏰ 争议审核事件即将到期\n\n订单号：:order_no\n事件编号：:event_no\n到期时间：:due_at\n请尽快处理，逾期将自动结束并释放冻结资金。",
+        'dispute_review_gateway_status_ignored' => "🔔 网关状态更新（争议审核期间）\n\n订单号：:order_no\n网关侧最新状态：:status\n该订单当前处于人工争议审核中，系统未自动处理此次状态更新。请核实网关侧的实际结果，并视情况手动关闭审核事件以释放冻结资金。",
         'payment_method_forbidden' => "🚫 支付通道已自动禁用\n\n通道：:method_name（:method_code）\n触发订单：:order_no\n该通道对应的三方账号已无法下单支付，系统已自动禁用此通道，请核实账号状态，如有需要请切换其他通道。",
+        'no_available_payment_method' => "⚠️ 下单失败：没有可用的支付通道\n\n支付组：:group_name（:group_key）\n订单金额：约 \$:amount\n原因：:reason\n这笔订单没有建单成功，请尽快核实支付组配置（是否启用了支付方式、风控阈值是否设置过低）。",
+        'no_available_payment_method_reasons' => [
+            'no_active_method' => '该支付组下没有任何启用的支付方式',
+            'risk_control_blocked' => '组内所有支付方式都被风控阈值挡住（单笔/单日金额/单日笔数/单月金额）',
+        ],
     ],
 
     'finance' => [

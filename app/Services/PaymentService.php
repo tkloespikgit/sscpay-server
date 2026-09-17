@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * 支付路由服务（分散流量防打满策略）。
@@ -28,6 +29,8 @@ use Illuminate\Support\Carbon;
  */
 class PaymentService
 {
+    public function __construct(private readonly TelegramNotificationService $telegram) {}
+
     /**
      * @throws NoAvailablePaymentMethodException
      */
@@ -50,10 +53,43 @@ class PaymentService
         }
 
         if ($passing === []) {
+            $this->alertNoAvailablePaymentMethod($group, $amountUsd, $candidates->count());
+
             throw new NoAvailablePaymentMethodException($group->group_key);
         }
 
         return $this->pickLeastLoaded($passing, $dailyStats);
+    }
+
+    /**
+     * 订单进来但整个支付组下没有一个通道能用（组内压根没启用的支付方式，
+     * 或者全部候选都被风控阈值挡住）——这笔订单会直接建单失败，商户很可能
+     * 完全不知道自己在丢单，所以主动推一条 Telegram 提醒，而不是等商户自己
+     * 发现"最近订单量怎么掉了"才去后台排查。
+     *
+     * 加一层短时去重（按支付组，10 分钟）：真实场景下这通常是配置问题
+     * （比如所有通道的日限额都设太低），短时间内会被同一批客户结账重试
+     * 反复触发，不去重会把 Telegram 刷屏，也会占掉 30 条/分钟的全局限流额度，
+     * 挤掉其他更重要的通知（支付成功、争议提醒等）。
+     */
+    private function alertNoAvailablePaymentMethod(PaymentGroup $group, float $amountUsd, int $candidateCount): void
+    {
+        $dedupeKey = "no_available_payment_method_alert:{$group->id}";
+
+        if (! Cache::add($dedupeKey, true, now()->addMinutes(10))) {
+            return;
+        }
+
+        $reason = $candidateCount === 0
+            ? __('admin.telegram_notification.no_available_payment_method_reasons.no_active_method')
+            : __('admin.telegram_notification.no_available_payment_method_reasons.risk_control_blocked');
+
+        $this->telegram->send($group->merchant_id, __('admin.telegram_notification.no_available_payment_method', [
+            'group_name' => $group->group_name,
+            'group_key' => $group->group_key,
+            'amount' => number_format($amountUsd, 2),
+            'reason' => $reason,
+        ]));
     }
 
     /**

@@ -21,15 +21,18 @@ return new class extends Migration
         });
 
         // 回填历史订单：按 merchant_id + method_code 匹配（含已软删除的支付方式，
-        // 保证历史订单也能展示当时锁定的渠道名称）。
-        DB::statement(<<<'SQL'
-            UPDATE orders o
-            INNER JOIN payment_methods pm
-                ON pm.merchant_id = o.merchant_id
-                AND pm.method_code = o.payment_method
-            SET o.payment_method_id = pm.id
-            WHERE o.payment_method_id IS NULL
-        SQL);
+        // 保证历史订单也能展示当时锁定的渠道名称）。MySQL 专属的 UPDATE...JOIN 语法，
+        // sqlite（测试库用）不支持；新库本来就没有历史订单要回填，直接跳过即可。
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement(<<<'SQL'
+                UPDATE orders o
+                INNER JOIN payment_methods pm
+                    ON pm.merchant_id = o.merchant_id
+                    AND pm.method_code = o.payment_method
+                SET o.payment_method_id = pm.id
+                WHERE o.payment_method_id IS NULL
+            SQL);
+        }
     }
 
     public function down(): void

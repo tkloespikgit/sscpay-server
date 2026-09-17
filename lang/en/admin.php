@@ -151,6 +151,32 @@ return [
     // per-platform (Meta/Google/TikTok) credentials used by AdConversionService to notify
     // ad platforms server-side after payment succeeds, independent of whether the order's
     // payment method allows returning to the source site.
+    // PaymentMethod "supplementary info" modal (App\Filament\Support\PaymentMethodProfileAction):
+    // stock addresses, company/legal-rep info, supplier info — unrelated to gateway connection
+    // config, visible/editable only to the super admin.
+    'payment_method_profile' => [
+        'label' => 'Info Sheet',
+        'modal_heading' => 'Info Sheet',
+        'modal_description' => 'Stock addresses, company/legal representative info, and supplier info. Visible and editable only to the super admin — unrelated to the payment gateway connection config.',
+        'saved' => 'Info sheet saved',
+        'fields' => [
+            'stock_addresses' => 'Stock Addresses',
+            'company_name' => 'Company Name',
+            'company_address' => 'Company Address',
+            'legal_representative_name' => 'Legal Representative Name',
+            'legal_representative_phone' => 'Legal Representative Phone',
+            'account_email' => 'Account Email',
+            'supplier_name' => 'Supplier Name',
+            'supplier_contact_person' => 'Supplier Contact Person',
+            'supplier_phone' => 'Supplier Phone',
+            'supplier_email' => 'Supplier Email',
+            'supplier_address' => 'Supplier Address',
+        ],
+        'actions' => [
+            'add_stock_address' => 'Add Stock Address',
+        ],
+    ],
+
     'ad_credentials' => [
         'summary' => 'Ad Conversion - Configured: :platforms',
         'not_configured' => 'Ad Conversion - Not Configured',
@@ -1005,6 +1031,7 @@ return [
     'telegram_notification' => [
         'logistics_import_completed' => "📦 Logistics import completed\n\nFile: :file_name\nTotal records: :total\nSucceeded: :success\nFailed: :failed",
         'order_paid' => "✅ Payment received\n\nOrder: :order_no\nAmount: :currency:amount (≈ $:converted_amount)\nPayment method: :payment_method",
+        'designated_order_created' => "🛒 Source site order created\n\nOrder: :order_no\nMerchant order no: :merchant_order_no\nCustomer email: :customer_email\nAmount: :currency:amount\nPayment method: :payment_method",
         'order_dispute_resolved' => "✅ Dispute resolved, order is paid again\n\nOrder: :order_no",
         'order_shipped' => "🚚 Order shipped\n\nOrder: :order_no",
         'order_failed' => "❌ Payment failed/cancelled\n\nOrder: :order_no\nStatus: :status",
@@ -1012,7 +1039,13 @@ return [
         'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
         'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
         'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
+        'dispute_review_gateway_status_ignored' => "🔔 Gateway status update (during dispute review)\n\nOrder: :order_no\nLatest gateway status: :status\nThis order is currently under manual dispute review, so this status update was not applied automatically. Please verify the actual outcome with the gateway and manually close the review event to release the frozen funds if appropriate.",
         'payment_method_forbidden' => "🚫 Payment channel disabled\n\nChannel: :method_name (:method_code)\nTriggered by order: :order_no\nThe gateway account can no longer accept payments, so this channel has been automatically disabled. Please check the account status and switch to another channel if needed.",
+        'no_available_payment_method' => "⚠️ Order failed: no available payment channel\n\nPayment group: :group_name (:group_key)\nOrder amount: approx. $:amount\nReason: :reason\nThis order was not created. Please check the payment group configuration soon (are any payment methods enabled? are the risk-control thresholds set too low?).",
+        'no_available_payment_method_reasons' => [
+            'no_active_method' => 'This payment group has no enabled payment methods',
+            'risk_control_blocked' => 'All payment methods in the group were blocked by risk-control thresholds (per-transaction/per-day amount/per-day count/per-month amount)',
+        ],
     ],
 
     'finance' => [

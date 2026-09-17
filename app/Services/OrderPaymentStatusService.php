@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\TelegramNotificationService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -215,9 +216,21 @@ class OrderPaymentStatusService
      */
     private function applyStatus(Order $order, string $targetStatus, array $payload): ?string
     {
-        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload) {
+        // 订单当前处于人工审核事件中时，shouldApply() 会把这条网关消息整个吞掉
+        // （人工审核结果优先，见该方法内的守卫注释）——但如果这条被吞的消息恰好
+        // 就是这次审核在等的最终结果（网关那边争议已经判下来了），审核期间冻结的
+        // 资金不会自动解冻，必须有人手动去关闭审核事件才会释放。这里单独记一下
+        // 这种情况，事务提交后（不占用行锁）发条 Telegram 提醒，避免运营/财务
+        // 只能靠自己盯着网关后台才知道"这时候该去把审核事件关掉放钱了"。
+        $ignoredDuringDisputeReview = false;
+
+        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, &$ignoredDuringDisputeReview) {
             $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
             $old    = $locked->status;
+
+            if ($old === Order::STATUS_DISPUTE_REVIEW) {
+                $ignoredDuringDisputeReview = true;
+            }
 
             if (!$this->shouldApply($old, $targetStatus)) {
                 return null;
@@ -250,6 +263,10 @@ class OrderPaymentStatusService
             return $old;
         });
 
+        if ($ignoredDuringDisputeReview) {
+            $this->alertDisputeReviewGatewayStatusIgnored($order, $targetStatus);
+        }
+
         if ($oldStatus === null) {
             return null;
         }
@@ -273,6 +290,36 @@ class OrderPaymentStatusService
         event(new OrderStatusChanged($order, $oldStatus, $targetStatus));
 
         return $oldStatus;
+    }
+
+    /**
+     * 人工审核期间收到的网关状态被 shouldApply() 吞掉时，单独提醒一下——
+     * 不代表争议已经胜诉/败诉，只是告诉人"网关这边已经有动静了，去核实一下
+     * 要不要关闭审核事件放钱"，真正的资金动作仍然要走人工关闭审核事件
+     * （BalanceService::releaseForDisputeEvent()）+ 视情况后续 refund()/chargeback()。
+     *
+     * 网关同一个事件可能重试多次投递相同 payload（订单一直停在 dispute_review，
+     * 没有"状态已变"这个天然的幂等信号可用），这里用缓存做一次性去重，
+     * 避免每次重试都再发一条一模一样的提醒刷屏。
+     *
+     * 去重 key 特意按"当前这一条处理中的审核事件"（activeDisputeEvent）分组，
+     * 不能只按订单 ID——同一笔订单可能先后开过好几轮独立的审核事件（关闭后
+     * 因故重新开立），按订单 ID 去重会被上一轮审核期间发过的提醒误伤，导致
+     * 这一轮真正该提醒的同样目标状态被误判成"已经提醒过"而漏发。
+     */
+    private function alertDisputeReviewGatewayStatusIgnored(Order $order, string $targetStatus): void
+    {
+        $activeDisputeEventId = $order->activeDisputeEvent?->id ?? $order->id;
+        $dedupeKey = "dispute_review_gateway_alert:{$activeDisputeEventId}:{$targetStatus}";
+
+        if (!Cache::add($dedupeKey, true, now()->addDay())) {
+            return;
+        }
+
+        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.dispute_review_gateway_status_ignored', [
+            'order_no' => $order->order_no,
+            'status'   => __('admin.order.statuses.'.$targetStatus),
+        ]));
     }
 
     private function shouldApply(string $oldStatus, string $targetStatus): bool

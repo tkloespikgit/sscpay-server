@@ -530,9 +530,10 @@ class PaymentMethodResource extends Resource
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
             ->action(function (PaymentMethod $record) {
-                // method_code_uniq 是虚拟生成列，不能出现在 INSERT 里，
-                // replicate 默认会把它复制过来，必须显式排除。
-                $copy = $record->replicate(['method_code_uniq']);
+                // method_code_uniq 是虚拟生成列，site_products_count / site_products_exists
+                // 是列表页 withCount/withExists('siteProducts') 附加的聚合别名，都不是真实
+                // 表字段，不能出现在 INSERT 里，replicate 默认会把它们复制过来，必须显式排除。
+                $copy = $record->replicate(['method_code_uniq', 'site_products_count', 'site_products_exists']);
                 $copy->is_active = false;
                 $copy->method_code = static::nextCopyCode($record);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
