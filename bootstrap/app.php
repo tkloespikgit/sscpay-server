@@ -14,6 +14,8 @@ use App\Http\Middleware\ApiAuthentication;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -28,5 +30,22 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        //
+        // routes/api.php 下的对外接口全部走 App-ID + 签名鉴权，没有"网页"这个概念，
+        // 异常必须始终以 JSON 呈现。Laravel 默认按 Accept: application/json 头
+        // 判断要不要渲染 JSON——商户联调的签名请求经常不带这个头，一旦控制器里
+        // 有没被显式 catch 的异常（例如 Merchant::findOrFail()/PaymentGroup::firstOrFail()
+        // 因为参数无效抛出 ModelNotFoundException），就会退化成 Laravel 默认的 HTML
+        // 404/500 报错页，而不是 JSON，商户那边的 HTTP 客户端解析不了。
+        $exceptions->shouldRenderJsonWhen(fn (Request $request) => $request->is('api/*') || $request->expectsJson());
+
+        // ModelNotFoundException 会被 Laravel 内部先转换成 NotFoundHttpException 再渲染，
+        // 这里统一收敛成和 ApiAuthentication::reject()/OrderController::errorResponse()
+        // 一致的 {code, msg} 结构，而不是 Laravel 默认的 {"message": "..."}。
+        $exceptions->render(function (NotFoundHttpException $e, Request $request) {
+            if (! $request->is('api/*')) {
+                return null;
+            }
+
+            return response()->json(['code' => 404, 'msg' => 'Resource not found.'], 404);
+        });
     })->create();
