@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -83,6 +84,14 @@ class Merchant extends Model
     public function paymentMethods(): HasMany
     {
         return $this->hasMany(PaymentMethod::class);
+    }
+
+    /**
+     * 被分配可使用的系统级支付方式（payment_methods.merchant_id 为空，见 PaymentMethod::assignedMerchants()）。
+     */
+    public function assignedPaymentMethods(): BelongsToMany
+    {
+        return $this->belongsToMany(PaymentMethod::class, 'merchant_payment_methods')->withTimestamps();
     }
 
     public function paymentGroups(): HasMany

@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
+use App\Models\Scopes\MerchantScope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -16,6 +18,75 @@ class PaymentMethod extends Model
     use BelongsToMerchant;
     use HasFactory;
     use SoftDeletes;
+
+    /**
+     * merchant_id 为 NULL 表示"系统级"支付方式（挂在管理员名下），可通过
+     * assignedMerchants() 中间表分配给多个商户使用，见下方 booted()。
+     */
+    public function isSystemLevel(): bool
+    {
+        return is_null($this->merchant_id);
+    }
+
+    /**
+     * BelongsToMerchant 默认的 MerchantScope 只会严格按 merchant_id 过滤，看不到
+     * "被分配的系统级支付方式"。这里用同一个 Scope 标识（MerchantScope::class）重新
+     * 注册一份闭包实现，覆盖掉 trait 在 bootBelongsToMerchant() 里注册的那份——
+     * Eloquent 全局 Scope 按标识存放在按 Model 类分组的数组里，同标识后注册的会
+     * 覆盖先注册的，且只影响 PaymentMethod 自己，不影响其它同样用了这个 trait 的
+     * Model（Order、PaymentGroup 等）。booted() 保证在 boot()（会跑完 bootTraits()）
+     * 之后执行，顺序上一定能覆盖成功。
+     *
+     * 覆盖后的规则：非平台超管时，只能看到"merchant_id 属于自己可管理范围"、
+     * "被分配（assignedMerchants）给自己可管理范围内某个商户"，或者"自己创建的
+     * 系统级支付方式（owner_id 是自己）"这三类之一的记录。最后一条是必须的：
+     * 商户级管理员刚创建一条系统级支付方式、还没来得及分配给任何商户时，
+     * merchant_id 是 NULL、assignedMerchants 也是空，前两个条件都不成立，
+     * 如果不认 owner_id，创建人保存后立刻看不到自己刚建的记录，编辑页
+     * 路由绑定 firstOrFail() 直接 404（曾经真实踩过）。
+     */
+    protected static function booted(): void
+    {
+        static::addGlobalScope(MerchantScope::class, function (Builder $builder) {
+            if (! auth()->check() || ! (auth()->user() instanceof User)) {
+                return;
+            }
+
+            $viewer = auth()->user();
+            $merchantIds = $viewer->manageableMerchantIds();
+
+            if ($merchantIds === null) {
+                return;
+            }
+
+            $builder->where(function (Builder $query) use ($merchantIds, $viewer) {
+                $query->whereIn('payment_methods.merchant_id', $merchantIds)
+                    ->orWhereHas('assignedMerchants', fn (Builder $q) => $q->whereIn('merchants.id', $merchantIds))
+                    ->orWhere('payment_methods.owner_id', $viewer->id);
+            });
+        });
+
+        static::creating(function (self $model) {
+            if ($model->isSystemLevel() && empty($model->owner_id) && auth()->check()) {
+                $model->owner_id = auth()->id();
+            }
+        });
+    }
+
+    /**
+     * 覆盖 BelongsToMerchant::scopeForMerchant()：API/队列等无登录用户场景下，
+     * 除了该商户自有的支付方式，还要能匹配到分配给它的系统级支付方式，
+     * 否则被分配的商户在下单时指定 method_code 会解析不到（见
+     * OrderCreationService::resolveDesignatedPaymentMethod()）。
+     */
+    public function scopeForMerchant(Builder $query, int $merchantId): Builder
+    {
+        return $query->withoutGlobalScope(MerchantScope::class)
+            ->where(function (Builder $q) use ($merchantId) {
+                $q->where('payment_methods.merchant_id', $merchantId)
+                    ->orWhereHas('assignedMerchants', fn (Builder $q2) => $q2->where('merchants.id', $merchantId));
+            });
+    }
 
     /**
      * 商品匹配模式兜底列表；允许取值以系统配置 payment.product_match_modes（JSON 数组）为准。
@@ -98,6 +169,22 @@ class PaymentMethod extends Model
     public function merchant(): BelongsTo
     {
         return $this->belongsTo(Merchant::class);
+    }
+
+    /**
+     * 系统级支付方式的创建人（超管/商户级管理员），见 booted() 里的自动回填。
+     */
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    /**
+     * 系统级支付方式分配给哪些商户使用，见 database/migrations/..._create_merchant_payment_methods_table.php。
+     */
+    public function assignedMerchants(): BelongsToMany
+    {
+        return $this->belongsToMany(Merchant::class, 'merchant_payment_methods')->withTimestamps();
     }
 
     public function configMap(): BelongsTo

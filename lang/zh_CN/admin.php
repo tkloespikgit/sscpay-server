@@ -223,6 +223,7 @@ return [
         ],
         'fields' => [
             'merchant' => '所属商户',
+            'assigned_merchants' => '分配给以下商户使用',
             'method_code' => '支付方式代码',
             'method_name' => '展示名称',
             'is_active' => '启用',
@@ -259,6 +260,8 @@ return [
             'site_products_summary_synced_at' => '上次同步时间',
         ],
         'help' => [
+            'merchant_blank_for_system_level' => '留空表示创建系统级支付方式（挂在自己名下），可在下方分配给多个商户使用；商户只能使用，不能修改配置',
+            'assigned_merchants' => '被分配的商户可在自己的支付组里勾选使用这条支付方式，但不能修改配置、删除、复制或触发同步；取消分配会自动把该商户支付组里对这条支付方式的引用一并摘除',
             'risk_control' => '填 0 表示该项不限制',
             'config_map' => '选择该支付方式对应的支付类型模板，下方会自动出现对应的配置项',
             'gateway_credentials' => '网关对接账号凭证，密码类字段均为明文保存与展示',
@@ -285,6 +288,7 @@ return [
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
+            'method_code_duplicate' => '该支付方式代码已被占用：同一商户下，或系统级支付方式之间，代码不能重复',
         ],
         'match_modes' => [
             'match' => '匹配',
@@ -306,6 +310,8 @@ return [
             'monthly_limit' => '单月上限',
             'sync_logistics' => '同步物流',
             'allow_returned_source' => '允许返回源站',
+            'system_level' => '系统级（管理员）',
+            'assigned_merchants_count' => '已分配商户数',
         ],
         'sync_statuses' => [
             'synced' => '已同步',
@@ -334,6 +340,10 @@ return [
             'sync_gateway_config_success' => '支付配置同步成功，支付配置 ID 已更新',
             'save_sync_success' => '配置已保存并同步到电商网站',
             'save_sync_failed' => '配置已保存，同步电商网站失败，请检查配置之后重试',
+            'detach_all_groups' => '脱离全部支付组',
+            'detach_all_groups_heading' => '脱离全部支付组',
+            'detach_all_groups_desc' => '将把这条支付方式从所有商户的支付组里摘除，摘除后所有支付组都不会再路由到这条支付方式，用于整体下线该支付方式，此操作不可撤销。',
+            'detach_all_groups_success' => '已从 :count 个支付组中脱离',
         ],
     ],
 

@@ -14,9 +14,53 @@ class EditPaymentMethod extends EditRecord
 {
     protected static string $resource = PaymentMethodResource::class;
 
+    /**
+     * 保存前先记下当前分配的商户 ID，保存后跟最新分配名单比对，把"被移除的商户"
+     * 名下支付组里对这条支付方式的引用一并摘除——否则取消分配后，那些商户已经
+     * 建好的支付组还是会继续路由到这条支付方式收单，跟"取消分配"的预期不符。
+     *
+     * @var array<int>
+     */
+    protected array $previousAssignedMerchantIds = [];
+
+    protected function beforeSave(): void
+    {
+        $this->previousAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();
+    }
+
     protected function getHeaderActions(): array
     {
-        return [PaymentMethodProfileAction::make(), MailCredentialsAction::make(), DeleteAction::make()];
+        return [
+            PaymentMethodProfileAction::make(),
+            MailCredentialsAction::make(),
+            $this->getDetachFromAllPaymentGroupsAction(),
+            DeleteAction::make(),
+        ];
+    }
+
+    /**
+     * 把这条支付方式整体从所有商户的支付组里摘除，用于下线一个支付方式时确保
+     * 不再被任何支付组当作候选通道路由（见 PaymentService::resolvePaymentMethod()）。
+     */
+    protected function getDetachFromAllPaymentGroupsAction(): Action
+    {
+        return Action::make('detachFromAllPaymentGroups')
+            ->label(__('admin.payment_method.actions.detach_all_groups'))
+            ->icon('heroicon-o-link-slash')
+            ->color('danger')
+            ->requiresConfirmation()
+            ->modalHeading(__('admin.payment_method.actions.detach_all_groups_heading'))
+            ->modalDescription(__('admin.payment_method.actions.detach_all_groups_desc'))
+            ->visible(fn () => PaymentMethodResource::canManageRecord($this->record))
+            ->action(function () {
+                $count = $this->record->paymentGroups()->count();
+                $this->record->paymentGroups()->detach();
+
+                Notification::make()
+                    ->success()
+                    ->title(__('admin.payment_method.actions.detach_all_groups_success', ['count' => $count]))
+                    ->send();
+            });
     }
 
     protected function getFormActions(): array
@@ -34,6 +78,13 @@ class EditPaymentMethod extends EditRecord
     protected function afterSave(): void
     {
         PaymentMethodResource::syncGatewayConfigAndNotify($this->record);
+
+        $currentAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();
+        $removedMerchantIds = array_diff($this->previousAssignedMerchantIds, $currentAssignedMerchantIds);
+
+        if (! empty($removedMerchantIds)) {
+            PaymentMethodResource::detachFromGroupsOfMerchants($this->record, $removedMerchantIds);
+        }
     }
 
     protected function getSavedNotification(): ?Notification

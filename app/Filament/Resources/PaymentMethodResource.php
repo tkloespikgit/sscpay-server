@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\PaymentMethodResource\Pages;
 use App\Jobs\SyncSiteProductsJob;
 use App\Models\Merchant;
+use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
@@ -87,13 +88,53 @@ class PaymentMethodResource extends Resource
 
                             return Merchant::query()->where('status', true)->pluck('name', 'id');
                         })
-                        ->required()
+                        // 超管/商户级管理员可以留空：留空 = 系统级支付方式（挂在自己名下，
+                        // 见 PaymentMethod::booted() 里 owner_id 的自动回填），可在下方
+                        // 分配给多个商户使用；普通商户用户这个字段被禁用+默认锁定成自己，
+                        // 必然有值，required 对他们无影响。
+                        ->required(! $canPickMerchant)
+                        ->helperText($canPickMerchant ? __('admin.payment_method.help.merchant_blank_for_system_level') : null)
                         ->searchable()
+                        ->live()
                         ->disabled(! $canPickMerchant)
                         ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
                         ->columnSpanFull(),
-                    TextInput::make('method_code')->label(__('admin.payment_method.fields.method_code'))->required()->maxLength(50)->placeholder('paypal / stripe'),
+                    Select::make('assignedMerchants')
+                        ->label(__('admin.payment_method.fields.assigned_merchants'))
+                        ->helperText(__('admin.payment_method.help.assigned_merchants'))
+                        ->relationship(
+                            'assignedMerchants',
+                            'name',
+                            // relationship() 的选项查询会 left join 中间表 merchant_payment_methods
+                            // 做去重/排除已选，中间表自己也有 id 主键列，不加 merchants. 前缀会导致
+                            // "Column 'id' in where clause is ambiguous"。
+                            modifyQueryUsing: fn ($query) => $isViewerMerchantManager
+                                ? $query->whereIn('merchants.id', $viewer->ownedMerchants()->pluck('id'))
+                                : $query->where('merchants.status', true),
+                        )
+                        ->multiple()
+                        ->searchable()
+                        ->preload()
+                        ->visible(fn (Get $get) => $canPickMerchant && blank($get('merchant_id')))
+                        ->dehydrated(fn (Get $get) => $canPickMerchant && blank($get('merchant_id')))
+                        ->columnSpanFull(),
+                    TextInput::make('method_code')
+                        ->label(__('admin.payment_method.fields.method_code'))
+                        ->required()
+                        ->maxLength(50)
+                        ->placeholder('paypal / stripe')
+                        // 数据库层是靠生成列做的软删安全唯一索引（同商户内，或系统级记录之间，
+                        // method_code 不能重复），这里用 scopedUnique 复刻同样的判断规则，
+                        // 保证冲突时是友好的表单校验提示，而不是未捕获的 SQL 唯一键冲突异常
+                        // 直接抛到用户面前。故意 withoutGlobalScopes()：要校验的是数据库层面
+                        // 全局是否冲突，商户级管理员/超管当前看不到的其它系统级记录也要算进去。
+                        ->scopedUnique(
+                            modifyQueryUsing: fn (Get $get, $query) => $query->withoutGlobalScopes()->where('merchant_id', $get('merchant_id')),
+                        )
+                        ->validationMessages([
+                            'unique' => __('admin.payment_method.validation.method_code_duplicate'),
+                        ]),
                     TextInput::make('method_name')->label(__('admin.payment_method.fields.method_name'))->required()->maxLength(50),
 
                     Toggle::make('is_active')->label(__('admin.payment_method.fields.is_active'))->default(true)->inline(false),
@@ -306,7 +347,17 @@ class PaymentMethodResource extends Resource
         // 商户用户在全局 Scope 下只能看到自己的支付方式，商户列没有意义；
         // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
         if ((bool) auth()->user()?->isPlatformStaff()) {
-            $columns[] = TextColumn::make('merchant.name')->label(__('admin.payment_method.fields.merchant'))->searchable()->sortable();
+            $columns[] = TextColumn::make('merchant.name')
+                ->label(__('admin.payment_method.fields.merchant'))
+                ->placeholder(__('admin.payment_method.columns.system_level'))
+                ->searchable()
+                ->sortable();
+            $columns[] = TextColumn::make('assigned_merchants_count')
+                ->label(__('admin.payment_method.columns.assigned_merchants_count'))
+                ->counts('assignedMerchants')
+                ->placeholder('—')
+                ->formatStateUsing(fn (?int $state) => $state ? (string) $state : '—')
+                ->toggleable(isToggledHiddenByDefault: true);
         }
 
         return $table
@@ -348,8 +399,8 @@ class PaymentMethodResource extends Resource
             ->recordActions([
                 static::syncProductsAction(),
                 static::duplicateAction(),
-                EditAction::make(),
-                DeleteAction::make(),
+                EditAction::make()->visible(fn (PaymentMethod $record) => static::canManageRecord($record)),
+                DeleteAction::make()->visible(fn (PaymentMethod $record) => static::canManageRecord($record)),
             ])
             ->defaultSort('sort_order');
     }
@@ -462,6 +513,7 @@ class PaymentMethodResource extends Resource
         return Action::make('syncProducts')
             ->label(__('admin.payment_method.actions.sync_products'))
             ->icon('heroicon-o-arrow-path')
+            ->visible(fn (PaymentMethod $record) => static::canManageRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.sync_products_heading'))
             ->modalDescription(__('admin.payment_method.actions.sync_products_desc'))
@@ -526,17 +578,23 @@ class PaymentMethodResource extends Resource
         return Action::make('duplicate')
             ->label(__('admin.payment_method.actions.duplicate'))
             ->icon('heroicon-o-square-2-stack')
+            ->visible(fn (PaymentMethod $record) => static::canManageRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
             ->action(function (PaymentMethod $record) {
-                // method_code_uniq 是虚拟生成列，site_products_count / site_products_exists
-                // 是列表页 withCount/withExists('siteProducts') 附加的聚合别名，都不是真实
-                // 表字段，不能出现在 INSERT 里，replicate 默认会把它们复制过来，必须显式排除。
-                $copy = $record->replicate(['method_code_uniq', 'site_products_count', 'site_products_exists']);
+                // method_code_uniq、merchant_id_uniq 都是虚拟生成列，site_products_count /
+                // site_products_exists 是列表页 withCount/withExists('siteProducts') 附加的
+                // 聚合别名，都不是真实表字段，不能出现在 INSERT 里，replicate 默认会把它们
+                // 复制过来，必须显式排除。
+                $copy = $record->replicate(['method_code_uniq', 'merchant_id_uniq', 'site_products_count', 'site_products_exists']);
                 $copy->is_active = false;
                 $copy->method_code = static::nextCopyCode($record);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
+                // replicate() 会把 owner_id 原样复制过来；系统级支付方式的副本应该归属于
+                // 触发复制的这个人（谁复制的归谁管），而不是继续挂在原记录创建人名下，
+                // 否则超管复制商户级管理员建的系统级支付方式后，那个管理员依旧管得到副本。
+                $copy->owner_id = $copy->isSystemLevel() ? auth()->id() : null;
 
                 $copy->save();
 
@@ -587,11 +645,50 @@ class PaymentMethodResource extends Resource
 
     public static function canEdit($record): bool
     {
-        return static::canViewAny();
+        return static::canViewAny() && static::canManageRecord($record);
     }
 
     public static function canDelete($record): bool
     {
-        return static::canViewAny();
+        return static::canEdit($record);
+    }
+
+    /**
+     * 商户自有的支付方式：本商户/其商户级管理员/超管可管理。
+     * 系统级支付方式（merchant_id 为空）：只有创建人（owner_id）本人和超管可管理，
+     * 被分配使用的商户只能看、能在支付组里勾选，不能改配置、删除、复制或触发同步
+     * ——这些操作全部复用这个方法做统一判断（见下方 duplicateAction/syncProductsAction）。
+     */
+    public static function canManageRecord(PaymentMethod $record): bool
+    {
+        $viewer = auth()->user();
+
+        if (! $viewer) {
+            return false;
+        }
+
+        if ($viewer->is_super_admin) {
+            return true;
+        }
+
+        if ($record->merchant_id !== null) {
+            return in_array($record->merchant_id, $viewer->manageableMerchantIds() ?? [], true);
+        }
+
+        return $record->owner_id !== null && $record->owner_id === $viewer->id;
+    }
+
+    /**
+     * 取消对某些商户的分配后，把这些商户名下支付组里对该支付方式的引用一并摘除，
+     * 避免"已取消分配"的商户继续通过自己的支付组路由到这条支付方式收单。
+     * 见 EditPaymentMethod::afterSave()。
+     */
+    public static function detachFromGroupsOfMerchants(PaymentMethod $record, array $merchantIds): void
+    {
+        $groupIds = PaymentGroup::query()->whereIn('merchant_id', $merchantIds)->pluck('id');
+
+        if ($groupIds->isNotEmpty()) {
+            $record->paymentGroups()->detach($groupIds);
+        }
     }
 }

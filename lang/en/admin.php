@@ -229,6 +229,7 @@ return [
         ],
         'fields' => [
             'merchant' => 'Merchant',
+            'assigned_merchants' => 'Assigned to Merchants',
             'method_code' => 'Method Code',
             'method_name' => 'Display Name',
             'is_active' => 'Enabled',
@@ -265,6 +266,8 @@ return [
             'site_products_summary_synced_at' => 'Last Synced At',
         ],
         'help' => [
+            'merchant_blank_for_system_level' => 'Leave blank to create a system-level payment method (owned by you); it can then be assigned to multiple merchants below. Assigned merchants can use it but cannot change its configuration.',
+            'assigned_merchants' => 'Assigned merchants can pick this payment method in their own payment groups, but cannot edit its configuration, delete it, duplicate it, or trigger a sync. Removing a merchant here also detaches this payment method from that merchant\'s payment groups automatically.',
             'risk_control' => 'Enter 0 for no limit',
             'config_map' => 'Pick the payment type template for this method — the matching config fields will appear below automatically',
             'gateway_credentials' => 'Gateway API credentials. Password fields are stored and displayed in plain text.',
@@ -291,6 +294,7 @@ return [
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
+            'method_code_duplicate' => 'This method code is already in use: it must be unique within the same merchant, and unique among system-level payment methods.',
         ],
         'match_modes' => [
             'match' => 'Match',
@@ -312,6 +316,8 @@ return [
             'monthly_limit' => 'Monthly Limit',
             'sync_logistics' => 'Sync Logistics',
             'allow_returned_source' => 'Allow Return to Source',
+            'system_level' => 'System-level (Admin)',
+            'assigned_merchants_count' => 'Assigned Merchants',
         ],
         'sync_statuses' => [
             'synced' => 'Synced',
@@ -340,6 +346,10 @@ return [
             'sync_gateway_config_success' => 'Gateway config synced. Payment Config ID updated.',
             'save_sync_success' => 'Saved and synced to the e-commerce site.',
             'save_sync_failed' => 'Saved, but syncing to the e-commerce site failed. Please check the config and retry.',
+            'detach_all_groups' => 'Detach from All Payment Groups',
+            'detach_all_groups_heading' => 'Detach from All Payment Groups',
+            'detach_all_groups_desc' => 'Removes this payment method from every merchant\'s payment groups. After this, no payment group will route to it anymore. Use this to fully take a payment method offline. This action cannot be undone.',
+            'detach_all_groups_success' => 'Detached from :count payment group(s)',
         ],
     ],
 
