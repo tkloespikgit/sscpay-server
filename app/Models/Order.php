@@ -251,18 +251,27 @@ class Order extends Model
     }
 
     /**
-     * 已锁定的支付方式（订单 payment_method 存的是 method_code，按商户 + code 反查）。
-     * 用于取该支付方式配置的退款/拒付手续费。
+     * 已锁定的支付方式配置，用于取退款/拒付手续费、发信身份、回调处理等。
+     *
+     * 优先按 payment_method_id 精确取（paymentMethod() 关联已带 withTrashed，
+     * 支付方式软删后历史订单照样能取到配置）；老订单没有 payment_method_id 时
+     * 再按"商户 + method_code"反查。反查必须走 forMerchant() 而不是只匹配
+     * merchant_id：系统级支付方式（merchant_id 为 NULL，分配给商户使用）用后者
+     * 永远查不到，会导致手续费按 0 算、回调/邮件拿不到配置。
      */
     public function paymentMethodConfig(): ?PaymentMethod
     {
-        if (empty($this->payment_method)) {
+        if ($this->payment_method_id && $this->paymentMethod) {
+            return $this->paymentMethod;
+        }
+
+        if (empty($this->payment_method) || empty($this->merchant_id)) {
             return null;
         }
 
         return PaymentMethod::query()
-            ->withoutGlobalScopes()
-            ->where('merchant_id', $this->merchant_id)
+            ->withTrashed()
+            ->forMerchant((int) $this->merchant_id)
             ->where('method_code', $this->payment_method)
             ->first();
     }
