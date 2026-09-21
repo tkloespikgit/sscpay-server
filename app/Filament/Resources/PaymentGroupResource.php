@@ -98,6 +98,10 @@ class PaymentGroupResource extends Resource
                         'method_name',
                         // 搜索走的是 relationship 的动态搜索（绕开下方 options 闭包），
                         // 必须在这里也按所选商户过滤，否则平台侧账号搜索时会搜出别家商户的支付方式。
+                        // 提交时 Filament 也拿这个查询做所选 ID 的存在性校验，所以过滤规则
+                        // 必须和下方 options 闭包完全一致：用 forMerchant() 而不是只匹配
+                        // merchant_id，否则分配给该商户的系统级支付方式（merchant_id 为空）
+                        // 在下拉里选得到、提交时却被判成 "selected ... is invalid"。
                         modifyQueryUsing: function ($query, Get $get) use ($canPickMerchant) {
                             if ($canPickMerchant) {
                                 if (blank($get('merchant_id'))) {
@@ -105,7 +109,7 @@ class PaymentGroupResource extends Resource
                                     return $query->whereRaw('1 = 0');
                                 }
 
-                                $query->where('payment_methods.merchant_id', $get('merchant_id'));
+                                return $query->forMerchant((int) $get('merchant_id'));
                             }
 
                             return $query;

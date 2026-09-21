@@ -332,8 +332,10 @@ class OrderItemService
 
             $subtotal = bcadd($subtotal, (string) $orderItem->total_price, 2);
 
+            // 关键词替换规则是按商户维护的，要用订单所属商户，而不是支付方式的商户：
+            // 系统级支付方式 merchant_id 为 NULL，传进去会直接 TypeError。
             $replacedName = mb_substr(
-                $this->cleanName(ReplaceKeyword::applyReplacements($orderItem->product_name, $paymentMethod->merchant_id)),
+                $this->cleanName(ReplaceKeyword::applyReplacements($orderItem->product_name, $order->merchant_id)),
                 0,
                 255
             );

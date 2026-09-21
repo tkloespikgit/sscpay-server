@@ -113,6 +113,7 @@ class WooCommerceProductSyncService
                         'woo_product_id' => $product['woo_product_id'],
                     ],
                     [
+                        // 系统级支付方式（merchant_id 为 NULL）同步下来的商品同样没有归属商户。
                         'merchant_id' => $paymentMethod->merchant_id,
                         'product_type' => $product['product_type'],
                         'name' => mb_substr($names[$index], 0, 500),
