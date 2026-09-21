@@ -50,6 +50,24 @@ class Order extends Model
      */
     public const STATUS_DISPUTE_REVIEW = 'dispute_review';
 
+    /**
+     * "从未收到过钱"的状态：订单要么还没支付，要么支付没成功。
+     *
+     * 其补集就是"曾经支付成功过"的状态族：paid / shipped / completed /
+     * partially_refunded / disputing / dispute_review / refunded / chargeback。
+     * 风控限额与均衡统计（PaymentService）按这个补集聚合——只数 status = 'paid'
+     * 会严重低估：订单一录物流就被改成 shipped（OrderShippingObserver），
+     * 退款/拒付/争议还会改成别的状态，这些钱明明已经过了通道，却从累计值里消失，
+     * 日/月限额形同虚设，发货快的通道还会被均衡算法持续判为"欠载"而多拿进单。
+     *
+     * 故意写成"排除法"而不是"枚举成功状态"：以后新增状态时默认会被计入，
+     * 方向是多算（限额更保守），而不是漏算——漏算正是当初那个缺陷的成因。
+     *
+     * 已退款/已拒付也计入：钱当天确实过了通道，通道风险已经产生。不计入的话，
+     * 退款会变相把通道额度"还"回来，拒付更是风险信号而非放量理由。
+     */
+    public const NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired'];
+
     protected $fillable = [
         'merchant_id',
         'application_id',
@@ -255,9 +273,10 @@ class Order extends Model
      *
      * 优先按 payment_method_id 精确取（paymentMethod() 关联已带 withTrashed，
      * 支付方式软删后历史订单照样能取到配置）；老订单没有 payment_method_id 时
-     * 再按"商户 + method_code"反查。反查必须走 forMerchant() 而不是只匹配
-     * merchant_id：系统级支付方式（merchant_id 为 NULL，分配给商户使用）用后者
-     * 永远查不到，会导致手续费按 0 算、回调/邮件拿不到配置。
+     * 再按 method_code 反查——method_code 是全局唯一的（不分商户/系统级），
+     * 单独就能定位到唯一一条记录，不需要也不应该再叠加商户条件：系统级支付方式
+     * merchant_id 为 NULL，叠加商户条件会查不到，导致手续费按 0 算、回调/邮件
+     * 拿不到配置。
      */
     public function paymentMethodConfig(): ?PaymentMethod
     {
@@ -265,13 +284,13 @@ class Order extends Model
             return $this->paymentMethod;
         }
 
-        if (empty($this->payment_method) || empty($this->merchant_id)) {
+        if (empty($this->payment_method)) {
             return null;
         }
 
         return PaymentMethod::query()
+            ->withoutGlobalScopes()
             ->withTrashed()
-            ->forMerchant((int) $this->merchant_id)
             ->where('method_code', $this->payment_method)
             ->first();
     }

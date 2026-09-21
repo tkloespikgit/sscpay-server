@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\ObserverResource\Pages;
 use App\Models\Observer;
 use App\Models\PaymentMethod;
+use App\Models\User;
 use App\Rules\UniqueObserverAccountEmail;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -85,6 +86,16 @@ class ObserverResource extends Resource
                     ->label(__('admin.observer.fields.status'))
                     ->helperText(__('admin.observer.help.status'))
                     ->default(true),
+                // 归属只有超管能看/能改（用来重新指派或转成平台直管）；商户级管理员
+                // 自己建的观察者在 Observer::booted() 里自动落成自己，不需要也不允许在这里选。
+                // 写法对齐 MerchantResource 里的同名字段。
+                Select::make('owner_id')
+                    ->label(__('admin.observer.fields.owner'))
+                    ->helperText(__('admin.observer.help.owner'))
+                    ->visible($isViewerSuperAdmin)
+                    ->options(fn () => User::query()->whereNull('merchant_id')->where('is_super_admin', false)->pluck('name', 'id'))
+                    ->searchable()
+                    ->placeholder(__('admin.observer.placeholders.owner_platform')),
             ])->columns(2),
 
             Section::make(__('admin.observer.sections.payment_methods'))->schema([
@@ -102,7 +113,7 @@ class ObserverResource extends Resource
                 Select::make('paymentMethods')
                     ->label(__('admin.observer.fields.payment_methods'))
                     ->relationship('paymentMethods', 'method_name')
-                    ->getOptionLabelFromRecordUsing(fn (PaymentMethod $record) => "{$record->merchant?->name} - {$record->method_name}")
+                    ->getOptionLabelFromRecordUsing(fn (PaymentMethod $record) => ($record->merchant?->name ?? __('admin.payment_method.columns.system_level'))." - {$record->method_name}")
                     ->multiple()
                     ->searchable()
                     ->preload()
@@ -140,6 +151,11 @@ class ObserverResource extends Resource
                     ->label(__('admin.observer.fields.payment_methods'))
                     ->badge()
                     ->limitList(3),
+                // 归属列只有超管需要看：其他人的列表已经被 getEloquentQuery() 限定成自己建的。
+                TextColumn::make('owner.name')
+                    ->label(__('admin.observer.fields.owner'))
+                    ->visible(fn () => (bool) auth()->user()?->is_super_admin)
+                    ->placeholder(__('admin.observer.placeholders.owner_platform')),
                 TextColumn::make('amount_display_ratio')
                     ->label(__('admin.observer.fields.amount_display_ratio'))
                     ->suffix('%')
@@ -158,9 +174,14 @@ class ObserverResource extends Resource
     }
 
     /**
-     * 商户级管理员只看到"绑定的支付方式里至少有一个在自己管理范围内"的观察者——
-     * whereHas 的子查询同样会自动套用 PaymentMethod 的 MerchantScope，不需要
-     * 手动传 manageableMerchantIds()。超级管理员不受限，看全部。
+     * 谁建的谁管：非超管只看得到自己创建的观察者（observers.owner_id）。超管不受限。
+     *
+     * 原来的口径是"绑定的支付方式里至少有一条我看得见"。系统级支付方式可以分配给
+     * 多个商户之后，这个口径破了：一个商户级管理员只要和某个观察者共享一条通道，
+     * 那个观察者就出现在他的列表里，而 canEdit/canDelete 当时又没有记录级判断，
+     * 于是他能改掉这个账号的登录密码——改完登录观察者面板，看到的是该观察者绑定的
+     * 全部通道下的订单，包括他自己完全无权访问的那些（实测过）。
+     * owner_id 为 NULL 的存量记录视为"平台直管"，只有超管能看见和维护。
      */
     public static function getEloquentQuery(): Builder
     {
@@ -170,7 +191,26 @@ class ObserverResource extends Resource
             return $query;
         }
 
-        return $query->whereHas('paymentMethods');
+        return $query->where('observers.owner_id', auth()->id());
+    }
+
+    /**
+     * 记录级归属判断，编辑/删除统一走这里（对齐 PaymentMethodResource::canManageRecord()）。
+     * 超管不受限；其他人只能管自己创建的。owner_id 为 NULL（平台直管）时非超管一律拒绝。
+     */
+    public static function canManageRecord(Observer $record): bool
+    {
+        $viewer = auth()->user();
+
+        if (! $viewer) {
+            return false;
+        }
+
+        if ($viewer->is_super_admin) {
+            return true;
+        }
+
+        return $record->owner_id !== null && $record->owner_id === $viewer->id;
     }
 
     public static function getPages(): array
@@ -194,11 +234,11 @@ class ObserverResource extends Resource
 
     public static function canEdit($record): bool
     {
-        return static::canViewAny();
+        return static::canViewAny() && static::canManageRecord($record);
     }
 
     public static function canDelete($record): bool
     {
-        return static::canViewAny();
+        return static::canViewAny() && static::canManageRecord($record);
     }
 }

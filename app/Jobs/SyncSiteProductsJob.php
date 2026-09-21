@@ -46,21 +46,30 @@ class SyncSiteProductsJob implements ShouldQueue
 
         $stats = $syncService->sync($paymentMethod);
 
-        if ($paymentMethod->merchant_id) {
-            $telegram->send($paymentMethod->merchant_id, sprintf(
-                "✅ 站点商品同步完成：%s\n共同步 %d 个商品（新增 %d / 更新 %d / 清理 %d / 跳过 0 价 %d）",
-                $paymentMethod->domain,
-                $stats['total'],
-                $stats['created'],
-                $stats['updated'],
-                $stats['deleted'],
-                $stats['skipped'] ?? 0,
-            ));
+        // 收件人取"全部绑定该通道的商户"：系统级支付方式 merchant_id 为 NULL，
+        // 原来的 if ($paymentMethod->merchant_id) 守卫会让它一条通知都发不出去，
+        // 而它的商品池恰恰是被多个商户共用的。口径与通道自动禁用通知一致
+        // （见 PaymentMethod::notifiableMerchantIds()）。
+        $recipientIds = $paymentMethod->notifiableMerchantIds();
+
+        $message = sprintf(
+            "✅ 站点商品同步完成：%s\n共同步 %d 个商品（新增 %d / 更新 %d / 清理 %d / 跳过 0 价 %d）",
+            $paymentMethod->domain,
+            $stats['total'],
+            $stats['created'],
+            $stats['updated'],
+            $stats['deleted'],
+            $stats['skipped'] ?? 0,
+        );
+
+        foreach ($recipientIds as $merchantId) {
+            $telegram->send($merchantId, $message);
         }
 
         Log::info('Site products sync completed', [
-            'payment_method_id' => $paymentMethod->id,
-            'stats'             => $stats,
+            'payment_method_id'  => $paymentMethod->id,
+            'stats'              => $stats,
+            'notified_merchants' => $recipientIds,
         ]);
     }
 
@@ -73,18 +82,32 @@ class SyncSiteProductsJob implements ShouldQueue
     {
         $paymentMethod = PaymentMethod::find($this->paymentMethodId);
 
+        // 同上：系统级支付方式没有归属商户，原来的守卫会让"重试耗尽"这条最要紧的
+        // 通知也静默丢掉——商品池就此停更，直到所有被分配商户的下单开始因为匹配
+        // 不到商品而整单失败才会被发现（OrderItemService 各模式都会抛 RuntimeException）。
+        $recipientIds = $paymentMethod?->notifiableMerchantIds() ?? [];
+
         Log::error('Site products sync failed permanently', [
-            'payment_method_id' => $this->paymentMethodId,
-            'error'             => $exception?->getMessage(),
+            'payment_method_id'  => $this->paymentMethodId,
+            'error'              => $exception?->getMessage(),
+            'notified_merchants' => $recipientIds,
         ]);
 
-        if ($paymentMethod?->merchant_id) {
-            app(TelegramNotificationService::class)->send($paymentMethod->merchant_id, sprintf(
-                "❌ 站点商品同步失败：%s（%s）\n%s",
-                $paymentMethod->domain,
-                $paymentMethod->method_name,
-                mb_substr($exception?->getMessage() ?? '未知错误', 0, 200),
-            ));
+        if ($recipientIds === []) {
+            return;
+        }
+
+        $message = sprintf(
+            "❌ 站点商品同步失败：%s（%s）\n%s",
+            $paymentMethod->domain,
+            $paymentMethod->method_name,
+            mb_substr($exception?->getMessage() ?? '未知错误', 0, 200),
+        );
+
+        $telegram = app(TelegramNotificationService::class);
+
+        foreach ($recipientIds as $merchantId) {
+            $telegram->send($merchantId, $message);
         }
     }
 }

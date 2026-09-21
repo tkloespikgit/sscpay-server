@@ -298,7 +298,7 @@ class OrderCreationService
     }
 
     /**
-     * API 下单显式指定支付渠道（payment_method_key 取 payment_methods.method_code，商户内唯一）。
+     * API 下单显式指定支付渠道（payment_method_key 取 payment_methods.method_code，全局唯一）。
      *
      * 与支付组路由（PaymentService::resolvePaymentMethod）的区别：
      *   1. 不做组内加权均匀分配，也不查单笔/当日金额/当日笔数/当月金额这些风控阈值——
@@ -319,7 +319,10 @@ class OrderCreationService
      */
     private function resolveDesignatedPaymentMethod(Merchant $merchant, string $methodKey, array $data): PaymentMethod
     {
-        // 走 forMerchant 而不是全局 Scope：API 上下文没有登录用户（见 BelongsToMerchant 注释）。
+        // method_code 虽然已是全局唯一、单独就能定位记录，这里依然必须叠加商户过滤：
+        // 这是一道授权边界，不能让 A 商户传别家的 payment_method_key 就用上别家的渠道收款。
+        // 走 forMerchant 而不是全局 Scope：一来 API 上下文没有登录用户（见 BelongsToMerchant
+        // 注释），二来它会连"分配给本商户的系统级支付方式"一并算进可用范围。
         $method = PaymentMethod::query()
             ->forMerchant($merchant->id)
             ->where('method_code', $methodKey)

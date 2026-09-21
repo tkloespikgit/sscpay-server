@@ -79,6 +79,22 @@ class EditPaymentMethod extends EditRecord
     {
         PaymentMethodResource::syncGatewayConfigAndNotify($this->record);
 
+        // 系统级改成商户自有：表单里的"分配商户"字段这时不会提交（visible/dehydrated 都关了），
+        // 中间表里的旧分配会原样残留，其它商户依旧能通过 assignedMerchants 看到、并在支付组里
+        // 路由到这条支付方式。这里把分配整体清掉，并视同"全部取消分配"处理支付组引用
+        // （新归属商户自己的支付组除外——它现在是这条支付方式的主人）。
+        if (! $this->record->isSystemLevel() && ! empty($this->previousAssignedMerchantIds)) {
+            $this->record->assignedMerchants()->detach();
+
+            $removedMerchantIds = array_diff($this->previousAssignedMerchantIds, [$this->record->merchant_id]);
+
+            if (! empty($removedMerchantIds)) {
+                PaymentMethodResource::detachFromGroupsOfMerchants($this->record, $removedMerchantIds);
+            }
+
+            return;
+        }
+
         $currentAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();
         $removedMerchantIds = array_diff($this->previousAssignedMerchantIds, $currentAssignedMerchantIds);
 

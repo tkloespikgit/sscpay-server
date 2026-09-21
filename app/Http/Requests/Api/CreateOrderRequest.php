@@ -41,7 +41,7 @@ class CreateOrderRequest extends FormRequest
             'platform' => ['required', 'string', 'max:50', Rule::in(Order::supportedPlatforms())],
             'currency' => ['required', 'string', 'size:3'],
             'group_key' => ['required', 'string', 'max:50'],
-            // 指定支付渠道（取值为 payment_methods.method_code，商户内唯一）：
+            // 指定支付渠道（取值为 payment_methods.method_code，全局唯一）：
             // 传了就直接用这个渠道收款，跳过支付组内的加权分配与单笔/日/月限额风控；
             // 不传则维持原逻辑，由 PaymentService 按组路由。两种模式下 group_key 都必填。
             'payment_method_key' => ['nullable', 'string', 'max:50'],

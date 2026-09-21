@@ -41,7 +41,7 @@ class PaymentSuccessRate extends StatsOverviewWidget
         $paymentMethod = $this->filters['payment_method'] ?? null;
 
         $result = app(DashboardService::class)->getPaymentSuccessRate(
-            auth()->user()?->merchant_id,
+            DashboardService::viewerMerchantIds(),
             $paymentMethod,
             $days,
         );

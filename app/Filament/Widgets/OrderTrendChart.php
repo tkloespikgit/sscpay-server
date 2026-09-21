@@ -14,7 +14,7 @@ class OrderTrendChart extends ChartWidget
 
     protected function getData(): array
     {
-        $trend = app(DashboardService::class)->getAdminStats($this->resolveMerchantId())['trend_30d'];
+        $trend = app(DashboardService::class)->getAdminStats($this->resolveMerchantIds())['trend_30d'];
 
         return [
             'datasets' => [
@@ -39,11 +39,11 @@ class OrderTrendChart extends ChartWidget
     }
 
     /**
-     * 统一取当前登录用户所属商户；超级管理员没有归属商户（merchant_id 为 NULL），
-     * 看到的是全平台汇总数据。
+     * 统计范围：超级管理员不限，商户级管理员是名下全部商户，普通商户用户是自己那一个。
+     * 统一走 DashboardService::viewerMerchantIds()，见该方法注释。
      */
-    private function resolveMerchantId(): ?int
+    private function resolveMerchantIds(): ?array
     {
-        return auth()->user()?->merchant_id;
+        return DashboardService::viewerMerchantIds();
     }
 }

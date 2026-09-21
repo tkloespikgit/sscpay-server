@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Events\OrderStatusChanged;
 use App\Models\Order;
+use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\TelegramNotificationService;
@@ -138,18 +139,49 @@ class OrderPaymentStatusService
         $method->is_active = false;
         $method->save();
 
+        $recipientIds = $this->forbiddenNoticeRecipients($order, $method);
+
         Log::warning('payment_status webhook: 支付通道账号已被标记为不可用，自动禁用', [
-            'order_no'          => $order->order_no,
-            'merchant_id'       => $order->merchant_id,
-            'payment_method_id' => $method->id,
-            'method_code'       => $method->method_code,
+            'order_no'           => $order->order_no,
+            'merchant_id'        => $order->merchant_id,
+            'payment_method_id'  => $method->id,
+            'method_code'        => $method->method_code,
+            'notified_merchants' => $recipientIds,
         ]);
 
-        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.payment_method_forbidden', [
+        $message = __('admin.telegram_notification.payment_method_forbidden', [
             'method_name' => $method->method_name,
             'method_code' => $method->method_code,
             'order_no'    => $order->order_no,
-        ]));
+        ]);
+
+        foreach ($recipientIds as $merchantId) {
+            $this->telegram->send($merchantId, $message);
+        }
+    }
+
+    /**
+     * 禁用通知的收件商户。
+     *
+     * 禁用是一次全局操作（payment_methods.is_active 只有一份），系统级支付方式被
+     * N 个商户共用时，一家的回调会让 N 家一起断掉收款。只通知下单那一家的话，
+     * 其余商户的支付组里这条通道会静默变成不可用，组内没有其它候选时下单直接失败，
+     * 而"无可用通道"告警有 10 分钟去重（PaymentService::alertNoAvailablePaymentMethod()），
+     * 他们拿不到真正的原因。所以收件人是"全部绑定该通道的商户"
+     * （PaymentMethod::notifiableMerchantIds()），再加下单商户兜底——理论上下单商户
+     * 必然在绑定名单里，但历史脏数据（比如支付组里挂了一条没分配给自己的通道）下
+     * 未必，兜一层不会重复发（下面会去重）。
+     *
+     * @return array<int>
+     */
+    private function forbiddenNoticeRecipients(Order $order, PaymentMethod $method): array
+    {
+        $ids = array_merge([$order->merchant_id], $method->notifiableMerchantIds());
+
+        return array_values(array_unique(array_filter(array_map(
+            fn ($id) => $id === null ? null : (int) $id,
+            $ids,
+        ))));
     }
 
     /**

@@ -30,9 +30,9 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\Unique;
 
 /**
  * 支付方式 + 风控阈值配置（3.6 节）。四个阈值字段填 0 表示不限制，
@@ -125,13 +125,18 @@ class PaymentMethodResource extends Resource
                         ->required()
                         ->maxLength(50)
                         ->placeholder('paypal / stripe')
-                        // 数据库层是靠生成列做的软删安全唯一索引（同商户内，或系统级记录之间，
-                        // method_code 不能重复），这里用 scopedUnique 复刻同样的判断规则，
-                        // 保证冲突时是友好的表单校验提示，而不是未捕获的 SQL 唯一键冲突异常
-                        // 直接抛到用户面前。故意 withoutGlobalScopes()：要校验的是数据库层面
-                        // 全局是否冲突，商户级管理员/超管当前看不到的其它系统级记录也要算进去。
-                        ->scopedUnique(
-                            modifyQueryUsing: fn (Get $get, $query) => $query->withoutGlobalScopes()->where('merchant_id', $get('merchant_id')),
+                        // 数据库层是靠生成列 method_code_uniq 做的软删安全全局唯一索引
+                        // （method_code 在所有未删除记录之间不能重复，不分商户/系统级），
+                        // 这里复刻同样的判断规则，保证冲突时是友好的表单校验提示，而不是
+                        // 未捕获的 SQL 唯一键冲突异常直接抛到用户面前。
+                        // unique() 走的是 Laravel 原生 Rule::unique（直接查表、不经过
+                        // Eloquent 全局 Scope），天然是全局口径——商户级管理员当前看不到的
+                        // 其它商户/其它管理员的记录同样会算进冲突范围，正是我们要的。
+                        // whereNull('deleted_at') 用于对齐生成列"只有未删除记录参与唯一性"
+                        // 的语义，否则已软删记录的 code 会被误判成占用、永远无法复用。
+                        ->unique(
+                            ignoreRecord: true,
+                            modifyRuleUsing: fn (Unique $rule) => $rule->whereNull('deleted_at'),
                         )
                         ->validationMessages([
                             'unique' => __('admin.payment_method.validation.method_code_duplicate'),
@@ -589,18 +594,15 @@ class PaymentMethodResource extends Resource
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
             ->action(function (PaymentMethod $record) {
-                // method_code_uniq、merchant_id_uniq 都是虚拟生成列，site_products_count /
-                // site_products_exists 是列表页 withCount/withExists('siteProducts') 附加的
-                // 聚合别名，都不是真实表字段，不能出现在 INSERT 里，replicate 默认会把它们
-                // 复制过来，必须显式排除。
-                $copy = $record->replicate(['method_code_uniq', 'merchant_id_uniq', 'site_products_count', 'site_products_exists']);
+                // method_code_uniq 是虚拟生成列，site_products_count / site_products_exists
+                // 是列表页 withCount/withExists('siteProducts') 附加的聚合别名，都不是真实
+                // 表字段，不能出现在 INSERT 里，replicate 默认会把它们复制过来，必须显式排除。
+                $copy = $record->replicate(['method_code_uniq', 'site_products_count', 'site_products_exists']);
                 $copy->is_active = false;
                 // 商户级管理员复制：副本脱离原商户，变成挂在自己名下的系统级支付方式；
                 // 其它角色复制：副本继续归属原记录的商户（超管复制系统级记录时也是 NULL）。
                 $copy->merchant_id = auth()->user()->isMerchantManager() ? null : $record->merchant_id;
-                // 副本代码要在"副本将要落到的归属"里查重，而不是原记录的归属：
-                // 商户级记录复制成系统级后，冲突范围是所有系统级记录之间。
-                $copy->method_code = static::nextCopyCode($record->method_code, $copy->merchant_id);
+                $copy->method_code = static::nextCopyCode($record->method_code);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
                 // replicate() 会把 owner_id 原样复制过来；系统级支付方式的副本应该归属于
                 // 触发复制的这个人（谁复制的归谁管），而不是继续挂在原记录创建人名下，
@@ -614,13 +616,12 @@ class PaymentMethodResource extends Resource
     }
 
     /**
-     * 生成在目标归属（$merchantId 对应的商户，NULL 则为系统级记录之间）内不冲突的
-     * 副本代码：先试 xxx_copy，被占用则递增后缀（xxx_copy2、xxx_copy3……）。
-     * method_code 唯一约束是软删安全的，只需在未删除记录里查重。
-     * 故意 withoutGlobalScopes()：数据库唯一索引是全局的，商户级管理员当前
-     * 看不到的其它管理员的系统级记录也要算进冲突范围，否则会撞唯一键。
+     * 生成全局不冲突的副本代码：先试 xxx_copy，被占用则递增后缀（xxx_copy2、xxx_copy3……）。
+     * method_code 是全局唯一的（不分商户/系统级），唯一约束又是软删安全的，
+     * 所以查重范围就是"全部未删除记录"。故意 withoutGlobalScopes()：商户级管理员
+     * 看不到的其它商户的记录同样占用 code，不算进来会撞唯一键。
      */
-    protected static function nextCopyCode(string $baseCode, ?int $merchantId): string
+    protected static function nextCopyCode(string $baseCode): string
     {
         $code = Str::limit($baseCode.'_copy', 50, '');
 
@@ -628,11 +629,6 @@ class PaymentMethodResource extends Resource
 
         while (PaymentMethod::query()
             ->withoutGlobalScopes()
-            ->when(
-                $merchantId === null,
-                fn (Builder $q) => $q->whereNull('merchant_id'),
-                fn (Builder $q) => $q->where('merchant_id', $merchantId),
-            )
             ->where('method_code', $code)
             ->exists()) {
             $code = Str::limit($baseCode.'_copy'.$suffix, 50, '');

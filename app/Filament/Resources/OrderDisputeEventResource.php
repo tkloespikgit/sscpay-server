@@ -119,7 +119,7 @@ class OrderDisputeEventResource extends Resource
                             ->with('merchant')
                             ->orderBy('sort_order')
                             ->get()
-                            ->groupBy(fn (PaymentMethod $method) => $method->merchant?->name ?? '-')
+                            ->groupBy(fn (PaymentMethod $method) => $method->merchant?->name ?? __('admin.payment_method.columns.system_level'))
                             ->map(fn ($methods) => $methods->pluck('method_name', 'method_code'))
                             ->toArray();
                     }),

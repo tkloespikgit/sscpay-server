@@ -26,6 +26,9 @@ class CreateObserver extends CreateRecord
 
         if (! (bool) auth()->user()?->is_super_admin) {
             $data['amount_display_ratio'] = 100;
+            // 归属字段同样只有超管能设，非超管一律落成自己（与 Observer::booted()
+            // 的自动回填同一结果），防止伪造提交把观察者挂到别人名下。
+            $data['owner_id'] = auth()->id();
         }
 
         return $data;

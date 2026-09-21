@@ -5,6 +5,7 @@ namespace App\Models;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -53,6 +54,7 @@ class Observer extends Authenticatable implements FilamentUser
     }
 
     protected $fillable = [
+        'owner_id',
         'name',
         'email',
         'password',
@@ -65,6 +67,22 @@ class Observer extends Authenticatable implements FilamentUser
         'remember_token',
     ];
 
+    /**
+     * 建号时自动把创建人落成当前登录的后台账号——商户级管理员建的观察者归他自己管，
+     * 超管建的也记在超管名下（超管本来就不受 owner 限制，记下来只是便于追溯）。
+     * 用 creating 而不是 saving：归属只在创建时确定，之后只有超管能在表单里显式改。
+     * instanceof User 判断：观察者面板自己的登录态是 observer guard，
+     * auth()->user() 会解析成 Observer，不能拿来当 owner。
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (self $model) {
+            if (empty($model->owner_id) && auth()->check() && auth()->user() instanceof User) {
+                $model->owner_id = auth()->id();
+            }
+        });
+    }
+
     protected function casts(): array
     {
         return [
@@ -72,6 +90,15 @@ class Observer extends Authenticatable implements FilamentUser
             'status' => 'boolean',
             'amount_display_ratio' => 'decimal:2',
         ];
+    }
+
+    /**
+     * 创建人（谁建的谁管），NULL 表示平台直管、只有超管能维护。
+     * 可见/可编辑范围见 ObserverResource::canManageRecord()。
+     */
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
     }
 
     public function paymentMethods(): BelongsToMany

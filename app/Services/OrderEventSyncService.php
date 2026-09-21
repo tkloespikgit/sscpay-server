@@ -66,7 +66,7 @@ class OrderEventSyncService
             'logs_skipped' => 0,
         ];
 
-        /** @var array<string, PaymentMethod|null> $methodCache 按 "merchant_id:method_code" 缓存，避免同一支付方式反复查库 */
+        /** @var array<string, PaymentMethod|null> $methodCache 按支付方式缓存，避免同一支付方式反复查库 */
         $methodCache = [];
 
         Order::query()
@@ -149,12 +149,16 @@ class OrderEventSyncService
     }
 
     /**
-     * 按 "merchant_id:method_code" 缓存解析结果，同一轮同步里同一个支付方式
-     * 只查一次库（活跃订单可能大量集中在少数几个支付方式上）。
+     * 缓存解析结果，同一轮同步里同一个支付方式只查一次库（活跃订单可能大量
+     * 集中在少数几个支付方式上）。缓存键优先用 payment_method_id，没有的老订单
+     * 退回 method_code——两者都能全局唯一定位一条支付方式（method_code 全局唯一），
+     * 不需要再拼上 merchant_id。
      */
     private function resolvePaymentMethod(Order $order, array &$methodCache): ?PaymentMethod
     {
-        $cacheKey = $order->merchant_id.':'.$order->payment_method;
+        $cacheKey = $order->payment_method_id
+            ? 'id:'.$order->payment_method_id
+            : 'code:'.$order->payment_method;
 
         if (! array_key_exists($cacheKey, $methodCache)) {
             $methodCache[$cacheKey] = $order->paymentMethodConfig();

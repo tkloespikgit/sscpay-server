@@ -58,7 +58,7 @@ class AdminDashboard extends BaseDashboard
                 ->label(__('admin.dashboard.filters.payment_method'))
                 ->placeholder(__('admin.dashboard.filters.all_payment_methods'))
                 ->options(fn () => collect(
-                    app(DashboardService::class)->getPaymentMethodOptions(auth()->user()?->merchant_id)
+                    app(DashboardService::class)->getPaymentMethodOptions(DashboardService::viewerMerchantIds())
                 )->mapWithKeys(fn (string $method) => [$method => $method]))
                 ->searchable(),
         ]);

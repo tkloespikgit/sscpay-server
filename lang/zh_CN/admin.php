@@ -288,7 +288,7 @@ return [
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
-            'method_code_duplicate' => '该支付方式代码已被占用：同一商户下，或系统级支付方式之间，代码不能重复',
+            'method_code_duplicate' => '该支付方式代码已被占用：代码全局唯一，不区分商户级与系统级，请换一个',
         ],
         'match_modes' => [
             'match' => '匹配',
@@ -953,6 +953,10 @@ return [
             'payment_methods' => '绑定的支付方式',
             'amount_display_ratio' => '金额显示比例',
             'created_at' => '创建时间',
+            'owner' => '所属管理员',
+        ],
+        'placeholders' => [
+            'owner_platform' => '平台直管',
         ],
         'help' => [
             'account' => '不需要真实邮箱，系统会自动用这个账号生成内部登录邮箱。',
@@ -961,6 +965,7 @@ return [
             'status' => '禁用后该账号将无法登录观察者面板，即使密码正确',
             'payment_methods' => '该观察者登录后只能看到这些支付方式下产生的订单',
             'amount_display_ratio' => '该观察者看到的所有交易金额都会按此比例折算展示（不影响真实数据），仅超级管理员可设置，商户级管理员新建的观察者账户固定为 100%（不折算）',
+            'owner' => '谁创建的谁维护。不选表示由平台超级管理员直接管理，商户级管理员看不到也改不了。',
         ],
     ],
 

@@ -66,8 +66,19 @@ class PaymentMethod extends Model
             });
         });
 
-        static::creating(function (self $model) {
-            if ($model->isSystemLevel() && empty($model->owner_id) && auth()->check()) {
+        // 用 saving 而不是 creating：编辑页把一条商户自有的支付方式的商户清空、改成
+        // 系统级时同样要回填 owner_id，否则商户级管理员保存后（merchant_id 为空、
+        // 没分配、owner_id 也为空）三个可见条件全不满足，立刻看不到这条记录。
+        // 反过来改成商户自有时 owner_id 清空：归属已经由 merchant_id 决定，
+        // 残留的 owner_id 没有意义，还会让后续再改回系统级时归属错人。
+        static::saving(function (self $model) {
+            if (! $model->isSystemLevel()) {
+                $model->owner_id = null;
+
+                return;
+            }
+
+            if (empty($model->owner_id) && auth()->check() && auth()->user() instanceof User) {
                 $model->owner_id = auth()->id();
             }
         });
@@ -169,6 +180,31 @@ class PaymentMethod extends Model
     public function merchant(): BelongsTo
     {
         return $this->belongsTo(Merchant::class);
+    }
+
+    /**
+     * 该支付方式的"利益相关商户"，用于任何针对这条通道本身的通知（自动禁用、
+     * 商品同步结果等）。
+     *
+     * 商户级支付方式就是它自己的归属商户；系统级支付方式（merchant_id 为 NULL）
+     * 没有归属商户，实际使用者是全部被分配商户，只通知其中一家是不够的——通道是
+     * 共用的，出问题时所有人一起受影响。
+     *
+     * assignedMerchants 关联自带 merchants 的软删过滤，已删除的商户不会被通知。
+     *
+     * @return array<int>
+     */
+    public function notifiableMerchantIds(): array
+    {
+        $ids = array_merge(
+            [$this->merchant_id],
+            $this->assignedMerchants()->pluck('merchants.id')->all(),
+        );
+
+        return array_values(array_unique(array_filter(array_map(
+            fn ($id) => $id === null ? null : (int) $id,
+            $ids,
+        ))));
     }
 
     /**

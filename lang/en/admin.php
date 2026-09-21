@@ -294,7 +294,7 @@ return [
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
-            'method_code_duplicate' => 'This method code is already in use: it must be unique within the same merchant, and unique among system-level payment methods.',
+            'method_code_duplicate' => 'This method code is already in use: method codes are globally unique across all merchant-level and system-level payment methods.',
         ],
         'match_modes' => [
             'match' => 'Match',
@@ -958,7 +958,12 @@ return [
             'status' => 'Status',
             'payment_methods' => 'Bound Payment Methods',
             'amount_display_ratio' => 'Amount Display Ratio',
+            'owner' => 'Whoever creates an observer maintains it. Leave blank to keep it managed by platform super admins only.',
             'created_at' => 'Created At',
+            'owner' => 'Owner',
+        ],
+        'placeholders' => [
+            'owner_platform' => 'Platform-managed',
         ],
         'help' => [
             'account' => 'No real email required — the system generates an internal login email from this account automatically.',

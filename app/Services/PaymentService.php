@@ -19,10 +19,13 @@ use Illuminate\Support\Facades\Cache;
  * 全部候选都不通过风控则整单失败（NoAvailablePaymentMethodException，
  * 调用方应让整个下单事务回滚）。
  *
- * "当天/当月"窗口按组时区（payment_groups.timezone，未配置回退系统时区）确定，
- * 与日/月限额风控的统计窗口保持同一时区口径。
+ * "当天/当月"窗口按系统默认时区（config('app.timezone')）确定，不跟随支付组时区——
+ * 详见 dayRange() 的注释。统计维度是支付方式本身
+ * （orders.payment_method_id），跨商户汇总——系统级支付方式可分配给多个商户，
+ * 限额和均衡都以通道总量为准，见 dailyStatsForMethods()。
  *
- * 阈值判断的"当前累计值"以 orders 表（status = paid）实时查询为准
+ * 阈值判断的"当前累计值"以 orders 表实时查询为准（口径是全部"曾经支付成功过"
+ * 的状态，见 Order::NEVER_PAID_STATUSES）
  * （2.4 节允许用 Redis 计数器加速，这里先给出 DB 查询版本作为权威实现；
  * 如果后续要接入 Redis 计数器，替换 dailyStatsForMethods()/monthlyAmountForMethod()
  * 内部实现即可，对外接口不变）。
@@ -39,15 +42,15 @@ class PaymentService
         $candidates = $group->activePaymentMethods()->get();
 
         // 一次 SQL 批量取全部候选的当天统计，再逐一过风控，避免每个通道一次查询。
-        [$dayStart, $dayEnd] = $this->groupDayRange($group);
-        $dailyStats = $this->dailyStatsForMethods($group, $candidates->pluck('method_code')->all(), $dayStart, $dayEnd);
+        [$dayStart, $dayEnd] = $this->dayRange();
+        $dailyStats = $this->dailyStatsForMethods($candidates->pluck('id')->all(), $dayStart, $dayEnd);
 
         $passing = [];
 
         foreach ($candidates as $method) {
-            $stats = $dailyStats[$method->method_code] ?? ['amount' => 0.0, 'count' => 0];
+            $stats = $dailyStats[$method->id] ?? ['amount' => 0.0, 'count' => 0];
 
-            if ($this->passesRiskControl($group, $method, $amountUsd, $stats)) {
+            if ($this->passesRiskControl($method, $amountUsd, $stats)) {
                 $passing[] = $method;
             }
         }
@@ -97,7 +100,7 @@ class PaymentService
      * 平局时权重大的优先，再平按 id 升序保证结果确定。
      *
      * @param  PaymentMethod[]  $methods
-     * @param  array<string, array{amount: float, count: int}>  $dailyStats
+     * @param  array<int, array{amount: float, count: int}>  $dailyStats
      */
     private function pickLeastLoaded(array $methods, array $dailyStats): PaymentMethod
     {
@@ -119,11 +122,11 @@ class PaymentService
     /**
      * 负载率 = 当天已成交金额 / 权重，越小表示越欠载、越应该进单。
      *
-     * @param  array<string, array{amount: float, count: int}>  $dailyStats
+     * @param  array<int, array{amount: float, count: int}>  $dailyStats
      */
     private function loadRatio(PaymentMethod $method, array $dailyStats): float
     {
-        $amount = $dailyStats[$method->method_code]['amount'] ?? 0.0;
+        $amount = $dailyStats[$method->id]['amount'] ?? 0.0;
 
         return $amount / $this->weightOf($method);
     }
@@ -139,7 +142,7 @@ class PaymentService
     /**
      * @param  array{amount: float, count: int}  $daily
      */
-    private function passesRiskControl(PaymentGroup $group, PaymentMethod $method, float $amountUsd, array $daily): bool
+    private function passesRiskControl(PaymentMethod $method, float $amountUsd, array $daily): bool
     {
         if ($method->exceedsPerTransactionLimit($amountUsd)) {
             return false;
@@ -156,8 +159,8 @@ class PaymentService
         }
 
         if (! $method->isUnlimited('max_amount_per_month')) {
-            [$monthStart, $monthEnd] = $this->groupMonthRange($group);
-            $monthlyAmount = $this->monthlyAmountForMethod($group, $method, $monthStart, $monthEnd);
+            [$monthStart, $monthEnd] = $this->monthRange();
+            $monthlyAmount = $this->monthlyAmountForMethod($method, $monthStart, $monthEnd);
 
             if (bccomp((string) ($monthlyAmount + $amountUsd), (string) $method->max_amount_per_month, 2) > 0) {
                 return false;
@@ -168,75 +171,92 @@ class PaymentService
     }
 
     /**
-     * 组的"当天"窗口（组时区的 0 点到 24 点），换算成 DB 存储时区用于查询。
+     * 风控窗口一律按系统默认时区（config('app.timezone')）划分，不用支付组时区。
+     *
+     * 限额统计的维度是"支付方式本身"、跨商户汇总（见 dailyStatsForMethods()）。
+     * 窗口如果跟着下单那一方的支付组时区走，同一条通道就会有多个互不对齐的"当天"：
+     * 一条系统级支付方式分配给上海和纽约的商户，两地 0 点差十几个小时，上海侧把日
+     * 限额跑满后，纽约侧用的是另一个偏移过的窗口，只看得到落在该窗口内的部分流水，
+     * 于是继续放行——真实 24 小时内成交额可以接近两倍日限额。月限额在跨月边界同理。
+     *
+     * 统一成系统时区后，同一条通道的窗口全局只有一个，累计值和阈值才是可比的。
+     * 注意这只改风控口径；后台展示用的时区（payment_groups.timezone /
+     * merchants.timezone）不受影响，两者本来就是不同用途。
      *
      * @return array{0: Carbon, 1: Carbon}
      */
-    private function groupDayRange(PaymentGroup $group): array
+    private function dayRange(): array
     {
-        $now = Carbon::now($group->effectiveTimezone());
-        $dbTimezone = (string) config('app.timezone', 'UTC');
+        $now = Carbon::now($this->riskControlTimezone());
 
-        return [
-            $now->copy()->startOfDay()->setTimezone($dbTimezone),
-            $now->copy()->endOfDay()->setTimezone($dbTimezone),
-        ];
+        return [$now->copy()->startOfDay(), $now->copy()->endOfDay()];
     }
 
     /**
-     * 组的"当月"窗口（组时区），换算成 DB 存储时区用于查询。
+     * 当月窗口，口径同 dayRange()：系统默认时区。
      *
      * @return array{0: Carbon, 1: Carbon}
      */
-    private function groupMonthRange(PaymentGroup $group): array
+    private function monthRange(): array
     {
-        $now = Carbon::now($group->effectiveTimezone());
-        $dbTimezone = (string) config('app.timezone', 'UTC');
+        $now = Carbon::now($this->riskControlTimezone());
 
-        return [
-            $now->copy()->startOfMonth()->setTimezone($dbTimezone),
-            $now->copy()->endOfMonth()->setTimezone($dbTimezone),
-        ];
+        return [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()];
+    }
+
+    private function riskControlTimezone(): string
+    {
+        return (string) config('app.timezone', 'UTC');
     }
 
     /**
      * 批量取各支付方式当天（组时区）已成交统计。
-     * 统计口径为整个商户维度（与日/月限额风控一致），不区分支付组。
+     * 统计口径是"这条支付方式（payment_methods.id）本身"的总量，不按商户拆分、
+     * 也不区分支付组：日/月限额保护的是通道本身，一条系统级支付方式分配给多个
+     * 商户使用时，各商户的成交要合在一起算，否则限额实际变成"每个商户各一份"。
+     * 按 orders.payment_method_id 而不是 method_code 统计，也顺带避免不同商户
+     * 各自配了同 code 支付方式时互相串账。
      *
-     * @param  string[]  $methodCodes
-     * @return array<string, array{amount: float, count: int}> 以 method_code 为键
+     * 口径是"曾经支付成功过"的全部状态（Order::NEVER_PAID_STATUSES 的补集），
+     * 不是只数 status = 'paid'：订单一录物流就变成 shipped，退款/拒付/争议还会
+     * 变成别的状态，这些钱都已经过了通道，必须计入当天/当月累计值。
+     *
+     * @param  int[]  $methodIds
+     * @return array<int, array{amount: float, count: int}> 以 payment_methods.id 为键
      */
-    private function dailyStatsForMethods(PaymentGroup $group, array $methodCodes, Carbon $start, Carbon $end): array
+    private function dailyStatsForMethods(array $methodIds, Carbon $start, Carbon $end): array
     {
-        if ($methodCodes === []) {
+        if ($methodIds === []) {
             return [];
         }
 
         $rows = Order::query()
             ->withoutGlobalScopes()
-            ->where('merchant_id', $group->merchant_id)
-            ->whereIn('payment_method', $methodCodes)
-            ->where('status', 'paid')
+            ->whereIn('payment_method_id', $methodIds)
+            ->whereNotIn('status', Order::NEVER_PAID_STATUSES)
             ->whereBetween('created_at', [$start, $end])
-            ->selectRaw('payment_method, COALESCE(SUM(converted_amount), 0) as total_amount, COUNT(*) as total_count')
-            ->groupBy('payment_method')
+            ->selectRaw('payment_method_id, COALESCE(SUM(converted_amount), 0) as total_amount, COUNT(*) as total_count')
+            ->groupBy('payment_method_id')
             ->get();
 
         return $rows->mapWithKeys(fn ($row) => [
-            $row->payment_method => [
+            (int) $row->payment_method_id => [
                 'amount' => (float) $row->total_amount,
                 'count' => (int) $row->total_count,
             ],
         ])->all();
     }
 
-    private function monthlyAmountForMethod(PaymentGroup $group, PaymentMethod $method, Carbon $start, Carbon $end): float
+    /**
+     * 当月已成交金额，口径同 dailyStatsForMethods()：按支付方式本身跨商户汇总，
+     * 且计入全部"曾经支付成功过"的状态。
+     */
+    private function monthlyAmountForMethod(PaymentMethod $method, Carbon $start, Carbon $end): float
     {
         $result = Order::query()
             ->withoutGlobalScopes()
-            ->where('merchant_id', $group->merchant_id)
-            ->where('payment_method', $method->method_code)
-            ->where('status', 'paid')
+            ->where('payment_method_id', $method->id)
+            ->whereNotIn('status', Order::NEVER_PAID_STATUSES)
             ->whereBetween('created_at', [$start, $end])
             ->sum('converted_amount');
 

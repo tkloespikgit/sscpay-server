@@ -42,6 +42,9 @@ class EditObserver extends EditRecord
 
         if (! (bool) auth()->user()?->is_super_admin) {
             $data['amount_display_ratio'] = $this->record->amount_display_ratio;
+            // 归属只有超管能改（重新指派/转平台直管）；非超管一律维持原值，
+            // 否则他可以把别人的观察者改到自己名下，或者把自己的甩给别人。
+            $data['owner_id'] = $this->record->owner_id;
         }
 
         return $data;

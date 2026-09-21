@@ -39,7 +39,10 @@ class PaymentGroup extends Model
 
     /**
      * 生效时区：组上未配置时回退系统时区。
-     * 分流算法和日/月限额风控都用它来确定"当天/当月"统计窗口。
+     *
+     * 注意：日/月限额风控与分流均衡的"当天/当月"窗口**不再**用这个时区，统一改成了
+     * 系统默认时区——限额是按支付方式跨商户汇总的，窗口跟着各自支付组时区走会让
+     * 同一条通道出现多个互不对齐的"当天"（详见 PaymentService::dayRange() 注释）。
      */
     public function effectiveTimezone(): string
     {

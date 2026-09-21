@@ -127,7 +127,7 @@ class OrderResource extends Resource
                     ->options(fn () => $observer
                         ? $observer->paymentMethods()->withoutGlobalScopes()->with('merchant')->get()
                             ->mapWithKeys(fn (PaymentMethod $method) => [
-                                $method->id => "{$method->merchant?->name} - {$method->method_name}",
+                                $method->id => ($method->merchant?->name ?? __('admin.payment_method.columns.system_level'))." - {$method->method_name}",
                             ])
                         : []),
 
