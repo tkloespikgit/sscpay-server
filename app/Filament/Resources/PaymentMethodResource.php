@@ -30,6 +30,7 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 
@@ -571,7 +572,12 @@ class PaymentMethodResource extends Resource
 
     /**
      * 复制支付方式：整份配置原样复制，仅标识字段（代码/名称）追加 _copy，
-     * 副本固定为禁用状态，避免直接可收款；风控阈值、手续费、商户保持不变。
+     * 副本固定为禁用状态，避免直接可收款；风控阈值、手续费保持不变。
+     *
+     * 归属规则：商户级管理员复制出来的副本一律变成系统级（merchant_id 置空、
+     * owner_id 是自己），即便原记录是某个商户自有的——商户级管理员复制的目的
+     * 通常是"拿一份自己维护、再分配给名下多个商户"，而不是给那个商户再加一条。
+     * 超管/普通商户用户复制则保持原记录的归属商户不变。
      */
     public static function duplicateAction(): Action
     {
@@ -589,7 +595,12 @@ class PaymentMethodResource extends Resource
                 // 复制过来，必须显式排除。
                 $copy = $record->replicate(['method_code_uniq', 'merchant_id_uniq', 'site_products_count', 'site_products_exists']);
                 $copy->is_active = false;
-                $copy->method_code = static::nextCopyCode($record);
+                // 商户级管理员复制：副本脱离原商户，变成挂在自己名下的系统级支付方式；
+                // 其它角色复制：副本继续归属原记录的商户（超管复制系统级记录时也是 NULL）。
+                $copy->merchant_id = auth()->user()->isMerchantManager() ? null : $record->merchant_id;
+                // 副本代码要在"副本将要落到的归属"里查重，而不是原记录的归属：
+                // 商户级记录复制成系统级后，冲突范围是所有系统级记录之间。
+                $copy->method_code = static::nextCopyCode($record->method_code, $copy->merchant_id);
                 $copy->method_name = Str::limit($record->method_name.'_copy', 100, '');
                 // replicate() 会把 owner_id 原样复制过来；系统级支付方式的副本应该归属于
                 // 触发复制的这个人（谁复制的归谁管），而不是继续挂在原记录创建人名下，
@@ -603,21 +614,28 @@ class PaymentMethodResource extends Resource
     }
 
     /**
-     * 生成不与同商户已有记录冲突的副本代码：先试 xxx_copy，
-     * 被占用则递增后缀（xxx_copy2、xxx_copy3……）。
+     * 生成在目标归属（$merchantId 对应的商户，NULL 则为系统级记录之间）内不冲突的
+     * 副本代码：先试 xxx_copy，被占用则递增后缀（xxx_copy2、xxx_copy3……）。
      * method_code 唯一约束是软删安全的，只需在未删除记录里查重。
+     * 故意 withoutGlobalScopes()：数据库唯一索引是全局的，商户级管理员当前
+     * 看不到的其它管理员的系统级记录也要算进冲突范围，否则会撞唯一键。
      */
-    protected static function nextCopyCode(PaymentMethod $record): string
+    protected static function nextCopyCode(string $baseCode, ?int $merchantId): string
     {
-        $code = Str::limit($record->method_code.'_copy', 50, '');
+        $code = Str::limit($baseCode.'_copy', 50, '');
 
         $suffix = 2;
 
         while (PaymentMethod::query()
-            ->where('merchant_id', $record->merchant_id)
+            ->withoutGlobalScopes()
+            ->when(
+                $merchantId === null,
+                fn (Builder $q) => $q->whereNull('merchant_id'),
+                fn (Builder $q) => $q->where('merchant_id', $merchantId),
+            )
             ->where('method_code', $code)
             ->exists()) {
-            $code = Str::limit($record->method_code.'_copy'.$suffix, 50, '');
+            $code = Str::limit($baseCode.'_copy'.$suffix, 50, '');
             $suffix++;
         }
 
