@@ -489,6 +489,8 @@ return [
             'customer_email_placeholder' => 'Fuzzy search supported',
             'order_no' => 'Order No.',
             'order_no_placeholder' => 'Fuzzy search supported',
+            'merchant_order_no' => 'Merchant Order No.',
+            'exact_placeholder' => 'Exact match — enter the full number',
             'transaction_id' => 'Transaction ID',
             'transaction_id_placeholder' => 'Fuzzy search supported',
             'created_from' => 'Start Time',
@@ -720,6 +722,13 @@ return [
         ],
         'placeholders' => [
             'none' => '—',
+        ],
+        'images_viewer' => [
+            'open' => 'Click to enlarge',
+            'download' => 'Download original',
+            'close' => 'Close',
+            'previous' => 'Previous',
+            'next' => 'Next',
         ],
     ],
 
@@ -1104,6 +1113,9 @@ return [
             'model_label_plural' => 'Withdrawals',
             'amount' => 'Amount',
             'request' => 'Request Withdrawal',
+            'request_for_merchant' => 'Request Withdrawal for Merchant',
+            'request_for_merchant_desc' => 'Request a withdrawal on behalf of ":merchant". Available balance is $:amount; the amount is frozen immediately on submit and is only paid out after approval under Withdrawals.',
+            'merchant_forbidden' => 'You are not allowed to request a withdrawal for this merchant.',
             'available' => 'Available balance: $:amount',
             'requested' => 'Withdrawal requested; the amount has been frozen pending review.',
             'requested_by' => 'Requested By',

@@ -97,13 +97,32 @@ class ViewOrder extends ViewRecord
 
             Section::make(__('admin.order.sections.customer_info'))->schema([
                 Grid::make(2)->schema([
-                    TextEntry::make('customer_first_name')->label(__('admin.order.fields.customer_first_name')),
-                    TextEntry::make('customer_last_name')->label(__('admin.order.fields.customer_last_name')),
-                    TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email')),
-                    TextEntry::make('customer_phone')->label(__('admin.order.fields.customer_phone')),
-                    TextEntry::make('shipping_address_line1')->label(__('admin.order.fields.address'))->columnSpanFull(),
-                    TextEntry::make('shipping_city')->label(__('admin.order.fields.city')),
-                    TextEntry::make('shipping_country')->label(__('admin.order.fields.country')),
+                    // 字段集与列表页「客户邮箱」列点开的弹窗（OrderResource::viewCustomerInfoAction()）
+                    // 保持一致：收货地址要完整（含地址行2 / 州省 / 邮编），
+                    // 缺一项客服就得回头翻订单 API 原始报文。
+                    TextEntry::make('customer_first_name')->label(__('admin.order.fields.customer_first_name'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('customer_last_name')->label(__('admin.order.fields.customer_last_name'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email'))->copyable(),
+                    TextEntry::make('customer_phone')->label(__('admin.order.fields.customer_phone'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->copyable(),
+                    TextEntry::make('shipping_address_line1')->label(__('admin.order.fields.address'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->copyable()
+                        ->columnSpanFull(),
+                    TextEntry::make('shipping_address_line2')->label(__('admin.order.fields.address_line2'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->columnSpanFull(),
+                    TextEntry::make('shipping_city')->label(__('admin.order.fields.city'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping_state')->label(__('admin.order.fields.state'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping_zip')->label(__('admin.order.fields.zip'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping_country')->label(__('admin.order.fields.country'))
+                        ->placeholder(__('admin.order.placeholders.none')),
                 ]),
             ]),
 
@@ -160,7 +179,12 @@ class ViewOrder extends ViewRecord
                         // 直接隐藏按钮，避免用户填完表单提交时才被拒绝。
                         ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_SHIP)
                             && in_array($record->status, OrderShippingService::RECORDABLE_STATUSES, true))
-                        ->fillForm(fn ($record) => $record->shipping?->only(['logistics_company', 'tracking_number', 'tracking_url', 'remark']) ?? [])
+                        // shipped_at 必须一起回填：补发/改单时 fillForm() 给了值的表单
+                        // 不会再套用字段上的 default()，漏填这一项会把已有的发货时间
+                        // 提交成 NULL，而那一列是 NOT NULL（实测报 1048）。
+                        ->fillForm(fn ($record) => $record->shipping?->only([
+                            'logistics_company', 'tracking_number', 'tracking_url', 'shipped_at', 'remark',
+                        ]) ?? [])
                         ->schema([
                             // 下拉选自 CarrierResource 维护的承运商清单，而不是自由文本——
                             // 保证手动录入的 logistics_company 和 API/CSV 两个入口一样，
@@ -185,7 +209,7 @@ class ViewOrder extends ViewRecord
                                 }),
                             TextInput::make('tracking_number')->label(__('admin.order.fields.tracking_number'))->required()->maxLength(100),
                             TextInput::make('tracking_url')->label(__('admin.order.fields.tracking_url'))->url()->maxLength(255),
-                            DateTimePicker::make('shipped_at')->label(__('admin.order.fields.shipped_at'))->default(now()),
+                            DateTimePicker::make('shipped_at')->label(__('admin.order.fields.shipped_at'))->required()->default(now()),
                             Textarea::make('remark')->label(__('admin.order.fields.remark'))->rows(2),
                         ])
                         ->action(function (array $data, OrderShippingService $service) {

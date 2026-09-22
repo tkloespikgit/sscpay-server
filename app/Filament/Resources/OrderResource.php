@@ -69,11 +69,18 @@ class OrderResource extends Resource
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
                     ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
                     ->searchable(),
-                TextColumn::make('application.app_id')->label(__('admin.order.columns.application'))
-                    ->formatStateUsing(fn ($record) => $record->application
-                        ? $record->application->app_id.' - '.$record->application->name
-                        : __('admin.order.placeholders.none'))
-                    ->searchable(['applications.app_id', 'applications.name'])
+                // 只展示应用名称（不带 app_id），但全局搜索依然同时命中 app_id，
+                // 方便直接粘贴 app_id 查订单。
+                //
+                // searchable() 里必须写「相对于关联模型的裸字段名」，不能写
+                // applications.app_id 这种带表名的形式：关联列的搜索最终走
+                // whereRelation('application', <字段>, 'like', ...)，Filament 会把
+                // 带点的字段名当成 JSON 路径处理（applications.app_id ->
+                // json_extract(`applications`, '$."app_id"')），MySQL 上直接报
+                // Unknown column 'applications'。
+                TextColumn::make('application.name')->label(__('admin.order.columns.application'))
+                    ->placeholder(__('admin.order.placeholders.none'))
+                    ->searchable(['app_id', 'name'])
                     ->toggleable(),
 
                 TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable()
@@ -137,10 +144,64 @@ class OrderResource extends Resource
             // TablesRenderHook::TOOLBAR_AFTER（见 AdminPanelProvider），不是 header()/
             // contentFooter()——Table 自带的这两个扩展点只能落在"筛选栏上方"或
             // "表格 <tfoot>"，没有"搜索栏下方"这个位置。
+            // 筛选项按「精准单号搜索 → 归属维度 → 状态维度 → 时间范围」分组排列，
+            // 配合 filtersFormColumns(4) 刚好每行一组，收起/展开时观感不会乱跳。
             ->filters([
+                // 订单号 / 商户订单号走精准匹配（两者都有唯一索引，等值查询直接走索引，
+                // 不像 like '%x%' 那样全表扫）。需要模糊找单可以用右上角的全局搜索框。
+                Filter::make('order_no')
+                    ->label(__('admin.order.filters.order_no'))
+                    ->schema([
+                        TextInput::make('order_no')
+                            ->label(__('admin.order.filters.order_no'))
+                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['order_no'] ?? '')) !== '',
+                        fn ($q) => $q->where('order_no', trim((string) $data['order_no']))
+                    )),
+
+                Filter::make('merchant_order_no')
+                    ->label(__('admin.order.filters.merchant_order_no'))
+                    ->schema([
+                        TextInput::make('merchant_order_no')
+                            ->label(__('admin.order.filters.merchant_order_no'))
+                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['merchant_order_no'] ?? '')) !== '',
+                        fn ($q) => $q->where('merchant_order_no', trim((string) $data['merchant_order_no']))
+                    )),
+
+                Filter::make('transaction_id')
+                    ->label(__('admin.order.filters.transaction_id'))
+                    ->schema([
+                        TextInput::make('transaction_id')
+                            ->label(__('admin.order.filters.transaction_id'))
+                            ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['transaction_id'] ?? null,
+                        fn ($q, $transactionId) => $q->where('transaction_id', 'like', '%'.$transactionId.'%')
+                    )),
+
+                Filter::make('customer_email')
+                    ->label(__('admin.order.filters.customer_email'))
+                    ->schema([
+                        TextInput::make('customer_email')
+                            ->label(__('admin.order.filters.customer_email'))
+                            ->placeholder(__('admin.order.filters.customer_email_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['customer_email'] ?? null,
+                        fn ($q, $email) => $q->where('customer_email', 'like', '%'.$email.'%')
+                    )),
+
                 // 商户筛选仅平台侧账号（超管、商户级管理员）可见；商户用户的数据本身已被 MerchantScope 限制。
                 // Merchant 模型本身不挂 MerchantScope（它就是"商户"，不隶属于商户），
                 // 这里手动把选项收窄到商户级管理员名下的商户，避免筛出自己管不到的商户。
+                // 注意：保持单选——ListOrders 的物流模板导出依赖 getTableFilterState('merchant_id')['value']
+                // 来确定导出哪个商户的订单。
                 SelectFilter::make('merchant_id')
                     ->label(__('admin.order.filters.merchant'))
                     ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
@@ -163,8 +224,10 @@ class OrderResource extends Resource
                         ->mapWithKeys(fn ($app) => [$app->id => $app->app_id.' - '.$app->name]))
                     ->searchable(),
 
+                // 多选：同一笔查询里经常要把几条同类通道（如多个 USDT 通道）一起看。
                 SelectFilter::make('payment_method')
                     ->label(__('admin.order.filters.payment_method'))
+                    ->multiple()
                     ->options(function () {
                         $user = auth()->user();
 
@@ -194,7 +257,8 @@ class OrderResource extends Resource
                     ->label(__('admin.order.filters.platform'))
                     ->options(fn () => array_combine($platforms = Order::supportedPlatforms(), $platforms)),
 
-                SelectFilter::make('status')->label(__('admin.order.filters.status'))->options([
+                // 多选：如"争议中 + 争议审核中 + 已拒付"这类需要一起盯的状态组合。
+                SelectFilter::make('status')->label(__('admin.order.filters.status'))->multiple()->options([
                     'pending' => __('admin.order.statuses.pending'),
                     'paid' => __('admin.order.statuses.paid'),
                     'shipped' => __('admin.order.statuses.shipped'),
@@ -240,30 +304,6 @@ class OrderResource extends Resource
                             : $query->whereHas('shipping', fn ($q) => $q->whereIn('sync_status', $values));
                     }),
 
-                Filter::make('customer_email')
-                    ->label(__('admin.order.filters.customer_email'))
-                    ->schema([
-                        TextInput::make('customer_email')
-                            ->label(__('admin.order.filters.customer_email'))
-                            ->placeholder(__('admin.order.filters.customer_email_placeholder')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['customer_email'] ?? null,
-                        fn ($q, $email) => $q->where('customer_email', 'like', '%'.$email.'%')
-                    )),
-
-                Filter::make('transaction_id')
-                    ->label(__('admin.order.filters.transaction_id'))
-                    ->schema([
-                        TextInput::make('transaction_id')
-                            ->label(__('admin.order.filters.transaction_id'))
-                            ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['transaction_id'] ?? null,
-                        fn ($q, $transactionId) => $q->where('transaction_id', 'like', '%'.$transactionId.'%')
-                    )),
-
                 // 创建时间拆成“开始时间 / 结束时间”两个独立筛选框，
                 // 各自占一格，避免两个日期控件堆叠在同一个单元格里造成换行。
                 Filter::make('created_from')
@@ -285,8 +325,10 @@ class OrderResource extends Resource
                         $data['created_to'] ?? null,
                         fn ($q, $date) => $q->whereDate('created_at', '<=', $date)
                     )),
-            ], layout: FiltersLayout::AboveContent)
-            ->filtersFormColumns(3)
+                // AboveContentCollapsible：筛选区默认收起，表格上方只留一个带
+                // "已启用筛选数量"徽标的展开按钮，展开后才铺开这 13 个筛选项。
+            ], layout: FiltersLayout::AboveContentCollapsible)
+            ->filtersFormColumns(4)
             ->recordActions([
                 ViewAction::make(),
                 static::queryStatusAction(),

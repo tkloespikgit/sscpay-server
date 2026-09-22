@@ -70,9 +70,18 @@ class OrderShipping extends Model
      * 在这里总是被强制重置为"待同步"——内容变了（哪怕只是补发同一个单号）就应该
      * 视为需要重新同步，不接受调用方绕过这个规则。触发同步动作是调用方
      * （OrderShippingService）的职责，本方法只负责落库。
+     *
+     * shipped_at 为空时直接从待写入字段里剔除，不会写成 NULL（那一列是
+     * NOT NULL DEFAULT CURRENT_TIMESTAMP）：新建时交给数据库默认值填当前时间，
+     * 补发/改单时保留原有的发货时间——"这次没填发货时间"的意思是"不改它"，
+     * 不是"把它清空"。
      */
     public static function recordShipment(int $orderId, array $attributes): self
     {
+        if (blank($attributes['shipped_at'] ?? null)) {
+            unset($attributes['shipped_at']);
+        }
+
         return static::updateOrCreate(
             ['order_id' => $orderId],
             array_merge($attributes, [

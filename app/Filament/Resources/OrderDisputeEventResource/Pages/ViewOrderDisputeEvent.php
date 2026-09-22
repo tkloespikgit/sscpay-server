@@ -11,8 +11,8 @@ use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\RichEditor;
-use Filament\Infolists\Components\ImageEntry;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Infolists\Components\ViewEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
@@ -58,12 +58,18 @@ class ViewOrderDisputeEvent extends ViewRecord
                 // reason 入库前已在 OrderDisputeService::open() 里做过 XSS 过滤
                 // （见 App\Support\RichTextSanitizer），这里直接渲染是安全的。
                 TextEntry::make('reason')->label('')->html()->columnSpanFull(),
-                ImageEntry::make('images')->label(__('admin.order_dispute_event.fields.images'))
-                    ->disk('oss')
-                    ->visibility('private')
-                    ->stacked()
-                    ->visible(fn ($record) => filled($record->images)),
             ]),
+
+            // 自绘缩略图 + 灯箱（点击放大、左右翻页、下载），不用 ImageEntry：
+            // 那个组件只能渲染固定尺寸的 <img>，没有放大和下载入口。
+            // 自定义视图会顶掉 Entry 自带的 label 包装，所以标题挂在 Section 上。
+            Section::make(__('admin.order_dispute_event.fields.images'))
+                ->visible(fn ($record) => filled($record->images))
+                ->schema([
+                    ViewEntry::make('images')
+                        ->view('filament.components.dispute-images')
+                        ->columnSpanFull(),
+                ]),
         ]);
     }
 

@@ -3,8 +3,8 @@
 namespace App\Filament\Resources\OrderDisputeEventResource\RelationManagers;
 
 use Filament\Resources\RelationManagers\RelationManager;
-use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Columns\ViewColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
 
@@ -30,10 +30,9 @@ class OrderDisputeEventRepliesRelationManager extends RelationManager
                 TextColumn::make('operator.name')->label(__('admin.order_dispute_event_reply.fields.operator')),
                 TextColumn::make('created_at')->label(__('admin.order_dispute_event_reply.fields.created_at'))->dateTime(),
                 TextColumn::make('content')->label(__('admin.order_dispute_event_reply.fields.content'))->html()->wrap(),
-                ImageColumn::make('images')->label(__('admin.order_dispute_event_reply.fields.images'))
-                    ->disk('oss')
-                    ->visibility('private')
-                    ->stacked(),
+                // 与事件详情页共用同一个灯箱视图（点击放大、翻页、下载）
+                ViewColumn::make('images')->label(__('admin.order_dispute_event_reply.fields.images'))
+                    ->view('filament.components.dispute-images'),
             ])
             ->defaultSort('created_at', 'desc')
             ->headerActions([])

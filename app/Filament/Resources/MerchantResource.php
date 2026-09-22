@@ -119,6 +119,7 @@ class MerchantResource extends Resource
             ->recordActions([
                 EditAction::make(),
                 static::adjustBalanceAction(),
+                static::requestWithdrawalAction(),
                 DeleteAction::make(),
             ])
             ->defaultSort('created_at', 'desc');
@@ -163,6 +164,81 @@ class MerchantResource extends Resource
                 }
 
                 Notification::make()->title(__('admin.finance.adjust.success'))->success()->send();
+            });
+    }
+
+    /**
+     * 平台侧代商户发起提现（"取款"）。商户自己的入口在提现管理列表页的头部动作
+     * （ListMerchantWithdrawals::requestWithdrawalAction()），那个动作绑定登录态的
+     * merchant_id，平台账号没有单一商户上下文所以看不到——这里补上按行选商户的版本。
+     *
+     * 只有平台侧账号（超级管理员 / 商户级管理员）可见，且需要 withdrawals.request
+     * 权限 + 资金操作强制 2FA。可操作范围天然受限于 getEloquentQuery()——商户级
+     * 管理员的列表只有自己名下的商户；action() 里再按 manageableMerchantIds()
+     * 兜一层，防的是有人手工构造 Livewire 请求指定别家商户的记录 ID。
+     *
+     * 语义与商户自助申请完全一致：提交即冻结可提现余额，落一条 pending 提现单，
+     * 仍需在「提现管理」里审核放款（approveWithdrawal）才真正扣款——这里不做
+     * "发起即放款"的捷径，放款是另一个人的另一次 2FA。
+     */
+    public static function requestWithdrawalAction(): Action
+    {
+        return Action::make('requestWithdrawal')
+            ->label(__('admin.finance.withdrawal.request_for_merchant'))
+            ->icon('heroicon-o-arrow-up-tray')
+            ->color('info')
+            ->visible(fn () => (bool) auth()->user()?->isPlatformStaff()
+                && auth()->user()->can(Permissions::WITHDRAWALS_REQUEST))
+            ->modalHeading(__('admin.finance.withdrawal.request_for_merchant'))
+            ->modalDescription(fn (Merchant $record) => __('admin.finance.withdrawal.request_for_merchant_desc', [
+                'merchant' => $record->name,
+                'amount' => number_format((float) $record->availableBalance(), 2),
+            ]))
+            ->schema([
+                TextInput::make('amount')
+                    ->label(__('admin.finance.withdrawal.amount'))
+                    ->numeric()
+                    ->required()
+                    ->minValue(0.01)
+                    // 上限只是前端提示，真正的可提现余额校验在 BalanceService
+                    // 的行锁事务里做（弹窗打开到提交之间余额可能已经变了）。
+                    ->maxValue(fn (Merchant $record) => (float) $record->availableBalance())
+                    ->prefix('$'),
+                TextInput::make('payout_account')
+                    ->label(__('admin.finance.withdrawal.payout_account'))
+                    ->maxLength(255),
+                Textarea::make('remark')
+                    ->label(__('admin.finance.withdrawal.remark'))
+                    ->rows(2)
+                    ->maxLength(500),
+                FinanceSecurity::codeField(),
+            ])
+            ->action(function (Merchant $record, array $data) {
+                try {
+                    $user = auth()->user();
+
+                    $manageableIds = $user->manageableMerchantIds();
+
+                    if ($manageableIds !== null && ! in_array($record->id, $manageableIds, true)) {
+                        throw new BalanceOperationException(__('admin.finance.withdrawal.merchant_forbidden'));
+                    }
+
+                    FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
+
+                    app(BalanceService::class)->requestWithdrawal(
+                        $record,
+                        $data['amount'],
+                        $user,
+                        $data['payout_account'] ?? null,
+                        $data['remark'] ?? null,
+                    );
+                } catch (BalanceOperationException $e) {
+                    Notification::make()->title($e->getMessage())->danger()->send();
+
+                    return;
+                }
+
+                Notification::make()->title(__('admin.finance.withdrawal.requested'))->success()->send();
             });
     }
 

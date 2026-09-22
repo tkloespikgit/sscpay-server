@@ -49,6 +49,17 @@ class LogisticsImportService
         'paid_at',
         'created_at',
         'remark',
+
+        // 客户联系方式 + 完整收货地址，一律追加在末尾：导入端按表头名做映射
+        // （见 HEADER_ALIASES / mapHeader()），不依赖列下标，所以在尾部加列
+        // 不会影响已有的物流导入；旧模板少了这几列也照常能上传。
+        'customer_phone',
+        'shipping_country',
+        'shipping_zip',
+        'shipping_state',
+        'shipping_city',
+        'shipping_address_line1',
+        'shipping_address_line2',
     ];
 
     /**
@@ -149,6 +160,15 @@ class LogisticsImportService
             'paid_at' => $order->paid_at?->format('Y-m-d H:i:s'),
             'created_at' => $order->created_at?->format('Y-m-d H:i:s'),
             'remark' => $shipping?->remark,
+            'customer_phone' => $order->customer_phone,
+            // 国家保持下单时的 ISO 3166-1 alpha-2 原值（如 US），不翻译成国家名——
+            // 面单和报关都认代码，翻译反而要商户再对一次表。
+            'shipping_country' => $order->shipping_country,
+            'shipping_zip' => $order->shipping_zip,
+            'shipping_state' => $order->shipping_state,
+            'shipping_city' => $order->shipping_city,
+            'shipping_address_line1' => $order->shipping_address_line1,
+            'shipping_address_line2' => $order->shipping_address_line2,
         ];
     }
 

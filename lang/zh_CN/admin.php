@@ -483,6 +483,8 @@ return [
             'customer_email_placeholder' => '支持模糊搜索',
             'order_no' => '系统订单号',
             'order_no_placeholder' => '支持模糊搜索',
+            'merchant_order_no' => '商户订单号',
+            'exact_placeholder' => '精准搜索，请输入完整单号',
             'transaction_id' => '三方交易号',
             'transaction_id_placeholder' => '支持模糊搜索',
             'created_from' => '开始时间',
@@ -714,6 +716,14 @@ return [
         ],
         'placeholders' => [
             'none' => '—',
+        ],
+        // 图片凭证灯箱（事件详情页与回复线程共用）
+        'images_viewer' => [
+            'open' => '点击查看大图',
+            'download' => '下载原图',
+            'close' => '关闭',
+            'previous' => '上一张',
+            'next' => '下一张',
         ],
     ],
 
@@ -1098,6 +1108,10 @@ return [
             'model_label_plural' => '提现管理',
             'amount' => '提现金额',
             'request' => '申请提现',
+            // 平台侧在商户列表里代商户发起（商户列表 -> 该行「代发起提现」）
+            'request_for_merchant' => '代发起提现',
+            'request_for_merchant_desc' => '为商户「:merchant」发起提现申请。当前可提现余额 $:amount，提交后该金额立即冻结，仍需在「提现管理」中审核放款才会真正扣款。',
+            'merchant_forbidden' => '无权为该商户发起提现。',
             'available' => '可提现余额：$:amount',
             'requested' => '提现申请已提交，相应金额已冻结，等待审核放款。',
             'requested_by' => '申请人',
