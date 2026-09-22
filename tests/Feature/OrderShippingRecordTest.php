@@ -83,6 +83,33 @@ class OrderShippingRecordTest extends TestCase
         $this->assertSame(1, OrderShipping::query()->withoutGlobalScopes()->count());
     }
 
+    /**
+     * 同样的"不传即不改"规则也适用于 tracking_url——CSV 导入在追踪链接留空时
+     * 整个键都不传（见 LogisticsImportService::resolveTrackingUrl()），
+     * 补发/改单不应该把订单上已有的链接抹掉。
+     */
+    public function test_omitting_tracking_url_keeps_the_existing_one(): void
+    {
+        OrderShipping::recordShipment($this->order->id, [
+            'merchant_id' => $this->merchant->id,
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z999',
+            'tracking_url' => 'https://track.example.com/1Z999',
+            'shipped_at' => now(),
+            'operator_id' => 1,
+        ]);
+
+        $shipping = OrderShipping::recordShipment($this->order->id, [
+            'merchant_id' => $this->merchant->id,
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z888',
+            'shipped_at' => now(),
+            'operator_id' => 1,
+        ]);
+
+        $this->assertSame('https://track.example.com/1Z999', $shipping->refresh()->tracking_url);
+    }
+
     public function test_an_explicit_shipped_at_still_overwrites_the_previous_one(): void
     {
         OrderShipping::recordShipment($this->order->id, [

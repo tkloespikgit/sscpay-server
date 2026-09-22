@@ -36,6 +36,8 @@ class LogisticsImportTaskRecord extends Model
         'order_no',
         'logistics_company',
         'tracking_number',
+        'shipped_at',
+        'tracking_url',
         'remark',
         'raw_data',
         'status',

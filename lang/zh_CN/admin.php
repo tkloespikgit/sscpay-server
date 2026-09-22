@@ -497,7 +497,10 @@ return [
             'csv_file' => 'CSV 文件',
             'merchant_required' => '请先在上方筛选条件中选择「商户」后再操作',
             'upload_forbidden' => '超级管理员不能上传物流信息，请由该商户的用户登录后上传',
-            'upload_logistics_hint' => '请先用「导出物流模板」下载 CSV，填好 logistics_company（承运商编码）、tracking_number（物流单号）、remark（备注）三列后原样上传，其他列不要改动',
+            'upload_logistics_hint' => '请先用「导出物流模板」下载 CSV。可填写的列共 5 个：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空不改动）、remark（备注，选填）；其余列仅供核对，改了不生效。填好后原样上传，表头和第二行的说明行请勿删除。',
+            // 写进导出模板第二行的说明（以 # 开头，上传时整行跳过），
+            // 内容必须与 LogisticsImportService::HEADER_ALIASES 支持的字段保持一致
+            'logistics_template_note' => '可填写列：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，格式 2026-09-22 15:30:00，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空则不改动已有链接）、remark（备注，选填）。其余列仅供核对，修改不生效。本行以 # 开头，上传时会被忽略，请勿删除表头。',
             'export_failed' => '导出失败：无法获取当前列表的查询条件，请刷新页面后重试',
             'upload_success' => '文件已上传，正在后台处理，完成后会有 Telegram 通知',
             'query_status' => '查询订单',

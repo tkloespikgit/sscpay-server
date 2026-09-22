@@ -7,6 +7,7 @@ use App\Models\Carrier;
 use App\Models\LogisticsImportTask;
 use App\Models\LogisticsImportTaskRecord;
 use App\Models\Order;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -15,9 +16,13 @@ use Illuminate\Validation\ValidationException;
  * 物流批量导入（4.6 节）：按订单列表当前筛选条件导出模板 → 商户填写 → 上传 OSS →
  * 队列异步处理 → 逐行明细落 logistics_import_task_records → Telegram 通知商户。
  *
- * 两个方向共用同一套表头（TEMPLATE_HEADERS）：导出的 CSV 商户填完
- * tracking_number / logistics_company / remark 三列后可直接回传，
+ * 两个方向共用同一套表头（TEMPLATE_HEADERS）：导出的 CSV 商户填完可直接回传，
  * 因此解析端必须认得导出端的全部列名，见 HEADER_ALIASES。
+ *
+ * 可填写的列只有 5 个：logistics_company / tracking_number（必填）、
+ * shipped_at / tracking_url / remark（选填）。其余列是导出时带出来给商户核对的
+ * 快照，改了不会有任何效果——这点写在模板第二行的说明行里（templateNoteRow()），
+ * 上传时按 '#' 前缀整行跳过。
  */
 class LogisticsImportService
 {
@@ -66,13 +71,25 @@ class LogisticsImportService
      * 上传解析时的表头别名（全部小写比较）：既认当前模板，也认旧版四列模板
      * （order_no/logistics_company/tracking_number/remark），还兜住商户把表头
      * 改成中文的情况。
+     *
+     * 这里列出的就是"商户填了会生效"的全部字段——TEMPLATE_HEADERS 里的其余列
+     * 只是导出时带出来给商户核对用的快照，改了不会有任何效果。模板第二行的
+     * 说明行（见 templateNote()）必须和这份名单保持一致。
      */
     private const HEADER_ALIASES = [
         'order_no' => ['order_no', '系统单号', '系统订单号', '订单号'],
         'logistics_company' => ['logistics_company', 'carrier_code', '承运商编码', '承运商代码', '物流公司'],
         'tracking_number' => ['tracking_number', 'tracking_no', '物流单号', '运单号'],
+        'shipped_at' => ['shipped_at', 'ship_time', '发货时间'],
+        'tracking_url' => ['tracking_url', 'tracking_link', '物流追踪链接', '追踪链接'],
         'remark' => ['remark', '备注'],
     ];
+
+    /**
+     * 模板说明行的前缀。这一行紧跟在表头下面，上传时按前缀整行跳过
+     * （见 isInstructionRow()），既不会被当成数据行，也不计入总行数。
+     */
+    private const INSTRUCTION_PREFIX = '#';
 
     /** 落库/读取的分批大小，避免上万行的文件一次性吃满内存（8.3 节）。 */
     private const CHUNK_SIZE = 500;
@@ -107,6 +124,7 @@ class LogisticsImportService
 
         fwrite($handle, "\xEF\xBB\xBF");
         fputcsv($handle, self::TEMPLATE_HEADERS);
+        fputcsv($handle, $this->templateNoteRow());
 
         // select('orders.*')：表格查询可能带着列的聚合子查询（withCount 等），
         // 导出只需要订单本身的字段，显式收敛 select 也顺便保证 lazyById() 能拿到 id。
@@ -126,6 +144,20 @@ class LogisticsImportService
         fclose($handle);
 
         return $csv;
+    }
+
+    /**
+     * 模板第二行的填写说明。补齐到和表头一样的列数，Excel 里不会出现
+     * 参差不齐的一行，商户另存回传时 fgetcsv 拿到的列数也保持一致。
+     *
+     * @return array<int, string>
+     */
+    private function templateNoteRow(): array
+    {
+        $row = array_fill(0, count(self::TEMPLATE_HEADERS), '');
+        $row[0] = self::INSTRUCTION_PREFIX.' '.__('admin.order.actions.logistics_template_note');
+
+        return $row;
     }
 
     /**
@@ -251,6 +283,9 @@ class LogisticsImportService
                 'order_no' => $this->truncate($row['order_no'], 32),
                 'logistics_company' => $this->truncate($row['logistics_company'], 50),
                 'tracking_number' => $this->truncate($row['tracking_number'], 100),
+                // 原文落库，解析/校验留到同步阶段做，失败只影响这一行
+                'shipped_at' => $this->truncate($row['shipped_at'], 50),
+                'tracking_url' => $this->truncate($row['tracking_url'], 255),
                 'remark' => $row['remark'] !== '' ? $row['remark'] : null,
                 'raw_data' => json_encode($row['raw'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE),
                 'status' => LogisticsImportTaskRecord::STATUS_PENDING,
@@ -367,14 +402,74 @@ class LogisticsImportService
             throw new \RuntimeException("物流承运商「{$logisticsCompany}」不在系统支持列表中，请联系管理员添加该承运商");
         }
 
-        $shippingService->record($order, $task->operator_id, [
+        $attributes = [
             'logistics_company' => $logisticsCompany,
             'tracking_number' => $trackingNumber,
             'remark' => $record->remark,
-            'shipped_at' => now(),
-        ]);
+            'shipped_at' => $this->resolveShippedAt($record->shipped_at, $task),
+        ];
+
+        // 留空就整个键不传：OrderShipping::recordShipment() 走 updateOrCreate，
+        // 不传等于"不改动"——补发/改单时不会把订单上已有的追踪链接清掉。
+        if (filled($trackingUrl = $this->resolveTrackingUrl($record->tracking_url))) {
+            $attributes['tracking_url'] = $trackingUrl;
+        }
+
+        $shippingService->record($order, $task->operator_id, $attributes);
 
         return $order->id;
+    }
+
+    /**
+     * 发货时间：填了就按填的走，没填则记成**文件上传时间**（= 任务创建时间）。
+     *
+     * 用上传时间而不是 now()，是因为上万行的文件要跑很久，用逐行处理时刻会让
+     * 同一批订单的发货时间散成一片，对不上商户实际的发货动作。
+     *
+     * 格式不认识时抛错让这一行失败，不静默回退到上传时间——商户明确填了值却被
+     * 悄悄换掉，比直接告诉他"这行没导进去"糟糕得多。
+     *
+     * @throws \RuntimeException 填了但解析不出来
+     */
+    private function resolveShippedAt(?string $raw, LogisticsImportTask $task): \DateTimeInterface
+    {
+        $raw = trim((string) $raw);
+
+        if ($raw === '') {
+            return $task->created_at ?? now();
+        }
+
+        try {
+            return Carbon::parse($raw);
+        } catch (\Throwable) {
+            throw new \RuntimeException("发货时间「{$raw}」格式无法识别，请按 2026-09-22 15:30:00 这样的格式填写，或留空（留空按文件上传时间记）");
+        }
+    }
+
+    /**
+     * 物流追踪链接：留空返回 null（调用方据此不传这个键），填了则校验是合法 URL
+     * 且不超过 order_shippings.tracking_url 的 255 长度——这里不做截断，
+     * 截断出来的半截链接点开是 404，不如让这一行失败、让商户自己改。
+     *
+     * @throws \RuntimeException 填了但不是合法 URL / 超长
+     */
+    private function resolveTrackingUrl(?string $raw): ?string
+    {
+        $raw = trim((string) $raw);
+
+        if ($raw === '') {
+            return null;
+        }
+
+        if (filter_var($raw, FILTER_VALIDATE_URL) === false) {
+            throw new \RuntimeException("物流追踪链接「{$raw}」不是合法的网址，请填写以 http:// 或 https:// 开头的完整链接，或留空");
+        }
+
+        if (mb_strlen($raw) > 255) {
+            throw new \RuntimeException('物流追踪链接超过 255 个字符，请改用短链接或留空');
+        }
+
+        return $raw;
     }
 
     /**
@@ -433,6 +528,11 @@ class LogisticsImportService
                     continue;
                 }
 
+                // 模板第二行是填写说明（# 开头），原样回传时跳过，不计入总数
+                if ($this->isInstructionRow($cells)) {
+                    continue;
+                }
+
                 yield $rowNumber => $this->cellValues($map, $header, $cells);
             }
         } finally {
@@ -488,8 +588,15 @@ class LogisticsImportService
             'order_no' => isset($map['order_no']) ? $pick('order_no') : '',
             'logistics_company' => isset($map['logistics_company']) ? $pick('logistics_company') : '',
             'tracking_number' => isset($map['tracking_number']) ? $pick('tracking_number') : '',
+            'shipped_at' => isset($map['shipped_at']) ? $pick('shipped_at') : '',
+            'tracking_url' => isset($map['tracking_url']) ? $pick('tracking_url') : '',
             'remark' => isset($map['remark']) ? $pick('remark') : '',
         ];
+    }
+
+    private function isInstructionRow(array $cells): bool
+    {
+        return str_starts_with(trim((string) ($cells[0] ?? '')), self::INSTRUCTION_PREFIX);
     }
 
     private function isBlankRow(array $cells): bool
