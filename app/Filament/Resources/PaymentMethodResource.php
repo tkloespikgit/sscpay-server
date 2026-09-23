@@ -583,13 +583,16 @@ class PaymentMethodResource extends Resource
      * owner_id 是自己），即便原记录是某个商户自有的——商户级管理员复制的目的
      * 通常是"拿一份自己维护、再分配给名下多个商户"，而不是给那个商户再加一条。
      * 超管/普通商户用户复制则保持原记录的归属商户不变。
+     *
+     * 可见性走 canDuplicateRecord() 而不是 canManageRecord()：复制不动原记录，
+     * 平台侧账号只要在列表里看得见就该能 fork 一份，见该方法的注释。
      */
     public static function duplicateAction(): Action
     {
         return Action::make('duplicate')
             ->label(__('admin.payment_method.actions.duplicate'))
             ->icon('heroicon-o-square-2-stack')
-            ->visible(fn (PaymentMethod $record) => static::canManageRecord($record))
+            ->visible(fn (PaymentMethod $record) => static::canDuplicateRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
@@ -670,8 +673,9 @@ class PaymentMethodResource extends Resource
     /**
      * 商户自有的支付方式：本商户/其商户级管理员/超管可管理。
      * 系统级支付方式（merchant_id 为空）：只有创建人（owner_id）本人和超管可管理，
-     * 被分配使用的商户只能看、能在支付组里勾选，不能改配置、删除、复制或触发同步
-     * ——这些操作全部复用这个方法做统一判断（见下方 duplicateAction/syncProductsAction）。
+     * 被分配使用的商户只能看、能在支付组里勾选，不能改配置、删除或触发同步
+     * ——这些操作全部复用这个方法做统一判断（见下方 syncProductsAction）。
+     * 「复制」不在此列，它有更宽的判断，见 canDuplicateRecord()。
      */
     public static function canManageRecord(PaymentMethod $record): bool
     {
@@ -690,6 +694,36 @@ class PaymentMethodResource extends Resource
         }
 
         return $record->owner_id !== null && $record->owner_id === $viewer->id;
+    }
+
+    /**
+     * 「复制」的判断比 canManageRecord() 宽：复制不改动原记录，只是照着建一条
+     * 归自己名下的新记录，所以平台侧账号（超管 / 商户级管理员）只要在列表里
+     * 看得见就允许复制。
+     *
+     * 为什么必须放宽：商户级管理员能看见的记录无非三类（见 PaymentMethod::booted()
+     * 里的全局 Scope）——名下商户自有的、分配给名下商户的系统级支付方式、自己建的。
+     * 第二类过去被 canManageRecord() 挡住，导致一个真实场景走不通：某商户原本是
+     * 平台直管，超管给它建了系统级支付方式并分配过去（owner_id 是超管、甚至是
+     * 存量数据里的 NULL），之后超管把这个商户整体指派给某个商户级管理员，
+     * 该管理员接手后看得到这条支付方式却复制不了，没法拿一份自己维护的副本。
+     *
+     * 普通商户用户不在放宽范围内，仍旧走 canManageRecord()：被分配的系统级支付方式
+     * 里带着网关/站点密钥，不能让租户侧账号复制出一份自己能随意改的记录。
+     */
+    public static function canDuplicateRecord(PaymentMethod $record): bool
+    {
+        $viewer = auth()->user();
+
+        if (! $viewer) {
+            return false;
+        }
+
+        if ($viewer->isPlatformStaff()) {
+            return true;
+        }
+
+        return static::canManageRecord($record);
     }
 
     /**
