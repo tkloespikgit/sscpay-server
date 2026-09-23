@@ -8,6 +8,7 @@ use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderItemsMismatchException;
+use App\Exceptions\OrderDetailsConflictException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Models\Application;
@@ -19,17 +20,19 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）和商户后台手工建单共用同一套流程，
  * 只是 $source 不同（api / manual）。是否发送付款链接邮件由调用方在拿到返回的
- * Order 后自行判断 $order->wasRecentlyCreated && $order->send_mail 再决定要不要
- * dispatch(SendPaymentLinkJob)——本方法只负责把这份"是否发送"的意图落库。
+ * Order 后自行判断；API 首次建单和远端补单成功时可发送，本方法只负责把
+ * "是否发送"的意图落库。
  *
  * 执行顺序（对应文档 2.x 节的铁律）：
- *   1. 幂等检查（merchant_id + merchant_order_no）—— 命中直接返回已存在订单，不新建。
+ *   1. 幂等检查（merchant_id + merchant_order_no）—— 币种、金额一致才返回已有订单，
+ *      不一致则拒绝，不新建也不请求远端。
  *   2. 金额公式校验（2.1 节）。
  *   3. 商品明细小计校验（3.8 节：subtotal 必须等于所有明细 total_price 之和）。
  *   4. 回跳域名一致性校验（notify_url / return_url / cancel_url 必须与本次下单所属
@@ -69,6 +72,7 @@ class OrderCreationService
      *
      * @throws AmountMismatchException
      * @throws OrderItemsMismatchException
+     * @throws OrderDetailsConflictException
      * @throws CallbackDomainNotAllowedException
      * @throws PaymentMethodNotAvailableException 指定的 payment_method_key 不存在/不属于该商户/已停用
      * @throws PaymentMethodDomainMismatchException 指定渠道时回跳地址与该渠道绑定域名不一致
@@ -108,6 +112,11 @@ class OrderCreationService
             ->first();
 
         if ($existing) {
+            if ($existing->currency !== $data['currency']
+                || ! BigDecimal::of((string) $existing->amount)->isEqualTo((string) $data['amount'])) {
+                throw new OrderDetailsConflictException();
+            }
+
             // 幂等命中：上次下单若在远程创建支付订单这一步失败过（订单已落库但没有
             // pay_url），这里自动补一次——插件 /pay 对同一 s_order_id 幂等，不会重复创建。
             if (blank($existing->pay_url)) {

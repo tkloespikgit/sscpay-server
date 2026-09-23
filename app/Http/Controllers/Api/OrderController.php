@@ -7,6 +7,7 @@ use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderItemsMismatchException;
+use App\Exceptions\OrderDetailsConflictException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Http\Controllers\Controller;
@@ -59,6 +60,8 @@ class OrderController extends Controller
         ) {
             // 前四类是通用下单校验；后两类只在商户传了 payment_method_key（指定支付渠道）时出现。
             return $this->errorResponse($e->errorCode(), $e->getMessage(), 422);
+        } catch (OrderDetailsConflictException $e) {
+            return $this->errorResponse($e->errorCode(), $e->getMessage(), 409);
         } catch (NoAvailablePaymentMethodException $e) {
             return $this->errorResponse($e->errorCode(), $e->getMessage(), 409);
         } catch (PaymentGatewayException $e) {
@@ -66,9 +69,10 @@ class OrderController extends Controller
             return $this->errorResponse('GATEWAY_ERROR', $e->getMessage(), 502);
         }
 
-        // 幂等命中已存在订单时 wasRecentlyCreated 为 false，不重复发送；
-        // 只有这次真正新建、且请求里 send_mail=Y 的订单才推付款链接邮件。
-        if ($order->wasRecentlyCreated && $order->send_mail) {
+        // 首次建单或补单时刚拿到 pay_url 才派发；后续幂等请求不重复发送。
+        // 使用订单中保存的发送意图，避免重试请求的 send_mail 参数改变原订单行为。
+        if ($order->send_mail && filled($order->pay_url)
+            && ($order->wasRecentlyCreated || $order->wasChanged('pay_url'))) {
             SendPaymentLinkJob::dispatch($order->id);
         }
 

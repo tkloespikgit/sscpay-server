@@ -128,7 +128,10 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         app(OrderPaymentStatusService::class)->handle([
             's_order_id' => $order->order_no,
             'status' => 'paid',
+            'paid_at' => '2026-09-02 10:00:00', // 网关以 UTC 发送
         ]);
+
+        $this->assertSame('2026-09-02 18:00:00', $order->refresh()->paid_at->format('Y-m-d H:i:s'));
 
         // 订单转 paid 还会触发商户 webhook 通知（notify_url）等其他无关请求，
         // 这里只关心 Telegram 这一路，不对总请求数做强断言。

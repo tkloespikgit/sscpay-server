@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderEvent;
+use App\Models\Scopes\MerchantScope;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
@@ -20,8 +21,13 @@ use Illuminate\Support\Facades\DB;
  * 一样走进"不过滤"分支，在首页看到的是全平台的订单数、成交额、趋势和支付方式占比。
  * 改成商户集合后三种角色都落在同一套口径上。
  *
- * 注意：这里的查询都用 withoutGlobalScopes() + 显式 whereIn('merchant_id', ...)，
- * 而不是依赖 MerchantScope 自动生效，以保证统计口径不受 Global Scope 行为影响。
+ * 注意：这里的查询都用 withoutGlobalScopes([MerchantScope::class]) + 显式
+ * whereIn('merchant_id', ...)，而不是依赖 MerchantScope 自动生效，以保证统计范围
+ * 不受 Global Scope 行为影响。只摘这一个作用域、不摘软删除——见 scopedOrders()。
+ *
+ * "收到过钱"的口径统一走 Order::scopePaidEver()（NEVER_PAID_STATUSES 的补集），
+ * 不要在这里写 where('status', 'paid')：订单一发货状态就流转成 shipped，
+ * 那样已发货/已完成的成交额会从统计里消失。
  */
 class DashboardService
 {
@@ -54,8 +60,10 @@ class DashboardService
 
         return [
             'total_orders' => $orderQuery()->count(),
-            'paid_orders' => $orderQuery()->where('status', 'paid')->count(),
-            'total_amount_usd' => (float) $orderQuery()->where('status', 'paid')->sum('converted_amount'),
+            // paidEver()：凡支付成功过的都算，不能用 where('status','paid')
+            // ——订单一发货状态就变了，那样会把已发货/已完成的成交额漏掉。
+            'paid_orders' => $orderQuery()->paidEver()->count(),
+            'total_amount_usd' => (float) $orderQuery()->paidEver()->sum('converted_amount'),
             'total_merchants' => $merchantIds === null ? Merchant::query()->count() : count($merchantIds),
             'today_new_orders' => $orderQuery()->whereDate('created_at', now()->toDateString())->count(),
             'trend_7d' => $this->orderTrend($merchantIds, 7),
@@ -90,14 +98,11 @@ class DashboardService
             $query->where('payment_method', $paymentMethod);
         }
 
-        // 支付成功过的状态：paid 本身 + 支付成功后流转出的状态。
-        // refunded / partially_refunded / chargeback 虽然钱退了，但支付环节是成功的；
-        // disputing / dispute_review 同理——订单已经收到过款，只是眼下有网关拒付争议
-        // 或人工审核未决。
-        $paidStatuses = ['paid', 'shipped', 'completed', 'refunded', 'partially_refunded', 'chargeback', 'disputing', 'dispute_review'];
-
+        // 支付成功过的状态统一走 Order::scopePaidEver()，不在这里另抄一份清单——
+        // 原先这里硬编码的 8 个状态和卡片用的 where('status','paid') 各算各的，
+        // 同一块面板上"成功率说 7 笔成功、成交额只算 1 笔"。
         $terminalCount = (clone $query)->where('status', '!=', 'pending')->count();
-        $paidCount = (clone $query)->whereIn('status', $paidStatuses)->count();
+        $paidCount = (clone $query)->paidEver()->count();
 
         return [
             'success_rate' => $terminalCount > 0 ? round($paidCount / $terminalCount * 100, 1) : 0.0,
@@ -129,7 +134,11 @@ class DashboardService
      */
     private function scopedOrders(?array $merchantIds)
     {
-        $query = Order::query()->withoutGlobalScopes();
+        // 只摘 MerchantScope（统计范围改由 $merchantIds 显式表达），
+        // 保留 SoftDeletingScope——不带参的 withoutGlobalScopes() 会把软删除
+        // 一起摘掉，导致卡片算已删订单、而商户排行（显式 whereNull deleted_at）
+        // 不算，同一块面板上两个数字对不上。
+        $query = Order::query()->withoutGlobalScopes([MerchantScope::class]);
 
         if ($merchantIds !== null) {
             $query->whereIn('merchant_id', $merchantIds);
@@ -143,9 +152,18 @@ class DashboardService
      */
     private function orderTrend(?array $merchantIds, int $days): array
     {
+        // 金额线的口径要和卡片一致（凡支付成功过的都算）。这里没法直接用
+        // scopePaidEver()——那会把整行过滤掉，而趋势图的订单数要算全部订单，
+        // 只有金额这一列按状态条件求和，所以把同一份状态清单绑进 CASE WHEN。
+        $neverPaid = Order::NEVER_PAID_STATUSES;
+        $placeholders = implode(',', array_fill(0, count($neverPaid), '?'));
+
         $rows = $this->scopedOrders($merchantIds)
             ->where('created_at', '>=', now()->subDays($days - 1)->startOfDay())
-            ->selectRaw('DATE(created_at) as d, COUNT(*) as order_count, COALESCE(SUM(CASE WHEN status = "paid" THEN converted_amount ELSE 0 END), 0) as amount_usd')
+            ->selectRaw(
+                "DATE(created_at) as d, COUNT(*) as order_count, COALESCE(SUM(CASE WHEN status NOT IN ({$placeholders}) THEN converted_amount ELSE 0 END), 0) as amount_usd",
+                $neverPaid,
+            )
             ->groupBy('d')
             ->orderBy('d')
             ->get()
@@ -194,7 +212,7 @@ class DashboardService
      */
     private function paymentMethodBreakdown(?array $merchantIds): array
     {
-        $query = $this->scopedOrders($merchantIds)->where('status', 'paid');
+        $query = $this->scopedOrders($merchantIds)->paidEver();
         $total = (clone $query)->count();
 
         if ($total === 0) {

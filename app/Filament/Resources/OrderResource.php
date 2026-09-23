@@ -487,6 +487,10 @@ class OrderResource extends Resource
      * 基于当前筛选 + 搜索后的完整结果集（不受分页影响，见 getFilteredSortedTableQuery()）。
      * 用 toBase() 退化成普通 query builder 再做 groupBy 聚合——避免用 Eloquent 语义
      * 对聚合行（缺 id 等字段）做模型 hydration / 关联预加载。
+     *
+     * 总额是"本次筛选命中了什么"，天然包含待支付/失败/已过期这些从没收到过钱的
+     * 订单；另外单列一组"其中已支付"，口径与仪表盘的总成交额完全一致
+     * （Order::scopePaidEver()），这样两个页面的数字可以直接对上。
      */
     public static function currencyStats($livewire): \Illuminate\Support\Collection
     {
@@ -502,8 +506,32 @@ class OrderResource extends Resource
             ->reorder()
             ->groupBy('currency')
             ->orderBy('currency')
-            ->selectRaw('currency, COUNT(*) as orders_count, SUM(amount) as total_amount, SUM(converted_amount) as total_converted_amount')
+            ->selectRaw(...static::currencyStatsSelect())
             ->get();
+    }
+
+    /**
+     * 「本次查询统计」的聚合表达式 + 绑定。抽出来给观察者面板的同名统计共用——
+     * 两边渲染的是同一个 Blade（order-currency-stats），字段必须完全一致，
+     * 少一个就会在视图里取到 undefined property。
+     *
+     * @return array{0: string, 1: array<int, string>}
+     */
+    public static function currencyStatsSelect(): array
+    {
+        $neverPaid = Order::NEVER_PAID_STATUSES;
+        $placeholders = implode(',', array_fill(0, count($neverPaid), '?'));
+        $paidOnly = "CASE WHEN status NOT IN ({$placeholders}) THEN %s ELSE 0 END";
+
+        return [
+            'currency,'
+            .' COUNT(*) as orders_count,'
+            .' SUM(amount) as total_amount,'
+            .' SUM(converted_amount) as total_converted_amount,'
+            .' SUM('.sprintf($paidOnly, '1').') as paid_orders_count,'
+            .' SUM('.sprintf($paidOnly, 'converted_amount').') as paid_converted_amount',
+            [...$neverPaid, ...$neverPaid],
+        ];
     }
 
     public static function getPages(): array

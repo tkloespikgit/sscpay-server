@@ -362,6 +362,21 @@ class Order extends Model
     }
 
     /**
+     * 曾经支付成功过的订单 —— NEVER_PAID_STATUSES 的补集，也就是
+     * paid / shipped / completed / refunded / partially_refunded /
+     * chargeback / disputing / dispute_review。
+     *
+     * 凡是"这笔钱有没有收到过"的统计都必须走这个作用域，不要写
+     * where('status', 'paid')：那样订单一发货就从统计里消失，业务跑得越顺
+     * 成交额掉得越快（仪表盘原先就是这个缺陷）。已退款/已拒付同样计入——
+     * 口径是"支付环节成功过"，和风控累计额（PaymentService）一致。
+     */
+    public function scopePaidEver(Builder $query): Builder
+    {
+        return $query->whereNotIn('status', self::NEVER_PAID_STATUSES);
+    }
+
+    /**
      * 付款链接当前是否仍然可访问：订单状态为 pending，且未超过有效期。
      * expire_days 从 system_configs（payment_link.expire_days）读取。
      */

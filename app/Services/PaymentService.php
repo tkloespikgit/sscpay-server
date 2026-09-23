@@ -25,7 +25,8 @@ use Illuminate\Support\Facades\Cache;
  * 限额和均衡都以通道总量为准，见 dailyStatsForMethods()。
  *
  * 阈值判断的"当前累计值"以 orders 表实时查询为准（口径是全部"曾经支付成功过"
- * 的状态，见 Order::NEVER_PAID_STATUSES）
+ * 的状态，见 Order::NEVER_PAID_STATUSES），按首次支付时间 paid_at 归入日/月窗口；
+ * paid_at 为空的历史已成交订单暂按 created_at 归入窗口。
  * （2.4 节允许用 Redis 计数器加速，这里先给出 DB 查询版本作为权威实现；
  * 如果后续要接入 Redis 计数器，替换 dailyStatsForMethods()/monthlyAmountForMethod()
  * 内部实现即可，对外接口不变）。
@@ -210,7 +211,7 @@ class PaymentService
     }
 
     /**
-     * 批量取各支付方式当天（组时区）已成交统计。
+     * 批量取各支付方式当天（系统时区）已成交统计。
      * 统计口径是"这条支付方式（payment_methods.id）本身"的总量，不按商户拆分、
      * 也不区分支付组：日/月限额保护的是通道本身，一条系统级支付方式分配给多个
      * 商户使用时，各商户的成交要合在一起算，否则限额实际变成"每个商户各一份"。
@@ -220,6 +221,7 @@ class PaymentService
      * 口径是"曾经支付成功过"的全部状态（Order::NEVER_PAID_STATUSES 的补集），
      * 不是只数 status = 'paid'：订单一录物流就变成 shipped，退款/拒付/争议还会
      * 变成别的状态，这些钱都已经过了通道，必须计入当天/当月累计值。
+     * 窗口按 paid_at 计算；历史订单没有 paid_at 时才退回 created_at。
      *
      * @param  int[]  $methodIds
      * @return array<int, array{amount: float, count: int}> 以 payment_methods.id 为键
@@ -234,7 +236,12 @@ class PaymentService
             ->withoutGlobalScopes()
             ->whereIn('payment_method_id', $methodIds)
             ->whereNotIn('status', Order::NEVER_PAID_STATUSES)
-            ->whereBetween('created_at', [$start, $end])
+            ->where(function ($query) use ($start, $end) {
+                $query->whereBetween('paid_at', [$start, $end])
+                    // paid_at 上线前的历史已成交订单没有支付时间，保留旧口径兜底。
+                    ->orWhere(fn ($legacy) => $legacy->whereNull('paid_at')
+                        ->whereBetween('created_at', [$start, $end]));
+            })
             ->selectRaw('payment_method_id, COALESCE(SUM(converted_amount), 0) as total_amount, COUNT(*) as total_count')
             ->groupBy('payment_method_id')
             ->get();
@@ -257,7 +264,11 @@ class PaymentService
             ->withoutGlobalScopes()
             ->where('payment_method_id', $method->id)
             ->whereNotIn('status', Order::NEVER_PAID_STATUSES)
-            ->whereBetween('created_at', [$start, $end])
+            ->where(function ($query) use ($start, $end) {
+                $query->whereBetween('paid_at', [$start, $end])
+                    ->orWhere(fn ($legacy) => $legacy->whereNull('paid_at')
+                        ->whereBetween('created_at', [$start, $end]));
+            })
             ->sum('converted_amount');
 
         return (float) $result;

@@ -8,6 +8,7 @@ use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\TelegramNotificationService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -271,12 +272,15 @@ class OrderPaymentStatusService
             $locked->status = $targetStatus;
 
             // 支付成功时间：首次进入"已收款状态族"时落一次快照，之后永不覆盖。
-            // 用状态族而不是只判断 targetStatus === 'paid'，是因为网关可能直接
+            // 用所有已收款状态而不是只判断 targetStatus === 'paid'，因为网关可能直接
             // 推送 paid 之后的状态（如争议/退款），这些状态同样意味着钱已经收到过。
             // 争议胜诉回退到 paid（BalanceService::releaseForDisputeEvent）不会走到这里，
             // 即便走到，empty() 判断也保证不会把首次支付时间改写成回退时间。
-            if (empty($locked->paid_at) && in_array($targetStatus, self::PAID_FAMILY_STATUSES, true)) {
-                $locked->paid_at = now();
+            if (empty($locked->paid_at) && ! in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
+                // 插件的 paid_at 是 UTC；优先采用真实支付时间，旧插件未提供时用接收时间。
+                $locked->paid_at = filled($payload['paid_at'] ?? null)
+                    ? Carbon::parse($payload['paid_at'], 'UTC')->setTimezone(config('app.timezone'))
+                    : now();
             }
 
             if (empty($locked->wp_order_id) && !empty($payload['wp_order_id'])) {

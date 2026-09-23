@@ -12,6 +12,14 @@
                 {{ __('admin.order.stats.total_amount') }} <span class="font-semibold">{{ number_format((float) $row->total_amount, 2) }} {{ $row->currency }}</span>
                 &nbsp;·&nbsp;
                 {{ __('admin.order.stats.total_amount_usd') }} <span class="font-semibold">${{ number_format((float) $row->total_converted_amount, 2) }}</span>
+                &nbsp;·&nbsp;
+                {{-- 与仪表盘「总成交额」同口径（Order::scopePaidEver()），两处数字可直接对账 --}}
+                <span class="text-gray-500 dark:text-gray-400">
+                    {{ __('admin.order.stats.paid_subtotal') }}
+                    <span class="font-semibold">{{ (int) $row->paid_orders_count }}</span>
+                    {{ __('admin.order.stats.orders') }}
+                    / <span class="font-semibold">${{ number_format((float) $row->paid_converted_amount, 2) }}</span>
+                </span>
             </p>
         @empty
             <p class="text-gray-500 dark:text-gray-400">{{ __('admin.order.stats.empty') }}</p>
@@ -24,6 +32,13 @@
                 {{ __('admin.order.stats.orders') }}
                 ·
                 <span class="font-semibold">${{ number_format((float) $stats->sum('total_converted_amount'), 2) }}</span>
+                ·
+                <span class="text-gray-500 dark:text-gray-400">
+                    {{ __('admin.order.stats.paid_subtotal') }}
+                    <span class="font-semibold">{{ (int) $stats->sum('paid_orders_count') }}</span>
+                    {{ __('admin.order.stats.orders') }}
+                    / <span class="font-semibold">${{ number_format((float) $stats->sum('paid_converted_amount'), 2) }}</span>
+                </span>
             </p>
         @endif
     </div>

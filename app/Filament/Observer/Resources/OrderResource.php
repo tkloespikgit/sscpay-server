@@ -3,6 +3,7 @@
 namespace App\Filament\Observer\Resources;
 
 use App\Filament\Observer\Resources\OrderResource\Pages;
+use App\Filament\Resources\OrderResource as AdminOrderResource;
 use App\Models\Observer;
 use App\Models\Order;
 use App\Models\PaymentMethod;
@@ -209,15 +210,18 @@ class OrderResource extends Resource
 
         $observer = static::currentObserver();
 
+        // 聚合表达式直接复用管理端那份（AdminOrderResource::currencyStatsSelect()）：
+        // 两边渲染同一个 Blade，字段少一个视图里就会取到 undefined property。
         return $query->toBase()
             ->reorder()
             ->groupBy('currency')
             ->orderBy('currency')
-            ->selectRaw('currency, COUNT(*) as orders_count, SUM(amount) as total_amount, SUM(converted_amount) as total_converted_amount')
+            ->selectRaw(...AdminOrderResource::currencyStatsSelect())
             ->get()
             ->each(function ($row) use ($observer) {
                 $row->total_amount = $observer?->scaleAmount($row->total_amount) ?? $row->total_amount;
                 $row->total_converted_amount = $observer?->scaleAmount($row->total_converted_amount) ?? $row->total_converted_amount;
+                $row->paid_converted_amount = $observer?->scaleAmount($row->paid_converted_amount) ?? $row->paid_converted_amount;
             });
     }
 

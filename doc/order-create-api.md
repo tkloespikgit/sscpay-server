@@ -145,7 +145,7 @@ $response = curl_exec($ch);
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `merchant_order_no` | string ≤64 | ✅ | 商户自己的订单号。与商户账号组合唯一，重复提交会幂等返回已存在的订单，**不会**重复创建 |
+| `merchant_order_no` | string ≤64 | ✅ | 商户自己的订单号。与商户账号组合唯一；重复提交仅在币种和应付金额一致时返回已有订单 |
 | `platform` | string ≤50 | ✅ | 电商网站平台类型枚举，如 `wordpress` / `shopyy` / `shopline` / `invoice` / `opencart`，合法值列表由系统配置 `order.platforms`（JSON 数组）动态维护，不在列表内直接拒单 |
 | `currency` | string(3) | ✅ | 下单币种，如 `EUR`/`JPY`/`GBP`，必须在系统配置的支持币种列表内 |
 | `group_key` | string ≤50 | ✅ | 支付方式组标识，在系统后台"支付组"配置。即使传了 `payment_method_key` 也仍然必填（用于校验归属并记录到订单上） |
@@ -277,13 +277,15 @@ $response = curl_exec($ch);
 | 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | 指定的 `payment_method_key` 在该商户名下不存在，或对应的支付方式已停用（不会创建订单） |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | 指定 `payment_method_key` 时，`notify_url`/`return_url`/`cancel_url` 缺失，或其域名与该渠道绑定的电商网站域名不一致（不会创建订单） |
 | 409 | `NO_AVAILABLE_PAYMENT_METHOD` | `group_key` 下所有支付方式都被风控阈值拦截，或该支付组不存在/未启用（仅在**未**指定 `payment_method_key` 时出现） |
+| 409 | `ORDER_DETAILS_CONFLICT` | 同一 `merchant_order_no` 已有订单，但本次 `currency` 或 `amount` 不一致；不会调用远端支付接口 |
 
 ---
 
 ## 幂等性
 
 用 `merchant_order_no` 做幂等键（与商户账号组合唯一）。同一个 `merchant_order_no` 重复提交：
-- 如果对应订单**已存在**，直接原样返回该订单的信息（`data` 里的内容和首次创建时一致），**不会**重复创建、也**不会**重新计算汇率或重新走风控。
+- 如果对应订单**已存在**且币种、应付金额一致，返回原订单与支付链接；远端支付单尚未创建成功时会尝试补建。不会创建新的本地订单，也不会重新计算汇率或重新走风控。
+- 如果币种或应付金额不同，返回 `409 ORDER_DETAILS_CONFLICT`，不修改原订单，也不调用远端支付接口。
 - 建议商户端网络超时重试时，使用**同一个** `merchant_order_no` 重新发起请求，而不是生成新的订单号——这正是幂等设计的意义所在，可以放心重试不用担心重复扣款/重复发货。
 
 ---

@@ -213,6 +213,10 @@ class PaymentGatewayService
      */
     private function request(string $path, array $json): array
     {
+        Log::debug('支付网关请求数据', [
+            'path' => $path,
+            'request_body' => $json
+        ]);
         $baseUrl = rtrim((string) ($this->baseUrlOverride ?? $this->config['base_url'] ?? ''), '/');
         if ($baseUrl === '') {
             throw new PaymentGatewayException('未配置支付网关站点地址（payment_gateway.base_url 或 withConnection 传入）', -1);

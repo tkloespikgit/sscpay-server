@@ -597,6 +597,7 @@ return [
             'orders_count' => 'orders',
             'total_amount' => 'total',
             'total_amount_usd' => 'total (USD)',
+            'paid_subtotal' => 'of which paid',
             'grand_total' => 'Grand total',
             'orders' => 'orders',
             'empty' => 'No data',

@@ -593,6 +593,7 @@ return [
             'orders_count' => '订单数',
             'total_amount' => '原始金额合计',
             'total_amount_usd' => '折算 USD',
+            'paid_subtotal' => '其中已支付',
             'grand_total' => '合计',
             'orders' => '单',
             'empty' => '暂无数据',

@@ -191,7 +191,7 @@ POST {BASE_URL}/api/order/create
 
 | 字段 | 类型 | 必填 | 说明                                                                                         |
 |---|---|---|--------------------------------------------------------------------------------------------|
-| `merchant_order_no` | string ≤64 | ✅ | 商户自己的订单号，是**幂等键**（与商户账号组合唯一）。重复提交原样返回已存在的订单，不会重复创建、不会重新算汇率或重新走风控                           |
+| `merchant_order_no` | string ≤64 | ✅ | 商户自己的订单号，是**幂等键**（与商户账号组合唯一）。币种和应付金额一致时重复提交返回旧订单，否则返回冲突错误 |
 | `platform` | string ≤50 | ✅ | 电商网站平台类型枚举，合法值列表由系统配置 `order.platforms` 动态维护，不在列表内直接拒单                                     |
 | `currency` | string(3) | ✅ | 下单币种（如 `EUR`/`JPY`/`GBP`），须在系统支持的币种列表内                                                     |
 | `group_key` | string ≤50 | ✅ | 支付方式组标识（系统后台"支付组"配置）。即使传了 `payment_method_key` 也仍然必填                                       |
@@ -256,7 +256,7 @@ POST {BASE_URL}/api/order/create
 
 ### 幂等性
 
-`merchant_order_no` 是幂等键。同一 `merchant_order_no` 重复提交：若订单已存在，直接原样返回该订单信息，不重复创建、不重新计算汇率、不重新走风控。**超时重试时应复用同一个 `merchant_order_no`**（但要重新生成 `Timestamp`/`X-Nonce`/`sign`）。
+`merchant_order_no` 是幂等键。同一 `merchant_order_no` 重复提交：币种和应付金额一致时返回原订单与支付链接；若远端支付单尚未建成，会尝试补建。币种或应付金额不一致时返回 `409 ORDER_DETAILS_CONFLICT`，不修改原订单，也不请求远端。**超时重试时应复用同一个 `merchant_order_no`**（但要重新生成 `Timestamp`/`X-Nonce`/`sign`）。
 
 ---
 
@@ -564,6 +564,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | `/order/create` | 指定的 `payment_method_key` 不存在或已停用 |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | `/order/create` | 指定渠道时回跳地址缺失或域名不匹配 |
 | 409 | `NO_AVAILABLE_PAYMENT_METHOD` | `/order/create` | 支付组内所有渠道都被风控拦截，或支付组不存在/未启用 |
+| 409 | `ORDER_DETAILS_CONFLICT` | `/order/create` | 相同商户订单号的币种或应付金额与旧订单不一致 |
 | 404 | `ORDER_NOT_FOUND` | `/order/query`、`/order/ship` | 找不到对应订单 |
 | 422 | `INVALID_ORDER_STATUS` | `/order/ship` | 订单当前状态不允许录入物流 |
 
