@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Events\OrderStatusChanged;
+use App\Exceptions\BalanceOperationException;
 use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
@@ -45,13 +46,24 @@ use Illuminate\Support\Facades\Log;
  * 往回改——网关不应该把一笔已经到账的订单覆盖成没到账，出现这种数据大概率
  * 是乱序投递或插件侧异常，只记警告日志，不落库。
  *
- * 【明确不做的事】refunded / confused（拒付）两个状态不自动扣减商户余额——
- * 具体退多少/扣多少需要人工核实后再走 BalanceService::refund()/chargeback()
- * （这两个方法本身要求传入操作人和金额，语义上就是"人工审核后的资金动作"，
- * 直接信任一条 payload 自动扣商户钱风险较高）。收到这两个状态（连同
- * disputing 一起，业务方要求这三种状态待遇一致）时，只做：更新订单状态、
- * 重新拉一遍该订单的 /order-logs（让后台第一时间能看到最新上下文）、发 Telegram
- * 提醒人工介入，不触碰余额。
+ * 【refunded / confused（拒付）的资金处理】这两个状态意味着钱已经从商户那边
+ * 出去了，收到即**自动扣减商户余额**并补齐 order_refunds / 余额流水，
+ * 见 settleGatewayReversal()。
+ *
+ * 早先的版本刻意不自动扣款，要求人工核实后再走 BalanceService::refund()/chargeback()。
+ * 但那条人工路径实际上是堵死的：订单一旦被改成 refunded/chargeback，
+ * 这两个方法的状态校验和详情页按钮的 visible() 就全都不再放行，
+ * 结果是"状态显示已退款、钱还挂在商户余额上、且没有任何界面能把账平掉"，
+ * 线上已经因此产生了一批余额虚高的订单。现在改为自动入账，三道防线兜住风险：
+ * webhook 的 HMAC 签名校验、shouldApply() 的终态守卫（挡重复投递）、
+ * 余额流水的唯一幂等键（挡重复扣款）。
+ *
+ * 自动入账失败（如已部分退款的订单又收到拒付）时退回原先的行为：只改状态 +
+ * Telegram 提醒，人工从订单详情页的退款/拒付按钮补录（那两个按钮现在对
+ * "已标记但未入账"的订单可见）。
+ *
+ * disputing 不在此列：争议中资金仍在商户账上，结果未定，只做状态更新 +
+ * 重新拉 /order-logs + Telegram 提醒。
  */
 class OrderPaymentStatusService
 {
@@ -78,9 +90,16 @@ class OrderPaymentStatusService
 
     /**
      * 收到这些状态时：更新状态 + 立即重新拉一遍该订单的 /order-logs +（交给
-     * OrderStatusChanged 事件的 Telegram 监听器）提醒人工处理，不自动动余额。
+     * OrderStatusChanged 事件的 Telegram 监听器）提醒人工处理。
      */
     private const ALERT_STATUSES = ['disputing', 'confused', 'refunded'];
+
+    /**
+     * 资金反向流动的状态（钱已经从商户那边出去了）：收到即自动入账扣减商户余额，
+     * 见 settleGatewayReversal()。disputing 不在列内——争议中资金仍在商户账上，
+     * 结果未定，要等网关判下来推 refunded/confused 或回到 paid。
+     */
+    private const REVERSAL_STATUSES = ['refunded', 'chargeback'];
 
     public function __construct(
         private readonly OrderEventSyncService $eventSync,
@@ -283,6 +302,13 @@ class OrderPaymentStatusService
                     : now();
             }
 
+            // 支付失败时间：口径与 paid_at 对称，只落首次。订单每日统计的
+            // 「失败」指标按这个时间归日——用 created_at 的话，下单后好几天才
+            // 被判失败的订单会落进早已统计封存的那一天（见迁移注释）。
+            if (empty($locked->failed_at) && $targetStatus === 'failed') {
+                $locked->failed_at = now();
+            }
+
             if (empty($locked->wp_order_id) && !empty($payload['wp_order_id'])) {
                 $locked->wp_order_id = (int) $payload['wp_order_id'];
             }
@@ -319,6 +345,15 @@ class OrderPaymentStatusService
             $this->adConversionService->dispatchInitial($order);
         }
 
+        // 网关侧的退款/拒付要把钱从商户余额里真正扣掉。刻意放在上面那个事务**之外**：
+        //   1. BalanceService::mutate() 先锁商户行再锁订单行，而本方法的事务是先锁
+        //      订单行，嵌进去就是相反的加锁顺序，撞上并发的人工退款会死锁；
+        //   2. 放外面的话，入账失败不会把已经正确落库的订单状态一起回滚，可以干净地
+        //      退回"只改状态 + 告警人工处理"这个兜底行为。
+        if (in_array($targetStatus, self::REVERSAL_STATUSES, true)) {
+            $this->settleGatewayReversal($order, $targetStatus, $payload);
+        }
+
         if (in_array($targetStatus, self::ALERT_STATUSES, true)) {
             $this->eventSync->syncOrderNow($order);
         }
@@ -326,6 +361,96 @@ class OrderPaymentStatusService
         event(new OrderStatusChanged($order, $oldStatus, $targetStatus));
 
         return $oldStatus;
+    }
+
+    /**
+     * 网关退款/拒付的自动入账。
+     *
+     * 金额一律取本地账面的剩余未退金额（amount - refunded_amount），不取 payload
+     * 里的 amount——按文档第二节那个字段是订单金额而不是退款金额，而且扣款金额
+     * 用自己的账面数比信任外部字段安全。payload 金额与订单金额对不上时照常入账，
+     * 另发一条告警：这种不一致本身就值得人看一眼。
+     *
+     * 业务性失败（典型：已部分退款的订单又收到拒付，chargeback() 会拒绝）必须
+     * 捕获——webhook 控制器不捕获异常，冒上去会变成 5xx 触发插件退避重试 5 次，
+     * 而这类失败重试多少次都不会成功，只会刷日志后永久卡住。这里退回原先的
+     * "只改状态 + 提醒人工处理"，人工入口见订单详情页的退款/拒付按钮。
+     * 基础设施异常（数据库挂了）不在捕获范围内，照旧冒出去让插件重试。
+     */
+    private function settleGatewayReversal(Order $order, string $targetStatus, array $payload): void
+    {
+        $this->alertIfPayloadAmountMismatches($order, $payload);
+
+        try {
+            if ($targetStatus === 'refunded') {
+                $remaining = bcsub((string) $order->amount, (string) $order->refunded_amount, 2);
+
+                // 人工已经先退平了（先部分退款、网关随后推全额退款的情况），没有要补的
+                if (bccomp($remaining, '0', 2) <= 0) {
+                    return;
+                }
+
+                $this->balanceService->refund(
+                    $order,
+                    $remaining,
+                    null,
+                    __('admin.finance.refund.gateway_auto_reason'),
+                    "gateway_refund:{$order->id}",
+                );
+            } else {
+                $this->balanceService->chargeback(
+                    $order,
+                    null,
+                    __('admin.finance.chargeback.gateway_auto_reason'),
+                    "gateway_chargeback:{$order->id}",
+                );
+            }
+
+            $order->refresh();
+        } catch (BalanceOperationException $e) {
+            Log::warning('payment_status webhook: 网关退款/拒付自动入账失败，已回退为人工处理', [
+                'order_no' => $order->order_no,
+                'merchant_id' => $order->merchant_id,
+                'target_status' => $targetStatus,
+                'error' => $e->getMessage(),
+            ]);
+
+            $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_settle_failed', [
+                'order_no' => $order->order_no,
+                'status' => __('admin.order.statuses.'.$targetStatus),
+                'error' => $e->getMessage(),
+            ]));
+        }
+    }
+
+    /**
+     * payload 带的金额与订单金额不一致时告警。只提醒，不阻断入账——网关是资金
+     * 事实的权威方，但金额对不上说明两边有一方的数据不对，需要人工核实。
+     */
+    private function alertIfPayloadAmountMismatches(Order $order, array $payload): void
+    {
+        $payloadAmount = $payload['amount'] ?? null;
+
+        if (blank($payloadAmount) || ! is_numeric($payloadAmount)) {
+            return;
+        }
+
+        if (bccomp((string) $payloadAmount, (string) $order->amount, 2) === 0) {
+            return;
+        }
+
+        Log::warning('payment_status webhook: 网关回传金额与订单金额不一致', [
+            'order_no' => $order->order_no,
+            'payload_amount' => (string) $payloadAmount,
+            'order_amount' => (string) $order->amount,
+        ]);
+
+        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_amount_mismatch', [
+            'order_no' => $order->order_no,
+            'gateway_amount' => (string) $payloadAmount,
+            'order_amount' => (string) $order->amount,
+            'currency' => strtoupper((string) $order->currency),
+        ]));
     }
 
     /**

@@ -479,6 +479,8 @@ return [
             'shipping_shipped' => '已发货',
             'shipping_unshipped' => '未发货',
             'sync_status' => '物流同步状态',
+            'settlement_status' => '入账状态',
+            'settlement_pending' => '待入账（已标记退款/拒付但未扣款）',
             'customer_email' => '客户邮箱',
             'customer_email_placeholder' => '支持模糊搜索',
             'order_no' => '系统订单号',
@@ -740,6 +742,41 @@ return [
             'content' => '内容',
             'images' => '图片',
             'created_at' => '回复时间',
+        ],
+    ],
+
+    'order_stats' => [
+        'nav_label' => '订单统计',
+        'title' => '订单统计',
+        'empty' => '所选周期内没有数据',
+        'unknown_dimension' => '未知（渠道已删除）',
+        'orders_count' => ':count 笔',
+        'amount_order_hint' => '每格为「金额 / 笔数」，金额统一折算 USD。',
+        'timezone_notice' => '统计按系统时区（UTC+8）划分日期，与后台时间显示所用的商户时区可能相差一天。',
+        'missing_days' => '⚠️ 所选周期内有 :count 天没有统计记录（:dates），数字可能偏小',
+        'periods' => [
+            'today' => '当天',
+            'yesterday' => '昨天',
+            'this_month' => '当月',
+            'last_month' => '上一月',
+        ],
+        'filters' => [
+            'period' => '统计周期',
+            'merchant' => '商户',
+            'application' => '应用',
+            'payment_method' => '支付方式',
+            'dimension' => '明细分组维度',
+            'all' => '全部',
+        ],
+        'metrics' => [
+            'paid' => '支付成功',
+            'failed' => '支付失败',
+            'refunded' => '退款',
+            'chargeback' => '拒付',
+        ],
+        'charts' => [
+            'trend' => '成交额趋势（按日）',
+            'breakdown' => '按:dimension 分解',
         ],
     ],
 
@@ -1063,6 +1100,8 @@ return [
         'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统未自动扣减商户余额，请人工核实后处理资损；已拉取最新订单日志，可在后台订单详情查看",
         'order_dispute_due_soon' => "⏰ 争议审核事件即将到期\n\n订单号：:order_no\n事件编号：:event_no\n到期时间：:due_at\n请尽快处理，逾期将自动结束并释放冻结资金。",
         'dispute_review_gateway_status_ignored' => "🔔 网关状态更新（争议审核期间）\n\n订单号：:order_no\n网关侧最新状态：:status\n该订单当前处于人工争议审核中，系统未自动处理此次状态更新。请核实网关侧的实际结果，并视情况手动关闭审核事件以释放冻结资金。",
+        'gateway_reversal_settle_failed' => "⚠️ 网关退款/拒付自动入账失败\n\n订单号：:order_no\n网关状态：:status\n失败原因：:error\n\n订单状态已更新，但款项**尚未**从商户余额扣除。请在后台订单详情页手动执行退款/拒付补录。",
+        'gateway_reversal_amount_mismatch' => "⚠️ 网关回传金额与订单金额不一致\n\n订单号：:order_no\n网关金额：:gateway_amount :currency\n订单金额：:order_amount :currency\n\n已按订单金额入账，请核实两边数据。",
         'payment_method_forbidden' => "🚫 支付通道已自动禁用\n\n通道：:method_name（:method_code）\n触发订单：:order_no\n该通道对应的三方账号已无法下单支付，系统已自动禁用此通道，请核实账号状态，如有需要请切换其他通道。",
         'no_available_payment_method' => "⚠️ 下单失败：没有可用的支付通道\n\n支付组：:group_name（:group_key）\n订单金额：约 \$:amount\n原因：:reason\n这笔订单没有建单成功，请尽快核实支付组配置（是否启用了支付方式、风控阈值是否设置过低）。",
         'no_available_payment_method_reasons' => [
@@ -1100,12 +1139,17 @@ return [
             'reason' => '退款理由',
             'desc' => '剩余可退：:remaining :currency ｜ 退款手续费：$:fee（USD，将一并从余额扣除）',
             'success' => '退款已完成，余额已扣减。',
+            // 补录场景：订单已被网关标记为已退款，但款项还挂在商户余额上
+            'settle_notice' => '⚠️ 该订单已被网关标记为已退款，但款项尚未从商户余额扣除。此操作是补录扣款，不会再向客户退一次钱。',
+            'gateway_auto_reason' => '网关退款自动入账',
         ],
         'chargeback' => [
             'action' => '拒付',
             'reason' => '拒付理由',
             'desc' => '拒付为全额：$:amount（USD）+ 拒付手续费 $:fee（USD），将从余额扣除，且订单将标记为已拒付。',
             'success' => '已登记拒付，余额已扣减。',
+            'settle_notice' => '⚠️ 该订单已被网关标记为已拒付，但款项尚未从商户余额扣除。此操作是补录扣款。',
+            'gateway_auto_reason' => '网关拒付自动入账',
         ],
         'withdrawal' => [
             'model_label' => '提现',

@@ -305,6 +305,10 @@ class ViewOrder extends ViewRecord
 
                 $order->forceFill([
                     'status' => $target,
+                    // 口径与 OrderPaymentStatusService 一致：失败时间只落首次。
+                    // 订单每日统计的「失败」指标按它归日，人工改成 failed 的订单
+                    // 不盖时间戳的话会落回下单那天（见 add_failed_at 迁移注释）。
+                    'failed_at' => $target === 'failed' ? ($order->failed_at ?? now()) : $order->failed_at,
                     'remark' => trim(($order->remark ? $order->remark."\n" : '').$note),
                 ])->save();
 
@@ -499,15 +503,17 @@ class ViewOrder extends ViewRecord
             ->label(__('admin.finance.refund.action'))
             ->icon('heroicon-o-arrow-uturn-left')
             ->color('danger')
+            // status=refunded 也放行：那是网关标记了退款但钱还没扣的历史订单，
+            // 必须还能补录把账扣平（放行条件与 BalanceService::assertRefundable() 一致）。
             ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_REFUND)
-                && in_array($record->status, ['paid', 'shipped', 'completed', 'partially_refunded'], true)
+                && in_array($record->status, ['paid', 'shipped', 'completed', 'partially_refunded', 'refunded'], true)
                 && bccomp((string) $record->refundableAmount(), '0', 2) > 0)
             ->modalHeading(__('admin.finance.refund.action'))
             ->modalDescription(fn ($record) => __('admin.finance.refund.desc', [
                 'remaining' => number_format((float) $record->refundableAmount(), 2),
                 'currency' => $record->currency,
                 'fee' => number_format((float) ($record->paymentMethodConfig()->refund_fee ?? 0), 2),
-            ]))
+            ]).($record->status === 'refunded' ? "\n\n".__('admin.finance.refund.settle_notice') : ''))
             ->schema(fn ($record) => [
                 TextInput::make('amount')
                     ->label(__('admin.finance.refund.amount'))
@@ -546,14 +552,17 @@ class ViewOrder extends ViewRecord
             ->icon('heroicon-o-exclamation-triangle')
             ->color('danger')
             ->requiresConfirmation()
+            // status=chargeback 且没落过拒付流水的也放行：网关标记了拒付但钱还没扣的
+            // 历史订单需要补录（放行条件与 BalanceService::assertChargebackable() 一致）。
             ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_CHARGEBACK)
-                && in_array($record->status, ['paid', 'shipped', 'completed'], true)
-                && bccomp((string) $record->refunded_amount, '0', 2) === 0)
+                && bccomp((string) $record->refunded_amount, '0', 2) === 0
+                && (in_array($record->status, ['paid', 'shipped', 'completed'], true)
+                    || ($record->status === 'chargeback' && ! BalanceService::hasChargebackLedger($record))))
             ->modalHeading(__('admin.finance.chargeback.action'))
             ->modalDescription(fn ($record) => __('admin.finance.chargeback.desc', [
                 'amount' => number_format((float) $record->converted_amount, 2),
                 'fee' => number_format((float) ($record->paymentMethodConfig()->chargeback_fee ?? 0), 2),
-            ]))
+            ]).($record->status === 'chargeback' ? "\n\n".__('admin.finance.chargeback.settle_notice') : ''))
             ->schema([
                 Textarea::make('reason')->label(__('admin.finance.chargeback.reason'))->rows(2)->maxLength(500),
                 FinanceSecurity::codeField(),

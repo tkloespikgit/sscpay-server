@@ -129,6 +129,7 @@ class Order extends Model
         'transaction_id',
         'status',
         'paid_at',
+        'failed_at',
         'remark',
         'ad_params',
     ];
@@ -137,6 +138,7 @@ class Order extends Model
     {
         return [
             'paid_at' => 'datetime',
+            'failed_at' => 'datetime',
             'payment_link_sent_at' => 'datetime',
             'send_mail' => 'boolean',
             'wp_order_id' => 'integer',
@@ -219,6 +221,15 @@ class Order extends Model
     public function matchedItems(): HasMany
     {
         return $this->hasMany(OrderMatchedItem::class);
+    }
+
+    /**
+     * 本订单产生的余额流水（入账 / 退款本金与手续费 / 拒付本金与手续费）。
+     * 用于判断某笔资金动作是否已经真的扣过钱，见 scopePendingReversalSettlement()。
+     */
+    public function balanceTransactions(): HasMany
+    {
+        return $this->hasMany(MerchantBalanceTransaction::class);
     }
 
     /**
@@ -374,6 +385,33 @@ class Order extends Model
     public function scopePaidEver(Builder $query): Builder
     {
         return $query->whereNotIn('status', self::NEVER_PAID_STATUSES);
+    }
+
+    /**
+     * 「已标记退款/拒付但钱还没从商户余额扣掉」的订单。
+     *
+     * 这批数据的来源：早期版本收到网关的 refunded/confused 时只改订单状态、
+     * 不动余额，而人工补录的入口当时又被状态校验挡死（见
+     * OrderPaymentStatusService 类注释），于是订单卡在"显示已退款、钱还在"的
+     * 状态里。现在网关回调会自动入账，这个作用域用于捞出历史遗留的那一批，
+     * 供财务在订单列表按「待入账」筛出来逐单处理。
+     *
+     * 判定口径与 BalanceService 的补录放行条件严格对应：
+     *   - 退款：还有未退金额（refunded_amount < amount）
+     *   - 拒付：没有落过拒付本金流水
+     */
+    public function scopePendingReversalSettlement(Builder $query): Builder
+    {
+        return $query->where(function (Builder $q) {
+            $q->where(fn (Builder $refunded) => $refunded
+                ->where('status', 'refunded')
+                ->whereColumn('refunded_amount', '<', 'amount'))
+                ->orWhere(fn (Builder $chargeback) => $chargeback
+                    ->where('status', 'chargeback')
+                    ->whereDoesntHave('balanceTransactions', fn (Builder $t) => $t
+                        ->withoutGlobalScopes()
+                        ->where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)));
+        });
     }
 
     /**

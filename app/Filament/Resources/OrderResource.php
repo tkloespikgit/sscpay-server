@@ -287,6 +287,19 @@ class OrderResource extends Resource
                             ->when(($data['value'] ?? null) === 'unshipped', fn ($q) => $q->doesntHave('shipping'));
                     }),
 
+                // 待入账：状态已是退款/拒付、但钱还没从商户余额扣掉的订单。
+                // 主要用来捞出历史遗留的那一批（网关回调早期只改状态不扣款，
+                // 见 Order::scopePendingReversalSettlement()），供财务逐单补录。
+                SelectFilter::make('pending_reversal_settlement')
+                    ->label(__('admin.order.filters.settlement_status'))
+                    ->options([
+                        'pending' => __('admin.order.filters.settlement_pending'),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        ($data['value'] ?? null) === 'pending',
+                        fn (Builder $q) => $q->pendingReversalSettlement()
+                    )),
+
                 // 物流同步状态：支持多选（比如同时勾选"待同步"+"同步失败"找出所有需要处理的记录）。
                 SelectFilter::make('sync_status')
                     ->label(__('admin.order.filters.sync_status'))
