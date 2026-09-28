@@ -10,6 +10,10 @@
  */
 return [
 
+    'auth' => [
+        'turnstile_failed' => 'Please complete the verification and try again.',
+    ],
+
     'nav' => [
         'platform' => 'Platform',
         'merchant_settings' => 'Merchant Settings',
@@ -431,6 +435,121 @@ return [
             'title' => 'Payment Methods',
             'priority' => 'Traffic Weight',
             'priority_help' => 'Higher value takes a larger share (e.g. 200 vs 100 splits orders roughly 2:1)',
+        ],
+    ],
+
+    'checkout_link' => [
+        'model_label' => 'Checkout Link',
+        'model_label_plural' => 'Checkout Links',
+        'sections' => [
+            'basic_info' => 'Basic Information',
+            'amount' => 'Amount & Currency',
+            'items' => 'Products (optional)',
+        ],
+        'fields' => [
+            'merchant' => 'Merchant',
+            'title' => 'Title',
+            'application' => 'Application',
+            'payment_group' => 'Payment Group',
+            'domain' => 'Custom Domain',
+            'logo' => 'Logo',
+            'google_maps_browser_key' => 'Google Maps browser key',
+            'supported_countries' => 'Supported countries',
+            'customer_notice' => 'Message to customers',
+            'currency' => 'Currency',
+            'amount_mode' => 'Amount Mode',
+            'fixed_amount' => 'Fixed Amount',
+            'min_amount' => 'Minimum Amount',
+            'max_amount' => 'Maximum Amount',
+            'shipping_fee' => 'Shipping Fee',
+            'tax' => 'Tax',
+            'discount' => 'Discount',
+            'is_active' => 'Enabled',
+            'product_name' => 'Product Name',
+            'product_image' => 'Product Image',
+            'product_sku' => 'SKU',
+            'product_url' => 'Product URL',
+            'unit_price' => 'Unit Price',
+            'quantity' => 'Quantity',
+        ],
+        'amount_modes' => [
+            'fixed' => 'Fixed amount',
+            'range' => 'Customer enters an amount within a range',
+        ],
+        'placeholders' => [
+            'platform_domain' => 'Use the platform domain',
+        ],
+        'help' => [
+            'title' => 'Shown at the top of the checkout page, e.g. "TV box - model 209343 checkout".',
+            'application' => 'Determines which application the resulting orders belong to, along with its email and ad-platform credentials.',
+            'payment_group' => 'Determines which payment channel collects the money. The system picks one channel inside this group at order time.',
+            'domain' => 'Only domains that are verified and have an active certificate appear here. Leave empty to use the platform domain.',
+            'logo' => 'Displayed at the top of the checkout page. PNG or SVG with a transparent background works best. Max 2 MB.',
+            'google_maps_browser_key' => 'Optional. Enter your own Google Maps JavaScript API key for address suggestions and restrict its HTTP referrers. Leave empty for country, state and city selectors.',
+            'supported_countries' => 'Only these countries will be available for shipping address and phone number. Leave empty to support all countries.',
+            'customer_notice' => 'Optional message shown above the checkout form. Plain text only; line breaks are preserved.',
+            'currency' => 'A checkout link collects in a single currency. Customers cannot switch currency on the page.',
+            'amount_mode' => 'If you add products, shipping or tax below, the amount must be fixed.',
+            'discount' => 'A positive number means money off.',
+            'is_active' => 'Disabling this immediately stops the link from accepting new orders. Existing orders are unaffected.',
+            'product_url' => 'Optional. Falls back to the checkout page address when empty.',
+            'items_section' => 'Products shown on the checkout page. Adding any product forces the amount to be fixed, and the total of all products plus shipping and tax minus the discount must equal that fixed amount.',
+        ],
+        'columns' => [
+            'url' => 'Link',
+            'amount' => 'Amount',
+            'orders_count' => 'Orders',
+        ],
+        'actions' => [
+            'add_item' => 'Add product',
+        ],
+        'notifications' => [
+            'url_copied' => 'Link copied',
+        ],
+        'errors' => [
+            'title' => 'Amounts do not add up',
+            'requires_fixed_amount' => 'You have configured products, shipping, tax or a discount, so the amount mode must be "Fixed amount". A customer-entered amount cannot be reconciled against itemised totals.',
+            'amount_mismatch' => 'Products plus shipping and tax minus the discount comes to :expected, but the fixed amount is :actual. Adjust one of them so the two match.',
+        ],
+    ],
+
+    'merchant_domain' => [
+        'model_label' => 'Custom Domain',
+        'model_label_plural' => 'Custom Domains',
+        'sections' => [
+            'basic_info' => 'Domain',
+            'dns_setup' => 'DNS Setup',
+        ],
+        'fields' => [
+            'merchant' => 'Merchant',
+            'host' => 'Domain',
+            'is_active' => 'Enabled',
+        ],
+        'help' => [
+            'host' => 'Use a subdomain such as checkout.example.com. Root domains cannot be pointed with a CNAME record, which this setup requires.',
+            'txt_record' => 'Step 1 — prove you own the domain. Add this TXT record to your DNS: name ":name", value ":value". Then click Verify.',
+            'dcv_record' => 'Step 2 — validate the certificate. Add the TXT record required by Cloudflare: name ":name", value ":value".',
+            'cname_record' => 'Step 3 — route traffic to us. Add a CNAME record pointing your domain at ":target". Keep the record DNS-only; do not enable a proxy (orange cloud) on it.',
+        ],
+        'columns' => [
+            'ownership' => 'Ownership Verified',
+            'certificate' => 'Certificate',
+            'synced_at' => 'Last Synced',
+        ],
+        'actions' => [
+            'verify' => 'Verify',
+        ],
+        'notifications' => [
+            'ready' => 'Domain is ready. You can now select it when creating a checkout link.',
+            'not_ready' => 'Domain is not ready yet',
+            'certificate_pending' => 'Ownership is verified. The certificate is still being issued — add the DCV record shown on the edit page, then check back in a few minutes.',
+        ],
+        'errors' => [
+            'use_subdomain' => 'Please use a subdomain such as checkout.example.com rather than a root domain.',
+            'invalid_host' => 'This does not look like a valid domain name.',
+            'dns_lookup_failed' => 'We could not query DNS for this domain. Check that the domain exists, then try again.',
+            'txt_not_found' => 'The verification TXT record was not found. DNS changes can take a few minutes to propagate — please wait and try again.',
+            'cloudflare_delete_failed' => 'The old domain could not be removed from Cloudflare. The change was cancelled. Please try again later.',
         ],
     ],
 

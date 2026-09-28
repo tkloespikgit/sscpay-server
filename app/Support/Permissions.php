@@ -26,6 +26,11 @@ final class Permissions
 
     public const REPLACE_KEYWORDS_MANAGE = 'replace_keywords.manage';
 
+    // 收款链接（商户自助创建可反复使用的收银链接）及其绑定的自有域名
+    public const CHECKOUT_LINKS_MANAGE = 'checkout_links.manage';
+
+    public const MERCHANT_DOMAINS_MANAGE = 'merchant_domains.manage';
+
     public const ORDERS_VIEW = 'orders.view';
 
     public const ORDERS_CREATE_MANUAL = 'orders.create_manual';
@@ -84,6 +89,8 @@ final class Permissions
             self::PAYMENT_METHODS_MANAGE,
             self::PAYMENT_GROUPS_MANAGE,
             self::REPLACE_KEYWORDS_MANAGE,
+            self::CHECKOUT_LINKS_MANAGE,
+            self::MERCHANT_DOMAINS_MANAGE,
             self::ORDERS_VIEW,
             self::ORDERS_CREATE_MANUAL,
             self::ORDERS_SHIP,

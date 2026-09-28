@@ -7,11 +7,12 @@ use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
-use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\OrderDetailsConflictException;
+use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Models\Application;
+use App\Models\CheckoutLink;
 use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
@@ -25,8 +26,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
- * 下单核心逻辑，API 下单（对外接口）和商户后台手工建单共用同一套流程，
- * 只是 $source 不同（api / manual）。是否发送付款链接邮件由调用方在拿到返回的
+ * 下单核心逻辑，API 下单（对外接口）、商户后台手工建单、收款链接落地页下单
+ * 共用同一套流程，只是 $source 不同（api / manual / checkout_link）。
+ * 是否发送付款链接邮件由调用方在拿到返回的
  * Order 后自行判断；API 首次建单和远端补单成功时可发送，本方法只负责把
  * "是否发送"的意图落库。
  *
@@ -114,7 +116,7 @@ class OrderCreationService
         if ($existing) {
             if ($existing->currency !== $data['currency']
                 || ! BigDecimal::of((string) $existing->amount)->isEqualTo((string) $data['amount'])) {
-                throw new OrderDetailsConflictException();
+                throw new OrderDetailsConflictException;
             }
 
             // 幂等命中：上次下单若在远程创建支付订单这一步失败过（订单已落库但没有
@@ -151,7 +153,14 @@ class OrderCreationService
         //    兼容裸域名与带路径写法）。三个回跳地址均必填（CreateOrderRequest 已强制），
         //    与 resolveDesignatedPaymentMethod() 对称：空值同样视为不匹配而拒单；
         //    应用未绑定 website 时 $boundDomain 为空串，任一回跳地址都会判为不一致而拒单。
-        if (! filled($data['payment_method_key'] ?? null)) {
+        //
+        //    收款链接（source='checkout_link'）跳过这一步：notify_url 固定为空，
+        //    return_url 和 cancel_url 由 CheckoutLinkOrderService 用链接绑定的商户域名
+        //    （或平台默认域名）现场生成，指向本系统自己的路由。拿它们去比对 applications.website
+        //    必然不一致——落地页本来就跑在商户自有域名上，而不是应用绑定的电商站点域名。
+        //    这一步防的是"商户把回跳地址指到任意第三方站点"，而收款链接的地址由
+        //    系统生成、商户改不了，风险本身不存在。
+        if (! filled($data['payment_method_key'] ?? null) && $source !== CheckoutLink::ORDER_SOURCE) {
             $boundDomain = (string) $application->website;
             foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
                 if (! $this->isSameHost($data[$field] ?? null, $boundDomain)) {
@@ -227,6 +236,8 @@ class OrderCreationService
                 'merchant_id' => $merchant->id,
                 'application_id' => $application->id,
                 'payment_group_id' => $group->id,
+                // 收款链接下单时由 CheckoutLinkOrderService 传入，其余来源为 null
+                'checkout_link_id' => $data['checkout_link_id'] ?? null,
                 'merchant_order_no' => $data['merchant_order_no'],
                 'source' => $source,
                 // 电商网站平台类型（API 下单必传；手工建单可选，没传就是 null）
@@ -542,7 +553,7 @@ class OrderCreationService
      */
     private function resolveAllowReturnedSource(Order $order, PaymentMethod $paymentMethod): string
     {
-        if ($order->platform === Order::PLATFORM_INVOICE) {
+        if ($order->platform === Order::PLATFORM_INVOICE || $order->platform == Order::PLATFORM_INVOICE) {
             return 'N';
         }
 

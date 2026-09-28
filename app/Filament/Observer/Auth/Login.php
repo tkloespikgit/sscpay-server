@@ -2,6 +2,7 @@
 
 namespace App\Filament\Observer\Auth;
 
+use App\Filament\Auth\Concerns\UsesLoginTurnstile;
 use App\Models\Observer;
 use Filament\Auth\Pages\Login as BaseLogin;
 use Filament\Forms\Components\TextInput;
@@ -14,6 +15,8 @@ use Illuminate\Validation\ValidationException;
  */
 class Login extends BaseLogin
 {
+    use UsesLoginTurnstile;
+
     protected function getEmailFormComponent(): Component
     {
         return TextInput::make('account')

@@ -8,6 +8,10 @@
  */
 return [
 
+    'auth' => [
+        'turnstile_failed' => '请完成人机验证后重试。',
+    ],
+
     'nav' => [
         'platform' => '平台管理',
         'merchant_settings' => '商户配置',
@@ -425,6 +429,121 @@ return [
             'title' => '支付方式',
             'priority' => '进单占比',
             'priority_help' => '数值越大分配占比越高，如 200 与 100 大约按 2:1 进单',
+        ],
+    ],
+
+    'checkout_link' => [
+        'model_label' => '收款链接',
+        'model_label_plural' => '收款链接',
+        'sections' => [
+            'basic_info' => '基本信息',
+            'amount' => '金额与币种',
+            'items' => '商品明细（可选）',
+        ],
+        'fields' => [
+            'merchant' => '所属商户',
+            'title' => '标题',
+            'application' => '应用',
+            'payment_group' => '支付组',
+            'domain' => '自有域名',
+            'logo' => 'Logo',
+            'google_maps_browser_key' => 'Google Maps 浏览器 Key',
+            'supported_countries' => '支持的国家',
+            'customer_notice' => '给客户的提示信息',
+            'currency' => '币种',
+            'amount_mode' => '金额模式',
+            'fixed_amount' => '固定金额',
+            'min_amount' => '金额下限',
+            'max_amount' => '金额上限',
+            'shipping_fee' => '运费',
+            'tax' => '税费',
+            'discount' => '折扣',
+            'is_active' => '启用',
+            'product_name' => '商品名称',
+            'product_image' => '商品图片',
+            'product_sku' => '商品编号',
+            'product_url' => '商品链接',
+            'unit_price' => '单价',
+            'quantity' => '数量',
+        ],
+        'amount_modes' => [
+            'fixed' => '固定金额',
+            'range' => '客户在区间内自行输入',
+        ],
+        'placeholders' => [
+            'platform_domain' => '使用平台默认域名',
+        ],
+        'help' => [
+            'title' => '显示在收款页顶部，例如 "TV box - model 209343 checkout"。',
+            'application' => '决定产生的订单归属于哪个应用，以及使用该应用的邮件与广告平台凭证。',
+            'payment_group' => '决定这笔钱走哪条通道收。系统会在下单时从这个组里自动锁定一个支付方式。',
+            'domain' => '只列出已验证归属且证书已生效的域名。留空则使用平台默认域名。',
+            'logo' => '显示在收款页顶部，建议用透明背景的 PNG 或 SVG，最大 2 MB。',
+            'google_maps_browser_key' => '可选。填写商户自己的 Google Maps JavaScript API Key，用于地址建议，并按 HTTP referrer 限制可用域名。留空则使用国家、省州、城市联动选择。',
+            'supported_countries' => '仅允许这些国家的收货地址和手机号。留空表示支持所有国家。',
+            'customer_notice' => '可选，显示在收款表单上方。仅支持纯文本，保留换行，最多 2000 字。',
+            'currency' => '一条收款链接只收一种币种，客户不能在页面上切换。',
+            'amount_mode' => '下方配置了商品、运费或税费时，金额模式必须是固定金额。',
+            'discount' => '填正数表示减免。',
+            'is_active' => '停用后链接立即无法再下单，已产生的订单不受影响。',
+            'product_url' => '可选，留空时自动用收款页地址兜底。',
+            'items_section' => '这些商品会以小票形式显示在收款页上。一旦添加商品，金额模式就必须是固定金额，且「商品合计 + 运费 + 税费 − 折扣」要与固定金额严格相等。',
+        ],
+        'columns' => [
+            'url' => '链接地址',
+            'amount' => '金额',
+            'orders_count' => '订单数',
+        ],
+        'actions' => [
+            'add_item' => '添加商品',
+        ],
+        'notifications' => [
+            'url_copied' => '链接已复制',
+        ],
+        'errors' => [
+            'title' => '金额对不上',
+            'requires_fixed_amount' => '已配置商品、运费、税费或折扣，金额模式必须选「固定金额」——客户自己输金额的话，商品明细的合计就无从核对。',
+            'amount_mismatch' => '商品合计加运费、税费、减折扣之后是 :expected，但固定金额填的是 :actual。请调整其中一边让两者相等。',
+        ],
+    ],
+
+    'merchant_domain' => [
+        'model_label' => '自有域名',
+        'model_label_plural' => '自有域名',
+        'sections' => [
+            'basic_info' => '域名',
+            'dns_setup' => 'DNS 配置',
+        ],
+        'fields' => [
+            'merchant' => '所属商户',
+            'host' => '域名',
+            'is_active' => '启用',
+        ],
+        'help' => [
+            'host' => '请使用子域名，如 checkout.example.com。根域名无法添加 CNAME 记录，而本方案的接入方式正是 CNAME。',
+            'txt_record' => '第一步——证明域名归你所有。在你的 DNS 里添加这条 TXT 记录：名称「:name」，值「:value」。添加完成后点「验证」。',
+            'dcv_record' => '第二步——验证证书。在 DNS 中添加 Cloudflare 要求的 TXT 记录：名称「:name」，值「:value」。',
+            'cname_record' => '第三步——把流量指过来。添加一条 CNAME 记录，指向「:target」。这条记录必须保持仅 DNS 解析，不要开启代理（橙云），否则证书签发会失败。',
+        ],
+        'columns' => [
+            'ownership' => '归属已验证',
+            'certificate' => '证书状态',
+            'synced_at' => '最近同步',
+        ],
+        'actions' => [
+            'verify' => '验证',
+        ],
+        'notifications' => [
+            'ready' => '域名已就绪，现在可以在创建收款链接时选用它了。',
+            'not_ready' => '域名还未就绪',
+            'certificate_pending' => '归属已验证通过，证书正在签发中——请把编辑页上显示的 DCV 记录加到 DNS，几分钟后再回来看。',
+        ],
+        'errors' => [
+            'use_subdomain' => '请使用子域名（如 checkout.example.com），而不是根域名。',
+            'invalid_host' => '这看起来不是一个合法的域名。',
+            'dns_lookup_failed' => '无法查询该域名的 DNS 记录，请确认域名存在后重试。',
+            'txt_not_found' => '没有找到验证用的 TXT 记录。DNS 变更通常需要几分钟才能生效，请稍后重试。',
+            'cloudflare_delete_failed' => '旧域名未能从 Cloudflare 清理，修改已取消。请稍后重试。',
         ],
     ],
 

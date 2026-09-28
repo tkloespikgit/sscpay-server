@@ -53,10 +53,11 @@ class SystemConfigSeeder extends Seeder
             ],
             [
                 'config_key' => 'order.platforms',
-                'config_value' => json_encode(['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart']),
+                // 保留 checkout_link 供已有订单筛选；新收款链接订单使用 invoice。
+                'config_value' => json_encode(['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart', 'checkout_link']),
                 'value_type' => 'json',
                 'group' => 'order',
-                'description' => '下单接口允许的电商网站平台类型枚举（JSON 数组），如 wordpress / shopyy / shopline / invoice / opencart',
+                'description' => '下单接口允许的电商网站平台类型枚举（JSON 数组），如 wordpress / shopyy / shopline / invoice / opencart / checkout_link',
             ],
             [
                 'config_key' => 'order_match.min_price_ratio',

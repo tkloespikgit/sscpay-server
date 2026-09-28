@@ -11,10 +11,12 @@
 */
 
 use App\Http\Middleware\ApiAuthentication;
+use App\Support\CloudflareIpRanges;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -23,11 +25,26 @@ return Application::configure(basePath: dirname(__DIR__))
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
+        // 收款链接落地页单独一个路由文件：它是对公网完全开放的页面，跑在商户
+        // 自己绑定的域名上，和后台/API 的访问模型都不一样，混在 web.php 里
+        // 容易让人误以为它受同样的约束。仍然套 'web' 中间件组——需要 session
+        // 与 CSRF 保护（表单提交要带 @csrf）。
+        then: function () {
+            Route::middleware('web')->group(base_path('routes/checkout.php'));
+        },
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
             'api.auth' => ApiAuthentication::class,
         ]);
+
+        // 收款链接的流量经 Cloudflare for SaaS 进来，源站看到的是 CF 边缘 IP。
+        // 只信任 CF 的网段（详见 CloudflareIpRanges 的类注释）——直连源站的
+        // 商户 API 与后台面板不在这个列表里，转发头会被忽略，不会被伪造。
+        //
+        // 这里用常量而不是 config()：本闭包执行在配置加载之前，调 config()
+        // 会抛 "Class config does not exist"。
+        $middleware->trustProxies(at: CloudflareIpRanges::all());
     })
     ->withExceptions(function (Exceptions $exceptions) {
         // routes/api.php 下的对外接口全部走 App-ID + 签名鉴权，没有"网页"这个概念，

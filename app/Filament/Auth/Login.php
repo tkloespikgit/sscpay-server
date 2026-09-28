@@ -2,6 +2,7 @@
 
 namespace App\Filament\Auth;
 
+use App\Filament\Auth\Concerns\UsesLoginTurnstile;
 use App\Models\User;
 use Filament\Auth\Pages\Login as BaseLogin;
 use Filament\Forms\Components\TextInput;
@@ -13,10 +14,13 @@ use Illuminate\Validation\ValidationException;
  * users.email 列，转换逻辑见 User::emailForAccount()（账号里带 @ 就原样当邮箱用，
  * 兼容历史上的真实邮箱账号，不会把老账号锁死）。
  *
- * 只覆写这三个方法，不碰 authenticate() 本身——MFA 二次验证流程完全复用父类实现。
+ * 账号转换仍由本类处理；Turnstile 验证由共享 trait 在登录前执行，MFA
+ * 二次验证流程继续复用父类实现。
  */
 class Login extends BaseLogin
 {
+    use UsesLoginTurnstile;
+
     protected function getEmailFormComponent(): Component
     {
         return TextInput::make('account')

@@ -29,7 +29,7 @@ class Order extends Model
      * 电商网站平台类型的兜底列表。正式枚举范围由系统配置 order.platforms
      * （JSON 数组，后台"系统配置"维护）动态决定，仅在配置缺失时退回这里。
      */
-    public const PLATFORMS_FALLBACK = ['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart'];
+    public const PLATFORMS_FALLBACK = ['wordpress', 'shopyy', 'shopline', 'invoice', 'opencart', 'checkout_link'];
 
     /**
      * platform=invoice（手工发票类订单）强制不允许返回源站，
@@ -72,6 +72,7 @@ class Order extends Model
         'merchant_id',
         'application_id',
         'payment_group_id',
+        'checkout_link_id',
         'order_no',
         'invoice_number',
         'subject',
@@ -198,6 +199,14 @@ class Order extends Model
     public function paymentGroup(): BelongsTo
     {
         return $this->belongsTo(PaymentGroup::class);
+    }
+
+    /**
+     * 产生该订单的收款链接（source='checkout_link' 时非空）。
+     */
+    public function checkoutLink(): BelongsTo
+    {
+        return $this->belongsTo(CheckoutLink::class);
     }
 
     /**
