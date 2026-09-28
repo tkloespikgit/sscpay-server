@@ -160,14 +160,15 @@ class OrderCreationService
         //    必然不一致——落地页本来就跑在商户自有域名上，而不是应用绑定的电商站点域名。
         //    这一步防的是"商户把回跳地址指到任意第三方站点"，而收款链接的地址由
         //    系统生成、商户改不了，风险本身不存在。
-        if (! filled($data['payment_method_key'] ?? null) && $source !== CheckoutLink::ORDER_SOURCE) {
+        //    手动修改，不再验证域名的权限，放开客户对接
+        /*if (! filled($data['payment_method_key'] ?? null) && $source !== CheckoutLink::ORDER_SOURCE) {
             $boundDomain = (string) $application->website;
             foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
                 if (! $this->isSameHost($data[$field] ?? null, $boundDomain)) {
                     throw new CallbackDomainNotAllowedException($field, (string) ($data[$field] ?? ''), $boundDomain);
                 }
             }
-        }
+        }*/
 
         // 5. 汇率 + 汇损快照
         $rate = ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
