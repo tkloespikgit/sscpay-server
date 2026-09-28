@@ -573,7 +573,11 @@ return [
         'help' => [
             'host' => 'Use a subdomain such as checkout.example.com. Root domains cannot be pointed with a CNAME record, which this setup requires.',
             'txt_record' => 'Step 1 — prove you own the domain. Add this TXT record to your DNS: name ":name", value ":value". Then click Verify.',
-            'dcv_record' => 'Step 2 — validate the certificate. Add the TXT record required by Cloudflare: name ":name", value ":value".',
+            'dcv_record' => 'Step 2 — validate the certificate. Add the :type record required by Cloudflare: name ":name", value ":value". Add all records shown, then click Verify / Refresh Certificate.',
+            'dcv_before_ownership' => 'Step 2 — validate the certificate. Complete the ownership check in step 1, then click Verify / Refresh Certificate to retrieve the validation records.',
+            'dcv_pending' => 'Step 2 — validate the certificate. Ownership is verified, but Cloudflare has not returned DNS validation records yet. Wait a little, then click Verify / Refresh Certificate. The step 1 record is not a certificate validation record.',
+            'dcv_active' => 'Step 2 — validate the certificate. The certificate is active. Continue with the CNAME setup in step 3.',
+            'dcv_error' => 'Last certificate sync error: :error',
             'cname_record' => 'Step 3 — route traffic to us. Add a CNAME record pointing your domain at ":target". Keep the record DNS-only; do not enable a proxy (orange cloud) on it.',
         ],
         'columns' => [
@@ -583,11 +587,13 @@ return [
         ],
         'actions' => [
             'verify' => 'Verify',
+            'verify_refresh' => 'Verify / Refresh Certificate',
         ],
         'notifications' => [
             'ready' => 'Domain is ready. You can now select it when creating a checkout link.',
             'not_ready' => 'Domain is not ready yet',
-            'certificate_pending' => 'Ownership is verified. The certificate is still being issued — add the DCV record shown on the edit page, then check back in a few minutes.',
+            'certificate_pending' => 'Ownership is verified, but the certificate is not active. Add all DCV records in step 2 on the edit page, then click Verify / Refresh Certificate to check progress.',
+            'enable_domain' => 'The certificate is active, but the domain is disabled. Enable it on the edit page and save.',
         ],
         'errors' => [
             'use_subdomain' => 'Please use a subdomain such as checkout.example.com rather than a root domain.',
@@ -595,6 +601,7 @@ return [
             'dns_lookup_failed' => 'We could not query DNS for this domain. Check that the domain exists, then try again.',
             'txt_not_found' => 'The verification TXT record was not found. DNS changes can take a few minutes to propagate — please wait and try again.',
             'cloudflare_delete_failed' => 'The old domain could not be removed from Cloudflare. The change was cancelled. Please try again later.',
+            'save_host_first' => 'The hostname has changed. Save it before verifying the new domain.',
         ],
     ],
 

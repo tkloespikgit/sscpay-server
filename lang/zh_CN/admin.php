@@ -567,7 +567,11 @@ return [
         'help' => [
             'host' => '请使用子域名，如 checkout.example.com。根域名无法添加 CNAME 记录，而本方案的接入方式正是 CNAME。',
             'txt_record' => '第一步——证明域名归你所有。在你的 DNS 里添加这条 TXT 记录：名称「:name」，值「:value」。添加完成后点「验证」。',
-            'dcv_record' => '第二步——验证证书。在 DNS 中添加 Cloudflare 要求的 TXT 记录：名称「:name」，值「:value」。',
+            'dcv_record' => '第二步——验证证书。在 DNS 中添加 Cloudflare 要求的 :type 记录：名称「:name」，值「:value」。如有多条记录，请全部添加，然后点击「验证 / 刷新证书信息」。',
+            'dcv_before_ownership' => '第二步——验证证书。请先完成第一步的域名归属验证，再点击「验证 / 刷新证书信息」获取证书验证记录。',
+            'dcv_pending' => '第二步——验证证书。归属已验证，Cloudflare 暂未返回可添加的 DNS 验证记录。请稍后点击「验证 / 刷新证书信息」重新获取；不要把第一步的记录当作证书验证记录。',
+            'dcv_active' => '第二步——验证证书。证书已生效，可继续完成第三步的 CNAME 配置。',
+            'dcv_error' => '最近一次证书同步错误：:error',
             'cname_record' => '第三步——把流量指过来。添加一条 CNAME 记录，指向「:target」。这条记录必须保持仅 DNS 解析，不要开启代理（橙云），否则证书签发会失败。',
         ],
         'columns' => [
@@ -577,11 +581,13 @@ return [
         ],
         'actions' => [
             'verify' => '验证',
+            'verify_refresh' => '验证 / 刷新证书信息',
         ],
         'notifications' => [
             'ready' => '域名已就绪，现在可以在创建收款链接时选用它了。',
             'not_ready' => '域名还未就绪',
-            'certificate_pending' => '归属已验证通过，证书正在签发中——请把编辑页上显示的 DCV 记录加到 DNS，几分钟后再回来看。',
+            'certificate_pending' => '归属已验证，证书尚未生效。请添加编辑页第二步列出的全部 DCV 记录，稍后点击「验证 / 刷新证书信息」检查进度。',
+            'enable_domain' => '证书已生效，但域名尚未启用。请在编辑页启用并保存。',
         ],
         'errors' => [
             'use_subdomain' => '请使用子域名（如 checkout.example.com），而不是根域名。',
@@ -589,6 +595,7 @@ return [
             'dns_lookup_failed' => '无法查询该域名的 DNS 记录，请确认域名存在后重试。',
             'txt_not_found' => '没有找到验证用的 TXT 记录。DNS 变更通常需要几分钟才能生效，请稍后重试。',
             'cloudflare_delete_failed' => '旧域名未能从 Cloudflare 清理，修改已取消。请稍后重试。',
+            'save_host_first' => '域名已修改，请先保存，再验证新域名。',
         ],
     ],
 

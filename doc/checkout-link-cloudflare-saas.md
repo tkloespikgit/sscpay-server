@@ -99,13 +99,23 @@ php artisan checkout:check-cloudflare-ips
 
 ## 3. 每接一个商户（商户自助，运维不参与）
 
-商户在后台「支付设置 → 自有域名」里完成，流程是两步 DNS + 一次点击：
+商户在后台「支付设置 → 自有域名」里完成：
 
 1. **录入域名**，如 `checkout.tvbox.com`。系统给出一条 TXT 记录。
 2. **加 TXT 记录**（证明域名归属），然后点「验证」。
-3. 系统验证归属通过后自动调 CF API 注册自定义主机名，CF 返回一条 **DCV 校验记录**，商户同样加到 DNS。
+3. 系统验证归属通过后自动调 CF API 注册自定义主机名。在编辑页第二步查看 **DCV 校验记录**，按显示的类型、名称和值添加全部记录；同一名称可能有不同的 TXT 值，不能只添加第一条。
 4. **加 CNAME 记录**：`checkout.tvbox.com` → `link.yourpay.com`。
-5. 等 CF 签发证书。证书状态由 `checkout:sync-domains`（每 15 分钟）自动轮询刷新，商户也可以手动再点一次「验证」立即刷新。
+5. 等 CF 签发证书。证书状态由 `checkout:sync-domains`（每 15 分钟）自动轮询刷新，也可以在编辑页点击 **验证 / 刷新证书信息** 立即查询；列表中的“验证”使用同一流程。
+
+### 第二步没有 DCV 记录时
+
+Cloudflare 创建自定义主机名的 POST 响应可能暂不包含 `ssl.validation_records`，需稍后 GET 查询详情。这是异步生成过程，详见 [Cloudflare 官方说明](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/domain-support/create-custom-hostnames/)。
+
+编辑页第二步始终显示：尚未验证归属时提示先完成第一步；归属通过但无记录时提示等待并刷新；有记录时显示完整 DNS 信息；证书生效后显示完成状态。已有证书状态及最近同步错误也会显示在第二步。
+
+归属通过后，稍等再点击 **验证 / 刷新证书信息**，系统会查询原 Cloudflare 主机名并在当前页面显示新记录，无需删除域名或重新创建。第一步的 `_sscpay-challenge` 记录只用于本系统的归属验证，不能代替证书 DCV 记录。若修改了域名，先保存再验证，以免查询旧域名。
+
+解析兼容 `ssl.txt_name/txt_value`、`ssl.validation_records` 中的 TXT 信息（含 `txt_record` 值字段），以及无 TXT 时的 CNAME 验证记录。TXT 存在时不同时要求添加同名的委派 CNAME，避免 DNS 冲突。Cloudflare 返回资源不存在时清除旧验证记录，防止继续展示失效 token。
 
 证书变成 `active` 之后，这个域名才会出现在「创建收款链接」的域名下拉里。
 

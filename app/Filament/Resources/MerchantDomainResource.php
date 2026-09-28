@@ -125,12 +125,10 @@ class MerchantDomainResource extends Resource
                         ])),
                     ];
 
-                    foreach ($record?->cf_dcv_records ?? [] as $dcv) {
-                        $components[] = Text::make(__('admin.merchant_domain.help.dcv_record', [
-                            'name' => $dcv['name'] ?? '',
-                            'value' => $dcv['value'] ?? '',
-                        ]));
-                    }
+                    // 必须始终显示第二步。CF 初次注册可能尚未生成记录，不能直接跳过。
+                    // 使用渲染期闭包，编辑页刷新记录后当次响应就显示新的 DCV 内容。
+                    $components[] = Text::make(fn (MerchantDomain $record) => static::certificateInstructions($record))
+                        ->extraAttributes(['class' => 'whitespace-pre-wrap break-all']);
 
                     $components[] = Text::make(fn () => __('admin.merchant_domain.help.cname_record', [
                         'target' => app(CloudflareSaasService::class)->fallbackOrigin() ?: '—',
@@ -175,35 +173,7 @@ class MerchantDomainResource extends Resource
                 Action::make('verify')
                     ->label(__('admin.merchant_domain.actions.verify'))
                     ->icon('heroicon-o-shield-check')
-                    ->action(function (MerchantDomain $record) {
-                        $ready = app(MerchantDomainService::class)->verify($record);
-                        $record->refresh();
-
-                        if ($ready) {
-                            Notification::make()
-                                ->success()
-                                ->title(__('admin.merchant_domain.notifications.ready'))
-                                ->send();
-
-                            return;
-                        }
-
-                        // 区分三种"还没好"：归属没验过、证书还在签发、调用出错。
-                        // 笼统地说一句"失败"会让商户完全不知道下一步该做什么。
-                        $body = match (true) {
-                            ! $record->isVerified() => $record->last_verify_error
-                                ?: __('admin.merchant_domain.errors.txt_not_found'),
-                            filled($record->cf_last_error) => $record->cf_last_error,
-                            default => __('admin.merchant_domain.notifications.certificate_pending'),
-                        };
-
-                        Notification::make()
-                            ->warning()
-                            ->title(__('admin.merchant_domain.notifications.not_ready'))
-                            ->body($body)
-                            ->persistent()
-                            ->send();
-                    }),
+                    ->action(fn (MerchantDomain $record) => static::verifyDomain($record)),
                 EditAction::make(),
                 DeleteAction::make()
                     // 本地记录删掉的同时清理 CF 侧的自定义主机名，
@@ -219,6 +189,54 @@ class MerchantDomainResource extends Resource
             'create' => Pages\CreateMerchantDomain::route('/create'),
             'edit' => Pages\EditMerchantDomain::route('/{record}/edit'),
         ];
+    }
+
+    public static function certificateInstructions(MerchantDomain $record): string
+    {
+        $text = match (true) {
+            $record->isCertificateActive() => __('admin.merchant_domain.help.dcv_active'),
+            filled($record->cf_dcv_records) => collect($record->cf_dcv_records)
+                ->map(fn (array $dcv) => __('admin.merchant_domain.help.dcv_record', [
+                    'type' => $dcv['type'] ?? 'TXT',
+                    'name' => $dcv['name'] ?? '',
+                    'value' => $dcv['value'] ?? '',
+                ]))->implode("\n"),
+            ! $record->isVerified() => __('admin.merchant_domain.help.dcv_before_ownership'),
+            default => __('admin.merchant_domain.help.dcv_pending'),
+        };
+
+        if (filled($record->cf_ssl_status)) {
+            $text .= "\n".__('admin.merchant_domain.columns.certificate').': '.$record->cf_ssl_status;
+        }
+
+        if (filled($record->cf_last_error)) {
+            $text .= "\n".__('admin.merchant_domain.help.dcv_error', ['error' => $record->cf_last_error]);
+        }
+
+        return $text;
+    }
+
+    public static function verifyDomain(MerchantDomain $record): void
+    {
+        $ready = app(MerchantDomainService::class)->verify($record);
+        $record->refresh();
+
+        if ($ready) {
+            Notification::make()->success()->title(__('admin.merchant_domain.notifications.ready'))->send();
+
+            return;
+        }
+
+        $body = match (true) {
+            ! $record->isVerified() => $record->last_verify_error ?: __('admin.merchant_domain.errors.txt_not_found'),
+            filled($record->cf_last_error) => $record->cf_last_error,
+            $record->isCertificateActive() => __('admin.merchant_domain.notifications.enable_domain'),
+            blank($record->cf_dcv_records) => __('admin.merchant_domain.help.dcv_pending'),
+            default => __('admin.merchant_domain.notifications.certificate_pending'),
+        };
+
+        Notification::make()->warning()->title(__('admin.merchant_domain.notifications.not_ready'))
+            ->body($body)->persistent()->send();
     }
 
     public static function canViewAny(): bool

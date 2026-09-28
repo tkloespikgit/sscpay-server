@@ -8,6 +8,7 @@ use App\Filament\Resources\MerchantDomainResource\Pages\ListMerchantDomains;
 use App\Models\Merchant;
 use App\Models\MerchantDomain;
 use App\Models\User;
+use App\Services\Checkout\CloudflareSaasService;
 use App\Services\Checkout\MerchantDomainService;
 use Filament\Facades\Filament;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -122,6 +123,118 @@ class MerchantDomainResourceTest extends TestCase
         $this->assertNull($domain->cf_hostname_id);
         $this->assertNull($domain->cf_ssl_status);
         $this->assertNotSame($originalToken, $domain->verify_token);
+    }
+
+    public function test_edit_page_fetches_delayed_dcv_records_and_renders_them_without_reopening(): void
+    {
+        $domain = MerchantDomain::create([
+            'merchant_id' => $this->merchant->id,
+            'host' => 'checkout.tvbox.com',
+            'verified_at' => now(),
+        ]);
+        $this->configureCloudflare();
+        Http::preventStrayRequests();
+        Http::fake(['api.cloudflare.com/*' => Http::sequence()
+            ->push(['success' => true, 'result' => ['id' => 'cf-123', 'ssl' => ['status' => 'pending_validation']]])
+            ->push(['success' => true, 'result' => ['id' => 'cf-123', 'ssl' => [
+                'status' => 'pending_validation',
+                'txt_name' => '_acme-challenge.checkout.tvbox.com',
+                'txt_value' => 'first-certificate-token',
+                'validation_records' => [
+                    ['txt_name' => '_acme-challenge.checkout.tvbox.com', 'txt_value' => 'first-certificate-token'],
+                    ['txt_name' => '_acme-challenge.checkout.tvbox.com', 'txt_record' => 'second-certificate-token'],
+                ],
+                'dcv_delegation_records' => [['cname' => '_acme-challenge.checkout.tvbox.com', 'cname_target' => 'alternative.example.com']],
+            ]]])
+            ->push(['success' => true, 'result' => ['id' => 'cf-123', 'ssl' => ['status' => 'active']]])]);
+
+        $page = Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])
+            ->assertSee(__('admin.merchant_domain.help.dcv_pending'))
+            ->callAction('verify')
+            ->assertSee(__('admin.merchant_domain.help.dcv_pending'))
+            ->assertSee('pending_validation');
+
+        $this->assertSame('cf-123', $domain->fresh()->cf_hostname_id);
+        $this->assertNull($domain->fresh()->cf_dcv_records);
+
+        $page->fillForm(['is_active' => false])
+            ->callAction('verify')
+            ->assertSee('_acme-challenge.checkout.tvbox.com')
+            ->assertSee('first-certificate-token')
+            ->assertSee('second-certificate-token')
+            ->assertDontSee(__('admin.merchant_domain.help.dcv_pending'))
+            ->assertFormSet(['is_active' => false]);
+
+        $this->assertCount(2, $domain->fresh()->cf_dcv_records);
+        Http::assertSent(fn ($request) => $request->method() === 'GET' && str_ends_with($request->url(), '/custom_hostnames/cf-123'));
+
+        $page->callAction('verify')->assertSee(__('admin.merchant_domain.help.dcv_active'));
+        Http::assertSentCount(3);
+    }
+
+    public function test_second_step_is_visible_before_ownership_verification(): void
+    {
+        $domain = MerchantDomain::create(['merchant_id' => $this->merchant->id, 'host' => 'checkout.tvbox.com']);
+
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])
+            ->assertSee(__('admin.merchant_domain.help.dcv_before_ownership'));
+    }
+
+    public function test_refresh_reports_cloudflare_errors_in_the_second_step(): void
+    {
+        $domain = MerchantDomain::create([
+            'merchant_id' => $this->merchant->id,
+            'host' => 'checkout.tvbox.com',
+            'verified_at' => now(),
+            'cf_hostname_id' => 'cf-123',
+        ]);
+        $this->configureCloudflare();
+        Http::fake(['api.cloudflare.com/*' => Http::response([
+            'success' => false, 'errors' => [['code' => 1000, 'message' => 'DCV API unavailable']],
+        ], 200)]);
+
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])
+            ->callAction('verify')->assertSee('DCV API unavailable');
+        $this->assertSame('cf-123', $domain->fresh()->cf_hostname_id);
+    }
+
+    public function test_changed_hostname_must_be_saved_before_refreshing(): void
+    {
+        $domain = MerchantDomain::create(['merchant_id' => $this->merchant->id, 'host' => 'checkout.tvbox.com']);
+        Http::fake();
+
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])
+            ->fillForm(['host' => 'changed.tvbox.com'])->callAction('verify')
+            ->assertHasErrors(['data.host']);
+
+        Http::assertNothingSent();
+        $this->assertSame('checkout.tvbox.com', $domain->fresh()->host);
+    }
+
+    public function test_cloudflare_refresh_parses_cname_records_and_clears_stale_records_on_404(): void
+    {
+        $domain = MerchantDomain::create([
+            'merchant_id' => $this->merchant->id,
+            'host' => 'checkout.tvbox.com',
+            'verified_at' => now(),
+            'cf_hostname_id' => 'cf-123',
+        ]);
+        $this->configureCloudflare();
+        Http::fake(['api.cloudflare.com/*' => Http::sequence()
+            ->push(['success' => true, 'result' => ['id' => 'cf-123', 'ssl' => [
+                'status' => 'pending_validation',
+                'validation_records' => [['cname' => '_acme-challenge.checkout.tvbox.com', 'cname_target' => 'validation.example.com']],
+            ]]])
+            ->push([], 404)]);
+
+        app(CloudflareSaasService::class)->refresh($domain);
+        $this->assertSame([['type' => 'CNAME', 'name' => '_acme-challenge.checkout.tvbox.com', 'value' => 'validation.example.com']], $domain->fresh()->cf_dcv_records);
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])
+            ->assertSee('validation.example.com')->assertSee('CNAME');
+
+        app(CloudflareSaasService::class)->refresh($domain);
+        $this->assertNull($domain->fresh()->cf_hostname_id);
+        $this->assertNull($domain->fresh()->cf_dcv_records);
     }
 
     public function test_failed_cloudflare_deletion_keeps_the_original_host_and_id(): void

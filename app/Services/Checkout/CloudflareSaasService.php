@@ -94,6 +94,7 @@ class CloudflareSaasService
             $domain->forceFill([
                 'cf_hostname_id' => null,
                 'cf_ssl_status' => null,
+                'cf_dcv_records' => null,
                 'cf_last_error' => 'Custom hostname not found on Cloudflare; it will be re-created on next verification.',
                 'cf_synced_at' => now(),
             ])->save();
@@ -158,7 +159,7 @@ class CloudflareSaasService
      */
     private function applyResponse(MerchantDomain $domain, ?array $payload, bool $successful): void
     {
-        if (! $successful) {
+        if (! $successful || ($payload['success'] ?? true) === false) {
             $domain->forceFill([
                 'cf_last_error' => $this->extractError($payload),
                 'cf_synced_at' => now(),
@@ -185,27 +186,35 @@ class CloudflareSaasService
      */
     private function extractDcvRecords(array $ssl): ?array
     {
-        if (filled($ssl['txt_name'] ?? null) && filled($ssl['txt_value'] ?? null)) {
-            return [[
-                'type' => 'TXT',
-                'name' => $ssl['txt_name'],
-                'value' => $ssl['txt_value'],
-            ]];
-        }
-
         $records = [];
 
-        foreach ($ssl['validation_records'] ?? [] as $record) {
-            if (filled($record['txt_name'] ?? null) && filled($record['txt_value'] ?? null)) {
+        // 同时处理顶层旧格式与完整数组，不能找到第一条就丢弃其余证书的验证记录。
+        foreach ([$ssl, ...($ssl['validation_records'] ?? []), ...($ssl['dcv_delegation_records'] ?? [])] as $record) {
+            $txtValue = $record['txt_value'] ?? $record['txt_record'] ?? null;
+
+            if (filled($record['txt_name'] ?? null) && filled($txtValue)) {
                 $records[] = [
                     'type' => 'TXT',
                     'name' => $record['txt_name'],
-                    'value' => $record['txt_value'],
+                    'value' => $txtValue,
+                ];
+            }
+
+            if (filled($record['cname'] ?? null) && filled($record['cname_target'] ?? null)) {
+                $records[] = [
+                    'type' => 'CNAME',
+                    'name' => $record['cname'],
+                    'value' => $record['cname_target'],
                 ];
             }
         }
 
-        return $records ?: null;
+        // 注册时选择 TXT 验证；委派 CNAME 是另一种方式，不能提示用户在同名 DNS
+        // 节点同时添加 TXT 和 CNAME。存在 TXT 时优先展示全部 TXT。
+        $txtRecords = array_filter($records, fn (array $record) => $record['type'] === 'TXT');
+        $records = $txtRecords ?: $records;
+
+        return $records ? array_values(array_unique($records, SORT_REGULAR)) : null;
     }
 
     private function extractSslError(array $ssl): ?string
