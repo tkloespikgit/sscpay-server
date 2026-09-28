@@ -5,13 +5,16 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\MerchantDomainResource\Pages\CreateMerchantDomain;
 use App\Filament\Resources\MerchantDomainResource\Pages\EditMerchantDomain;
 use App\Filament\Resources\MerchantDomainResource\Pages\ListMerchantDomains;
+use App\Models\Merchant;
 use App\Models\MerchantDomain;
 use App\Models\User;
-use App\Support\Permissions;
+use App\Services\Checkout\MerchantDomainService;
 use Filament\Facades\Filament;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -182,6 +185,35 @@ class MerchantDomainResourceTest extends TestCase
             ->assertSee('checkout.tvbox.com');
     }
 
+    public function test_order_administrator_can_verify_their_domain(): void
+    {
+        $domain = MerchantDomain::create([
+            'merchant_id' => $this->merchant->id,
+            'host' => 'checkout.tvbox.com',
+        ]);
+        $this->mock(MerchantDomainService::class)->shouldReceive('verify')->once()
+            ->withArgs(fn (MerchantDomain $record) => $record->id === $domain->id)->andReturnTrue();
+
+        Livewire::test(ListMerchantDomains::class)
+            ->callTableAction('verify', $domain)
+            ->assertNotified();
+    }
+
+    public function test_order_administrator_cannot_access_another_merchants_domain(): void
+    {
+        $other = Merchant::create([
+            'name' => 'Other merchant',
+            'contact_person' => 'Tester',
+            'contact_phone' => '123456',
+            'contact_email' => 'other@example.com',
+        ]);
+        $domain = MerchantDomain::create(['merchant_id' => $other->id, 'host' => 'checkout.other.example']);
+
+        Livewire::test(ListMerchantDomains::class)->assertCanNotSeeTableRecords([$domain]);
+        $this->expectException(ModelNotFoundException::class);
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()]);
+    }
+
     private function domainUser(): User
     {
         $user = User::create([
@@ -191,7 +223,7 @@ class MerchantDomainResourceTest extends TestCase
             'merchant_id' => $this->merchant->id,
         ]);
 
-        $user->givePermissionTo(Permissions::MERCHANT_DOMAINS_MANAGE);
+        $user->assignRole(Role::where('merchant_id', $this->merchant->id)->where('name', '订单管理员')->firstOrFail());
 
         return $user->fresh();
     }

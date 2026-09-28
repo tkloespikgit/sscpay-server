@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Illuminate\Console\Command;
 use Spatie\Permission\Models\Permission;
@@ -10,7 +11,7 @@ use Spatie\Permission\PermissionRegistrar;
 
 /**
  * 一次性命令：给收款链接功能上线前已存在的商户，把新增的两个权限补发到
- * 「商户管理员」角色上。
+ * 「商户管理员」及「订单管理员」角色上。
  *
  * 背景与 RolloutOrderDisputePermissions 完全一致：
  * MerchantRoleProvisioningService::provisionDefaultRoles() 只在新商户创建时
@@ -20,8 +21,8 @@ use Spatie\Permission\PermissionRegistrar;
  * 用 givePermissionTo()（增量授予）而不是 syncPermissions()（整体覆盖），
  * 避免冲掉商户自己在默认角色上加过的自定义权限。
  *
- * 只补发给「商户管理员」：收款链接直接关系到收款金额与品牌域名，
- * 默认不下放给订单/物流/财务管理员，需要的话由商户自己在角色里勾选。
+ * 按当前默认角色模板增量补发；超管已在模板里取消的权限不会被此命令重新授予。
+ * 完整角色权限的修改与撤销请使用平台后台「角色权限分配」。
  *
  * 不进调度，部署后手动执行一次：
  *   php artisan permissions:rollout-checkout-links
@@ -30,14 +31,14 @@ class RolloutCheckoutLinkPermissions extends Command
 {
     protected $signature = 'permissions:rollout-checkout-links';
 
-    protected $description = '给存量商户的「商户管理员」角色补发收款链接与自有域名权限';
+    protected $description = '按模板为存量商户管理员和订单管理员补发收款链接与自有域名权限';
 
     private const PERMISSIONS = [
         Permissions::CHECKOUT_LINKS_MANAGE,
         Permissions::MERCHANT_DOMAINS_MANAGE,
     ];
 
-    public function handle(): int
+    public function handle(MerchantRoleProvisioningService $service): int
     {
         foreach (self::PERMISSIONS as $permissionName) {
             Permission::query()->firstOrCreate([
@@ -51,13 +52,19 @@ class RolloutCheckoutLinkPermissions extends Command
         // 必须在创建权限记录之后、授予角色之前清掉（同 PermissionSeeder 的注释）。
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
-        $roles = Role::query()->where('name', '商户管理员')->get();
+        foreach (array_intersect_key($service->definitions(), array_flip(['merchant_admin', 'order_admin'])) as $definition) {
+            $permissions = array_values(array_intersect(self::PERMISSIONS, $definition['permissions']));
+            $roles = Role::query()->whereNotNull('merchant_id')->where('guard_name', 'web')
+                ->where('name', $definition['label'])->get();
 
-        foreach ($roles as $role) {
-            $role->givePermissionTo(self::PERMISSIONS);
+            foreach ($roles as $role) {
+                $role->givePermissionTo($permissions);
+            }
+
+            $this->info("角色「{$definition['label']}」：处理了 {$roles->count()} 条角色记录。");
         }
 
-        $this->info("角色「商户管理员」：更新了 {$roles->count()} 条角色记录。");
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         // 平台侧的「商户级管理员」角色走 PlatformRoleProvisioningService，
         // 它用的是 Permissions::platformMerchantManager()（同样包含 merchantScoped

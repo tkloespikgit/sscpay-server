@@ -141,7 +141,7 @@ php artisan checkout:sync-domains
 |---|---|---|
 | `checkout:sync-domains` | 每 15 分钟 | 刷新 CF 侧证书签发状态 |
 | `checkout:check-cloudflare-ips` | 每周一 09:00 | 核对可信代理网段是否与 CF 官方一致 |
-| `permissions:rollout-checkout-links` | 手动跑一次 | 给存量商户的「商户管理员」角色补发收款链接权限 |
+| `permissions:rollout-checkout-links` | 按需手动运行 | 按当前角色模板为存量「商户管理员」「订单管理员」补发收款链接和域名权限；也可使用超管后台“角色权限分配”保存并同步 |
 
 ---
 

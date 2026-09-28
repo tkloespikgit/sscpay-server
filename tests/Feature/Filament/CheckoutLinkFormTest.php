@@ -6,10 +6,10 @@ use App\Filament\Resources\CheckoutLinkResource\Pages\CreateCheckoutLink;
 use App\Models\CheckoutLink;
 use App\Models\PaymentGroup;
 use App\Models\User;
-use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -204,7 +204,7 @@ class CheckoutLinkFormTest extends TestCase
             'merchant_id' => $this->merchant->id,
         ]);
 
-        $user->givePermissionTo(Permissions::CHECKOUT_LINKS_MANAGE);
+        $user->assignRole(Role::where('merchant_id', $this->merchant->id)->where('name', '订单管理员')->firstOrFail());
 
         return $user->fresh();
     }

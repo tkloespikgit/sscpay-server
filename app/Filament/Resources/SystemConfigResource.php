@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\SystemConfigResource\Pages;
 use App\Models\SystemConfig;
+use App\Services\MerchantRoleProvisioningService;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
@@ -17,6 +18,7 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * 系统配置管理（超管专属）：汇率汇损、订单事件同步、付款链接有效期、
@@ -145,6 +147,13 @@ class SystemConfigResource extends Resource
             'index' => Pages\ListSystemConfigs::route('/'),
             'edit' => Pages\EditSystemConfig::route('/{record}/edit'),
         ];
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        // 角色模板必须经专用页面保存，确保配置与各商户权限一同更新。
+        return parent::getEloquentQuery()
+            ->where('config_key', '!=', MerchantRoleProvisioningService::TEMPLATE_CONFIG_KEY);
     }
 
     public static function canViewAny(): bool
