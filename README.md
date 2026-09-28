@@ -625,11 +625,18 @@ environment=APP_ENV="production"
 
 | 文档 | 内容 |
 |---|---|
-| `doc/api-order-implete.md` | 订单系统 API 完整对接文档（鉴权签名、create / ship / query、webhook） |
-| `doc/order-create-api.md` | 创建订单接口详解（字段说明、指定渠道行为差异、错误码、幂等性、常见对接问题） |
-| `doc/wordpress-integration.md` | WordPress / WooCommerce 插件对接指南（含签名参考实现、状态映射、插件设计建议、踩坑清单） |
-| `doc/s-system-payment-status-notify.md` | 支付状态回调说明（payload、状态清单、主动查询接口、订单日志接口） |
-| `doc/s-system-sync-tracking.md` | 物流同步接口说明（参数、承运商字段、各渠道支持情况、幂等性、升级检查清单） |
-| `doc/i18n.md` | 多语言支持现状与新增语言步骤 |
-| `doc/deployment.md` | 生产环境部署与运维配置（www-data 运行身份、目录权限、Crontab 调度、Supervisor 队列 Worker、logrotate、Nginx/PHP-FPM、首次部署与零停机发布、上线检查清单） |
-| `postman/README.md` | Postman 集合使用说明（签名预请求脚本、`merchant_order_no` 写 `AUTO` 的技巧） |
+| [AGENTS.md](AGENTS.md) | AI 开发入口、关键约束与验证约定 |
+| [docs/architecture.md](docs/architecture.md) | 系统架构、业务链路、服务职责与代码入口 |
+| [docs/database.md](docs/database.md) | 数据模型、金额/时间口径及数据库约束 |
+| [docs/decisions.md](docs/decisions.md) | 关键技术决策、原因及实现依据 |
+| [docs/development-log.md](docs/development-log.md) | 重要变更、工作区交接及旧资料与当前代码的已知差异 |
+| [doc/api.md](doc/api.md) | 订单系统 API 对接文档（鉴权签名、create / ship / query、webhook） |
+| [doc/checkout-link.md](doc/checkout-link.md) | 公开收款链接的配置与下单流程 |
+| [doc/checkout-link-cloudflare-saas.md](doc/checkout-link-cloudflare-saas.md) | 收款链接自有域名与 Cloudflare SaaS 接入 |
+| [支付状态协议](doc/wordpress/s-system-payment-status-notify.md) | 插件状态回调、主动查询及订单日志接口 |
+| [物流同步协议](doc/wordpress/s-system-sync-tracking.md) | 插件物流参数、承运商字段与幂等性 |
+| [doc/i18n.md](doc/i18n.md) | 多语言支持现状与新增语言步骤 |
+| [doc/deployment.md](doc/deployment.md) | 生产环境部署与运维配置 |
+| [postman/README.md](postman/README.md) | Postman 集合及签名预请求脚本使用说明 |
+
+`docs/` 用于开发交接，`doc/` 保留接口和操作手册。README 部分业务正文仍沿用旧实现，涉及域名校验、退款/拒付、风控及网关认证时，先核对 [已知差异](docs/development-log.md) 与当前源码。
