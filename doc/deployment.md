@@ -53,7 +53,7 @@
 | Supervisor | 4.x | 守护队列 Worker |
 | Nginx | 1.18+ | Web 服务器（也可用 Apache，本文以 Nginx 为例） |
 | Composer | 2.x | 依赖安装 |
-| Node.js | 18+ | **仅构建期需要**（`npm run build`），可在 CI / 本地构建后只上传 `public/build` |
+| Node.js | 20.19+（20.x）或 22.12+ | Vite 7 要求；**仅构建期需要**（`npm run build`），可在 CI / 本地构建后上传完整 `public/build` |
 | `mysqldump` | 随 MySQL 客户端 | `db:backup:upload` 备份命令依赖，确认 `which mysqldump` 在 cron 的 `PATH` 内 |
 
 ---
@@ -358,7 +358,7 @@ cd /var/www/sscpay-server
 
 # 1. 依赖（PHP 用绝对路径，Node 仅构建期需要）
 composer install --no-dev --optimize-autoloader
-npm install && npm run build           # 或在 CI 构建后仅上传 public/build
+npm ci --include=dev && npm run build   # 或在 CI 构建后上传完整 public/build
 
 # 2. 环境变量
 cp .env.example .env                    # 按第 3 节填写生产配置
@@ -399,7 +399,7 @@ cd /var/www/sscpay-server
 sudo -u www-data git pull                # 或 rsync 部署产物
 
 composer install --no-dev --optimize-autoloader
-npm run build                            # 前端有变更时
+npm ci --include=dev && npm run build     # 构建与本次代码一致的前端产物
 
 /usr/bin/php8.2 artisan migrate --force
 /usr/bin/php8.2 artisan config:cache && /usr/bin/php8.2 artisan route:cache && /usr/bin/php8.2 artisan view:cache
@@ -413,6 +413,20 @@ npm run build                            # 前端有变更时
 
 - `queue:restart` 对**所有** Worker 生效，依赖 Redis 连通性；若 Redis 认证失败（如 `WRONGPASS`）则不生效，此时改用 `sudo supervisorctl restart sscpay-server-worker-fast:* sscpay-server-worker-slow:*`。
 - `--max-time` 是兜底：即使漏跑 `queue:restart`，Worker 也会在运行满设定秒数后自动重启加载新代码。
+
+### 收款页报错：Vite manifest 缺少 checkout.js
+
+如果出现 `Unable to locate file in Vite manifest: resources/js/checkout.js`，表示服务器上的 manifest 没有收款页入口。当前 `vite.config.js` 已配置该入口；应确认部署的是最新代码，并重新构建配套资源，无需修改 `.env`。
+
+```bash
+cd /var/www/sscpay-server
+node -v                                 # 需满足上方 Node.js 版本要求
+npm ci --include=dev                     # Vite 等构建工具位于 devDependencies
+npm run build                           # 成功后再继续发布
+node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync("public/build/manifest.json", "utf8")); const e = m["resources/js/checkout.js"]; if (!e || !fs.existsSync("public/build/" + e.file)) { throw new Error("收款页构建产物缺失"); } console.log(e.file);'
+```
+
+`public/build` 被 Git 忽略，单独 `git pull` 不会更新它。若服务器不安装 Node.js，在 CI 或本地针对同一版本代码构建，然后将 **整个 `public/build` 目录**随本次版本部署（包含 manifest、JS、CSS、动态加载模块和图片）。只上传 manifest 或仅清理 Laravel 缓存无法补齐构建产物。多实例部署需要每个实例使用同一份产物。
 
 ---
 
