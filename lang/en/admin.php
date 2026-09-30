@@ -115,6 +115,7 @@ return [
             'merchant' => 'Merchant',
             'website' => 'Website Domain',
             'status' => 'Enabled (API calls are rejected while disabled)',
+            'is_auto_discount_enabled' => 'Automatic Discount',
             'is_order_email_enabled' => 'Enable Order Emails',
             'payment_link_mail_template' => 'Payment Link Email Body',
             'remark' => 'Remark',
@@ -123,6 +124,7 @@ return [
             'created_at' => 'Created At',
         ],
         'help' => [
+            'auto_discount' => 'Random discount in the order currency: 0.01–0.10 for original payable amounts up to 200, or 0.01–0.50 above 200. Keeps at least 0.01 payable; skips amounts too small to discount. Applies to new orders only.',
             'api_key' => 'Merchants use this to sign requests. Keep it secret — do not share it with anyone who does not need it.',
             'payment_link_mail_template' => 'Leave blank to use the system default template. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved. Different applications under the same merchant can each have their own body.',
         ],

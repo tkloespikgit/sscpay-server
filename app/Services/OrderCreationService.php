@@ -115,7 +115,7 @@ class OrderCreationService
 
         if ($existing) {
             if ($existing->currency !== $data['currency']
-                || ! BigDecimal::of((string) $existing->amount)->isEqualTo((string) $data['amount'])) {
+                || ! BigDecimal::of((string) ($existing->original_amount ?? $existing->amount))->isEqualTo((string) $data['amount'])) {
                 throw new OrderDetailsConflictException;
             }
 
@@ -141,6 +141,19 @@ class OrderCreationService
         $itemsSum = OrderItem::sumTotalPrice($data['items']);
         if (bccomp($itemsSum, (string) $data['subtotal'], 2) !== 0) {
             throw new OrderItemsMismatchException((string) $data['subtotal'], $itemsSum);
+        }
+
+        // 原始金额用于幂等校验；自动折扣仅在首次建单时生成，先于汇率和费用快照。
+        $originalAmount = (string) $data['amount'];
+        $autoDiscount = '0.00';
+        if ($application->is_auto_discount_enabled && bccomp($originalAmount, '0.01', 2) > 0) {
+            $maxCents = bccomp($originalAmount, '200.00', 2) <= 0 ? 10 : 50;
+            if (bccomp($originalAmount, '0.51', 2) < 0) {
+                $maxCents = min($maxCents, (int) bcmul($originalAmount, '100', 0) - 1);
+            }
+            $autoDiscount = bcdiv((string) random_int(1, $maxCents), '100', 2);
+            $data['discount'] = bcadd((string) $data['discount'], $autoDiscount, 2);
+            $data['amount'] = bcsub($originalAmount, $autoDiscount, 2);
         }
 
         // 4. 回跳域名校验（notify_url / return_url / cancel_url），比对基准「二选一」：
@@ -231,7 +244,9 @@ class OrderCreationService
             $sendMail,
             $feePercentAmount,
             $feeFixedAmount,
-            $settlementAmount
+            $settlementAmount,
+            $originalAmount,
+            $autoDiscount
         ) {
             $order = Order::createWithGeneratedIdentifiers([
                 'merchant_id' => $merchant->id,
@@ -249,6 +264,8 @@ class OrderCreationService
                 'discount' => $data['discount'],
                 'tax' => $data['tax'],
                 'amount' => $data['amount'],
+                'original_amount' => $originalAmount,
+                'auto_discount' => $autoDiscount,
                 'converted_currency' => 'USD',
                 'converted_amount' => $convertedAmount,
                 'subtotal_converted' => $subtotalConverted,
@@ -378,7 +395,7 @@ class OrderCreationService
      *     同步创建同价商品（createItems，/pay 需要真实的商品 ID / 链接）；
      *   - COPY：先用商户关键词替换表洗一遍商品名，逐条按订单明细找同名同价商品，
      *     找不到就复制一份改名改价并在站点上同步创建（copyItems，同样需要同步完成）。
-     * 各分支均保证明细小计与订单商品金额完全一致（matched_discount 恒为 0）。
+     * MATCH / VIRTUAL 的超额计入订单 subtotal 和 discount，应付金额保持不变。
      *
      * 插件对同一 s_order_id（传系统订单号）幂等，失败重试安全。
      *
@@ -412,10 +429,17 @@ class OrderCreationService
             ? $order->matchedItems()->where('auto_created', true)->get()
             : null;
 
+        // 原始明细不随匹配修改，还原目标小计及匹配前折扣（含自动折扣），避免重试累计。
+        $originalSubtotal = $order->items()->get()->reduce(
+            fn (string $sum, OrderItem $item) => bcadd($sum, (string) $item->total_price, 2), '0.00'
+        );
+        $previousOverflow = bcsub((string) $order->subtotal, $originalSubtotal, 2);
+        $originalDiscount = bcsub((string) $order->discount, $previousOverflow, 2);
+
         $matched = match (true) {
             $this->isSameSite($order, $paymentMethod) => $this->directItems($order),
             $mode === PaymentMethod::MODE_MATCH,
-            $mode === PaymentMethod::MODE_VIRTUAL => $this->orderItemService->matchItems($paymentMethod, (string) $order->subtotal,
+            $mode === PaymentMethod::MODE_VIRTUAL => $this->orderItemService->matchItems($paymentMethod, $originalSubtotal,
                 (string) $order->exchange_rate),
             $mode === PaymentMethod::MODE_CREATE => $this->orderItemService->createItems($paymentMethod, $order, $reusableCreated),
             $mode === PaymentMethod::MODE_COPY => $this->orderItemService->copyItems($paymentMethod, $order, $reusableCreated),
@@ -423,15 +447,20 @@ class OrderCreationService
                 -1),
         };
 
-        // 匹配算法末件改价补齐后 overflow 恒为 0，这里仍照旧写入（与商户下单传的 discount 分开），
-        // 保留字段以免后续匹配规则再引入溢出折扣。
+        $discount = bcadd($originalDiscount, $matched['overflow'], 2);
+
         // 发票号与订单主题随支付方式配置生成，落库后随 payload 一并同步给 WordPress。
         $invoiceNumber = $this->buildInvoiceNumber($order, $paymentMethod);
         $subject = $this->buildSubject($order, $paymentMethod);
         $allowReturnedSource = $this->resolveAllowReturnedSource($order, $paymentMethod);
 
         $order->update([
-            'matched_discount' => $matched['overflow'],
+            'subtotal' => $matched['subtotal'],
+            'discount' => $discount,
+            'subtotal_converted' => bcmul($matched['subtotal'], (string) $order->exchange_rate, 2),
+            'discount_converted' => bcmul($discount, (string) $order->exchange_rate, 2),
+            // 折扣已并入 discount，旧的独立折扣字段归零，避免网关重复抵扣。
+            'matched_discount' => '0.00',
             'invoice_number' => $invoiceNumber,
             'subject' => $subject,
         ]);
@@ -499,8 +528,8 @@ class OrderCreationService
             ])->all(),
             'shipping_fee' => (float) $order->shipping_fee,
             'tax_fee' => (float) $order->tax,
-            // 自动匹配商品溢出产生的折扣（订单原币种）
-            'discount_fee' => (float) ($order->matched_discount + $order->discount),
+            // 总折扣：商户折扣、应用自动折扣和匹配商品溢出（订单原币种）
+            'discount_fee' => (float) $order->discount,
         ];
 
         // 优先引用已注册的网关配置（见「同步支付配置」按钮）；尚未同步过时退化为内联明文配置。
@@ -582,7 +611,7 @@ class OrderCreationService
             'auto_created' => false,
         ])->all();
 
-        return ['items' => $items, 'subtotal' => (string) $order->subtotal, 'overflow' => '0'];
+        return ['items' => $items, 'subtotal' => array_reduce($items, fn (string $sum, array $item) => bcadd($sum, $item['total_price'], 2), '0.00'), 'overflow' => '0'];
     }
 
     /**

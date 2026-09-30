@@ -51,7 +51,7 @@ erDiagram
 | 字段组 | 语义与限制 |
 |---|---|
 | `order_no` | 本地系统订单号，同时作为插件 `s_order_id`；通过生成器与唯一约束处理碰撞 |
-| `merchant_id` + `merchant_order_no` | 未软删订单的幂等键。重复请求比较 `currency` 和数值 `amount`，并非校验所有明细字段一致 |
+| `merchant_id` + `merchant_order_no` | 未软删订单的幂等键。重复请求比较 `currency` 和原始请求金额 `original_amount`（历史订单为空时回退 `amount`），并非校验所有明细字段一致 |
 | `application_id`、`payment_group_id` | 建单应用与支付组 |
 | `payment_method_id`、`payment_method` | 渠道 ID 与代码快照。当前渠道代码在未删除渠道中全局唯一；历史解析复用 `paymentMethodConfig()` |
 | `designated_payment_method_key` | 记录本次是否显式指定渠道，区别于普通组内路由 |
@@ -73,6 +73,18 @@ erDiagram
 - `order_matched_items`：支付站点实际接收的明细、来源变体及自动创建信息。
 - `site_products` / `site_product_variations`：按渠道同步的站点商品/变体快照，用于匹配与复制。
 - `replace_keywords`：`COPY` 模式所用的商户商品名称替换规则。
+
+### 应用自动折扣（2026-09-30，当前工作区）
+
+`applications.is_auto_discount_enabled` 默认关闭，仅影响新订单。按折扣前应付金额、订单原币种计算：不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50，以 0.01 为步长。极小金额缩小随机范围，至少保留 0.01 应付；金额不超过 0.01 时跳过。
+
+`orders.original_amount` 保存折扣前请求应付金额供幂等比较，历史订单为 NULL 时回退 `amount`；`auto_discount` 保存本次自动减免，默认 0，已包含在 `discount` 中。先验证请求公式和原始商品，再增加折扣、减少 `amount`，随后计算汇率、风控、手续费与结算快照。原始商品不变，商品匹配溢出折扣仍可叠加；补单与开关变化不重新抽取自动折扣。查询、通知与远端支付使用折扣后实际金额。
+
+### 自动匹配商品的订单折扣（2026-09-30）
+
+MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小数单价）。尾件超额加入订单 `subtotal` 与 `discount`，同步更新两者的 USD 折算字段，`amount`、`converted_amount` 和结算金额不变。商户原始 `order_items` 保持原样；匹配后的 `subtotal` 对应 `order_matched_items`，因此可能不再等于原始明细之和。
+
+补单按原始明细之和恢复目标小计，并从当前折扣扣除上一轮小计增量，再加入本轮超额，避免重试重复抵扣。新匹配结果将旧的独立 `matched_discount` 归零，网关 `discount_fee` 只发送 `discount`。不批量修改历史订单。
 
 ## 4. 状态、资金与审计
 

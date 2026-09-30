@@ -86,6 +86,12 @@ class ApplicationResource extends Resource
                     ->required()
                     ->placeholder('hat.com'),
 
+                Toggle::make('is_auto_discount_enabled')
+                    ->label(__('admin.application.fields.is_auto_discount_enabled'))
+                    ->helperText(__('admin.application.help.auto_discount'))
+                    ->default(false)
+                    ->inline(false),
+
                 Toggle::make('status')->label(__('admin.application.fields.status'))->default(true)->inline(false),
                 // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
                 // 不选就直接建，会导致 merchant_id 外键列为空。见 BelongsToMerchant：

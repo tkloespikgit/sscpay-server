@@ -113,6 +113,7 @@ return [
             'merchant' => '所属商户',
             'website' => '官网域名',
             'status' => '状态',
+            'is_auto_discount_enabled' => '自动折扣',
             'is_order_email_enabled' => '邮件通知',
             'payment_link_mail_template' => '付款链接邮件正文',
             'remark' => '备注',
@@ -121,6 +122,7 @@ return [
             'created_at' => '创建时间',
         ],
         'help' => [
+            'auto_discount' => '按订单原币种随机减免：原始应付金额不超过 200 时减 0.01～0.10，超过 200 时减 0.01～0.50。至少保留 0.01 应付金额，不足减免时跳过；仅对新订单生效。',
             'api_key' => '商户端签名请求时需要用到这个值，请妥善保管，不要泄露给无关人员。',
             'payment_link_mail_template' => '留空则使用系统默认模板。支持变量 {customer_name}（客户姓名）、{payment_link}（付款链接），发送时会自动替换为实际内容；纯文本，换行会保留。同一商户下不同应用可以各自配置不同的正文。',
         ],

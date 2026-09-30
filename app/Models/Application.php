@@ -24,6 +24,7 @@ class Application extends Model
         'app_id',
         'api_key',
         'is_order_email_enabled',
+        'is_auto_discount_enabled',
         'sender_email',
         'sender_name',
         'payment_link_mail_template',
@@ -37,6 +38,7 @@ class Application extends Model
     {
         return [
             'is_order_email_enabled' => 'boolean',
+            'is_auto_discount_enabled' => 'boolean',
             'status' => 'boolean',
             // 使用 Laravel 内置的 encrypted cast：读取时自动解密、写入时自动加密，
             // 不需要在业务代码里手写 Crypt::encryptString()/decrypt()。

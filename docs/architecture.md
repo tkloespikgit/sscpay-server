@@ -63,9 +63,9 @@ flowchart TD
 
 主要入口：[OrderCreationService.php](../app/Services/OrderCreationService.php)。
 
-1. 对 `merchant_id + merchant_order_no` 加缓存锁（当前租期 30 秒、等待 10 秒）。查到旧单时比较币种与金额；冲突拒绝，匹配则复用快照/渠道。旧单没有 `pay_url` 时尝试远端补单。
+1. 对 `merchant_id + merchant_order_no` 加缓存锁（当前租期 30 秒、等待 10 秒）。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用快照/渠道。旧单没有 `pay_url` 时尝试远端补单。
 2. 校验 `amount = subtotal + shipping_fee - discount + tax`，公式容差由 `Order::AMOUNT_TOLERANCE` 定义（当前 0.01）；商品明细按两位小数核对小计。
-3. 读取汇率及汇损，换算 USD。回跳域名校验的当前策略见 [D-05](decisions.md#d-05-下单域名策略)。
+3. 应用开启自动折扣时，首次建单随机减免原币种应付金额，保存原始金额及折扣快照；然后读取汇率及汇损，换算 USD。回跳域名校验的当前策略见 [D-05](decisions.md#d-05-下单域名策略)。
 4. 校验支付组归属且启用。普通路径经 `PaymentService` 筛选风控后，选当天成交额/权重最小的渠道；指定 `payment_method_key` 的路径跳过组内路由与限额检查，但仍检查渠道可用范围、启用状态和三个回跳 URL 的渠道域名。
 5. 计算并固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细。
 6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`；远端失败保留本地订单，供幂等重试恢复。

@@ -113,3 +113,18 @@
 **原因与影响：** 不同客户不能因重复访问同一链接复用别人的订单；金额、商户身份和回跳地址由服务端控制，支付结果由已验证网关状态驱动。Cloudflare 证书异步签发，域名是否就绪由模型状态和定时同步配合处理。
 
 **依据：** [routes/checkout.php](../routes/checkout.php)、[CheckoutLinkOrderService](../app/Services/Checkout/CheckoutLinkOrderService.php)、[CheckoutLinkController](../app/Http/Controllers/CheckoutLinkController.php)、[CheckoutLinkTest](../tests/Feature/CheckoutLinkTest.php)。
+
+## D-10 自动匹配尾件保留原价，超额计入订单折扣
+
+- 状态：采用（2026-09-30，按用户要求）。
+- 原因：商品行展示真实价格，折扣集中体现在订单上。
+- 实现：`OrderItemService::matchItems()` 返回原价明细和超额；`OrderCreationService` 同步增加小计与折扣并保留应付金额，重试还原原始目标后重新计算。
+- 影响：不再追加商品名称折扣文案，移除尾件改价回溯；旧配置 `order_match.min_price_ratio` 不再参与匹配。随机件数上限、容量限制仍有效。按订单币种单价匹配，避免先以 USD 凑满再逐行换汇导致短缺。
+
+## D-14 应用自动折扣保存原始金额与减免快照
+
+**状态：当前工作区已实现，未提交（2026-09-30）。** 应用开关默认关闭。自动折扣在统一建单入口验证原始请求后、计算汇率与费用前应用，计入 `discount` 并减少 `amount`；与匹配商品溢出折扣叠加。
+
+**原因与影响：** 实际付款金额改变后，不能继续用它与重试请求金额直接比较。新增 `original_amount` 用于幂等、`auto_discount` 用于审计；历史单原始金额为空时沿用 `amount`。折扣仅首次生成，应用开关变化不影响旧订单；查询、通知、手续费、结算按实际折后金额处理。
+
+**依据：** [OrderCreationService](../app/Services/OrderCreationService.php)、[迁移](../database/migrations/2026_09_30_000001_add_application_auto_discount.php)、[ApplicationAutoDiscountTest](../tests/Feature/ApplicationAutoDiscountTest.php)。规则及小额边界见 [数据库说明](database.md)。

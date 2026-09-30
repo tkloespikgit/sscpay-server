@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\OrderMatchedItem;
 use App\Models\PaymentMethod;
 use App\Models\ReplaceKeyword;
 use App\Models\SiteProduct;
@@ -25,15 +26,8 @@ use RuntimeException;
  * 匹配规则：
  *   - 匹配对象是变体数据（每个变体有独立的 SKU / 价格），父商品只用于
  *     取商品名称与详情页链接；
- *   - 变体价格统一以美金（USD）存储，先按美金金额匹配，
- *     最后再把单价折算成订单交易币种；
- *   - 每一轮从"单价不超过剩余额度"的变体里取出单价最高的 10 个，
- *     再从中随机选 1 个，能拿多少拿多少（数量递增），再加一件就超额时
- *     进入下一轮继续挑选；
- *   - 剩余额度连最便宜的变体都买不起时，末件改价补齐打满目标金额：
- *     优先挑"原价不低于剩余额度且最接近"的变体小幅打折；若折扣深度超过
- *     阈值（order_match.min_price_ratio，默认 0.4）则回溯退掉上一行一件把额度凑大，
- *     最多回溯有限轮次；小额订单无行可退时退化为深折扣兜底；
+ *   - 变体原价按汇率折算成订单币种后匹配；每轮从买得起的最高价 10 个候选中随机选取；
+ *   - 余额不足一件时，追加最接近余额的商品原价，超额作为订单折扣返回，不修改商品名称或单价；
  *   - 单个变体的件数上限在每次匹配时于 1 ~ order_match.max_item_quantity
  *     （默认 3，0 不限制）之间随机确定：后台配置只是临界值，随机值不会超过它，
  *     让同一单里各商品的件数分布不再千篇一律；随机上限内凑不出下一件时
@@ -56,12 +50,6 @@ class OrderItemService
     /** 每轮挑选时参与随机抽取的候选池大小（价格最高/最低的前 N 个）。 */
     private const RANDOM_POOL_SIZE = 10;
 
-    /** 末件补齐回溯退量的最大轮次，防止小额差额反复退行。 */
-    private const MAX_BACKTRACK_ROUNDS = 3;
-
-    /** order_match.min_price_ratio 未配置时的默认值：改价后单价不低于原价的 40%。 */
-    private const DEFAULT_MIN_PRICE_RATIO = '0.4';
-
     /** order_match.max_item_quantity 未配置时的默认值：单品件数随机上限的临界值为 3 件。 */
     private const DEFAULT_MAX_ITEM_QUANTITY = 3;
 
@@ -81,10 +69,10 @@ class OrderItemService
      * @param  string  $targetGoodsAmount  目标商品金额（订单币种，即订单应达到的 subtotal）
      * @param  string  $actualRate  含汇损的实际汇率：1 订单币种 = ? USD
      * @return array{items: list<array>, subtotal: string, overflow: string}
-     *               items：字段结构同下单 items（单价/小计为订单币种，
-     *               converted_unit_price 为美金原价）；
-     *               subtotal：匹配明细行小计之和（订单币种）；
-     *               overflow：保留字段，末件改价补齐后恒为 0
+     *                                                                       items：字段结构同下单 items（单价/小计为订单币种，
+     *                                                                       converted_unit_price 为美金原价）；
+     *                                                                       subtotal：匹配明细行小计之和（订单币种）；
+     *                                                                       overflow：商品小计超出目标金额的部分（订单币种），计入订单 discount
      */
     public function matchItems(PaymentMethod $paymentMethod, string $targetGoodsAmount, string $actualRate): array
     {
@@ -108,64 +96,35 @@ class OrderItemService
             throw new RuntimeException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品变体，请先同步商品");
         }
 
-        // 站点商品价格均为美金：先把目标金额折算成美金再匹配。
-        $targetUsd = bcmul($targetGoodsAmount, $actualRate, 2);
-
-        $lines = $this->fillByGreedy($candidates, $targetUsd);
-
-        // 把美金匹配结果折算回订单币种，组装成与下单 items 一致的明细结构。
+        // 先折算单价再匹配，避免逐行换汇截断后商品总额低于目标金额。
+        $lines = $this->fillByGreedy($candidates, $targetGoodsAmount, $actualRate);
         $items = [];
-        $subtotal = '0';
+        $subtotal = '0.00';
 
         foreach ($lines as $line) {
-            if ($line['price_adjusted']) {
-                // 改价补齐的行：单价直接取"目标金额 - 已有明细小计"，
-                // 保证匹配小计与订单商品金额分毫不差，不产生溢出折扣。
-                $unitPrice = bcsub($targetGoodsAmount, $subtotal, 2);
-            } else {
-                $unitPrice = bcdiv($line['price'], $actualRate, 2);
-            }
+            $unitPrice = $line['price'];
             $totalPrice = bcmul($unitPrice, (string) $line['quantity'], 2);
             $subtotal = bcadd($subtotal, $totalPrice, 2);
-
             $variation = $line['variation'];
             $product = $variation->siteProduct;
-
-            // 改价行的商品名追加折扣文案（按美金口径计算折扣百分比），
-            // 让商品名与改价后的金额自洽，避免"原价 16 美金卖 0.6"的观感。
-            $productName = $product->name;
-
-            if ($line['price_adjusted'] && $line['original_price'] !== null) {
-                $discountPercent = (int) round(
-                    (float) bcdiv(bcsub($line['original_price'], $line['price'], 4), $line['original_price'], 4) * 100
-                );
-
-                if ($discountPercent > 0) {
-                    $productName .= " ({$discountPercent}% discount)";
-                }
-            }
 
             $items[] = [
                 'product_sku' => $variation->sku,
                 'product_id' => (string) $variation->woo_variation_id,
                 'product_url' => $product->permalink,
-                'product_name' => $productName,
+                'product_name' => $product->name,
                 'product_description' => null,
                 'unit_price' => $unitPrice,
                 'quantity' => $line['quantity'],
                 'total_price' => $totalPrice,
-                // 改价行的"原价"即改价后的美金折算价，保持单价×汇率口径一致。
-                'converted_unit_price' => $line['price_adjusted']
-                    ? bcmul($unitPrice, $actualRate, 2)
-                    : $line['price'],
+                'converted_unit_price' => $this->variationPrice($variation),
             ];
         }
 
         return [
             'items' => $items,
             'subtotal' => $subtotal,
-            // 末件改价补齐后匹配小计与目标金额完全一致，不再有溢出折扣。
-            'overflow' => '0',
+            'overflow' => bcsub($subtotal, $targetGoodsAmount, 2),
         ];
     }
 
@@ -177,8 +136,8 @@ class OrderItemService
      *
      * @param  PaymentMethod  $paymentMethod  选定的支付方式（商品按其站点配置同步/创建）
      * @param  Order  $order  订单（取商户下单明细，明细自带下单时快照的 USD 折算价）
-     * @param  Collection<int, \App\Models\OrderMatchedItem>|null  $reusableCreated
-     *         幂等补单重试时上一轮已自动创建的商品行，按 USD 单价复用，避免站点堆积重复商品。
+     * @param  Collection<int, OrderMatchedItem>|null  $reusableCreated
+     *                                                                   幂等补单重试时上一轮已自动创建的商品行，按 USD 单价复用，避免站点堆积重复商品。
      */
     public function createItems(PaymentMethod $paymentMethod, Order $order, ?Collection $reusableCreated = null): array
     {
@@ -286,10 +245,10 @@ class OrderItemService
      *
      * @param  PaymentMethod  $paymentMethod  选定的支付方式（商品按其站点配置同步/创建）
      * @param  Order  $order  订单（取商户下单明细，明细自带下单时快照的 USD 折算价）
-     * @param  Collection<int, \App\Models\OrderMatchedItem>|null  $reusableCreated
-     *         幂等补单重试时上一轮已自动创建的商品行，按"USD 单价 + 替换后名称"复合键复用，
-     *         避免站点堆积重复商品；不同名字的商品即使同价也不能互相顶替，所以不能像 CREATE
-     *         那样只按价格复用。
+     * @param  Collection<int, OrderMatchedItem>|null  $reusableCreated
+     *                                                                   幂等补单重试时上一轮已自动创建的商品行，按"USD 单价 + 替换后名称"复合键复用，
+     *                                                                   避免站点堆积重复商品；不同名字的商品即使同价也不能互相顶替，所以不能像 CREATE
+     *                                                                   那样只按价格复用。
      */
     public function copyItems(PaymentMethod $paymentMethod, Order $order, ?Collection $reusableCreated = null): array
     {
@@ -424,21 +383,20 @@ class OrderItemService
     }
 
     /**
-     * 美金口径的贪心凑单：每一轮从"单价不超过剩余额度"的变体中取单价
-     * 最高的 RANDOM_POOL_SIZE 个，随机选 1 个，数量按剩余额度尽量拿满；
-     * 剩余额度一件都买不起时，末件改价补齐：优先挑原价最接近剩余额度的变体小幅打折，
-     * 折扣深度低于阈值（order_match.min_price_ratio）时回溯退上一行一件凑大额度，
-     * 最多回溯 MAX_BACKTRACK_ROUNDS 轮；无行可退时退化为深折扣兜底。
-     * 单个变体的件数上限每次匹配时在 1 ~ order_match.max_item_quantity（0 表示不限制）
-     * 之间随机确定，配置值只是随机上限的临界值；随机上限内已无可用变体时放宽到临界值。
+     * 按订单币种原价贪心匹配；尾件保留原价，遵守随机件数上限和配置硬上限。
      *
-     * @param  Collection<int, SiteProductVariation>  $candidates  候选变体（价格 > 0）
-     * @return list<array{variation: SiteProductVariation, price: string, quantity: int, price_adjusted: bool, original_price: string|null}>
+     * @param  Collection<int, SiteProductVariation>  $candidates
+     * @return list<array{variation: SiteProductVariation, price: string, quantity: int}>
      */
-    private function fillByGreedy(Collection $candidates, string $targetUsd): array
+    private function fillByGreedy(Collection $candidates, string $targetAmount, string $actualRate): array
     {
+        $priceOf = fn (SiteProductVariation $variation) => bcdiv($this->variationPrice($variation), $actualRate, 2);
+        $candidates = $candidates->filter(fn (SiteProductVariation $variation) => bccomp($priceOf($variation), '0', 2) > 0);
+        if ($candidates->isEmpty()) {
+            throw new RuntimeException('站点商品折算后的单价均小于 0.01，无法自动匹配商品');
+        }
         $lines = [];
-        $remaining = $targetUsd;
+        $remaining = $targetAmount;
 
         // 单品件数上限的临界值（0 或配成非正数表示不限制）。
         $hardMax = (int) SystemConfig::get('order_match.max_item_quantity', self::DEFAULT_MAX_ITEM_QUANTITY);
@@ -448,7 +406,7 @@ class OrderItemService
         }
 
         // 某变体已分配的件数（variation id => 件数）：同一变体可能在多轮里被选中、
-        // 也可能出现在末件改价行，用 map 随行增删同步维护，过滤时 O(1) 查询；
+        // 也可能出现在末件原价行，用 map 随行增删同步维护，过滤时 O(1) 查询；
         // 若改成每次遍历 $lines 汇总，多轮凑单下会退化成 O(轮数×候选数×行数) 卡死。
         $allocated = [];
 
@@ -465,7 +423,7 @@ class OrderItemService
         };
 
         // 临界值上限：随机上限内已经凑不出下一件时用它兜底，保证随机件数只影响
-        // 明细的件数分布，不会让匹配提前进入改价补齐甚至直接失败。
+        // 明细的件数分布，不会让匹配提前进入追加尾件甚至直接失败。
         $hardLimit = fn (SiteProductVariation $variation) => $hardMax;
 
         // 未达件数上限的候选变体。
@@ -474,9 +432,9 @@ class OrderItemService
         );
 
         // 剩余额度买得起、且未达件数上限的候选池：单价最高的 RANDOM_POOL_SIZE 个。
-        $affordableUnder = function (callable $limit) use ($poolUnder, &$remaining) {
+        $affordableUnder = function (callable $limit) use ($poolUnder, &$remaining, $priceOf) {
             return $poolUnder($limit)
-                ->filter(fn (SiteProductVariation $variation) => bccomp($this->variationPrice($variation), $remaining, 2) <= 0)
+                ->filter(fn (SiteProductVariation $variation) => bccomp($priceOf($variation), $remaining, 2) <= 0)
                 ->sortByDesc(fn (SiteProductVariation $variation) => (float) $variation->price)
                 ->take(self::RANDOM_POOL_SIZE);
         };
@@ -487,11 +445,11 @@ class OrderItemService
             $capacity = '0';
 
             foreach ($candidates as $variation) {
-                $capacity = bcadd($capacity, bcmul($this->variationPrice($variation), (string) $hardMax, 2), 2);
+                $capacity = bcadd($capacity, bcmul($priceOf($variation), (string) $hardMax, 2), 2);
             }
 
-            if (bccomp($targetUsd, $capacity, 2) > 0) {
-                throw new RuntimeException("站点商品容量不足：按单品最多 {$hardMax} 件计算，可用商品总额 {$capacity} 美金，低于目标金额 {$targetUsd} 美金，无法自动匹配商品");
+            if (bccomp($targetAmount, $capacity, 2) > 0) {
+                throw new RuntimeException("站点商品容量不足：按单品最多 {$hardMax} 件计算，可用商品总额 {$capacity}（订单币种），低于目标金额 {$targetAmount}（订单币种），无法自动匹配商品");
             }
         }
 
@@ -510,7 +468,7 @@ class OrderItemService
             }
 
             $picked = $affordable->random();
-            $price = $this->variationPrice($picked);
+            $price = $priceOf($picked);
 
             // 数量取剩余额度最多能买的件数（再加一件就会超出），且不超过该变体的件数上限：
             // 随机上限还有余量就按随机上限，随机上限已用满（放宽轮次命中）时按临界值。
@@ -524,111 +482,24 @@ class OrderItemService
                 'variation' => $picked,
                 'price' => $price,
                 'quantity' => $quantity,
-                'price_adjusted' => false,
-                'original_price' => null,
             ];
             $allocated[$picked->id] = ($allocated[$picked->id] ?? 0) + $quantity;
             $remaining = bcsub($remaining, bcmul($price, (string) $quantity, 2), 2);
         }
 
-        // 剩余额度买不起任何一件变体：末件改价补齐打满目标金额。
-        // 为避免"16 美金的商品改价到 0.6 美金"这类深折扣异常单，优先挑"原价不低于
-        // 剩余额度且最接近"的变体（小幅打折、永不涨价）；若折扣深度仍低于阈值，
-        // 回溯退掉最后一行一件把额度凑大，最多回溯 MAX_BACKTRACK_ROUNDS 轮。
+        // 剩余预算不足一件时按原价追加；超出部分由订单级折扣抵扣。
         if (bccomp($remaining, '0', 2) > 0) {
-            $minRatio = (string) SystemConfig::get('order_match.min_price_ratio', self::DEFAULT_MIN_PRICE_RATIO);
-            // 候选池最贵变体的原价：回溯后的额度一旦超过它，再挑就只能涨价了，
-            // 此时停止回溯、接受当前折扣偏深的挑选（深折扣优于涨价）。
-            $maxPrice = $this->variationPrice($candidates->sortByDesc(fn (SiteProductVariation $v) => (float) $v->price)->first());
-            $picked = null;
-
-            for ($attempt = 0; $attempt <= self::MAX_BACKTRACK_ROUNDS; $attempt++) {
-                // 末件改价行也是一件，同样要排除已达件数上限的变体：先在随机上限内挑，
-                // 挑不出"原价不低于剩余额度"的再放宽到临界值。
-                $picked = $this->pickClosestAbove($poolUnder($randomLimit), $remaining)
-                    ?? $this->pickClosestAbove($poolUnder($hardLimit), $remaining);
-
-                // 折扣深度可接受（改价/原价 >= 阈值）就用它，停止回溯。
-                if ($picked !== null
-                    && bccomp(bcdiv($remaining, $this->variationPrice($picked), 4), $minRatio, 4) >= 0) {
-                    break;
-                }
-
-                // 没有可回溯的行（首件都买不起的小额订单），只能接受兜底。
-                if ($lines === []) {
-                    break;
-                }
-
-                $last = &$lines[count($lines) - 1];
-                $nextRemaining = bcadd($remaining, $last['price'], 2);
-
-                // 回溯后额度会超出所有变体原价（再挑只能涨价），停止回溯。
-                if (bccomp($nextRemaining, $maxPrice, 2) > 0) {
-                    unset($last);
-
-                    break;
-                }
-
-                // 回溯：最后一行退一件，把一件的预算还给剩余额度。
-                $remaining = $nextRemaining;
-                $last['quantity']--;
-                $allocated[$last['variation']->id]--;
-
-                if ($last['quantity'] <= 0) {
-                    array_pop($lines);
-                }
-
-                unset($last);
-            }
+            $picked = $poolUnder($randomLimit)->sortBy($priceOf)->first()
+                ?? $poolUnder($hardLimit)->sortBy($priceOf)->first();
 
             if ($picked === null) {
-                // 深折扣兜底：所有变体原价都低于剩余额度或无行可退时，
-                // 从未达件数上限（随机上限内没有可用变体时放宽到临界值）的
-                // 最便宜 10 个里随机挑一件改价补齐。
-                $pool = $poolUnder($randomLimit);
-
-                if ($pool->isEmpty()) {
-                    $pool = $poolUnder($hardLimit);
-                }
-
-                $fallbackPool = $pool
-                    ->sortBy(fn (SiteProductVariation $variation) => (float) $variation->price)
-                    ->take(self::RANDOM_POOL_SIZE);
-
-                if ($fallbackPool->isEmpty()) {
-                    throw new RuntimeException('站点商品均已达到最大匹配件数，无法继续匹配商品');
-                }
-
-                $picked = $fallbackPool->random();
+                throw new RuntimeException('站点商品均已达到最大匹配件数，无法继续匹配商品');
             }
 
-            // 单独加一行而不是并入已有同款行，避免同一行里混着原价与改价两种单价；
-            // original_price 记录改价前原价，供组装明细时生成折扣文案。
-            $lines[] = [
-                'variation' => $picked,
-                'price' => $remaining,
-                'quantity' => 1,
-                'price_adjusted' => true,
-                'original_price' => $this->variationPrice($picked),
-            ];
-            $allocated[$picked->id] = ($allocated[$picked->id] ?? 0) + 1;
+            $lines[] = ['variation' => $picked, 'price' => $priceOf($picked), 'quantity' => 1];
         }
 
         return $lines;
-    }
-
-    /**
-     * 从候选变体中挑出"原价不低于剩余额度且最接近剩余额度"的一件，
-     * 改价到剩余额度时折扣幅度最小且永不涨价；没有符合条件的返回 null。
-     *
-     * @param  Collection<int, SiteProductVariation>  $candidates
-     */
-    private function pickClosestAbove(Collection $candidates, string $remainingUsd): ?SiteProductVariation
-    {
-        return $candidates
-            ->filter(fn (SiteProductVariation $variation) => bccomp($this->variationPrice($variation), $remainingUsd, 2) >= 0)
-            ->sortBy(fn (SiteProductVariation $variation) => (float) $variation->price)
-            ->first();
     }
 
     /** 把变体价格规范成两位小数字符串，供 bcmath 比较/计算。 */
