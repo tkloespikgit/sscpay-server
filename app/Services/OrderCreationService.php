@@ -160,7 +160,7 @@ class OrderCreationService
         //    必然不一致——落地页本来就跑在商户自有域名上，而不是应用绑定的电商站点域名。
         //    这一步防的是"商户把回跳地址指到任意第三方站点"，而收款链接的地址由
         //    系统生成、商户改不了，风险本身不存在。
-        //    关闭域名检测，不再强制验证
+        //    关闭域名验证
         if (! filled($data['payment_method_key'] ?? null) && $source !== CheckoutLink::ORDER_SOURCE && false) {
             $boundDomain = (string) $application->website;
             foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
