@@ -554,17 +554,13 @@ class OrderCreationService
     }
 
     /**
-     * 发票号：支付方式 invoice 前缀 _ 客户名 _ 客户姓 _ 系统订单号，
+     * 发票号：支付方式 invoice 前缀 _ 系统订单号；前缀为空时只用系统订单号，
      * 去掉所有空白字符后统一转大写（WordPress 侧对发票号格式有要求）。
      */
     private function buildInvoiceNumber(Order $order, PaymentMethod $paymentMethod): string
     {
-        $raw = implode('_', [
-            (string) $paymentMethod->invoice_prefix,
-            (string) $order->customer_first_name,
-            (string) $order->customer_last_name,
-            (string) $order->order_no,
-        ]);
+        $prefix = (string) preg_replace('/\s+/u', '', (string) $paymentMethod->invoice_prefix);
+        $raw = $prefix === '' ? (string) $order->order_no : $prefix.'_'.$order->order_no;
 
         return mb_strtoupper((string) preg_replace('/\s+/u', '', $raw));
     }
