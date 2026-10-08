@@ -112,7 +112,7 @@ class ObserverResource extends Resource
                 // 手动重复一遍范围判断。
                 Select::make('paymentMethods')
                     ->label(__('admin.observer.fields.payment_methods'))
-                    ->relationship('paymentMethods', 'method_name')
+                    ->relationship('paymentMethods', 'method_name', modifyQueryUsing: fn (Builder $query) => $query->withTrashed())
                     ->getOptionLabelFromRecordUsing(fn (PaymentMethod $record) => ($record->merchant?->name ?? __('admin.payment_method.columns.system_level'))." - {$record->method_name}")
                     ->multiple()
                     ->searchable()

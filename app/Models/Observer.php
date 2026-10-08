@@ -101,9 +101,10 @@ class Observer extends Authenticatable implements FilamentUser
         return $this->belongsTo(User::class, 'owner_id');
     }
 
+    /** 分配包含软删除渠道，便于观察历史订单并在编辑时保留已有授权。 */
     public function paymentMethods(): BelongsToMany
     {
-        return $this->belongsToMany(PaymentMethod::class, 'observer_payment_methods');
+        return $this->belongsToMany(PaymentMethod::class, 'observer_payment_methods')->withTrashed();
     }
 
     public function canAccessPanel(Panel $panel): bool

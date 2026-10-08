@@ -4,7 +4,10 @@ namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
 use App\Models\Application;
+use App\Models\Merchant;
+use App\Models\Order;
 use App\Models\User;
+use App\Services\LogisticsImportService;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -91,6 +94,70 @@ class OrderListFiltersTest extends TestCase
             ->filterTable('payment_method', ['alipay', 'usdt'])
             ->assertCanSeeTableRecords([$a, $b])
             ->assertCanNotSeeTableRecords([$c]);
+    }
+
+    public function test_deleted_payment_method_remains_available_in_filter(): void
+    {
+        $method = $this->makePaymentMethod('archived');
+        $target = $this->makeOrder('SSC-ARCHIVED', 'M-ARCHIVED', ['payment_method' => $method->method_code, 'payment_method_id' => $method->id]);
+        $other = $this->makeOrder('SSC-OTHER', 'M-OTHER');
+        $method->delete();
+
+        $page = Livewire::test(ListOrders::class);
+        $options = $page->instance()->getTable()->getFilter('payment_method')->getOptions();
+        $this->assertSame('ARCHIVED', $options[$this->merchant->name]['archived']);
+
+        $page->filterTable('payment_method', ['archived'])
+            ->assertCanSeeTableRecords([$target])
+            ->assertCanNotSeeTableRecords([$other]);
+    }
+
+    public function test_export_without_merchant_filter_downloads_current_results(): void
+    {
+        $this->makeOrder('SSC-EXPORT', 'M-EXPORT');
+
+        Livewire::test(ListOrders::class)
+            ->callAction('exportLogisticsTemplate')
+            ->assertFileDownloaded('logistics_template_'.now()->format('Ymd_His').'.csv');
+    }
+
+    public function test_export_preserves_filters_and_merchant_permissions(): void
+    {
+        $otherMerchant = Merchant::create(['name' => 'Other Merchant', 'contact_person' => 'Other', 'contact_phone' => '123456', 'contact_email' => 'other@example.com']);
+        $this->makeOrder('SSC-OWN', 'M-OWN', ['status' => 'paid']);
+        $this->makeOrder('SSC-PENDING', 'M-PENDING', ['status' => 'pending']);
+        $this->makeOrder('SSC-OTHER', 'M-OTHER', ['merchant_id' => $otherMerchant->id, 'status' => 'paid']);
+
+        $service = app(LogisticsImportService::class);
+        $page = Livewire::test(ListOrders::class)->filterTable('status', ['paid']);
+        $csv = $service->generateTemplate(null, $page->instance()->getFilteredTableQuery());
+        $this->assertStringContainsString('SSC-OWN', $csv);
+        $this->assertStringContainsString('SSC-OTHER', $csv);
+        $this->assertStringNotContainsString('SSC-PENDING', $csv);
+
+        $merchantUser = User::create([
+            'name' => 'Merchant User', 'email' => 'export@example.com',
+            'password' => bcrypt('secret'), 'merchant_id' => $this->merchant->id,
+        ]);
+        $this->actingAs($merchantUser);
+        $csv = $service->generateTemplate(null, Order::query()->where('status', 'paid'));
+        $this->assertStringContainsString('SSC-OWN', $csv);
+        $this->assertStringNotContainsString('SSC-OTHER', $csv);
+        $this->assertStringNotContainsString('SSC-PENDING', $csv);
+
+        // 显式传入其他商户也不能绕过登录用户的租户范围。
+        $csv = $service->generateTemplate($otherMerchant->id, Order::query());
+        $this->assertStringNotContainsString('SSC-OTHER', $csv);
+
+        $manager = User::create([
+            'name' => 'Manager', 'email' => 'manager-export@example.com',
+            'password' => bcrypt('secret'),
+        ]);
+        $this->merchant->update(['owner_id' => $manager->id]);
+        $this->actingAs($manager);
+        $csv = $service->generateTemplate(null, Order::query()->where('status', 'paid'));
+        $this->assertStringContainsString('SSC-OWN', $csv);
+        $this->assertStringNotContainsString('SSC-OTHER', $csv);
     }
 
     /**

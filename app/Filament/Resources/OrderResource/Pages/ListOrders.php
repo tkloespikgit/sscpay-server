@@ -5,7 +5,7 @@ namespace App\Filament\Resources\OrderResource\Pages;
 use App\Filament\Resources\OrderResource;
 use App\Jobs\ProcessLogisticsImportJob;
 use App\Models\LogisticsImportTask;
-use App\Models\Merchant;
+use App\Models\User;
 use App\Services\LogisticsImportService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -16,17 +16,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * 订单列表页。头部两个物流相关动作（导出模板 / 上传单号）都严格绑定"单个商户"，
- * 但两者的开放范围不同：
- *
- *   - 导出模板（只读）：商户用户取登录态的 merchant_id；超级管理员必须先在表格上方的
- *     「商户」筛选里选定一个商户（见 resolveExportMerchantId()），否则拒绝执行——
- *     不限制就会跨商户导出数据。
- *   - 上传单号（会改写订单发货状态并回传商户站点）：只允许商户用户操作，超级管理员
- *     一律不可见也不可调用（见 canUploadLogistics()）。
- *
- * 导出范围 = 列表当前的筛选 + 搜索条件命中的全部订单（不受分页限制），
- * 通过 getFilteredTableQuery() 拿到与表格完全一致的查询。
+ * 导出使用列表当前筛选和搜索条件，范围限定为登录账号可管理的商户。
+ * 上传物流仍绑定登录用户所属的单个商户。
  */
 class ListOrders extends ListRecords
 {
@@ -40,13 +31,9 @@ class ListOrders extends ListRecords
                 ->icon('heroicon-o-arrow-down-tray')
                 ->visible(fn () => (bool) auth()->user()?->can(Permissions::LOGISTICS_IMPORTS_MANAGE))
                 ->action(function ($livewire, LogisticsImportService $service) {
-                    $merchantId = self::resolveExportMerchantId($livewire);
+                    $user = auth()->user();
 
-                    if ($merchantId === null) {
-                        self::notifyMerchantRequired();
-
-                        return null;
-                    }
+                    abort_unless($user instanceof User && $user->can(Permissions::LOGISTICS_IMPORTS_MANAGE), 403);
 
                     // getFilteredTableQuery() 来自 Filament\Tables\Concerns\HasRecords，
                     // 那是个 trait——不能用 instanceof 判断（PHP 里对 trait 用 instanceof
@@ -64,7 +51,13 @@ class ListOrders extends ListRecords
                         return null;
                     }
 
-                    $csv = $service->generateTemplate($merchantId, $query);
+                    $manageableIds = $user->manageableMerchantIds();
+
+                    if ($manageableIds !== null) {
+                        $query->whereIn('orders.merchant_id', $manageableIds);
+                    }
+
+                    $csv = $service->generateTemplate(null, $query);
 
                     return response()->streamDownload(
                         fn () => print ($csv),
@@ -144,50 +137,6 @@ class ListOrders extends ListRecords
     }
 
     /**
-     * 「导出物流模板」绑定的商户 ID：
-     *   - 商户用户 -> 自己的 merchant_id；
-     *   - 平台侧账号（超级管理员、商户级管理员）-> 列表「商户」筛选里选定的那一个，
-     *     没选则返回 null（禁止跨商户导出）。
-     *
-     * 动作闭包里一律用 self:: 而不是 static:: 调本类的静态方法：
-     * Filament 在 clone 组件时会把闭包 bindTo 到克隆体上，而 bindTo 会把
-     * 后期静态绑定指向 Action 类，static:: 会直接报"方法不存在"。
-     */
-    private static function resolveExportMerchantId($livewire): ?int
-    {
-        $user = auth()->user();
-
-        if (! $user) {
-            return null;
-        }
-
-        if (! $user->isPlatformStaff()) {
-            return $user->merchant_id ? (int) $user->merchant_id : null;
-        }
-
-        // 同上用 method_exists：getTableFilterState() 定义在 HasFilters trait 里。
-        if (! is_object($livewire) || ! method_exists($livewire, 'getTableFilterState')) {
-            return null;
-        }
-
-        $selected = $livewire->getTableFilterState('merchant_id')['value'] ?? null;
-
-        if (blank($selected)) {
-            return null;
-        }
-
-        // 筛选项必须是系统里真实存在、且在自己可管理范围内的商户——超管不限；
-        // 商户级管理员即便手改请求参数塞一个别家商户的 ID 进来，也会在这里被拦下。
-        $manageableIds = $user->manageableMerchantIds();
-
-        if ($manageableIds !== null && ! in_array((int) $selected, $manageableIds, true)) {
-            return null;
-        }
-
-        return Merchant::query()->whereKey($selected)->exists() ? (int) $selected : null;
-    }
-
-    /**
      * 「上传物流单号」是否可用：只有绑定了商户的普通用户才行，超级管理员即便在筛选里
      * 选了商户也不允许代传——上传会改写订单发货状态并触发回传给商户站点，属于商户
      * 自己的业务动作，平台侧只保留只读的导出模板能力。
@@ -206,13 +155,5 @@ class ListOrders extends ListRecords
     private static function uploadMerchantId(): ?int
     {
         return self::canUploadLogistics() ? (int) auth()->user()->merchant_id : null;
-    }
-
-    private static function notifyMerchantRequired(): void
-    {
-        Notification::make()
-            ->title(__('admin.order.actions.merchant_required'))
-            ->danger()
-            ->send();
     }
 }

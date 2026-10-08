@@ -108,13 +108,12 @@ class LogisticsImportService
     /**
      * 按订单列表当前的筛选 + 搜索条件导出全部命中订单（不受分页限制）。
      *
-     * @param  int  $merchantId  导出范围锁定的商户 ID。调用方（ListOrders）负责校验
-     *                           超级管理员必须先在列表筛选里指定商户；这里再叠一层
-     *                           forMerchant()，保证任何情况下都不会跨商户导出。
+     * @param  int|null  $merchantId  可选的单商户限制；null 时保留查询的权限范围与筛选。
+     *                                调用方负责提供已授权的查询，不能移除租户 scope。
      * @param  Builder  $query  订单列表页已应用筛选/搜索的查询（ListOrders::getFilteredTableQuery()）
      * @return string 带 UTF-8 BOM 的 CSV 文本（BOM 是为了 Excel 直接双击打开不乱码）
      */
-    public function generateTemplate(int $merchantId, Builder $query): string
+    public function generateTemplate(?int $merchantId, Builder $query): string
     {
         $handle = fopen('php://temp/maxmemory:8388608', 'r+');
 
@@ -129,8 +128,13 @@ class LogisticsImportService
         // select('orders.*')：表格查询可能带着列的聚合子查询（withCount 等），
         // 导出只需要订单本身的字段，显式收敛 select 也顺便保证 lazyById() 能拿到 id。
         // lazyById 按主键分批取，内存占用与文件行数无关。
+        $query = clone $query;
+
+        if ($merchantId !== null) {
+            $query->where('orders.merchant_id', $merchantId);
+        }
+
         $orders = $query
-            ->forMerchant($merchantId)
             ->select('orders.*')
             ->with(['merchant', 'application', 'shipping', 'paymentMethod'])
             ->lazyById(self::CHUNK_SIZE);

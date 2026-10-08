@@ -2,6 +2,19 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-08：观察者可分配已删除支付方式（当前工作区，未提交）
+
+- `ObserverResource` 的支付方式分配选项包含软删除渠道，保留 `PaymentMethod` 的租户可见范围；`Observer::paymentMethods()` 包含软删除关联，编辑账户时回显并保留已有分配。
+- 新增 `ObserverPaymentMethodsTest`，覆盖软删除渠道分配、编辑保留、商户级管理员越权提交被拒绝及管理范围内渠道可分配。
+- 验证：`/opt/homebrew/bin/php artisan test --filter='ObserverPaymentMethodsTest|OrderListFiltersTest|LogisticsTemplateTest'` 在 SQLite 内存库通过 22 个测试、106 个断言；本次三个 PHP 文件 Pint 及 `git diff --check` 通过。未涉及数据库迁移或外部请求。
+
+## 2026-10-08：订单导出按当前筛选范围，筛选包含已删除渠道（当前工作区，未提交）
+
+- `ListOrders` 取消平台账号必须选定单个商户的导出限制，沿用列表筛选和搜索，并显式限定 `manageableMerchantIds()`。超管可跨商户导出，商户级管理员只可导出名下商户，普通商户只可导出自身订单；保留物流权限检查。
+- `LogisticsImportService::generateTemplate()` 支持商户 ID 为 null，保留查询全局 scope；传入单商户 ID 时追加条件，不再绕过租户 scope。克隆查询避免改写列表查询。物流上传沿用原有规则。
+- `OrderResource` 支付方式筛选加入 `withTrashed()`，包含软删除渠道并保留现有租户可见范围。同步架构说明及 `OrderListFiltersTest`。
+- 验证：使用 `/opt/homebrew/bin/php`，SQLite 内存库运行 `OrderListFiltersTest`、`LogisticsTemplateTest`，20 个测试、77 个断言通过；四个变更 PHP 文件 Pint 检查及 `git diff --check` 通过。未涉及迁移或真实外部请求。
+
 ## 2026-09-30：应用级自动折扣（当前工作区，未提交）
 
 - Application 后台增加默认关闭的自动折扣开关；统一建单入口在原始金额校验后、费用计算前按原币种随机减免。当前边界采用不超过 200 减 0.01～0.10、超过 200 减 0.01～0.50；极小金额保留至少 0.01，不足减免时跳过。

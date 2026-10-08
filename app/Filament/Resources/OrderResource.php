@@ -26,6 +26,7 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 /**
  * 订单管理（4.4 / 7.7 节）。列表支持商户、应用、支付方式、状态、
@@ -200,8 +201,6 @@ class OrderResource extends Resource
                 // 商户筛选仅平台侧账号（超管、商户级管理员）可见；商户用户的数据本身已被 MerchantScope 限制。
                 // Merchant 模型本身不挂 MerchantScope（它就是"商户"，不隶属于商户），
                 // 这里手动把选项收窄到商户级管理员名下的商户，避免筛出自己管不到的商户。
-                // 注意：保持单选——ListOrders 的物流模板导出依赖 getTableFilterState('merchant_id')['value']
-                // 来确定导出哪个商户的订单。
                 SelectFilter::make('merchant_id')
                     ->label(__('admin.order.filters.merchant'))
                     ->visible(fn () => (bool) auth()->user()?->isPlatformStaff())
@@ -234,7 +233,7 @@ class OrderResource extends Resource
                         // 不加 withoutGlobalScopes()，交给 MerchantScope 自动隔离：
                         // 商户用户只会看到自己商户的支付方式，不会出现其他商户的配置。
                         if (! $user?->isPlatformStaff()) {
-                            return PaymentMethod::query()
+                            return PaymentMethod::query()->withTrashed()
                                 ->orderBy('sort_order')
                                 ->pluck('method_name', 'method_code');
                         }
@@ -243,7 +242,7 @@ class OrderResource extends Resource
                         // 按商户分组展示，便于区分不同商户配置的同名/同 code 支付方式
                         // （按 code 筛选时会同时命中这些商户的订单）。MerchantScope 已经把
                         // 商户级管理员限制在自己名下的商户，这里不用再额外过滤。
-                        return PaymentMethod::query()
+                        return PaymentMethod::query()->withTrashed()
                             ->with('merchant')
                             ->orderBy('sort_order')
                             ->get()
@@ -505,7 +504,7 @@ class OrderResource extends Resource
      * 订单；另外单列一组"其中已支付"，口径与仪表盘的总成交额完全一致
      * （Order::scopePaidEver()），这样两个页面的数字可以直接对上。
      */
-    public static function currencyStats($livewire): \Illuminate\Support\Collection
+    public static function currencyStats($livewire): Collection
     {
         $query = $livewire->getFilteredSortedTableQuery();
 
