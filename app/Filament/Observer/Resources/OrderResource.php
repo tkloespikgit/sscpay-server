@@ -7,7 +7,9 @@ use App\Filament\Resources\OrderResource as AdminOrderResource;
 use App\Models\Observer;
 use App\Models\Order;
 use App\Models\PaymentMethod;
+use App\Support\ObserverOrderStatus;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Tables\Columns\TextColumn;
@@ -77,7 +79,8 @@ class OrderResource extends Resource
 
         return parent::getEloquentQuery()
             ->withoutGlobalScopes()
-            ->whereIn('payment_method_id', $paymentMethodIds);
+            ->whereIn('payment_method_id', $paymentMethodIds)
+            ->whereIn('status', ObserverOrderStatus::visibleStatuses());
     }
 
     public static function table(Table $table): Table
@@ -88,23 +91,16 @@ class OrderResource extends Resource
             ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping', 'paymentMethod.merchant']))
             ->columns([
                 TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable(),
-                TextColumn::make('paymentMethod.merchant.name')->label(__('admin.order.columns.merchant_name')),
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))
                     ->formatStateUsing(fn (?string $state, Order $record) => $state ?? $record->payment_method),
 
                 TextColumn::make('status')->label(__('admin.order.columns.status'))
                     ->badge()
-                    ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
-                    ->color(fn (string $state) => match ($state) {
-                        'pending' => 'gray',
-                        'paid' => 'info',
-                        'shipped' => 'warning',
-                        'completed' => 'success',
+                    ->formatStateUsing(fn (string $state) => ObserverOrderStatus::label($state))
+                    ->color(fn (string $state) => match (ObserverOrderStatus::group($state)) {
+                        'paid' => 'success',
                         'disputing' => 'warning',
-                        'dispute_review' => 'warning',
-                        'partially_refunded' => 'warning',
-                        'cancelled', 'failed', 'expired', 'refunded', 'chargeback' => 'danger',
-                        default => 'gray',
+                        default => 'danger',
                     }),
 
                 TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
@@ -132,20 +128,22 @@ class OrderResource extends Resource
                             ])
                         : []),
 
-                SelectFilter::make('status')->label(__('admin.order.filters.status'))->options([
-                    'pending' => __('admin.order.statuses.pending'),
-                    'paid' => __('admin.order.statuses.paid'),
-                    'shipped' => __('admin.order.statuses.shipped'),
-                    'completed' => __('admin.order.statuses.completed'),
-                    'cancelled' => __('admin.order.statuses.cancelled'),
-                    'failed' => __('admin.order.statuses.failed'),
-                    'expired' => __('admin.order.statuses.expired'),
-                    'disputing' => __('admin.order.statuses.disputing'),
-                    'dispute_review' => __('admin.order.statuses.dispute_review'),
-                    'partially_refunded' => __('admin.order.statuses.partially_refunded'),
-                    'refunded' => __('admin.order.statuses.refunded'),
-                    'chargeback' => __('admin.order.statuses.chargeback'),
-                ]),
+                SelectFilter::make('status')->label(__('admin.order.filters.status'))
+                    ->options(ObserverOrderStatus::options())
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        filled($data['value'] ?? null),
+                        fn (Builder $q) => $q->whereIn('status', ObserverOrderStatus::GROUPS[$data['value']] ?? [])
+                    )),
+
+                Filter::make('created_at')
+                    ->label(__('admin.order.columns.created_at'))
+                    ->schema([
+                        DatePicker::make('created_from')->label(__('admin.order.filters.created_from')),
+                        DatePicker::make('created_to')->label(__('admin.order.filters.created_to')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query
+                        ->when($data['created_from'] ?? null, fn (Builder $q, $date) => $q->whereDate('orders.created_at', '>=', $date))
+                        ->when($data['created_to'] ?? null, fn (Builder $q, $date) => $q->whereDate('orders.created_at', '<=', $date))),
 
                 // 发货状态判定方式对齐 App\Filament\Resources\OrderResource（以是否存在
                 // 物流记录为准，不按 status 字段判断）。

@@ -6,6 +6,7 @@ use App\Filament\Observer\Resources\OrderResource;
 use App\Filament\Observer\Resources\OrderResource\RelationManagers\OrderDisputeEventsRelationManager;
 use App\Models\Order;
 use App\Models\OrderShipping;
+use App\Support\ObserverOrderStatus;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
@@ -43,7 +44,7 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no'))
                         ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
-                        ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state)),
+                        ->formatStateUsing(fn (string $state) => ObserverOrderStatus::label($state)),
                     TextEntry::make('paymentMethod.method_name')->label(__('admin.order.fields.payment_method'))
                         ->formatStateUsing(fn (?string $state, Order $record) => $state ?? $record->payment_method),
                     TextEntry::make('transaction_id')->label(__('admin.order.fields.transaction_id'))

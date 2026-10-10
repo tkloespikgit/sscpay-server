@@ -2,6 +2,13 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-10：观察者状态归并、日期筛选和订单导出（当前工作区，未提交）
+
+- 新增 `ObserverOrderStatus`，观察者端仅展示支付成功、退款/部分退款、拒付、争议中四组状态；待发货（paid）、已发货、已完成归入支付成功，争议审核中与争议中归入争议中。其他状态在 Resource 查询入口排除，详情与列表共用展示口径。
+- 观察者 `OrderResource` 增加创建日期范围，包含起止当天。`ListOrders` 增加 CSV 导出，`ObserverOrderExportService` 按当前筛选/搜索导出所有匹配记录（不受分页限制），重新校验渠道及状态范围，金额保持观察者显示比例，不输出未折算金额或额外客户字段；增加中英文文案。
+- 更新架构说明，新增 `ObserverOrdersTest`，覆盖状态分组、其他状态隐藏、已删除授权渠道、日期边界、跨页搜索导出、渠道隔离和金额折算。
+- 验证：使用 `/opt/homebrew/bin/php`，SQLite 内存库联跑 `ObserverOrdersTest` 与 `ObserverPaymentMethodsTest`，5 个测试、107 个断言通过；变更 PHP 文件 Pint、`git diff --check` 通过。没有迁移、前端资源或真实外部请求。
+
 ## 2026-10-08：观察者可分配已删除支付方式（当前工作区，未提交）
 
 - `ObserverResource` 的支付方式分配选项包含软删除渠道，保留 `PaymentMethod` 的租户可见范围；`Observer::paymentMethods()` 包含软删除关联，编辑账户时回显并保留已有分配。
