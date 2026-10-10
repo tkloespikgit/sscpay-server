@@ -6,6 +6,7 @@ use App\Jobs\SendOrderNotificationJob;
 use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
 use App\Support\SignatureCanonicalizer;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -49,13 +50,17 @@ class OrderNotificationService
     /**
      * 供 ProcessDueOrderNotifications 命令在扫描到到期重试记录后调用。
      */
-    public function dispatchRetry(OrderNotificationAttempt $dueAttempt): OrderNotificationAttempt
+    public function dispatchRetry(OrderNotificationAttempt $dueAttempt): ?OrderNotificationAttempt
     {
-        $next = $dueAttempt->createNextAttempt();
+        return DB::transaction(function () use ($dueAttempt): ?OrderNotificationAttempt {
+            $next = $dueAttempt->createNextAttempt();
 
-        SendOrderNotificationJob::dispatch($next->id);
+            if ($next !== null) {
+                SendOrderNotificationJob::dispatch($next->id)->afterCommit();
+            }
 
-        return $next;
+            return $next;
+        });
     }
 
     /**

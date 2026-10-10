@@ -99,7 +99,7 @@ flowchart TD
 
 | 队列 | 执行者 | 重试来源 |
 |---|---|---|
-| `notifications` | `SendOrderNotificationJob` | Job `tries=1`，重试由尝试记录与到期扫描驱动 |
+| `notifications` | `SendOrderNotificationJob` | Job `tries=1`，重试由尝试记录与到期扫描驱动；行锁领取并清空旧重试时间，提交后入队 |
 | `payment-links` | `SendPaymentLinkJob` | Job `tries=3`、backoff |
 | `default` | `SendTelegramNotification` 队列监听器 | Worker 配置 |
 | `low` | 商品同步、物流导入、物流回传、广告转化 | 按 Job 定义；广告转化也由尝试表驱动重试 |

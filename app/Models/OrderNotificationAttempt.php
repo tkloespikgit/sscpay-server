@@ -3,10 +3,12 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
+use App\Models\Scopes\MerchantScope;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 /**
  * 商户交易结果通知（回调 orders.notify_url）的单次尝试记录。
@@ -118,22 +120,55 @@ class OrderNotificationAttempt extends Model
     }
 
     /**
-     * 基于当前这条"失败且等待重试"的记录，生成下一次尝试。
-     * 调用方（调度任务）应在拿到返回值后立即发起实际的 HTTP 请求。
+     * 原子领取到期重试：锁定旧记录、创建下一次尝试并清空旧调度时间。
+     * 返回 null 表示未到期、已经处理或下一次尝试已存在，不应重复投递。
      */
-    public function createNextAttempt(): self
+    public function createNextAttempt(): ?self
     {
-        return static::create([
-            'order_id' => $this->order_id,
-            'merchant_id' => $this->merchant_id,
-            'notify_type' => $this->notify_type,
-            'attempt_number' => $this->attempt_number + 1,
-            'max_attempts' => $this->max_attempts,
-            'status' => 'pending',
-            'notify_url' => $this->notify_url,
-            'request_payload' => $this->request_payload,
-            'scheduled_at' => $this->next_retry_at ?? now(),
-        ]);
+        return DB::transaction(function (): ?self {
+            $current = static::query()->withoutGlobalScope(MerchantScope::class)
+                ->where('merchant_id', $this->merchant_id)
+                ->whereKey($this->id)->lockForUpdate()->first();
+
+            if (! $current || $current->status !== 'failed' || ! $current->next_retry_at || $current->next_retry_at->isFuture()) {
+                return null;
+            }
+
+            if ($current->attempt_number >= $current->max_attempts) {
+                $current->update(['status' => 'exhausted', 'next_retry_at' => null]);
+
+                return null;
+            }
+
+            $exists = static::query()->withoutGlobalScope(MerchantScope::class)
+                ->where('merchant_id', $current->merchant_id)
+                ->where('order_id', $current->order_id)
+                ->where('notify_type', $current->notify_type)
+                ->where('attempt_number', $current->attempt_number + 1)
+                ->exists();
+
+            if ($exists) {
+                // 兼容旧代码留下的调度标记，不改写后续尝试的结果，也不重复发送。
+                $current->update(['next_retry_at' => null]);
+
+                return null;
+            }
+
+            $next = static::create([
+                'order_id' => $current->order_id,
+                'merchant_id' => $current->merchant_id,
+                'notify_type' => $current->notify_type,
+                'attempt_number' => $current->attempt_number + 1,
+                'max_attempts' => $current->max_attempts,
+                'status' => 'pending',
+                'notify_url' => $current->notify_url,
+                'request_payload' => $current->request_payload,
+                'scheduled_at' => $current->next_retry_at,
+            ]);
+            $current->update(['next_retry_at' => null]);
+
+            return $next;
+        });
     }
 
     // ------------------------------------------------------------------

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\OrderNotificationAttempt;
+use App\Models\Scopes\MerchantScope;
 use App\Services\OrderNotificationService;
 use Illuminate\Console\Command;
 
@@ -23,7 +24,7 @@ class ProcessDueOrderNotifications extends Command
     public function handle(OrderNotificationService $service): int
     {
         $dueAttempts = OrderNotificationAttempt::query()
-            ->withoutGlobalScopes()
+            ->withoutGlobalScope(MerchantScope::class)
             ->dueForRetry()
             ->get();
 
@@ -33,11 +34,14 @@ class ProcessDueOrderNotifications extends Command
             return self::SUCCESS;
         }
 
+        $dispatched = 0;
         foreach ($dueAttempts as $attempt) {
-            $service->dispatchRetry($attempt);
+            if ($service->dispatchRetry($attempt) !== null) {
+                $dispatched++;
+            }
         }
 
-        $this->info("Dispatched {$dueAttempts->count()} retry attempt(s).");
+        $this->info("Dispatched {$dispatched} retry attempt(s).");
 
         return self::SUCCESS;
     }
