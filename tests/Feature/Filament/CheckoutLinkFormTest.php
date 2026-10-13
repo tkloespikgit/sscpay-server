@@ -3,6 +3,7 @@
 namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\CheckoutLinkResource\Pages\CreateCheckoutLink;
+use App\Filament\Resources\CheckoutLinkResource\Pages\EditCheckoutLink;
 use App\Models\CheckoutLink;
 use App\Models\PaymentGroup;
 use App\Models\User;
@@ -64,6 +65,21 @@ class CheckoutLinkFormTest extends TestCase
         $this->assertCount(1, $link->items);
         // slug 是保存时生成的，必须足够长才猜不出来（落地页没有其他鉴权）。
         $this->assertSame(24, strlen($link->slug));
+    }
+
+    public function test_auto_redirect_is_enabled_by_default_and_can_be_disabled(): void
+    {
+        Livewire::test(CreateCheckoutLink::class)
+            ->assertFormSet(['auto_redirect' => true])
+            ->fillForm($this->formData(['auto_redirect' => false]))
+            ->call('create')->assertHasNoFormErrors();
+
+        $link = CheckoutLink::withoutGlobalScopes()->firstOrFail();
+        $this->assertFalse($link->auto_redirect);
+        Livewire::test(EditCheckoutLink::class, ['record' => $link->id])
+            ->assertFormSet(['auto_redirect' => false])
+            ->fillForm(['auto_redirect' => true])->call('save')->assertHasNoFormErrors();
+        $this->assertTrue($link->fresh()->auto_redirect);
     }
 
     public function test_merchant_can_save_own_google_maps_key(): void

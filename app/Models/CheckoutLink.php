@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
+use App\Support\Countries;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -60,6 +61,7 @@ class CheckoutLink extends Model
         'tax',
         'discount',
         'is_active',
+        'auto_redirect',
         'orders_count',
     ];
 
@@ -73,6 +75,7 @@ class CheckoutLink extends Model
             'tax' => 'decimal:2',
             'discount' => 'decimal:2',
             'is_active' => 'boolean',
+            'auto_redirect' => 'boolean',
             'supported_countries' => 'array',
         ];
     }
@@ -133,7 +136,7 @@ class CheckoutLink extends Model
     /** Empty means that the merchant has not restricted countries. */
     public function availableCountries(): array
     {
-        $countries = \App\Support\Countries::withPhoneCodes();
+        $countries = Countries::withPhoneCodes();
 
         if (empty($this->supported_countries)) {
             return $countries;

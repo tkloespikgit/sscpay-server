@@ -93,6 +93,12 @@ return [
         'not_available' => 'This payment link is no longer available.',
     ],
 
+    'payment' => [
+        'title' => 'Your payment link is ready',
+        'body' => 'Use the link below to complete your payment.',
+        'continue' => 'Go to payment',
+    ],
+
     'result' => [
         'success_title' => 'Thank you',
         'success_body' => 'We have received your request. A confirmation will be sent to your email once the payment is fully processed.',

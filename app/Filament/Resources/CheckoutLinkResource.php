@@ -9,8 +9,8 @@ use App\Models\Merchant;
 use App\Models\MerchantDomain;
 use App\Models\PaymentGroup;
 use App\Models\SystemConfig;
-use App\Support\Permissions;
 use App\Support\Countries;
+use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
@@ -163,6 +163,10 @@ class CheckoutLinkResource extends Resource
                     ->maxLength(2000)
                     ->helperText(__('admin.checkout_link.help.customer_notice')),
 
+                Toggle::make('auto_redirect')
+                    ->label(__('admin.checkout_link.fields.auto_redirect'))
+                    ->default(true)
+                    ->helperText(__('admin.checkout_link.help.auto_redirect')),
                 Toggle::make('is_active')
                     ->label(__('admin.checkout_link.fields.is_active'))
                     ->default(true)

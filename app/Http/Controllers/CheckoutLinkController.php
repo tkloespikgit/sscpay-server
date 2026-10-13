@@ -95,7 +95,26 @@ class CheckoutLinkController extends Controller
             return redirect()->route('payment.show', $order->payment_link_token);
         }
 
+        if (! $link->auto_redirect) {
+            return redirect()->route('checkout.payment', ['slug' => $link->slug]);
+        }
+
         return redirect()->away($order->pay_url);
+    }
+
+    /** 展示当前会话刚创建的订单付款链接，刷新不会重新建单。 */
+    public function payment(Request $request, string $slug): View
+    {
+        $link = $this->resolveLink($request, $slug);
+        $order = Order::query()->withoutGlobalScopes()
+            ->where('merchant_id', $link->merchant_id)
+            ->where('checkout_link_id', $link->id)
+            ->whereKey($request->session()->get('checkout_last_order_id'))
+            ->firstOrFail();
+
+        abort_if(blank($order->pay_url), 404);
+
+        return view('checkout.payment', compact('link', 'order'));
     }
 
     /**

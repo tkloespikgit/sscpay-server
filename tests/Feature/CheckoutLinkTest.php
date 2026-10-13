@@ -275,12 +275,38 @@ class CheckoutLinkTest extends TestCase
         // 手机号必须被归一化成 E.164 落库，而不是原样保留客户敲的空格。
         $this->assertSame('+4915112345678', $order->customer_phone);
 
-        // 没配商品时会合成一条兜底明细，小计必须等于金额，
-        // 否则 OrderCreationService 第 3 步会直接拒单。
-        $this->assertSame('100.00', $order->subtotal);
+        // 原始商品明细保留 100；匹配超额增加 subtotal 与 discount，最终金额不变。
+        $this->assertSame('100.00', $order->items->first()->total_price);
+        $this->assertSame('100.00', bcsub($order->subtotal, $order->discount, 2));
         $this->assertCount(1, $order->items);
 
         $this->assertSame(1, $link->fresh()->orders_count);
+    }
+
+    public function test_disabled_auto_redirect_displays_payment_url_without_creating_another_order(): void
+    {
+        $link = $this->createLink(['auto_redirect' => false]);
+        $this->post('/c/'.$link->slug, $this->validPayload(['auto_redirect' => true]))
+            ->assertRedirect(route('checkout.payment', ['slug' => $link->slug]));
+
+        $this->get('/c/'.$link->slug.'/payment')
+            ->assertOk()->assertViewIs('checkout.payment')
+            ->assertSee('https://gateway.example.com/pay/abc');
+        $this->get('/c/'.$link->slug.'/payment')->assertOk();
+        $this->assertSame(1, Order::withoutGlobalScopes()->count());
+
+        $other = $this->createLink(['auto_redirect' => false]);
+        $this->get('/c/'.$other->slug.'/payment')->assertNotFound();
+        $link->update(['is_active' => false]);
+        $this->get('/c/'.$link->slug.'/payment')->assertNotFound();
+    }
+
+    public function test_payment_url_page_requires_matching_session_and_host(): void
+    {
+        $link = $this->createLink(['auto_redirect' => false]);
+        $this->get('/c/'.$link->slug.'/payment')->assertNotFound();
+        $this->post('/c/'.$link->slug, $this->validPayload())->assertRedirect();
+        $this->get('https://untrusted.example/c/'.$link->slug.'/payment')->assertNotFound();
     }
 
     public function test_customer_cannot_override_amount_on_a_fixed_link(): void
@@ -425,8 +451,9 @@ class CheckoutLinkTest extends TestCase
 
         $order = Order::withoutGlobalScopes()->firstOrFail();
 
-        // 100 + 10 - 0 + 5 = 115，与固定金额一致才建得出来。
-        $this->assertSame('100.00', $order->subtotal);
+        // 匹配超额由折扣抵扣，商品净额仍为 100，运费与税费保持不变。
+        $this->assertSame('100.00', $order->items->first()->total_price);
+        $this->assertSame('100.00', bcsub($order->subtotal, $order->discount, 2));
         $this->assertSame('10.00', $order->shipping_fee);
         $this->assertSame('5.00', $order->tax);
         $this->assertSame('115.00', $order->amount);

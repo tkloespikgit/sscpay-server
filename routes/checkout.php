@@ -30,6 +30,7 @@ Route::get('/checkout-locations/cities', [CheckoutLocationController::class, 'ci
 Route::prefix('c/{slug}')->group(function () {
     Route::get('/', [CheckoutLinkController::class, 'show'])->name('checkout.show');
     Route::post('/', [CheckoutLinkController::class, 'store'])->name('checkout.store');
+    Route::get('/payment', [CheckoutLinkController::class, 'payment'])->name('checkout.payment');
 
     // 支付网关回跳地址（下单时写进 orders.return_url / cancel_url）。
     // 这两个页面只是给客户看的结果提示，订单状态的真实流转一律由
