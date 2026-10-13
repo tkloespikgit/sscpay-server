@@ -12,6 +12,7 @@ use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
 use App\Models\SiteProduct;
 use App\Models\SiteProductVariation;
+use App\Services\Checkout\CheckoutLinkOrderService;
 use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
@@ -307,6 +308,25 @@ class CheckoutLinkTest extends TestCase
         $this->get('/c/'.$link->slug.'/payment')->assertNotFound();
         $this->post('/c/'.$link->slug, $this->validPayload())->assertRedirect();
         $this->get('https://untrusted.example/c/'.$link->slug.'/payment')->assertNotFound();
+    }
+
+    public function test_browser_language_list_longer_than_twenty_characters_is_preserved(): void
+    {
+        $link = $this->createLink();
+        $language = 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6';
+        $this->withHeader('Accept-Language', $language)
+            ->post('/c/'.$link->slug, $this->validPayload())
+            ->assertRedirect('https://gateway.example.com/pay/abc');
+        $this->assertSame($language, Order::withoutGlobalScopes()->firstOrFail()->accept_language);
+    }
+
+    public function test_order_creation_limits_language_metadata_to_database_capacity(): void
+    {
+        $link = $this->createLink();
+        $customer = $this->validPayload();
+        $customer['accept_language'] = str_repeat('en-US,en;q=0.9,', 30);
+        $order = app(CheckoutLinkOrderService::class)->createOrder($link, $customer);
+        $this->assertSame(mb_substr($customer['accept_language'], 0, 255), $order->fresh()->accept_language);
     }
 
     public function test_customer_cannot_override_amount_on_a_fixed_link(): void

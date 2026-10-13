@@ -296,7 +296,9 @@ class OrderCreationService
                 'designated_payment_method_key' => filled($data['payment_method_key'] ?? null) ? $data['payment_method_key'] : null,
                 'customer_ip' => $data['customer_ip'] ?? null,
                 'user_agent' => $data['user_agent'] ?? null,
-                'accept_language' => $data['accept_language'] ?? null,
+                'accept_language' => isset($data['accept_language'])
+                    ? mb_substr((string) $data['accept_language'], 0, 255)
+                    : null,
                 'notify_url' => $data['notify_url'] ?? null,
                 'return_url' => $data['return_url'] ?? null,
                 'cancel_url' => $data['cancel_url'] ?? null,

@@ -2,6 +2,14 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-13：浏览器语言头不再因订单字段过短导致建单失败（当前工作区，未提交）
+
+- 线上收款链接日志显示正常浏览器 `Accept-Language` 多语言列表超过 `orders.accept_language` 的 VARCHAR(20)，而收款请求允许 255 字符，MySQL 因字段过长拒绝插入。
+- 新增迁移 `2026_10_13_000002` 将字段扩大为 nullable VARCHAR(255)，保留字段注释和历史值；`OrderCreationService` 统一在写库前限制到 255 字符，覆盖 API、收款链接等建单入口。未修改原始建表迁移。
+- `CheckoutLinkTest` 新增真实语言列表完整保存和直接调用建单 Service 的超长元数据截断测试；更新数据库说明。
+- 验证：使用 `/opt/homebrew/bin/php`，SQLite 内存库联跑 `CheckoutLinkTest`、`OrderCreateRetryMailTest`，26 个测试、137 个断言通过；三个 PHP 文件 Pint 及 `git diff --check` 通过。未执行生产迁移或真实支付请求，未验证 MySQL DDL；SQLite 不强制 VARCHAR 长度，不能将测试通过视为 MySQL 字段容量验证。
+- 部署必须执行新增迁移，单独更新 PHP 代码无法解决旧 VARCHAR(20) 的限制。回滚收窄字段前须检查是否已有超过 20 字符的数据，避免截断历史数据。
+
 ## 2026-10-13：收款链接可配置建单后的自动跳转（当前工作区，未提交）
 
 - 新增迁移 `2026_10_13_000001`，`checkout_links.auto_redirect` 默认 true，保留已有链接自动跳转行为；模型增加可写字段与布尔转换，后台创建/编辑增加开关及中英文说明。
