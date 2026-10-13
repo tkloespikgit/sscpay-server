@@ -112,7 +112,7 @@ QUEUE_FAILED_DRIVER=database-uuids
 # 域名限制（按实际后台 / API 域名填写；留空则不限制域名）
 FILAMENT_PLATFORM_DOMAIN=sma.example.com
 FILAMENT_MERCHANT_DOMAIN=applo.example.com
-API_DOMAIN=apios.example.com
+API_DOMAIN=apios.example.com       # 仅限制商户 API，支付网关 webhook 不限制域名
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1

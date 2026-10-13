@@ -265,7 +265,7 @@
 
 ## 6. 对外接口
 
-> `routes/api.php` 整个文件（含下面 6.1 的商户 API 和 6.3 的支付网关 webhook）限定在 `API_DOMAIN` 域名下才能访问，未配置时不限制域名，见 [11.3 环境变量](#113-环境变量)。
+> 商户 API 限定在 `API_DOMAIN` 域名下才能访问，未配置时不限制域名，见 [11.3 环境变量](#113-环境变量)。支付网关 webhook 不限制域名，以接收收款链接自定义域名的订单回调；仍必须通过 `X-PGA-Signature` 原始请求体验签。
 
 ### 6.1 商户 API（`api.auth` 中间件：App-ID + 签名）
 
@@ -488,7 +488,7 @@ APP_LOCALE=zh_CN                    # 后台默认语言，可选 en
 # 后台登录 / 对外 API 域名限制（留空则不限制域名，本地开发可不填）
 FILAMENT_PLATFORM_DOMAIN=sma.example.com   # 平台面板：超级管理员 + 商户级管理员登录
 FILAMENT_MERCHANT_DOMAIN=applo.example.com # 商户面板：商户自己的管理员登录
-API_DOMAIN=apios.example.com               # 对外 API：下单/查询/发货、支付网关 webhook
+API_DOMAIN=apios.example.com               # 商户 API：下单/查询/发货；支付网关 webhook 不受此限制
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1

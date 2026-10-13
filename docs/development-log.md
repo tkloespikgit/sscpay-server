@@ -2,6 +2,12 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-13：支付网关 webhook 接受自定义域名回调（当前工作区，未提交）
+
+- `routes/api.php` 将订单状态 webhook 移出 `API_DOMAIN` 域名组，修复收款链接通过客户域名建单后，WordPress 向同域 `callback_url` 回调时路由不匹配的 404。URL 路径、路由名称、原始 body 验签及状态/账务编排沿用原实现；商户 create/query/ship 接口保留域名限制与 `api.auth`。
+- 新增 `PaymentGatewayWebhookRoutingTest`，在明确配置 API 域名的情况下加载实际路由，验证自定义/API 域名的有效签名回调能到达状态服务、缺失/无效/原始 body 不匹配签名被拒绝、商户接口仍限制域名并鉴权。更新架构、D-15、README 与部署变量说明。
+- 验证：`/opt/homebrew/bin/php artisan test --filter='PaymentGatewayWebhookRoutingTest|GatewayRefundChargebackTest'` 在 SQLite 内存库 12 项、42 个断言通过；变更路由及测试 Pint、`git diff --check` 通过。未发起真实网关请求、未执行数据库迁移或线上部署；生产如有路由缓存，部署时需重建（`php artisan route:cache`）。已失败的历史通知是否仍有插件重试需按线上情况核对。
+
 ## 2026-10-13：收款链接 Google 检索限定国家，地址按 PayPal 国家规则整理（当前工作区，未提交）
 
 - `resources/views/checkout/show.blade.php` 的 Google Places 检索跟随国家下拉框选择，未选择时限制到首个可选国家；避免旧版组件最多同时限制 5 个国家导致多国家配置失效。结果回填前检查国家白名单及当前检索国家。

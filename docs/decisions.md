@@ -128,3 +128,11 @@
 **原因与影响：** 实际付款金额改变后，不能继续用它与重试请求金额直接比较。新增 `original_amount` 用于幂等、`auto_discount` 用于审计；历史单原始金额为空时沿用 `amount`。折扣仅首次生成，应用开关变化不影响旧订单；查询、通知、手续费、结算按实际折后金额处理。
 
 **依据：** [OrderCreationService](../app/Services/OrderCreationService.php)、[迁移](../database/migrations/2026_09_30_000001_add_application_auto_discount.php)、[ApplicationAutoDiscountTest](../tests/Feature/ApplicationAutoDiscountTest.php)。规则及小额边界见 [数据库说明](database.md)。
+
+## D-15 支付网关 webhook 不限定 API 域名
+
+**状态：当前工作区已实现，未提交（2026-10-13，按用户要求）。** `API_DOMAIN` 仅限制商户下单、查询、发货接口；`/api/webhooks/payment-gateway/status` 在域名组外注册，保留 `X-PGA-Signature` 对原始请求体的 HMAC 校验。
+
+**原因与影响：** `OrderCreationService` 通过当前请求的 URL 构造 `callback_url`，收款链接建单时可能使用客户自定义域名。webhook 若限定 API 域名，插件回调会在路由匹配阶段返回 404，无法落地订单结果。允许其他域名到达验签入口，商户 API 的域名限制和鉴权保持原有行为；部署变更需更新路由缓存。
+
+**依据：** [routes/api.php](../routes/api.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[PaymentGatewayWebhookController](../app/Http/Controllers/PaymentGatewayWebhookController.php)、[PaymentGatewayWebhookRoutingTest](../tests/Feature/PaymentGatewayWebhookRoutingTest.php)。
