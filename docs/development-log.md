@@ -2,6 +2,16 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-13：收款链接 Google 检索限定国家，地址按 PayPal 国家规则整理（当前工作区，未提交）
+
+- `resources/views/checkout/show.blade.php` 的 Google Places 检索跟随国家下拉框选择，未选择时限制到首个可选国家；避免旧版组件最多同时限制 5 个国家导致多国家配置失效。结果回填前检查国家白名单及当前检索国家。
+- 按用户补充的 PayPal REST 要求修正最初“所有国家都取简称”的方案：新增 `CheckoutAddress` 与共享 JSON 省州表，按官方表处理 11 个国家，澳大利亚按澳邮规则补充。例如 Tokyo → `TOKYO-TO`、Maharashtra 保留全名、Quintana Roo → `Q ROO`；意大利取二级省而非一级 region，英国取 county。未列出规则的国家保留全称/手动输入，不声称具备全部国家地区白名单。
+- `CreateCheckoutOrderRequest` 对手动省州输入也做归一化和校验；有映射表的国家必填有效省州，Service 再校验以覆盖直接调用。省州值沿用现有字段落库并发给 WordPress 的 billing/shipping `state`。商户 API 协议不变，没有数据库结构变更。
+- 城市取 `locality` / `postal_town` 的城镇语义，英国优先邮政城镇；移除社区兜底。缺少城镇、省州、邮编时清空旧值，切换国家清空旧地区字段。Google 请求固定英文，减少名称语言差异。
+- 更新 [收款链接手册](../doc/checkout-link.md)、架构及字段口径；新增 `CheckoutAddressTest` 与 JavaScript 行为测试，扩展 `CheckoutLinkTest` 检查省州归一化、落库及网关协议字段。
+- 验证：`node --test tests/JavaScript/checkout-autocomplete.test.mjs` 19 项通过；`/opt/homebrew/bin/php artisan test --filter='CheckoutAddressTest|CheckoutLinkTest'` 在 SQLite 内存库 31 项、1319 个断言通过；Pint、`npm run build`、`git diff --check` 通过。构建提示 Node 20.1.0 低于 Vite 要求。未调用真实 Google / PayPal API，远端 WordPress 插件的 PayPal 请求构造不在此仓库，未进行线上验证。
+- 后续核对无 Google Key 路径：新增无 Key 的 US/CA/IT 省州名称提交归一化测试，与无效省州拒绝测试联跑 2 项、24 个断言通过，Pint 和 diff 检查通过。已知限制：CountriesNow 下拉数据仍不等于 PayPal 地区表，层级/名称不匹配可能在本地拒绝；城市没有真实性校验。手册已说明，未将其描述为所有国家地址均可通过。
+
 ## 2026-10-13：浏览器语言头不再因订单字段过短导致建单失败（当前工作区，未提交）
 
 - 线上收款链接日志显示正常浏览器 `Accept-Language` 多语言列表超过 `orders.accept_language` 的 VARCHAR(20)，而收款请求允许 255 字符，MySQL 因字段过长拒绝插入。

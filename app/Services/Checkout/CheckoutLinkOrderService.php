@@ -7,6 +7,7 @@ use App\Models\CheckoutLinkItem;
 use App\Models\Order;
 use App\Rules\InternationalPhone;
 use App\Services\OrderCreationService;
+use App\Support\CheckoutAddress;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -34,6 +35,7 @@ class CheckoutLinkOrderService
      */
     public function createOrder(CheckoutLink $link, array $customer): Order
     {
+        $state = CheckoutAddress::validatedState((string) $customer['country'], $customer['state'] ?? null);
         $link->loadMissing(['merchant', 'application', 'paymentGroup', 'items']);
 
         $amount = $link->resolveAmount($customer['amount'] ?? null);
@@ -65,7 +67,7 @@ class CheckoutLinkOrderService
             'shipping_address_line1' => $customer['address_line1'],
             'shipping_address_line2' => $customer['address_line2'] ?? null,
             'shipping_city' => $customer['city'],
-            'shipping_state' => $customer['state'] ?? null,
+            'shipping_state' => $state,
             'shipping_country' => strtoupper((string) $customer['country']),
             'shipping_zip' => $customer['zip'] ?? null,
 

@@ -5,7 +5,7 @@ namespace App\Http\Requests;
 use App\Models\CheckoutLink;
 use App\Rules\InternationalPhone;
 use App\Services\Checkout\TurnstileService;
-use App\Support\Countries;
+use App\Support\CheckoutAddress;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Cache;
@@ -32,9 +32,21 @@ class CreateCheckoutOrderRequest extends FormRequest
         return true;
     }
 
+    protected function prepareForValidation(): void
+    {
+        if (is_string($this->input('country')) && is_string($this->input('state'))) {
+            $normalized = CheckoutAddress::normalizeState($this->input('country'), $this->input('state'));
+            if ($normalized !== null) {
+                $this->merge(['state' => $normalized]);
+            }
+        }
+    }
+
     public function rules(): array
     {
         $link = $this->checkoutLink();
+        $country = $this->input('country');
+        $stateRules = is_string($country) ? (CheckoutAddress::stateRules()[$country] ?? null) : null;
 
         return [
             'first_name' => ['required', 'string', 'max:100'],
@@ -45,7 +57,9 @@ class CreateCheckoutOrderRequest extends FormRequest
             'address_line1' => ['required', 'string', 'max:255'],
             'address_line2' => ['nullable', 'string', 'max:255'],
             'city' => ['required', 'string', 'max:100'],
-            'state' => ['nullable', 'string', 'max:100'],
+            'state' => $stateRules === null
+                ? ['nullable', 'string', 'max:100']
+                : ['required', 'string', 'max:100', Rule::in(array_keys($stateRules))],
             // ISO 3166-1 alpha-2。Google Places 的 short_name 正好是这个格式，
             // 前端自动填充时直接取那个值。用白名单而不是 size:2 + alpha——
             // 后者放得过 'ZZ' 这种不存在的代码，脏数据会一路流到订单表。
@@ -98,6 +112,8 @@ class CreateCheckoutOrderRequest extends FormRequest
             // 统一报一句含糊的失败信息即可。
             'company_website.prohibited' => __('checkout.validation.submission_rejected'),
             'form_token.required' => __('checkout.validation.form_expired'),
+            'state.required' => __('checkout.validation.state_invalid'),
+            'state.in' => __('checkout.validation.state_invalid'),
         ];
     }
 

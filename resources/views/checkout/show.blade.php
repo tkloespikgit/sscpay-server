@@ -284,15 +284,56 @@
     @if ($googleMapsKey)
         <script>
             // Google Places 自动填充。选中一个地址后把各字段拆开回填。
+            // PayPal admin_area_1 按国家映射；admin_area_2 是城镇，不是 Google 同名行政层级。
             // 注意 country 取的是 short_name（ISO alpha-2），而不是 long_name
             // ——orders.shipping_country 是 char(2)，填 "Germany" 会被截断成 "Ge"。
             function initCheckoutAutocomplete() {
                 const input = document.getElementById('address_line1');
-                if (!input || !window.google?.maps?.places) return;
+                const countrySelect = document.getElementById('country');
+                if (!input || !countrySelect || !window.google?.maps?.places) return;
+
+                const allowedCountries = Array.from(countrySelect.options)
+                    .map((option) => option.value).filter(Boolean);
+                if (!allowedCountries.length) return;
+
+                const stateRules = @json(\App\Support\CheckoutAddress::stateRules());
+                const normalizeName = (value) => (value || '').normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+                const normalizeState = (country, longName, shortName) => {
+                    const rules = stateRules[country];
+                    if (!rules) return longName;
+                    for (const candidate of [longName, shortName]) {
+                        if (!candidate) continue;
+                        const needle = normalizeName(candidate);
+                        for (const [value, names] of Object.entries(rules)) {
+                            if ([value, ...names].some((name) => normalizeName(name) === needle)) return value;
+                        }
+                    }
+                    // 无法识别时交给客户纠正，服务端会拒绝无效省州，不能猜代码。
+                    return '';
+                };
+
+                // 旧版组件最多同时限制 5 个国家；跟随国家选择可覆盖任意数量的可选国家。
+                const searchCountry = () => allowedCountries.includes(countrySelect.value)
+                    ? countrySelect.value : allowedCountries[0];
+                let previousCountry = searchCountry();
+                const stateInput = document.getElementById('state');
+                stateInput.required = Boolean(stateRules[previousCountry]);
 
                 const autocomplete = new google.maps.places.Autocomplete(input, {
                     fields: ['address_components'],
                     types: ['address'],
+                    componentRestrictions: { country: searchCountry() },
+                });
+
+                countrySelect.addEventListener('change', () => {
+                    const country = searchCountry();
+                    if (country !== previousCountry) {
+                        for (const id of ['city', 'state', 'zip']) document.getElementById(id).value = '';
+                    }
+                    previousCountry = country;
+                    stateInput.required = Boolean(stateRules[country]);
+                    autocomplete.setComponentRestrictions({ country });
                 });
 
                 autocomplete.addListener('place_changed', function () {
@@ -304,27 +345,28 @@
                         return part ? part[form] : '';
                     };
 
+                    const placeCountry = get('country', 'short_name').toUpperCase();
+                    // 旧建议或异常结果不能回填到另一个国家，更不能越过链接的国家白名单。
+                    if (!allowedCountries.includes(placeCountry) || placeCountry !== searchCountry()) return;
+
                     const streetNumber = get('street_number');
                     const route = get('route');
                     // 门牌号在前还是路名在前因国家而异，这里统一用 "路名 门牌号"
                     // 之外的顺序都交给客户自己微调——强行按国家规则拼反而更容易出错。
                     input.value = [route, streetNumber].filter(Boolean).join(' ').trim() || input.value;
 
-                    const setValue = (id, value) => {
-                        const el = document.getElementById(id);
-                        if (el && value) el.value = value;
-                    };
-
-                    setValue('city', get('locality') || get('postal_town') || get('sublocality'));
-                    setValue('state', get('administrative_area_level_1'));
-                    setValue('zip', get('postal_code'));
-                    const placeCountry = get('country', 'short_name');
-                    const countrySelect = document.getElementById('country');
-                    if (placeCountry) {
-                        countrySelect.value = countrySelect.querySelector(`option[value="${placeCountry}"]`)
-                            ? placeCountry : '';
-                        countrySelect.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
+                    // 英国使用邮政城镇和 county；意大利 PayPal 需要 province 而非 region。
+                    const stateType = ['GB', 'IT'].includes(placeCountry)
+                        ? 'administrative_area_level_2' : 'administrative_area_level_1';
+                    document.getElementById('city').value = placeCountry === 'GB'
+                        ? get('postal_town') || get('locality')
+                        : get('locality') || get('postal_town');
+                    // 缺失的省州、邮编也要清空，不能沿用上一次所选地址的值。
+                    document.getElementById('state').value = normalizeState(placeCountry,
+                        get(stateType), get(stateType, 'short_name'));
+                    document.getElementById('zip').value = get('postal_code');
+                    countrySelect.value = placeCountry;
+                    countrySelect.dispatchEvent(new Event('change', { bubbles: true }));
                 });
 
                 // 在地址框里按回车会触发表单提交，而此时客户往往只是想选中
@@ -335,7 +377,7 @@
             }
         </script>
         <script async defer
-                src="https://maps.googleapis.com/maps/api/js?key={{ $googleMapsKey }}&libraries=places&callback=initCheckoutAutocomplete"></script>
+                src="https://maps.googleapis.com/maps/api/js?key={{ $googleMapsKey }}&libraries=places&language=en&callback=initCheckoutAutocomplete"></script>
     @else
         <script>
             (() => {

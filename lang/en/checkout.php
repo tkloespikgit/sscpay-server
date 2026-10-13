@@ -78,6 +78,7 @@ return [
     ],
 
     'validation' => [
+        'state_invalid' => 'Please enter a valid state or province for the selected country.',
         'phone_needs_country_code' => 'Please include your country code, starting with +.',
         'phone_invalid' => 'This phone number does not look valid. Please check and try again.',
         'phone_country_not_supported' => 'This payment link does not support phone numbers from that country.',

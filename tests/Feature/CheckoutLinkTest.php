@@ -17,6 +17,7 @@ use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 /**
@@ -203,6 +204,64 @@ class CheckoutLinkTest extends TestCase
 
         $this->post('/c/'.$link->slug, $this->validPayload())
             ->assertRedirect('https://gateway.example.com/pay/abc');
+    }
+
+    public function test_checkout_normalizes_manual_states_before_storage_and_gateway_submission(): void
+    {
+        $link = $this->createLink(['google_maps_browser_key' => 'merchant-test-key']);
+        foreach ([
+            ['US', 'California', 'CA', 'Los Angeles'],
+            ['CA', 'Ontario', 'ON', 'Toronto'],
+            ['JP', 'Tokyo', 'TOKYO-TO', 'Shibuya'],
+            ['IN', 'Maharashtra', 'Maharashtra', 'Mumbai'],
+            ['IT', 'Roma', 'RM', 'Roma'],
+            ['MX', 'Quintana Roo', 'Q ROO', 'Cancún'],
+        ] as [$country, $state, $expected, $city]) {
+            $this->post('/c/'.$link->slug, $this->validPayload(compact('country', 'state', 'city')))
+                ->assertRedirect('https://gateway.example.com/pay/abc');
+            $order = Order::withoutGlobalScopes()->latest('id')->firstOrFail();
+            $this->assertSame($expected, $order->shipping_state);
+            $this->assertSame($city, $order->shipping_city);
+            Http::assertSent(fn ($request) => str_contains($request->url(), '/payment-plugin/v1/pay')
+                && $request['shipping_address']['country'] === $country
+                && $request['shipping_address']['state'] === $expected
+                && $request['shipping_address']['city'] === $city
+                && $request['billing_address'] === $request['shipping_address']);
+        }
+    }
+
+    public function test_checkout_rejects_invalid_missing_or_cross_country_states_before_creating_orders(): void
+    {
+        $link = $this->createLink();
+        foreach ([['US', 'ZZ'], ['US', ''], ['CA', 'California'], ['IT', 'Lazio']] as [$country, $state]) {
+            $this->post('/c/'.$link->slug, $this->validPayload(compact('country', 'state')))
+                ->assertSessionHasErrors('state');
+        }
+        $this->assertSame(0, Order::withoutGlobalScopes()->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_checkout_without_google_key_normalizes_selected_state_names(): void
+    {
+        $link = $this->createLink(['google_maps_browser_key' => null]);
+        $this->get('/c/'.$link->slug)->assertSee('state-select')->assertDontSee('maps.googleapis.com');
+
+        foreach ([['US', 'California', 'CA'], ['CA', 'Ontario', 'ON'], ['IT', 'Roma', 'RM']] as [$country, $state, $expected]) {
+            $this->post('/c/'.$link->slug, $this->validPayload(compact('country', 'state')))
+                ->assertRedirect('https://gateway.example.com/pay/abc');
+            $this->assertSame($expected, Order::withoutGlobalScopes()->latest('id')->firstOrFail()->shipping_state);
+            Http::assertSent(fn ($request) => str_contains($request->url(), '/payment-plugin/v1/pay')
+                && $request['shipping_address']['country'] === $country
+                && $request['shipping_address']['state'] === $expected);
+        }
+    }
+
+    public function test_checkout_order_service_rejects_invalid_states_when_called_directly(): void
+    {
+        $this->expectException(ValidationException::class);
+        app(CheckoutLinkOrderService::class)->createOrder($this->createLink(), $this->validPayload([
+            'country' => 'US', 'state' => 'ZZ',
+        ]));
     }
 
     public function test_only_trusted_cloudflare_requests_can_recommend_a_country(): void
