@@ -27,7 +27,7 @@
     color: #303438;
 }
 
-.checkout-form input:not([type="hidden"]):not([type="checkbox"]),
+.checkout-form input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]),
 .checkout-form select {
     min-height: 46px;
     border-radius: 8px;
@@ -36,7 +36,7 @@
     transition: border-color 150ms, box-shadow 150ms;
 }
 
-.checkout-form input:not([type="hidden"]):not([type="checkbox"]):focus,
+.checkout-form input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):focus,
 .checkout-form select:focus {
     border-color: #394a59;
     box-shadow: 0 0 0 2px rgba(57, 74, 89, 0.12);
@@ -49,6 +49,40 @@
 
 .checkout-form .iti {
     display: block;
+}
+
+/*
+ * 支付方式选择：logo 按钮。
+ *
+ * 整块 <label> 都是按钮，logo 图片设 pointer-events:none —— 点击一律穿透到
+ * <label> 上激活里面的 radio，所以「点击 logo 即选中」不依赖浏览器把 img
+ * 当点击目标；顺带挡掉 Safari / 移动端把按下识别成图片拖拽、长按弹
+ * 「存储图片」菜单（-webkit-touch-callout）。
+ */
+.checkout-payment-option {
+    -webkit-tap-highlight-color: transparent;
+}
+
+.checkout-payment-option :is(img, svg) {
+    pointer-events: none;
+    -webkit-user-drag: none;
+    -webkit-touch-callout: none;
+    user-select: none;
+}
+
+/*
+ * 未选中的 logo 略降不透明度，悬停与选中恢复全彩。
+ * 手写而不用 Tailwind：图片在按钮 span 内部，而 peer-checked: 用的是
+ * ~ 兄弟选择器，够不到兄弟的后代节点。
+ */
+.checkout-payment-option img {
+    opacity: 0.7;
+    transition: opacity 150ms ease;
+}
+
+.checkout-payment-option:hover img,
+.checkout-payment-option .peer:checked ~ * img {
+    opacity: 1;
 }
 
 .country-input-wrap {

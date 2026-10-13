@@ -20,6 +20,7 @@ return [
     'sections' => [
         'secure_checkout' => 'Secure checkout',
         'order_summary' => 'Order Summary',
+        'payment_method' => 'Payment Method',
         'contact' => 'Contact Information',
         'shipping' => 'Shipping Address',
         'payment' => 'Payment',
@@ -37,6 +38,7 @@ return [
         'country' => 'Country',
         'zip' => 'ZIP / Postal code',
         'amount' => 'Amount',
+        'payment_method' => 'Payment method',
     ],
 
     'placeholders' => [
@@ -61,6 +63,7 @@ return [
         'phone' => 'Include your country code, for example +49 151 1234 5678.',
         'amount_range' => 'Enter an amount between :min and :max.',
         'address_autocomplete' => 'Select your address from the suggestions to fill in the fields automatically.',
+        'payment_method' => 'Choose how you would like to pay. The exact payment channel is selected automatically.',
     ],
 
     'summary' => [
@@ -86,6 +89,7 @@ return [
         'submission_rejected' => 'We could not process this submission. Please refresh the page and try again.',
         'too_many_attempts' => 'Too many attempts. Please wait a while before trying again.',
         'link_unavailable' => 'This payment link is temporarily unavailable. Please contact the merchant.',
+        'payment_method_required' => 'Please choose a payment method to continue.',
     ],
 
     'errors' => [

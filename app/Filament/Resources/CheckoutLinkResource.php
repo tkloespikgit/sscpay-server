@@ -70,11 +70,14 @@ class CheckoutLinkResource extends Resource
         $viewer = auth()->user();
         $canPickMerchant = (bool) $viewer?->isPlatformStaff();
         $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
-        $currencies = SystemConfig::getArray('exchange.supported_currencies', ['EUR', 'JPY', 'GBP']);
+        // 兜底值必须与 SystemConfigSeeder 保持一致并包含 USD（基准币种）。
+        $currencies = SystemConfig::getArray('exchange.supported_currencies', ['USD', 'EUR', 'JPY', 'GBP']);
 
         return $schema->components([
             Section::make(__('admin.checkout_link.sections.basic_info'))->schema([
-                Grid::make(2)->schema([
+                // 3 列：所属商户 / 内部名称 / 对客标题。三者都在回答"这条链接是谁的、叫什么"，
+                // 并排放便于对照，也能一眼看出内部名称与对客标题是两回事。
+                Grid::make(3)->schema([
                     Select::make('merchant_id')
                         ->label(__('admin.checkout_link.fields.merchant'))
                         ->options(function () use ($isViewerMerchantManager, $viewer) {
@@ -95,8 +98,18 @@ class CheckoutLinkResource extends Resource
                         ->afterStateUpdated(function (Set $set) {
                             $set('application_id', null);
                             $set('payment_group_id', null);
+                            $set('payment_group_ids', []);
                             $set('merchant_domain_id', null);
                         }),
+
+                    // 内部名称（需求 F2.2）：只给后台看，落地页不渲染它。
+                    // 和右边的 title 是两件事——那条是给客户看的标题。
+                    TextInput::make('link_name')
+                        ->label(__('admin.checkout_link.fields.link_name'))
+                        ->required()
+                        ->maxLength(255)
+                        ->placeholder('DE-TVBox-test')
+                        ->helperText(__('admin.checkout_link.help.link_name')),
 
                     TextInput::make('title')
                         ->label(__('admin.checkout_link.fields.title'))
@@ -124,6 +137,19 @@ class CheckoutLinkResource extends Resource
                         ->searchable()
                         ->helperText(__('admin.checkout_link.help.payment_group')),
                 ]),
+
+                // 需求 2：一条链接可以挂多个支付组，落地页把它们展示给客户挑。
+                // 只列「启用中」的组（scopedOptions 的 activeColumn 参数）——给客户挂一个
+                // 停用的组，等于给了一个点进去必然失败的选项。
+                // ⚠️ 这里选的是「组」而不是「支付方式」：组内走哪条通道仍由
+                // PaymentService 的加权算法 + 风控决定，不受本字段影响。
+                Select::make('payment_group_ids')
+                    ->label(__('admin.checkout_link.fields.payment_groups'))
+                    ->options(fn (Get $get) => static::scopedOptions(PaymentGroup::class, $get, 'group_name', 'is_active'))
+                    ->multiple()
+                    ->searchable()
+                    ->helperText(__('admin.checkout_link.help.payment_groups'))
+                    ->columnSpanFull(),
 
                 Grid::make(2)->schema([
                     Select::make('merchant_domain_id')
@@ -344,6 +370,12 @@ class CheckoutLinkResource extends Resource
 
         return $table
             ->columns(array_merge($columns, [
+                // 内部名称排在 title 前面：运营在列表里是靠它认链接的，
+                // title 是对客文案，扫列表时优先级更低。
+                TextColumn::make('link_name')
+                    ->label(__('admin.checkout_link.fields.link_name'))
+                    ->searchable()
+                    ->wrap(),
                 TextColumn::make('title')->label(__('admin.checkout_link.fields.title'))->searchable()->wrap(),
                 TextColumn::make('url')
                     ->label(__('admin.checkout_link.columns.url'))

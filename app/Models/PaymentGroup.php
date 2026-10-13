@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Storage;
 
 class PaymentGroup extends Model
 {
@@ -20,6 +21,7 @@ class PaymentGroup extends Model
         'merchant_id',
         'group_key',
         'group_name',
+        'logo_path',
         'description',
         'timezone',
         'is_active',
@@ -68,5 +70,23 @@ class PaymentGroup extends Model
     public function activePaymentMethods(): BelongsToMany
     {
         return $this->paymentMethods()->where('payment_methods.is_active', true);
+    }
+
+    /**
+     * 落地页上展示的组 Logo 公开地址。
+     *
+     * 和 CheckoutLink::logoUrl() 同一个前提：落地页访问者是未登录的终端客户，
+     * 必须走**公开可读**的盘，用不了争议附件那套 temporaryUrl() 签名地址
+     * （签名有有效期，而收款链接是长期挂在广告位上的）。
+     *
+     * 返回 null 时落地页会回退展示链接自身的 Logo，见落地页视图的降级逻辑。
+     */
+    public function logoUrl(): ?string
+    {
+        if (blank($this->logo_path)) {
+            return null;
+        }
+
+        return Storage::disk(config('checkout.media_disk', 'public'))->url($this->logo_path);
     }
 }

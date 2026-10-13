@@ -36,6 +36,10 @@ class CreateCheckoutOrderRequest extends FormRequest
     {
         $link = $this->checkoutLink();
 
+        // 只算一次：候选组在同一个请求内是稳定的，但每次都要查库，
+        // 下方 required 与 in 两条规则都要用到它。
+        $selectableGroups = $link->availablePaymentGroups();
+
         return [
             'first_name' => ['required', 'string', 'max:100'],
             'last_name' => ['required', 'string', 'max:100'],
@@ -66,6 +70,18 @@ class CreateCheckoutOrderRequest extends FormRequest
                     'decimal:0,2',
                 ],
 
+            // 落地页的支付组选择（需求 2/3）。链接配了可选组时客户必选（决策 Q2-A），
+            // 且必须落在「已启用 + 属于本商户」的白名单里 —— 该白名单由
+            // availablePaymentGroups() 给出，**已自动包含默认组**，所以客户选默认组
+            // 同样合法；没配可选组时页面不渲染选择区，字段缺失属正常，用 nullable
+            // 放行（下单时会回落到默认组）。
+            //
+            // ⚠️ 只收「组」ID，不收支付方式 ID —— 组内走哪条通道必须交给算法决定，
+            // 传支付方式 ID 会走进 resolveDesignatedPaymentMethod() 旁路并跳过全部风控阈值。
+            'payment_group_id' => $selectableGroups->isNotEmpty()
+                ? ['required', 'integer', Rule::in($selectableGroups->modelKeys())]
+                : ['nullable', 'integer'],
+
             // 蜜罐：真人看不见这个字段（CSS 隐藏），填了就是机器人。
             'company_website' => ['prohibited'],
 
@@ -88,6 +104,7 @@ class CreateCheckoutOrderRequest extends FormRequest
             'country' => __('checkout.fields.country'),
             'zip' => __('checkout.fields.zip'),
             'amount' => __('checkout.fields.amount'),
+            'payment_group_id' => __('checkout.fields.payment_method'),
         ];
     }
 
@@ -98,6 +115,7 @@ class CreateCheckoutOrderRequest extends FormRequest
             // 统一报一句含糊的失败信息即可。
             'company_website.prohibited' => __('checkout.validation.submission_rejected'),
             'form_token.required' => __('checkout.validation.form_expired'),
+            'payment_group_id.required' => __('checkout.validation.payment_method_required'),
         ];
     }
 

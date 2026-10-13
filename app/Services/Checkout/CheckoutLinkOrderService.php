@@ -30,11 +30,18 @@ class CheckoutLinkOrderService
      *                           含 first_name / last_name / email / phone /
      *                           address_line1 / address_line2 / city / state /
      *                           country / zip / amount（range 模式才有），
+     *                           payment_group_id（落地页客户选中的支付组，可选），
      *                           以及 customer_ip / user_agent / accept_language
      */
     public function createOrder(CheckoutLink $link, array $customer): Order
     {
         $link->loadMissing(['merchant', 'application', 'paymentGroup', 'items']);
+
+        // 客户在落地页选中的支付组（需求 2/3）。链接没配可选组时回落到默认组，
+        // 选中项失效（组被停用/删掉）时同样回落——规则见 CheckoutLink::resolvePaymentGroup()。
+        $paymentGroup = $link->resolvePaymentGroup(
+            isset($customer['payment_group_id']) ? (int) $customer['payment_group_id'] : null
+        );
 
         $amount = $link->resolveAmount($customer['amount'] ?? null);
         $items = $this->buildItems($link, $amount);
@@ -49,7 +56,9 @@ class CheckoutLinkOrderService
             'merchant_order_no' => $this->generateMerchantOrderNo($link),
             'platform' => CheckoutLink::ORDER_PLATFORM,
             'currency' => $link->currency,
-            'group_key' => $link->paymentGroup->group_key,
+            // 只交出「组」。OrderCreationService 拿到 group_key 后重新按商户 + 启用状态
+            // 查组，组内的通道由 PaymentService 的加权算法 + 四道风控决定。
+            'group_key' => $paymentGroup->group_key,
 
             'subtotal' => $subtotal,
             'shipping_fee' => $this->money($link->shipping_fee),

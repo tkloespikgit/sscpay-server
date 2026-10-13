@@ -92,6 +92,78 @@
             </div>
         @endif
 
+        @if ($paymentGroups->isNotEmpty())
+            @php
+                // 预选：表单校验失败回填优先；其次，只有一个可选组时默认勾上
+                // —— 让客户不必为唯一的选项多点一次（仍可改）。
+                // ⚠️ 多个组时**故意不预选**：「客户必选」是既定决策 Q2-A，
+                // 无脑选中第一个会让这条规则形同虚设（有测试盯着）。
+                $preselectedGroupId = filled(old('payment_group_id'))
+                    ? (string) old('payment_group_id')
+                    : ($paymentGroups->count() === 1 ? (string) $paymentGroups->first()->id : null);
+            @endphp
+            {{-- 需求 3：把链接配置的支付组展示给客户点选。
+                 ⚠️ 客户只选到「组」这一层 —— 组内具体走哪条通道仍由
+                 PaymentService 的加权算法 + 风控决定（需求的硬约束），
+                 所以这里提交的是 payment_group_id，而不是 payment_method_id。
+
+                 交互：整块 <label> 就是一个 logo 按钮，**点 logo 图片本身即可选中**。
+                 图片由 .checkout-payment-option 设为 pointer-events:none，点击一律
+                 穿透到 <label>；顺带挡掉 Safari / 移动端把按下识别成图片拖拽、
+                 长按弹「存储图片」菜单。 --}}
+            <section>
+                <h2 class="mb-5 text-xl font-semibold tracking-tight text-slate-900">
+                    {{ __('checkout.sections.payment_method') }}
+                </h2>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    @foreach ($paymentGroups as $group)
+                        @php
+                            // 展示优先级（决策 Q3）：组自己的 Logo → 回退到链接自身的 Logo
+                            // （header 里那张）→ 都没有时退回组名兜底，保证卡片不会空着点不到。
+                            // 不首选用组名，是因为 group_name 是内部命名（如「pp支付」），
+                            // 直接给海外买家看很突兀。
+                            $groupLogo = $group->logoUrl() ?: $link->logoUrl();
+                            $groupId = 'payment_group_'.$group->id;
+                        @endphp
+                        <label for="{{ $groupId }}"
+                               class="checkout-payment-option group relative block cursor-pointer select-none">
+                            <input type="radio" id="{{ $groupId }}" name="payment_group_id"
+                                   value="{{ $group->id }}" class="peer sr-only" required
+                                   @checked($preselectedGroupId === (string) $group->id)>
+
+                            {{-- 按钮本体。边框恒为 2px、只换颜色，选中时不会有 1px 的跳动。
+                                 选中态的文字色写在这一层：里面的组名 span 是它的子节点，
+                                 显式设了颜色会盖掉继承，所以那边不设 color。 --}}
+                            <span class="flex min-h-[72px] items-center justify-center rounded-xl border-2 border-slate-200 bg-white px-4 py-3 text-slate-600 transition
+                                         group-hover:border-slate-400 group-hover:bg-slate-50 group-hover:text-slate-900
+                                         peer-checked:border-slate-900 peer-checked:bg-slate-50 peer-checked:text-slate-900
+                                         peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-slate-900">
+                                @if ($groupLogo)
+                                    <img src="{{ $groupLogo }}" alt="" draggable="false"
+                                         class="h-12 w-auto max-w-[160px] object-contain">
+                                @else
+                                    <span class="text-center text-sm font-semibold">{{ $group->group_name }}</span>
+                                @endif
+                            </span>
+
+                            {{-- 选中角标。⚠️ 必须是 <input> 的兄弟节点：Tailwind 的
+                                 peer-checked: 用的是 ~ 兄弟选择器，嵌套在按钮里会失效。 --}}
+                            <span aria-hidden="true"
+                                  class="absolute -right-2 -top-2 flex h-6 w-6 scale-75 items-center justify-center rounded-full bg-slate-900 text-white opacity-0 shadow-sm transition peer-checked:scale-100 peer-checked:opacity-100">
+                                <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="3">
+                                    <path d="m4 10.5 4 4 8-9" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </span>
+                        </label>
+                    @endforeach
+                </div>
+                <p class="mt-2 text-xs text-slate-500">{{ __('checkout.help.payment_method') }}</p>
+                @error('payment_group_id')
+                    <p class="mt-1.5 text-xs text-red-600">{{ $message }}</p>
+                @enderror
+            </section>
+        @endif
+
         {{-- 金额区间模式：客户自己输金额。固定金额模式下这一段整个不渲染，
              服务端也会忽略任何传上来的 amount（见 CheckoutLink::resolveAmount）。 --}}
         @unless ($link->isFixedAmount())

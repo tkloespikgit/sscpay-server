@@ -10,6 +10,7 @@ use App\Models\PaymentMethod;
 use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
@@ -84,6 +85,25 @@ class PaymentGroupResource extends Resource
                     ->maxLength(50)
                     ->helperText(__('admin.payment_group.help.group_key')),
                 TextInput::make('group_name')->label(__('admin.payment_group.fields.group_name'))->required()->maxLength(100),
+                FileUpload::make('logo_path')
+                    ->label(__('admin.payment_group.fields.logo'))
+                    ->image()
+                    // 落地页访问者是未登录客户，必须走公开可读的盘（同收款链接 Logo）。
+                    ->disk(config('checkout.media_disk', 'public'))
+                    ->directory(config('checkout.payment_group_logo_directory', 'payment-groups/logos'))
+                    ->visibility('public')
+                    ->maxSize(2048)
+                    // 落地页按固定尺寸渲染组卡片，这里把上传图统一压到 320×120
+                    // （cover：先等比缩放再居中裁切），避免商户传不同比例的图把版面顶乱。
+                    // ⚠️ Filament v5 的缩放是**浏览器端** FilePond 插件做的（参数序列化后交给前端，
+                    //    见 FileUpload 的 automaticallyResizeImages*），不是服务端处理：
+                    //    SVG 不会被缩放，绕过前端直传也会跳过。落地页另有 CSS 兜底
+                    //    （h-12 / max-w-[160px] / object-contain），所以 320×120 是引导值而非常量约束。
+                    ->automaticallyResizeImagesMode('cover')
+                    ->automaticallyResizeImagesToWidth('320')
+                    ->automaticallyResizeImagesToHeight('120')
+                    ->helperText(__('admin.payment_group.help.logo'))
+                    ->columnSpanFull(),
                 Select::make('timezone')
                     ->label(__('admin.payment_group.fields.timezone'))
                     ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
