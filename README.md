@@ -391,6 +391,7 @@
 | `make:super-admin` | 创建平台超级管理员（支持 `--name` / `--email` / `--password` 非交互） |
 | `make:merchant-manager` | 创建商户级管理员（同上支持三个非交互参数），自动赋平台级"商户级管理员"角色 |
 | `merchants:provision-roles {merchant_id?}` | 给存量商户补建 / 刷新默认角色，幂等 |
+| `orders:recalculate-surcharge {merchant}` | 按商户 ID/完整名称预览历史订单汇损修复，`--apply` 写入；保留历史市场汇率及手续费金额，只处理已入账无退款/争议订单，不修改余额。[操作与差额口径](doc/order-surcharge-recalculation.md) |
 | `permissions:rollout-order-disputes` | 一次性命令：用 `givePermissionTo()` **增量**给存量商户的默认角色补发争议相关的 4 个权限（不覆盖商户自定义权限）。仅精确匹配默认角色名，商户改过名字或自建角色的不在覆盖范围 |
 
 ---
