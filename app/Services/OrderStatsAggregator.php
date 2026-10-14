@@ -106,6 +106,43 @@ class OrderStatsAggregator
         return $written;
     }
 
+    /**
+     * 重算 [$from, $to] 闭区间内的每一天（含首尾），返回写入的总行数。
+     *
+     * 供后台「订单统计」页的手动刷新使用：刷新范围要跟着用户当前选择的
+     * 统计周期走（当天 / 昨天 / 当月 / 上一月），而周期是日期区间而不是
+     * 「最近 N 天」，所以这里不能直接复用 aggregateRecentDays()。
+     *
+     * 逐日调用已有的 aggregateDate()，不另写一套取数逻辑——手动刷新与
+     * 定时任务（AggregateOrderStats）必须落在同一条代码路径上，否则两边
+     * 的统计口径迟早会漂移出差异，而这种差异极难排查。
+     *
+     * 日期解析统一走系统时区，与 aggregateDate() 内部保持一致。
+     *
+     * @return int{0, int} 写入的总行数
+     */
+    public function aggregateDateRange(\DateTimeInterface $from, \DateTimeInterface $to): int
+    {
+        $timezone = config('app.timezone');
+        $start = Carbon::parse($from->format('Y-m-d'), $timezone)->startOfDay();
+        $end = Carbon::parse($to->format('Y-m-d'), $timezone)->endOfDay();
+
+        // 传反了区间（理论上不该发生，但 $from/$to 来自筛选器）就直接不动表，
+        // 静默把两个日期对调会算出一批天没意义的统计。
+        if ($start->greaterThan($end)) {
+            return 0;
+        }
+
+        $written = 0;
+
+        // 用副本推进游标，避免改动入参对象（Carbon 是可变对象）。
+        for ($cursor = $start->copy(); $cursor->lessThanOrEqualTo($end); $cursor->addDay()) {
+            $written += $this->aggregateDate($cursor->copy());
+        }
+
+        return $written;
+    }
+
     // ------------------------------------------------------------------
     // 四个指标的取数
     // ------------------------------------------------------------------

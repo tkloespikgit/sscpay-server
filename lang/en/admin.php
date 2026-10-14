@@ -724,6 +724,7 @@ return [
             'transaction_id' => 'Transaction ID',
             'created_at' => 'Created At',
             'paid_at' => 'Paid At',
+            'refunded_amount' => 'Refunded Amount',
             'send_mail' => 'Email Requested at Checkout',
             'payment_link_sent_at' => 'Payment Link Email Sent At',
             'payment_link_mail_failed_reason' => 'Mail Send Failure Reason',
@@ -961,6 +962,14 @@ return [
         'charts' => [
             'trend' => 'Revenue Trend (daily)',
             'breakdown' => 'Breakdown by :dimension',
+        ],
+        'actions' => [
+            'refresh_now' => 'Refresh statistics',
+            'refresh_now_desc' => 'This recomputes the daily statistics for the currently selected period (:range). Figures are normally recomputed automatically every 3 hours; manual refresh is only needed when reconciling or when numbers look clearly stale. Recomputing overwrites the existing statistics for those dates.',
+            'refresh_now_submit' => 'Recompute now',
+            'refresh_now_success' => 'Statistics refreshed, :rows row(s) written.',
+            'refresh_failed' => 'Could not refresh the statistics. Please try again later.',
+            'refresh_busy' => 'Another refresh is already running. Please try again in a moment.',
         ],
     ],
 
@@ -1201,6 +1210,7 @@ return [
             'status' => 'Disabling this account blocks it from logging into the observer panel, even with the correct password',
             'payment_methods' => 'This observer can only see orders placed through these payment methods after logging in',
             'amount_display_ratio' => 'All transaction amounts this observer sees are scaled by this percentage for display only (the real data is unaffected). Only a super admin can set this; observers created by a merchant manager are fixed at 100% (no scaling)',
+            'owner' => 'Whoever creates an observer maintains it. Leave blank to keep it managed by platform super admins only.',
         ],
     ],
 

@@ -720,6 +720,7 @@ return [
             'transaction_id' => '三方交易号',
             'created_at' => '创建时间',
             'paid_at' => '支付成功时间',
+            'refunded_amount' => '已退款金额',
             'send_mail' => '下单时请求发送邮件',
             'payment_link_sent_at' => '付款链接邮件发送时间',
             'payment_link_mail_failed_reason' => '邮件发送失败原因',
@@ -958,6 +959,14 @@ return [
         'charts' => [
             'trend' => '成交额趋势（按日）',
             'breakdown' => '按:dimension 分解',
+        ],
+        'actions' => [
+            'refresh_now' => '立即刷新统计',
+            'refresh_now_desc' => '将重算当前统计周期（:range）对应的每日统计。数据平时由系统每 3 小时自动重算一次，只有在对账或发现数字明显滞后时才需要手动刷新。重算会覆盖这些日期已有的统计结果。',
+            'refresh_now_submit' => '开始重算',
+            'refresh_now_success' => '统计已刷新，共写入 :rows 行。',
+            'refresh_failed' => '统计刷新失败，请稍后重试。',
+            'refresh_busy' => '已有另一个刷新任务在执行，请稍候再试。',
         ],
     ],
 
