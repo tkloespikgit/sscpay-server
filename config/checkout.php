@@ -24,6 +24,8 @@ return [
     */
     'logo_directory' => 'checkout-links/logos',
     'item_image_directory' => 'checkout-links/items',
+    // 支付组 Logo（需求 1）。与收款链接 Logo 分开存放，便于在 OSS 上单独设公共读策略。
+    'payment_group_logo_directory' => 'payment-groups/logos',
 
     /*
     |--------------------------------------------------------------------------

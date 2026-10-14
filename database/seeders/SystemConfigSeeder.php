@@ -18,7 +18,11 @@ class SystemConfigSeeder extends Seeder
         $configs = [
             [
                 'config_key' => 'exchange.supported_currencies',
-                'config_value' => json_encode(['EUR', 'JPY', 'GBP']),
+                // ⚠️ 必须包含 USD：USD 是本系统基准币种（汇率以 USD 为基准，
+                // getRateWithSurcharge() 对同币种短路返回 1.0），且手工建单与
+                // 收款链接都要能选美元。见 ExchangeRateHistory::dailySeries()
+                // 中对该项（USD/USD 恒 1.0）的过滤说明。
+                'config_value' => json_encode(['USD', 'EUR', 'JPY', 'GBP']),
                 'value_type' => 'json',
                 'group' => 'exchange',
                 'description' => '支持的币种列表（JSON 数组）',

@@ -193,7 +193,7 @@ POST {BASE_URL}/api/order/create
 |---|---|---|--------------------------------------------------------------------------------------------|
 | `merchant_order_no` | string ≤64 | ✅ | 商户自己的订单号，是**幂等键**（与商户账号组合唯一）。币种和原始请求应付金额一致时重复提交返回旧订单，否则返回冲突错误 |
 | `platform` | string ≤50 | ✅ | 电商网站平台类型枚举，合法值列表由系统配置 `order.platforms` 动态维护，不在列表内直接拒单                                     |
-| `currency` | string(3) | ✅ | 下单币种（如 `EUR`/`JPY`/`GBP`），须在系统支持的币种列表内                                                     |
+| `currency` | string(3) | ✅ | 下单币种（如 `USD`/`EUR`/`JPY`/`GBP`），须在系统支持的币种列表内                                                     |
 | `group_key` | string ≤50 | ✅ | 支付方式组标识（系统后台"支付组"配置）。即使传了 `payment_method_key` 也仍然必填                                       |
 | `payment_method_key` | string ≤50 | 否 | **指定支付渠道**（取值为后台"支付方式"的 `method_code`）。传了会跳过支付组路由与限额风控，直接用该渠道；代价是三个回跳地址全部必填且域名必须与该渠道绑定站点一致 |
 | `subtotal` | string(数字) | ✅ | 商品小计，须等于 `items[].unit_price × quantity` 之和                                                |

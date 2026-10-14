@@ -336,7 +336,7 @@
 
 | 分组 | Key | 默认值 | 说明 |
 |---|---|---|---|
-| exchange | `exchange.supported_currencies` | `["EUR","JPY","GBP"]` | 支持的下单币种，同时决定汇率拉取范围 |
+| exchange | `exchange.supported_currencies` | `["USD","EUR","JPY","GBP"]` | 支持的下单币种，同时决定汇率拉取范围。**必须包含 USD**（基准币种，同币种汇率恒为 1.0）。重跑 `SystemConfigSeeder` 会覆盖此项，见 `doc/checkout-link-cloudflare-saas.md` 的告警 |
 | exchange | `exchange.surcharge_type` | `percent` | 汇损类型：`percent` / `fixed` |
 | exchange | `exchange.surcharge_percent` | `0` | 汇损百分比 |
 | exchange | `exchange.surcharge_fixed` | `0.005` | 固定汇损值（`surcharge_type = fixed` 时生效） |

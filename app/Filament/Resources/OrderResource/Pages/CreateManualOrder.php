@@ -87,7 +87,8 @@ class CreateManualOrder extends Page
         $viewer = auth()->user();
         $canPickMerchant = (bool) $viewer?->isPlatformStaff();
         $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
-        $currencies = SystemConfig::getArray('exchange.supported_currencies', ['EUR', 'JPY', 'GBP']);
+        // 兜底值必须与 SystemConfigSeeder 保持一致并包含 USD（基准币种）。
+        $currencies = SystemConfig::getArray('exchange.supported_currencies', ['USD', 'EUR', 'JPY', 'GBP']);
 
         return $schema
             ->components([

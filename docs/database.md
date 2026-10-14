@@ -114,6 +114,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 |---|---|
 | `merchant_domains` | 商户域名、Cloudflare 自定义 hostname/证书状态，未删除 `host` 全局唯一 |
 | `checkout_links` | 商户可重复使用的收款配置；关联应用、支付组及可选商户域名，支持固定/范围金额、支持国家、说明等；`auto_redirect` 默认 true，控制建单后自动跳转或展示付款链接 |
+| `checkout_links` | 商户可重复使用的收款配置；关联应用、支付组及可选商户域名，支持固定/范围金额、支持国家、说明等。`link_name` 是商户**内部标识**（后台列表/搜索用，不展示给客户），与对客展示的 `title` 分工不同，两者均必填 |
 | `checkout_link_items` | 链接预设商品；实际下单时转换为 `order_items` |
 | `orders.checkout_link_id` | 订单来源追踪；一个链接可以产生多笔订单 |
 

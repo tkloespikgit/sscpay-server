@@ -115,6 +115,41 @@ class CheckoutLinkFormTest extends TestCase
         );
     }
 
+    /**
+     * 内部名称（link_name）是必填（需求 F2.2）。
+     *
+     * 它和 title 各管一头：title 是给客户看的标题，link_name 是后台认链接用的内部标识。
+     * 两个都必填，缺了哪个都不行——这也是本次改动最容易踩的回归点，
+     * 所以单独钉一个用例，避免以后有人把 required 去掉。
+     */
+    public function test_link_name_is_required(): void
+    {
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData(['link_name' => null]))
+            ->call('create')
+            ->assertHasFormErrors(['link_name' => 'required']);
+
+        $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
+    }
+
+    /**
+     * USD 必须可选（基准币种）。
+     *
+     * 回归背景：`exchange.supported_currencies` 的默认值一度只有 EUR/JPY/GBP，
+     * 一旦有人重跑 SystemConfigSeeder（它用 updateOrInsert），这项配置就会被
+     * 覆盖回不含 USD 的默认值，收款链接与手工建单的币种下拉里美元就凭空消失了。
+     * 这里从表单兜底值这一侧钉住，配合 seeder 与 CheckoutLinkResource 的默认值。
+     */
+    public function test_usd_is_available_as_a_currency(): void
+    {
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData(['currency' => 'USD']))
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame('USD', CheckoutLink::withoutGlobalScopes()->firstOrFail()->currency);
+    }
+
     public function test_items_that_do_not_add_up_are_rejected(): void
     {
         Livewire::test(CreateCheckoutLink::class)
@@ -199,6 +234,7 @@ class CheckoutLinkFormTest extends TestCase
             'merchant_id' => $this->merchant->id,
             'application_id' => $this->application->id,
             'payment_group_id' => $this->group->id,
+            'link_name' => 'TV Box Link',
             'title' => 'TV box - model 209343 checkout',
             'currency' => 'EUR',
             'amount_mode' => CheckoutLink::MODE_FIXED,

@@ -44,6 +44,8 @@ class CheckoutLinkController extends Controller
 
         return view('checkout.show', [
             'link' => $link,
+            // 落地页要展示给客户挑的支付组（已启用 + 属于本商户）。为空时视图不渲染选择区。
+            'paymentGroups' => $link->availablePaymentGroups(),
             'countries' => $countries,
             'recommendedCountry' => CheckoutCountryRecommendation::forRequest($request, $countries)
                 ?? (count($link->supported_countries ?? []) === 1 ? array_key_first($countries) : null),

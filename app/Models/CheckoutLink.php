@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
 use App\Support\Countries;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,6 +18,10 @@ use Illuminate\Support\Str;
  *
  * 与 orders.payment_link_token 的区别见 create_checkout_links_table 迁移注释，
  * 两者不可混用。
+ *
+ * title 与 link_name 都是必填，但用途完全不同，别混用：
+ *   - title     = 对客标题，渲染在落地页顶部（checkout/layout.blade.php）与浏览器标签页；
+ *   - link_name = 商户内部标识，仅后台列表识别与搜索用，**不展示给客户**。
  */
 class CheckoutLink extends Model
 {
@@ -45,9 +50,11 @@ class CheckoutLink extends Model
         'merchant_id',
         'application_id',
         'payment_group_id',
+        'payment_group_ids',
         'merchant_domain_id',
         'slug',
         'title',
+        'link_name',
         'customer_notice',
         'logo_path',
         'google_maps_browser_key',
@@ -77,6 +84,7 @@ class CheckoutLink extends Model
             'is_active' => 'boolean',
             'auto_redirect' => 'boolean',
             'supported_countries' => 'array',
+            'payment_group_ids' => 'array',
         ];
     }
 
@@ -236,6 +244,79 @@ class CheckoutLink extends Model
             fn (string $carry, CheckoutLinkItem $item) => bcadd($carry, $item->totalPrice(), 2),
             '0.00'
         );
+    }
+
+    /**
+     * 落地页上可供客户选择的支付组（需求决策 Q1-A）。
+     *
+     * 候选 = 「可选择支付组」∪「默认支付组」，只保留**启用中**、且仍属于本链接
+     * 商户的组，按 id 升序。
+     *
+     * 为什么要自动并入默认组：配了选择区之后，默认组依然是"这条链接的组"之一。
+     * 若因为运营没在「可选择支付组」里重复勾它，就让它整块从客户眼前消失，后台
+     * 那个必填字段就退化成了隐形配置——运营以为它在生效，实际客户永远看不到，
+     * 只能靠一次线上投诉才发现。
+     *
+     * 之所以每次都重新查库，而不是直接信 JSON 里的 ID 列表：payment_group_ids 是
+     * 后台保存时的快照，之后组可能被停用、被软删除、甚至被改挂到别的商户名下。
+     * 直接信任快照会把失效的组渲染给客户，客户点进去还会在下单时炸掉。
+     *
+     * 返回空集合表示这条链接没配选择区 —— 落地页不渲染选择区，直接走默认组
+     * payment_group_id（存量链接零迁移零回归）。
+     *
+     * @return Collection<int, PaymentGroup>
+     */
+    public function availablePaymentGroups(): Collection
+    {
+        $ids = array_map('intval', (array) ($this->payment_group_ids ?? []));
+        $ids = array_values(array_filter($ids, fn (int $id) => $id > 0));
+
+        // 没配可选组 = 不展示选择区。这一条必须最先判断：默认组不能把空列表
+        // "撑"成非空，否则存量链接会凭空空降出一个只有一个选项的选择区。
+        if ($ids === []) {
+            return new Collection;
+        }
+
+        if ((int) $this->payment_group_id > 0) {
+            $ids[] = (int) $this->payment_group_id;
+        }
+
+        return PaymentGroup::query()
+            ->forMerchant((int) $this->merchant_id)
+            ->whereIn('id', array_values(array_unique($ids)))
+            // 默认组若已被停用，同样不出现在候选里——标准与可选组完全一致。
+            // 渲染一个点进去必然失败的选项，比不渲染更糟。
+            ->where('is_active', true)
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
+     * 本次下单实际使用的支付组（需求决策 Q2-A：客户必选）。
+     *
+     * - 配了可选组：客户传上来的 ID 必须落在 availablePaymentGroups() 里（已启用 +
+     *   属于本商户，**且该集合已自动包含默认组**）；非法或没传时**回退到默认组**
+     *   而不是抛异常 —— 落地页的异常会被控制器统一吞成一句"下单失败"，回退至少
+     *   能让客户把单走完；正常路径上，FormRequest 的 required + in 规则已经在
+     *   更前面拦住了非法值，所以这条回退实际是给服务层直接调用兜的底。
+     * - 没配可选组：直接用默认组。
+     *
+     * ⚠️ 只解析到「组」为止，绝不继续解析成具体支付方式 —— 组内通道必须交给
+     * PaymentService::resolvePaymentMethod() 的加权算法 + 风控，这是需求的硬约束。
+     */
+    public function resolvePaymentGroup(?int $selectedId): PaymentGroup
+    {
+        $available = $this->availablePaymentGroups();
+
+        if ($available->isNotEmpty() && $selectedId !== null) {
+            $selected = $available->firstWhere('id', $selectedId);
+
+            if ($selected) {
+                return $selected;
+            }
+        }
+
+        return $this->paymentGroup;
     }
 
     public function scopeActive($query)
