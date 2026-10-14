@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Facade;
  * 尤其是在需要写单测的地方（注入更容易mock）。
  *
  * @method static array registerGatewayConfig(string $configKey, string $paymentMethod, array $config)
- * @method static array createPayment(array $payload)
+ * @method static array createPayment(array $payload, ?\App\Models\Order $order = null)
  * @method static array syncTracking(array $payload)
  * @method static array checkHealth(string $paymentMethod, ?int $gatewayConfigId = null, ?array $gatewayConfig = null)
  * @method static array orderLogs(string $sOrderId)

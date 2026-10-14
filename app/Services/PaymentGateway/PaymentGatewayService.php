@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Services\PaymentGateway;
 
+use App\Events\PaymentLinkCreationFailed;
+use App\Models\Order;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * WordPress支付网关聚合插件的客户端封装。
@@ -94,27 +97,97 @@ class PaymentGatewayService
      * 不会重复创建订单——本方法内部也默认开启了HTTP层的自动重试，见config('payment_gateway.retry_times')。
      *
      * @param  array  $payload  完整请求体，字段见API文档 POST /pay 一节
+     * @param  Order|null  $order  本地订单上下文，用于失败时按订单商户发送 Telegram，不传入远端请求
      * @return array{s_order_id:string,wp_order_id:int,payment_method:string,currency:string,amount:float,status:string,pay_url:string,expires_at:string,created_at:string}
      *
      * @throws PaymentGatewayException
      */
-    public function createPayment(array $payload): array
+    public function createPayment(array $payload, ?Order $order = null): array
     {
-        $result = $this->request('pay', $payload);
+        try {
+            $result = $this->request('pay', $payload);
 
-        // 插件返回 code=0（业务成功）却没给 pay_url，本该是异常情况——之前这里
-        // 直接透传给调用方，OrderCreationService 用 ?? null 兜底，最终订单创建
-        // "成功"但 pay_url 是 null，商户和排查的人都看不出这一步其实失败了。
-        if (blank($result['pay_url'] ?? null)) {
-            Log::warning('支付网关插件 /pay 返回成功但缺少 pay_url', [
-                's_order_id' => $payload['s_order_id'] ?? null,
-                'response' => $result,
-            ]);
+            // 插件业务成功却缺少 pay_url，同样属于创建支付链接失败。
+            if (blank($result['pay_url'] ?? null)) {
+                Log::warning('支付网关插件 /pay 返回成功但缺少 pay_url', [
+                    's_order_id' => $payload['s_order_id'] ?? null,
+                    'response' => $result,
+                ]);
 
-            throw new PaymentGatewayException('支付网关插件 /pay 返回成功但未提供 pay_url，无法生成收银台链接', -1, 200, $result);
+                throw new PaymentGatewayException('支付网关插件 /pay 返回成功但未提供 pay_url，无法生成收银台链接', -1, 200, $result);
+            }
+
+            return $result;
+        } catch (Throwable $e) {
+            // 放在 HTTP 重试之外：一次 createPayment 最终失败只发一次提醒。
+            // 发送提醒的异常不能覆盖支付异常，调用方仍可保留本地单并幂等补建。
+            $this->notifyPaymentLinkCreationFailed($payload, $order, $e);
+
+            throw $e;
         }
+    }
 
-        return $result;
+    private function notifyPaymentLinkCreationFailed(array $payload, ?Order $order, Throwable $error): void
+    {
+        try {
+            // 商户必须来自可信本地订单，不根据渠道所有者或客户端 payload 推断。
+            if (! $order || ! $order->exists || ! $order->merchant_id
+                || (string) ($payload['s_order_id'] ?? '') !== (string) $order->order_no) {
+                Log::warning('创建支付链接失败提醒已跳过：缺少匹配的本地订单上下文');
+
+                return;
+            }
+
+            $details = [
+                'merchant_id' => (string) $order->merchant_id,
+                'order_no' => (string) $order->order_no,
+                'merchant_order_no' => (string) $order->merchant_order_no,
+                'amount' => (string) $order->amount,
+                'currency' => (string) $order->currency,
+                'converted_amount' => (string) $order->converted_amount,
+                'payment_method' => (string) $order->payment_method,
+                'payment_method_id' => (string) ($order->payment_method_id ?? '-'),
+                'source' => (string) $order->source,
+                'gateway_host' => (string) (parse_url($this->baseUrlOverride ?? $this->config['base_url'] ?? '', PHP_URL_HOST) ?: '-'),
+                'http_status' => (string) ($error instanceof PaymentGatewayException ? $error->httpStatus : 0),
+                'pga_code' => (string) ($error instanceof PaymentGatewayException ? $error->pgaCode : -1),
+            ];
+            $details = array_map(fn ($value) => mb_substr($value, 0, 200), $details);
+            $details['error'] = mb_substr($this->redactFailureReason($error->getMessage(), $payload), 0, 1200);
+
+            event(new PaymentLinkCreationFailed((int) $order->merchant_id, $details));
+        } catch (Throwable $notificationError) {
+            Log::warning('创建支付链接失败提醒派发失败', [
+                'merchant_id' => $order?->merchant_id,
+                'order_no' => $order?->order_no,
+                'exception' => $notificationError::class,
+            ]);
+        }
+    }
+
+    private function redactFailureReason(string $reason, array $payload): string
+    {
+        // cURL 错误会带请求 URL，里面的 WooCommerce query 凭证必须屏蔽。
+        $secrets = array_values($this->credentialsOverride ?? []);
+        $gatewayConfig = $payload['gateway_config'] ?? [];
+        if (is_array($gatewayConfig)) {
+            array_walk_recursive($gatewayConfig, function ($value, $key) use (&$secrets) {
+                if (is_string($value) && preg_match('/secret|password|token|key|client.?id|authorization/i', (string) $key)) {
+                    $secrets[] = $value;
+                }
+            });
+        }
+        $replacements = [];
+        foreach ($secrets as $secret) {
+            if (is_string($secret) && $secret !== '') {
+                foreach ([$secret, rawurlencode($secret), urlencode($secret)] as $value) {
+                    $replacements[$value] = '[REDACTED]';
+                }
+            }
+        }
+        $reason = strtr($reason, $replacements);
+
+        return (string) preg_replace('/((?:consumer_key|consumer_secret|client_secret|access_token|api_key|password)=)[^&\s]+/i', '$1[REDACTED]', $reason);
     }
 
     /**
@@ -215,7 +288,7 @@ class PaymentGatewayService
     {
         Log::debug('支付网关请求数据', [
             'path' => $path,
-            'request_body' => $json
+            'request_body' => $json,
         ]);
         $baseUrl = rtrim((string) ($this->baseUrlOverride ?? $this->config['base_url'] ?? ''), '/');
         if ($baseUrl === '') {

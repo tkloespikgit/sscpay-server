@@ -547,7 +547,7 @@ class OrderCreationService
                 (string) $paymentMethod->domain_client_id,
                 (string) $paymentMethod->domain_client_sk,
             )
-            ->createPayment($payload);
+            ->createPayment($payload, $order);
 
         $order->update([
             'pay_url' => $result['pay_url'] ?? null,

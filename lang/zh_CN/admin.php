@@ -1279,6 +1279,7 @@ return [
     ],
 
     'telegram_notification' => [
+        'payment_link_creation_failed' => "❌ 创建支付链接失败\n\n商户 ID：:merchant_id\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n来源：:source\n金额：:currency :amount（折算 USD :converted_amount）\n支付渠道：:payment_method（ID :payment_method_id）\n支付站点：:gateway_host\nHTTP 状态：:http_status\n网关错误码：:pga_code\n失败原因：:error\n\n本地订单已保留，请核实渠道与网关错误后重试补建支付链接。",
         'logistics_import_completed' => "📦 物流导入完成\n\n文件：:file_name\n总记录：:total\n成功：:success\n失败：:failed",
         'order_paid' => "✅ 支付成功通知\n\n订单号：:order_no\n金额：:currency:amount（≈ \$:converted_amount）\n支付方式：:payment_method",
         'designated_order_created' => "🛒 源网站订单已创建\n\n订单号：:order_no\n商户订单号：:merchant_order_no\n客户邮箱：:customer_email\n金额：:currency:amount\n支付方式：:payment_method",

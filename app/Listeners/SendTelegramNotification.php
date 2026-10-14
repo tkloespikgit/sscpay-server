@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Events\DesignatedOrderCreated;
 use App\Events\LogisticsImportCompleted;
 use App\Events\OrderStatusChanged;
+use App\Events\PaymentLinkCreationFailed;
 use App\Models\Order;
 use App\Services\TelegramNotificationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -91,12 +92,21 @@ class SendTelegramNotification implements ShouldQueue
         $this->telegram->send($task->merchant_id, $message);
     }
 
+    public function handlePaymentLinkCreationFailed(PaymentLinkCreationFailed $event): void
+    {
+        $details = array_map(fn ($value) => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $event->details);
+        $message = __('admin.telegram_notification.payment_link_creation_failed', $details);
+
+        $this->telegram->send($event->merchantId, $message);
+    }
+
     public function subscribe(Dispatcher $events): array
     {
         return [
             OrderStatusChanged::class => 'handleOrderStatusChanged',
             LogisticsImportCompleted::class => 'handleLogisticsImportCompleted',
             DesignatedOrderCreated::class => 'handleDesignatedOrderCreated',
+            PaymentLinkCreationFailed::class => 'handlePaymentLinkCreationFailed',
         ];
     }
 

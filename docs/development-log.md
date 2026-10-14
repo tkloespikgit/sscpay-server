@@ -2,6 +2,14 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-15：创建支付链接失败时向订单商户发送 Telegram 提醒（当前工作区，未提交）
+
+- `PaymentGatewayService::createPayment()` 在一次调用最终失败时派发 `PaymentLinkCreationFailed`，覆盖业务错误、连接重试耗尽、非预期响应、异常 data 类型和缺少 `pay_url`。不在共享 `request()` 内告警，避免 HTTP 重试重复提醒或其他网关接口误报；成功不发，通知异常隔离后原样抛出支付异常。
+- `OrderCreationService` 唯一实际调用点传入可信本地 Order 上下文，首次建单与幂等补建共用；可选参数保持原单参数调用兼容。缺少上下文或系统订单号不匹配时仅记录提醒跳过日志，不按全局订单号查商户，也不把共享渠道所有者当作接收商户。进入 `createPayment()` 前的渠道检查、商品准备异常不在本次事件范围。
+- 现有 `SendTelegramNotification` 队列订阅新事件，发送系统/商户订单号、商户 ID、来源、原币金额/折算金额、渠道代码/ID、站点 host、HTTP/PGA 错误码和失败原因。沿用商户启用的 Bot、限流及 default 队列，不回退系统 Bot。新增中英文模板并更新 Facade 签名、README 与架构。
+- 入队事件只含标量快照，原因先屏蔽站点认证凭证和内联网关配置中的敏感值（含 URL 编码），截断至 1200 字符；其他字段限制 200 字符，发送前 HTML 转义。不发送原始请求、完整响应、异常对象或配置凭证。
+- 验证：`/opt/homebrew/bin/php artisan test --filter='PaymentLinkCreationFailureTelegramTest|OrderCreateRetryMailTest|DesignatedOrderTelegramNotificationTest'`，SQLite 内存库 17 项、152 个断言通过；变更 PHP Pint、`git diff --check` 通过。新增测试覆盖实际商户 Bot 的模拟发送、最终重试仅一条事件、共享渠道商户隔离、脱敏/转义、通知异常不覆盖支付异常、无上下文/禁用 Bot、中英文消息及实际建单失败保留本地订单。全部 HTTP 为模拟，未发送真实 Telegram，未执行迁移或线上部署。
+
 ## 2026-10-14：按商户补算历史订单漏配汇损（当前工作区，未提交）
 
 - 新增 `orders:recalculate-surcharge {merchant}`，支持 ID 或完整商户名、创建日期范围、默认预览、`--apply` 写入、`--include-existing` 和逐单 JSON 审计报告；未传日期时核对该商户全部未软删订单。业务计算集中在 `OrderSurchargeRecalculationService`，读取数据库最新汇损配置，保留各单历史原始市场汇率、原币金额及手续费金额，重算订单实际汇率、汇损、折算字段和净入账。

@@ -79,6 +79,8 @@ flowchart TD
 6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`；远端失败保留本地订单，供幂等重试恢复。
 7. 是否派发付款链接邮件由调用方决定，Service 仅保存意图。API 重试补单后的发信行为由 `OrderCreateRetryMailTest` 覆盖。
 
+`PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息发送给订单商户的已启用机器人。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号或渠道商户推断接收人。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
+
 两类明细不可混用：`order_items` 保存商户原始商品，`order_matched_items` 保存发给支付站点的商品。`OrderItemService` 支持 `MATCH`、`VIRTUAL`、`CREATE`、`COPY`；同站点直连优先于模式选择。`CREATE`/`COPY` 需要远端真实商品 ID，因此下单过程同步建品。
 
 锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；风控当前统计已成交数据，不能宣称它严格串行化所有渠道订单。
@@ -107,7 +109,7 @@ flowchart TD
 |---|---|---|
 | `notifications` | `SendOrderNotificationJob` | Job `tries=1`，重试由尝试记录与到期扫描驱动；行锁领取并清空旧重试时间，提交后入队 |
 | `payment-links` | `SendPaymentLinkJob` | Job `tries=3`、backoff |
-| `default` | `SendTelegramNotification` 队列监听器 | Worker 配置 |
+| `default` | `SendTelegramNotification` 队列监听器（含支付链接创建失败提醒） | Worker 配置 |
 | `low` | 商品同步、物流导入、物流回传、广告转化 | 按 Job 定义；广告转化也由尝试表驱动重试 |
 
 `config/queue.php` 的 Redis `retry_after` 必须大于长任务 Worker timeout。现有 `composer dev` 的默认 `queue:listen` 不能代替订阅全部业务队列的 Worker；启动方式参考部署文档。队列配置的 `after_commit` 当前为 false，新增事务内派发时要明确提交时机。

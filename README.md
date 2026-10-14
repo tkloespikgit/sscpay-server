@@ -120,7 +120,7 @@
 
 ### 3.4 事件驱动
 
-`OrderStatusChanged` / `LogisticsImportCompleted` / `OrderEventsSyncCompleted` 三个事件，`SendTelegramNotification` 监听器异步（`ShouldQueue`）推送商户 Telegram。商户未配置或未启用 Bot 时静默跳过，不回退系统默认 Token。
+`OrderStatusChanged` / `LogisticsImportCompleted` / `DesignatedOrderCreated` / `PaymentLinkCreationFailed` 事件由 `SendTelegramNotification` 监听器异步（`ShouldQueue`）推送商户 Telegram。支付链接创建失败时包含订单号、商户订单号、金额、渠道、站点和脱敏后的失败原因及错误码。商户未配置或未启用 Bot 时静默跳过，不回退系统默认 Token。
 
 ---
 

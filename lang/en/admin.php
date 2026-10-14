@@ -1283,6 +1283,7 @@ return [
     ],
 
     'telegram_notification' => [
+        'payment_link_creation_failed' => "❌ Payment link creation failed\n\nMerchant ID: :merchant_id\nOrder: :order_no\nMerchant order: :merchant_order_no\nSource: :source\nAmount: :currency :amount (USD :converted_amount)\nPayment channel: :payment_method (ID :payment_method_id)\nGateway host: :gateway_host\nHTTP status: :http_status\nGateway error code: :pga_code\nReason: :error\n\nThe local order has been retained. Check the payment channel and gateway error, then retry creating the payment link.",
         'logistics_import_completed' => "📦 Logistics import completed\n\nFile: :file_name\nTotal records: :total\nSucceeded: :success\nFailed: :failed",
         'order_paid' => "✅ Payment received\n\nOrder: :order_no\nAmount: :currency:amount (≈ $:converted_amount)\nPayment method: :payment_method",
         'designated_order_created' => "🛒 Source site order created\n\nOrder: :order_no\nMerchant order no: :merchant_order_no\nCustomer email: :customer_email\nAmount: :currency:amount\nPayment method: :payment_method",
