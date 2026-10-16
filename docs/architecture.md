@@ -89,6 +89,8 @@ flowchart TD
 
 [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，最终统一进入状态应用逻辑。它处理状态映射、行锁、重复/乱序守卫、首次 `paid_at`/`failed_at`、账务和通知编排。
 
+`PendingOrderStatusSyncService` 每 30 分钟对全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单逐笔调用 `queryAndApply()`，补偿支付回调遗漏。查询窗口包含起止时刻，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔缺凭证、远端失败或未知状态计入失败并继续，命令最终返回非零并记录调度失败日志；日志归档仍由 `OrderEventSyncService` 单独负责。
+
 | 行为 | 当前实现 |
 |---|---|
 | 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算；首次正常 `paid` 派发商户通知与广告转化。旧单仍沿用原即时入账 |
@@ -130,6 +132,7 @@ flowchart TD
 | `exchange:fetch` | 每小时 |
 | `db:backup:upload` | 每 6 小时 |
 | `order-events:sync` | 每分钟，防重叠 |
+| `orders:sync-pending-status` | 每 30 分钟，防重叠；查询最近 48 小时待支付订单 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |
