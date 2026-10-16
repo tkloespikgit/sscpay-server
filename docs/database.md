@@ -78,6 +78,8 @@ erDiagram
 - `site_products` / `site_product_variations`：按渠道同步的站点商品/变体快照，用于匹配与复制。
 - `replace_keywords`：`COPY` 模式所用的商户商品名称替换规则。
 
+`order_matched_items.product_name` 使用非空 `TEXT` 保存站点商品名称快照，避免站点商品名（`site_products.name` 最多 500 字符）或远端创建响应的长名称在建单时超出旧 255 字符列。原始 `order_items` 与 `checkout_link_items` 的名称长度和输入协议保持 255 字符。新增迁移 `2026_10_16_153313` 仅扩容匹配快照名称；如含超过 255 字符的名称（包括软删除记录），回滚会拒绝缩回旧列宽，避免截断历史数据。
+
 ### 应用自动折扣（2026-09-30，当前工作区）
 
 `applications.is_auto_discount_enabled` 默认关闭，仅影响新订单。按折扣前应付金额、订单原币种计算：不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50，以 0.01 为步长。极小金额缩小随机范围，至少保留 0.01 应付；金额不超过 0.01 时跳过。

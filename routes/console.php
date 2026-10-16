@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('exchange:fetch')->hourly();
@@ -7,6 +8,13 @@ Schedule::command('exchange:fetch')->hourly();
 Schedule::command('db:backup:upload')->everySixHours();
 
 Schedule::command('order-events:sync')->everyMinute()->withoutOverlapping();
+
+Schedule::command('orders:sync-pending-status')
+    ->everyThirtyMinutes()
+    ->withoutOverlapping()
+    ->onFailure(function (): void {
+        Log::error('待支付订单状态定时查询存在失败，请检查单笔查询日志');
+    });
 
 Schedule::command('order-notifications:process-due')->everyMinute()->withoutOverlapping();
 

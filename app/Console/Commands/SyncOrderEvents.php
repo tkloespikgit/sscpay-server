@@ -28,7 +28,7 @@ class SyncOrderEvents extends Command
         $intervalMinutes = (int) SystemConfig::get('order_event.sync_interval', 10);
         $lastRun = SystemConfig::get(self::LAST_RUN_CONFIG_KEY);
 
-        if ($lastRun && now()->diffInMinutes(Carbon::parse($lastRun)) < $intervalMinutes) {
+        if ($lastRun && now()->lt(Carbon::parse($lastRun)->addMinutes($intervalMinutes))) {
             $this->info('Not due yet, skipping this run.');
 
             return self::SUCCESS;

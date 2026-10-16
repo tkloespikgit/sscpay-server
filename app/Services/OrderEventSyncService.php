@@ -30,8 +30,8 @@ use Illuminate\Support\Facades\Log;
  *
  * 【明确不做的事】order-logs 只返回人工可读的日志文本，没有结构化状态字段，
  * 不适合用来判断"订单是否已支付"。订单状态流转（pending -> paid 等）由
- * payment_status webhook 回调驱动（文档第一节，见 PaymentGatewayWebhookController /
- * OrderPaymentStatusService），本服务只做日志归档，不修改订单状态、不触发入账。
+ * payment_status webhook 与 /order-query 主动查询共用 OrderPaymentStatusService 处理；
+ * 待支付订单补偿查询由 PendingOrderStatusSyncService 负责，本服务只做日志归档。
  */
 class OrderEventSyncService
 {
