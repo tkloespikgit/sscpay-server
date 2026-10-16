@@ -2,6 +2,13 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-17：主动查询已支付结果覆盖任意本地状态（当前工作区，未提交）
+
+- 按用户要求，`OrderPaymentStatusService::queryAndApply()` 返回 `paid` 时绕过终态及人工审核状态守卫；本地已为 `paid` 时仍幂等跳过，查询非 `paid` 结果及 webhook 继续使用原有守卫。状态无变化时也刷新模型，避免并发更新后仍返回旧状态。
+- 从 `pending/failed/cancelled/expired` 首次转为 `paid` 时复用 `BalanceService` 按净入账金额幂等记账并通知；曾收款状态恢复 `paid` 仅纠正状态，`SendTelegramNotification` 同步避免重复付款提醒。首次支付/失败时间、退款累计额、资金台账及人工审核事件/冻结均保留，不自动撤销退款/拒付或关闭审核。
+- `BalanceService` 根据已有拒付本金流水阻止再次退款或拒付，避免订单改回 `paid` 后重复扣款。更新模型注释、架构、数据库语义及 D-17；下单服务、商户查询 API 和定时扫描范围沿用现状。
+- 验证：新增 `OrderPaymentStatusQueryTest` 23 项、261 个断言通过，覆盖未支付/曾支付各状态恢复、重复查询、支付时间和退款金额保留、审核冻结保留、其他状态及 webhook 守卫、旧模型查询返回最新状态；与待支付同步、退款/拒付、指定渠道 Telegram、webhook 路由联跑，SQLite 内存库共 56 项、382 个断言通过。执行 Pint dirty 格式化及 `git diff --check`；HTTP/队列均模拟，未改写历史订单、连接业务库或调用真实外部接口。未验证 MySQL 并发锁行为。
+
 ## 2026-10-17：每半小时补查最近 48 小时的待支付订单（当前工作区，未提交）
 
 - 新增 `PendingOrderStatusSyncService` 与 `orders:sync-pending-status` 命令，每 30 分钟查询全平台最近 48 小时创建、`pending` 且 `paid_at` 为空的订单。窗口包含起止时刻，排除未来创建及软删除订单；仅移除商户 scope，按 ID 分批处理以免更新状态后分页漏单。

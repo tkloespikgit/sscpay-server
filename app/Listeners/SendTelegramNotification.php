@@ -31,9 +31,9 @@ class SendTelegramNotification implements ShouldQueue
         // 不走下面 match() 的"单条消息"逻辑，与普通订单的支付成功区分开
         // （普通订单目前没有接"支付成功"这条 Telegram 通知，order_paid 文案
         // 此前只是没被用到的现成模板）。跟 OrderPaymentStatusService::applyStatus()
-        // 里"是否首次支付成功"的判断口径保持一致：disputing 回退到 paid
-        // 是争议胜诉，不是新的支付成功，不重复连发。
-        if ($event->newStatus === 'paid' && $event->oldStatus !== 'disputing'
+        // 里"是否首次支付成功"的判断口径保持一致：曾收款状态纠正为 paid
+        // 不代表新的支付成功，不重复连发。
+        if ($event->newStatus === 'paid' && in_array($event->oldStatus, Order::NEVER_PAID_STATUSES, true)
             && filled($event->order->designated_payment_method_key)) {
             $this->sendDesignatedOrderPaidMessages($event->order);
 

@@ -41,7 +41,8 @@ class Order extends Model
      * 人工发起的争议审核事件占用的订单状态（见 OrderDisputeService）。
      * 与网关 webhook 驱动的 'disputing' 是两套独立的机制——状态本身互不复用，
      * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫
-     * （一旦进入 dispute_review，后续网关消息一律忽略，人工审核结果优先）。
+     * （一旦进入 dispute_review，后续 webhook 忽略；主动查询返回 paid 时可纠正
+     * 订单状态，但不关闭审核事件或释放冻结资金）。
      * 但 'disputing' 允许作为开立争议审核事件的起点之一（商户需要在网关争议
      * 处理期间提交申诉材料），见 BalanceService::freezeForDisputeEvent()——
      * 这只是放宽了开立时校验的起始状态，两套状态机的定义和驱动方式仍然独立。

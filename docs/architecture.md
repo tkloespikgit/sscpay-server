@@ -93,15 +93,17 @@ flowchart TD
 
 | 行为 | 当前实现 |
 |---|---|
-| 支付成功 | 首次正常进入 `paid` 后，经 `BalanceService::creditForPaidOrder()` 按 `settlement_amount` 入账，派发商户通知与广告转化 |
-| 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护 |
+| 支付成功 | 从未支付状态首次进入 `paid` 后，经 `BalanceService::creditForPaidOrder()` 按 `settlement_amount` 幂等入账，派发商户通知与广告转化；曾收款状态恢复 `paid` 不重复触发首次支付副作用 |
+| 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护，主动查询返回 `paid` 时允许覆盖任意本地状态，保留原支付时间和资金审计记录 |
 | 网关 `refunded` / `confused` | 后者映射 `chargeback`；尝试自动退款/拒付记账。业务性失败保留状态并告警，支持人工补录 |
 | 网关 `disputing` | 网关争议中，更新状态并拉日志；不等同人工冻结审核 |
-| 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间网关状态不会覆盖人工审核状态 |
+| 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间 webhook 不覆盖人工审核状态，主动查询为 `paid` 可纠正订单状态，但不关闭审核事件或释放冻结 |
 | 物流 | `OrderShippingObserver` 在符合条件时推进 `shipped`，并派发物流同步 |
 | 订单事件日志 | `OrderEventSyncService` 拉取插件 `/order-logs` 归档；不以日志反推支付状态 |
 
 余额写操作集中在 [BalanceService](../app/Services/BalanceService.php)。锁顺序先商户行、再相关订单/业务单据。当前状态事务与退款/拒付账务事务分开，避免反向加锁造成死锁；不可描述为远端状态和本地资金全程原子提交。人工资金动作使用 `FinanceSecurity` 做 TOTP 二次验证。
+
+主动查询将退款/拒付订单纠正为 `paid` 时，不撤销既有扣款或修改退款累计额；已存在拒付本金流水的订单仍不可再退款或拒付，资金资格不能仅按纠正后的状态判断。规则与适用边界见 [D-17](decisions.md#d-17-主动查询已支付结果优先于本地状态)。
 
 漏配历史汇损可使用 `orders:recalculate-surcharge`，由 `OrderSurchargeRecalculationService` 明确按商户纠正订单快照，保留历史市场汇率及手续费金额，默认预览，仅 `--apply` 写入。只处理已入账且无反向资金/争议历史的订单，保存新旧快照报告，不修改余额或台账；人工调账差额与统计补算步骤见[操作手册](../doc/order-surcharge-recalculation.md)。
 

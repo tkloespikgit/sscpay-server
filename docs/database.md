@@ -96,6 +96,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 `Order::NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired']`。`paidEver()` 取其补集，包含发货、完成、部分退款、退款、拒付、网关争议和人工争议审核状态。新增状态会影响风控和统计，必须同步审查这个口径。
 
+主动查询网关返回 `paid` 时可以纠正任意本地状态，仍保留首次 `paid_at`、`failed_at`、`refunded_amount` 和退款/拒付台账；人工审核事件及其冻结金额也独立保留。曾收款状态恢复 `paid` 不重放首次支付入账；已扣拒付本金的订单按流水阻止再次退款或拒付。详见 [D-17](decisions.md#d-17-主动查询已支付结果优先于本地状态)。
+
 | 表 / 模型 | 关键语义 |
 |---|---|
 | `merchant_balance_transactions` | 总余额变动台账，含前后余额、金额、类型、关联单据与 `idempotency_key`；自动支付入账键为 `order_paid:{order_id}` |
