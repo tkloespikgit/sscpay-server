@@ -17,6 +17,7 @@ use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -352,6 +353,27 @@ class CheckoutLinkTest extends TestCase
         $this->assertSame('100.00', bcadd((string) $order->items->sum('total_price'), '0', 2));
 
         $this->assertSame(1, $link->fresh()->orders_count);
+    }
+
+    public function test_checkout_preserves_long_matched_product_names_in_database_and_gateway_request(): void
+    {
+        $name = str_repeat('Cardinal Bracelet ', 16).'纪念首饰';
+        SiteProduct::query()->where('payment_method_id', $this->method->id)->update(['name' => $name]);
+        $link = $this->createLink();
+
+        $this->post('/c/'.$link->slug, $this->validPayload())
+            ->assertRedirect('https://gateway.example.com/pay/abc');
+
+        $order = Order::withoutGlobalScopes()->firstOrFail();
+        $this->assertSame('text', Schema::getColumnType('order_matched_items', 'product_name'));
+        $this->assertNotEmpty($order->matchedItems);
+        foreach ($order->matchedItems as $item) {
+            $this->assertSame($name, $item->product_name);
+        }
+        $this->assertNotSame($name, $order->items->firstOrFail()->product_name);
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/payment-plugin/v1/pay')
+            && count($request['items']) > 0
+            && collect($request['items'])->every(fn (array $item): bool => $item['name'] === $name));
     }
 
     public function test_disabled_auto_redirect_displays_payment_url_without_creating_another_order(): void

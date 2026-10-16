@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 /**
  * 订单自动匹配商品：下单时未传商品明细的订单，由系统按订单商品金额
  * （USD）从支付方式绑定的站点商品中自动匹配出来的明细，
- * 表结构与 order_items 一致，单独存放以便和商户真实下单明细区分。
+ * 单独存放以便和商户真实下单明细区分，商品名称快照使用 TEXT 保存。
  */
 class OrderMatchedItem extends Model
 {
