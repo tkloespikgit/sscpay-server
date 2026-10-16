@@ -2,8 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Events\OrderStatusChanged;
+use App\Listeners\SendTelegramNotification;
 use App\Models\Application;
 use App\Models\Merchant;
+use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
@@ -13,6 +16,8 @@ use App\Services\OrderPaymentStatusService;
 use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
 /**
@@ -21,6 +26,7 @@ use Tests\TestCase;
  */
 class DesignatedOrderTelegramNotificationTest extends TestCase
 {
+    use CreatesTestOrders;
     use RefreshDatabase;
 
     public function test_designated_order_sends_created_then_five_paid_telegram_messages(): void
@@ -146,5 +152,72 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         );
 
         $this->assertCount(5, $paidMessages);
+    }
+
+    #[DataProvider('neverPaidStatuses')]
+    public function test_designated_order_sends_five_paid_messages_after_a_never_paid_status(string $oldStatus): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['api.telegram.org/bottest-bot-token/sendMessage' => Http::response(['ok' => true], 200)]);
+        $order = $this->designatedPaidOrder();
+
+        app(SendTelegramNotification::class)->handleOrderStatusChanged(new OrderStatusChanged($order, $oldStatus, 'paid'));
+
+        Http::assertSentCount(5);
+        Http::assertSent(fn ($request) => str_contains((string) $request['text'], $order->order_no));
+    }
+
+    #[DataProvider('previouslyPaidStatuses')]
+    public function test_designated_order_does_not_repeat_paid_messages_after_a_previously_paid_status(string $oldStatus): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['api.telegram.org/bottest-bot-token/sendMessage' => Http::response(['ok' => true], 200)]);
+        $order = $this->designatedPaidOrder();
+
+        app(SendTelegramNotification::class)->handleOrderStatusChanged(new OrderStatusChanged($order, $oldStatus, 'paid'));
+
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{string}> */
+    public static function neverPaidStatuses(): array
+    {
+        return [
+            'pending' => ['pending'],
+            'failed' => ['failed'],
+            'cancelled' => ['cancelled'],
+            'expired' => ['expired'],
+        ];
+    }
+
+    /** @return array<string, array{string}> */
+    public static function previouslyPaidStatuses(): array
+    {
+        return [
+            'paid' => ['paid'],
+            'shipped' => ['shipped'],
+            'completed' => ['completed'],
+            'partially_refunded' => ['partially_refunded'],
+            'refunded' => ['refunded'],
+            'chargeback' => ['chargeback'],
+            'disputing' => ['disputing'],
+            'dispute_review' => ['dispute_review'],
+        ];
+    }
+
+    private function designatedPaidOrder(): Order
+    {
+        $this->createMerchantAndApplication();
+        TelegramBot::create([
+            'merchant_id' => $this->merchant->id,
+            'bot_token' => 'test-bot-token',
+            'chat_id' => '111222333',
+            'is_enabled' => true,
+        ]);
+
+        return $this->makeOrder('SSC-PAID', 'M-PAID', [
+            'status' => 'paid',
+            'designated_payment_method_key' => 'test_method',
+        ]);
     }
 }

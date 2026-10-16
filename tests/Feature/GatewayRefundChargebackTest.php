@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\BalanceOperationException;
 use App\Models\MerchantBalanceTransaction;
 use App\Models\Order;
 use App\Models\OrderRefund;
@@ -178,6 +179,52 @@ class GatewayRefundChargebackTest extends TestCase
         $this->expectExceptionMessage('该订单已完成拒付扣款，不能重复拒付。');
 
         app(BalanceService::class)->chargeback($order->refresh(), $this->operator(), '重复拒付');
+    }
+
+    public function test_a_settled_chargeback_cannot_be_charged_back_again_after_status_is_corrected_to_paid(): void
+    {
+        $order = $this->paidOrder();
+        $this->pushGatewayStatus($order, 'confused');
+        $order->refresh()->forceFill(['status' => 'paid'])->save();
+
+        try {
+            app(BalanceService::class)->chargeback($order, $this->operator(), '重复拒付');
+            $this->fail('已扣款的拒付订单不能再次扣款。');
+        } catch (BalanceOperationException $exception) {
+            $this->assertSame('该订单已完成拒付扣款，不能重复拒付。', $exception->getMessage());
+        }
+
+        $this->assertSame('785.00', (string) $this->merchant->refresh()->balance);
+        $this->assertSame('paid', $order->refresh()->status);
+        $this->assertSame(
+            ['chargeback' => '-200.00', 'chargeback_fee' => '-15.00'],
+            $this->ledgerFor($order),
+        );
+        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->count());
+    }
+
+    public function test_a_settled_chargeback_cannot_be_refunded_after_status_is_corrected_to_paid(): void
+    {
+        $order = $this->paidOrder();
+        $this->pushGatewayStatus($order, 'confused');
+        $order->refresh()->forceFill(['status' => 'paid'])->save();
+
+        try {
+            app(BalanceService::class)->refund($order, '10.00', $this->operator(), '拒付后退款');
+            $this->fail('已扣款的拒付订单不能再次退款。');
+        } catch (BalanceOperationException $exception) {
+            $this->assertSame('该订单已完成拒付扣款，不能再退款。', $exception->getMessage());
+        }
+
+        $this->assertSame('785.00', (string) $this->merchant->refresh()->balance);
+        $this->assertSame('paid', $order->refresh()->status);
+        $this->assertSame('0.00', (string) $order->refunded_amount);
+        $this->assertDatabaseCount('order_refunds', 0);
+        $this->assertSame(
+            ['chargeback' => '-200.00', 'chargeback_fee' => '-15.00'],
+            $this->ledgerFor($order),
+        );
+        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->count());
     }
 
     public function test_pending_settlement_scope_only_matches_unsettled_orders(): void

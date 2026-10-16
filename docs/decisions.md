@@ -66,7 +66,7 @@
 
 ## D-08 网关争议与人工审核分开
 
-**状态：已实现。** 网关 `disputing` 与人工 `dispute_review` 是两套机制；人工审核期间忽略网关状态覆盖并可告警。审核开立/关闭冻结或释放快照金额，拟定的 `final_action` 不自动执行退款/拒付。
+**状态：已实现；主动查询的 `paid` 例外由 D-17 补充。** 网关 `disputing` 与人工 `dispute_review` 是两套机制；人工审核期间忽略 webhook 状态覆盖并可告警。主动查询返回 `paid` 可纠正订单状态，审核事件与冻结独立保留。审核开立/关闭冻结或释放快照金额，拟定的 `final_action` 不自动执行退款/拒付。
 
 **原因与影响：** 人工收集材料及截止期限不能被异步网关消息打断。单订单同时最多一个处理中事件，由行锁与生成列唯一约束共同保护。
 
@@ -144,3 +144,13 @@
 **原因与影响：** 不能把当前市场行情当作历史市场价，也无法从已截断的历史手续费金额精确还原百分比费率。仅处理已入账、无退款/争议历史且原资金流水与净入账快照相符的订单；其余列原因跳过。原余额和台账均不改，显示“含汇损与无汇损之差”以及“本次净入账变化”两个口径，后者作为此次人工调账参考。历史统计需按报告日期另行补算，正常新单的快照规则不变。
 
 **依据：** [RecalculateOrderSurcharge](../app/Console/Commands/RecalculateOrderSurcharge.php)、[OrderSurchargeRecalculationService](../app/Services/OrderSurchargeRecalculationService.php)、[RecalculateOrderSurchargeTest](../tests/Feature/RecalculateOrderSurchargeTest.php)、[操作手册](../doc/order-surcharge-recalculation.md)。
+
+## D-17 主动查询已支付结果优先于本地状态
+
+**状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** `OrderPaymentStatusService::queryAndApply()` 查询网关返回 `paid` 时，无论本地是过期、失败、退款、拒付、已完成或人工审核等状态，都纠正为 `paid`；本地已为 `paid` 时幂等跳过。此例外补充 D-08，webhook 与查询非 `paid` 结果继续使用原有状态守卫。
+
+**原因与影响：** 主动核对确认付款后，本地终态不能阻止支付状态纠正。从未支付状态恢复 `paid` 复用 `BalanceService` 入账幂等与首次通知；曾收款订单仅纠正状态，不重复入账、商户通知、广告转化或指定渠道付款提醒。首次支付/失败时间、退款金额、资金台账和人工审核冻结均保留，不将状态纠正解释为撤销退款/拒付或关闭审核。已存在拒付本金流水时，无论当前状态如何，都禁止再次退款或拒付，防止纠正状态后重复扣款。
+
+商户 `/api/order/query` 仍只读取本地状态；定时补查仍只选择最近 48 小时未收款的 `pending` 订单，不因本规则扩大扫描范围。
+
+**依据：** [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[BalanceService](../app/Services/BalanceService.php)、[SendTelegramNotification](../app/Listeners/SendTelegramNotification.php)、[查询回归测试](../tests/Feature/OrderPaymentStatusQueryTest.php)、[退款/拒付测试](../tests/Feature/GatewayRefundChargebackTest.php)。
