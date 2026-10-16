@@ -9,7 +9,7 @@ class SyncPendingOrderStatuses extends Command
 {
     protected $signature = 'orders:sync-pending-status';
 
-    protected $description = '查询最近 48 小时内未支付的待支付订单并同步最新状态';
+    protected $description = '补查最近 48 小时内的待支付订单，每单最多两次，分别于创建满 30 和 90 分钟后查询';
 
     public function handle(PendingOrderStatusSyncService $service): int
     {

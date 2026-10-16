@@ -134,6 +134,8 @@ class Order extends Model
         'status',
         'paid_at',
         'failed_at',
+        'pending_status_query_count',
+        'pending_status_last_queried_at',
         'remark',
         'ad_params',
     ];
@@ -143,6 +145,8 @@ class Order extends Model
         return [
             'paid_at' => 'datetime',
             'failed_at' => 'datetime',
+            'pending_status_query_count' => 'integer',
+            'pending_status_last_queried_at' => 'datetime',
             'payment_link_sent_at' => 'datetime',
             'send_mail' => 'boolean',
             'wp_order_id' => 'integer',

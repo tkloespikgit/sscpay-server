@@ -154,3 +154,13 @@
 商户 `/api/order/query` 仍只读取本地状态；定时补查仍只选择最近 48 小时未收款的 `pending` 订单，不因本规则扩大扫描范围。
 
 **依据：** [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[BalanceService](../app/Services/BalanceService.php)、[SendTelegramNotification](../app/Listeners/SendTelegramNotification.php)、[查询回归测试](../tests/Feature/OrderPaymentStatusQueryTest.php)、[退款/拒付测试](../tests/Feature/GatewayRefundChargebackTest.php)。
+
+## D-18 待支付订单按创建时间最多自动补查两次
+
+**状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** 最近 48 小时的 `pending` 且 `paid_at` 为空的订单，分别在创建满 30 分钟、90 分钟时获得一次定时补查机会，每单最多两次。调度由每 30 分钟执行改为每分钟扫描，避免整点/半点调度使任意创建时间的订单晚查近半小时；繁忙或停机时在窗口内顺延，每轮每单最多补一次。
+
+**原因与影响：** 避免未付款订单在 48 小时内反复请求网关。订单持久化 `pending_status_query_count` 与 `pending_status_last_queried_at`，在网关调用之前按当前状态、窗口、到期条件及原次数原子领取，异常、未知状态和缺凭证都消耗一次，重复或并发调用不会突破两次上限。第一次查询后已离开待支付状态则停止；手工查询不计入自动额度，客户端内部连接重试仍沿用原策略。
+
+首次部署须执行新增迁移。此前没有可恢复的查询计数，历史订单默认从 0 累计并保留 48 小时窗口，不从日志推断次数；回滚/重建计数会重开额度，生产优先前向修复。本规则仅改变定时查询的选择和次数，支付状态落地继续遵循 D-17。
+
+**依据：** [PendingOrderStatusSyncService](../app/Services/PendingOrderStatusSyncService.php)、[Order](../app/Models/Order.php)、[迁移](../database/migrations/2026_10_17_024742_add_pending_status_query_tracking_to_orders_table.php)、[调度](../routes/console.php)、[回归测试](../tests/Feature/SyncPendingOrderStatusesTest.php)。
