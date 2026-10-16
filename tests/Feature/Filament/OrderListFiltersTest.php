@@ -69,6 +69,79 @@ class OrderListFiltersTest extends TestCase
             ->assertCanSeeTableRecords([$target]);
     }
 
+    public function test_amount_filter_matches_original_currency_amount_exactly(): void
+    {
+        $usd = $this->makeOrder('SSC-USD', 'M-USD', ['amount' => '100.00']);
+        $eur = $this->makeOrder('SSC-EUR', 'M-EUR', ['currency' => 'EUR', 'amount' => '100.00', 'converted_amount' => '110.00']);
+        $convertedMatch = $this->makeOrder('SSC-CONVERTED', 'M-CONVERTED', ['amount' => '90.00', 'converted_amount' => '100.00']);
+        $beforeDiscountMatch = $this->makeOrder('SSC-DISCOUNT', 'M-DISCOUNT', ['original_amount' => '100.00', 'amount' => '99.00']);
+        $differentCents = $this->makeOrder('SSC-CENTS', 'M-CENTS', ['amount' => '100.01']);
+        $similar = $this->makeOrder('SSC-SIMILAR', 'M-SIMILAR', ['amount' => '1000.00']);
+
+        Livewire::test(ListOrders::class)
+            ->filterTable('amount', ['amount' => ' 100.00 '])
+            ->assertCanSeeTableRecords([$usd, $eur])
+            ->assertCanNotSeeTableRecords([$convertedMatch, $beforeDiscountMatch, $differentCents, $similar]);
+    }
+
+    public function test_amount_filter_handles_zero_invalid_input_and_clearing(): void
+    {
+        $zero = $this->makeOrder('SSC-ZERO', 'M-ZERO', ['amount' => '0.00']);
+        $other = $this->makeOrder('SSC-OTHER', 'M-OTHER');
+
+        Livewire::test(ListOrders::class)
+            ->filterTable('amount', ['amount' => '0'])
+            ->assertCanSeeTableRecords([$zero])
+            ->assertCanNotSeeTableRecords([$other])
+            ->filterTable('amount', ['amount' => 'invalid'])
+            ->assertCanNotSeeTableRecords([$zero, $other])
+            ->filterTable('amount', ['amount' => ''])
+            ->assertCanSeeTableRecords([$zero, $other]);
+    }
+
+    public function test_created_time_filters_default_to_today_and_can_be_cleared(): void
+    {
+        $this->travelTo(now()->setDate(2026, 10, 16)->setTime(12, 34, 56));
+        $before = $this->makeOrder('SSC-BEFORE', 'M-BEFORE');
+        $before->forceFill(['created_at' => '2026-10-15 23:59:59'])->save();
+        $start = $this->makeOrder('SSC-START', 'M-START');
+        $start->forceFill(['created_at' => '2026-10-16 00:00:00'])->save();
+        $end = $this->makeOrder('SSC-END', 'M-END');
+        $end->forceFill(['created_at' => '2026-10-16 23:59:59'])->save();
+        $after = $this->makeOrder('SSC-AFTER', 'M-AFTER');
+        $after->forceFill(['created_at' => '2026-10-17 00:00:00'])->save();
+
+        Livewire::test(ListOrders::class)
+            ->assertSet('tableFilters.created_from.created_from', '2026-10-16 00:00:00')
+            ->assertSet('tableFilters.created_to.created_to', '2026-10-16 23:59:59')
+            ->assertCanSeeTableRecords([$start, $end])
+            ->assertCanNotSeeTableRecords([$before, $after])
+            ->removeTableFilter('created_from')
+            ->assertCanSeeTableRecords([$before, $start, $end])
+            ->assertCanNotSeeTableRecords([$after])
+            ->removeTableFilter('created_to')
+            ->assertCanSeeTableRecords([$before, $start, $end, $after]);
+    }
+
+    public function test_created_time_filters_preserve_hours_minutes_and_seconds_inclusively(): void
+    {
+        $this->travelTo(now()->setDate(2026, 10, 16)->setTime(12, 34, 56));
+        $before = $this->makeOrder('SSC-BEFORE', 'M-BEFORE');
+        $before->forceFill(['created_at' => '2026-09-30 12:34:55'])->save();
+        $start = $this->makeOrder('SSC-START', 'M-START');
+        $start->forceFill(['created_at' => '2026-09-30 12:34:56'])->save();
+        $end = $this->makeOrder('SSC-END', 'M-END');
+        $end->forceFill(['created_at' => '2026-10-01 13:45:57'])->save();
+        $after = $this->makeOrder('SSC-AFTER', 'M-AFTER');
+        $after->forceFill(['created_at' => '2026-10-01 13:45:58'])->save();
+
+        Livewire::test(ListOrders::class)
+            ->filterTable('created_from', ['created_from' => '2026-09-30 12:34:56'])
+            ->filterTable('created_to', ['created_to' => '2026-10-01 13:45:57'])
+            ->assertCanSeeTableRecords([$start, $end])
+            ->assertCanNotSeeTableRecords([$before, $after]);
+    }
+
     public function test_status_filter_accepts_multiple_values(): void
     {
         $paid = $this->makeOrder('SSC-1', 'M-1', ['status' => 'paid']);

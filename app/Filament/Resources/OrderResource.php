@@ -14,7 +14,7 @@ use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
-use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
@@ -149,8 +149,7 @@ class OrderResource extends Resource
             // TablesRenderHook::TOOLBAR_AFTER（见 AdminPanelProvider），不是 header()/
             // contentFooter()——Table 自带的这两个扩展点只能落在"筛选栏上方"或
             // "表格 <tfoot>"，没有"搜索栏下方"这个位置。
-            // 筛选项按「精准单号搜索 → 归属维度 → 状态维度 → 时间范围」分组排列，
-            // 配合 filtersFormColumns(4) 刚好每行一组，收起/展开时观感不会乱跳。
+            // 筛选项按「订单信息 → 归属维度 → 状态维度 → 时间范围」分组排列。
             ->filters([
                 // 订单号 / 商户订单号走精准匹配（两者都有唯一索引，等值查询直接走索引，
                 // 不像 like '%x%' 那样全表扫）。需要模糊找单可以用右上角的全局搜索框。
@@ -177,6 +176,28 @@ class OrderResource extends Resource
                         trim((string) ($data['merchant_order_no'] ?? '')) !== '',
                         fn ($q) => $q->where('merchant_order_no', trim((string) $data['merchant_order_no']))
                     )),
+
+                Filter::make('amount')
+                    ->label(__('admin.order.columns.amount_original'))
+                    ->schema([
+                        TextInput::make('amount')
+                            ->label(__('admin.order.columns.amount_original'))
+                            ->inputMode('decimal')
+                            ->placeholder('100.00'),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $amount = trim((string) ($data['amount'] ?? ''));
+
+                        if ($amount === '') {
+                            return $query;
+                        }
+
+                        if (! is_numeric($amount)) {
+                            return $query->whereRaw('1 = 0');
+                        }
+
+                        return $query->where('amount', $amount);
+                    }),
 
                 Filter::make('transaction_id')
                     ->label(__('admin.order.filters.transaction_id'))
@@ -325,24 +346,38 @@ class OrderResource extends Resource
                 Filter::make('created_from')
                     ->label(__('admin.order.filters.created_from'))
                     ->schema([
-                        DatePicker::make('created_from')->label(__('admin.order.filters.created_from')),
+                        DateTimePicker::make('created_from')
+                            ->label(__('admin.order.filters.created_from'))
+                            ->native(false)
+                            ->seconds()
+                            ->displayFormat('Y-m-d H:i:s')
+                            ->timezone(config('app.timezone'))
+                            ->default(fn (): string => now()->startOfDay()->toDateTimeString())
+                            ->defaultFocusedDate(fn () => now()->startOfDay()),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         $data['created_from'] ?? null,
-                        fn ($q, $date) => $q->whereDate('created_at', '>=', $date)
+                        fn ($q, $date) => $q->where('created_at', '>=', $date)
                     )),
 
                 Filter::make('created_to')
                     ->label(__('admin.order.filters.created_to'))
                     ->schema([
-                        DatePicker::make('created_to')->label(__('admin.order.filters.created_to')),
+                        DateTimePicker::make('created_to')
+                            ->label(__('admin.order.filters.created_to'))
+                            ->native(false)
+                            ->seconds()
+                            ->displayFormat('Y-m-d H:i:s')
+                            ->timezone(config('app.timezone'))
+                            ->default(fn (): string => now()->endOfDay()->toDateTimeString())
+                            ->defaultFocusedDate(fn () => now()->endOfDay()),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         $data['created_to'] ?? null,
-                        fn ($q, $date) => $q->whereDate('created_at', '<=', $date)
+                        fn ($q, $date) => $q->where('created_at', '<=', $date)
                     )),
                 // AboveContentCollapsible：筛选区默认收起，表格上方只留一个带
-                // "已启用筛选数量"徽标的展开按钮，展开后才铺开这 13 个筛选项。
+                // "已启用筛选数量"徽标的展开按钮，展开后才铺开筛选项。
             ], layout: FiltersLayout::AboveContentCollapsible)
             ->filtersFormColumns(4)
             ->recordActions([
