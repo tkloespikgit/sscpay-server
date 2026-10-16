@@ -648,6 +648,7 @@ return [
             'transaction_id' => 'Transaction ID',
             'amount_original' => 'Original Amount',
             'amount_usd' => 'Amount (USD)',
+            'amount_settled' => 'Settlement Amount (USD)',
             'customer_email' => 'Customer Email',
             'customer_name' => 'Customer Name',
             'source' => 'Source',
