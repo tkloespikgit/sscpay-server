@@ -8,6 +8,7 @@ use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\LogisticsImportService;
+use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -214,5 +215,67 @@ class OrderListFiltersTest extends TestCase
         // （平台侧用来区分不同商户的同名应用），那是筛选项不是列。
         Livewire::test(ListOrders::class)
             ->assertTableColumnFormattedStateSet('application.name', $this->application->name, $order);
+    }
+
+    public function test_order_list_shows_net_settlement_after_exchange_surcharge_and_payment_fees(): void
+    {
+        $this->app->setLocale('en');
+        $order = $this->makeOrder('SSC-SETTLED', 'M-SETTLED', [
+            'currency' => 'EUR',
+            'original_exchange_rate' => '1.100000',
+            'exchange_rate' => '1.078000',
+            'surcharge_percent' => '-2.0000',
+            'surcharge_amount' => '-0.022000',
+            'surcharge_fee' => '-2.20',
+            'converted_amount' => '107.80',
+            'fee_percent_amount' => '3.30',
+            'fee_fixed_amount' => '0.30',
+            'settlement_amount' => '104.20',
+        ]);
+
+        Livewire::test(ListOrders::class)
+            ->assertSuccessful()
+            ->assertSee('Settlement Amount (USD)')
+            ->assertCanRenderTableColumn('settlement_amount')
+            ->assertTableColumnFormattedStateSet('settlement_amount', '$104.20', $order)
+            ->assertTableColumnStateSet('converted_amount', '107.80', $order);
+    }
+
+    public function test_merchant_can_sort_orders_by_net_settlement_instead_of_converted_amount(): void
+    {
+        $higherNet = $this->makeOrder('SSC-HIGH-NET', 'M-HIGH-NET', [
+            'converted_amount' => '100.00', 'settlement_amount' => '96.70',
+        ]);
+        $lowerNet = $this->makeOrder('SSC-LOW-NET', 'M-LOW-NET', [
+            'converted_amount' => '110.00', 'settlement_amount' => '90.00',
+        ]);
+        $merchantUser = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $merchantUser->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($merchantUser);
+        Filament::setCurrentPanel('merchant');
+
+        Livewire::test(ListOrders::class)
+            ->assertSuccessful()
+            ->assertCanRenderTableColumn('settlement_amount')
+            ->sortTable('settlement_amount')
+            ->assertCanSeeTableRecords([$lowerNet, $higherNet], inOrder: true)
+            ->sortTable('settlement_amount', 'desc')
+            ->assertCanSeeTableRecords([$higherNet, $lowerNet], inOrder: true);
+    }
+
+    public function test_missing_settlement_snapshot_is_not_shown_as_zero_or_converted_amount(): void
+    {
+        $this->app->setLocale('en');
+        $missing = $this->makeOrder('SSC-MISSING-NET', 'M-MISSING-NET', [
+            'converted_amount' => '107.80', 'settlement_amount' => null,
+        ]);
+        $zero = $this->makeOrder('SSC-ZERO-NET', 'M-ZERO-NET', ['settlement_amount' => '0.00']);
+
+        $page = Livewire::test(ListOrders::class)
+            ->assertSuccessful()
+            ->assertTableColumnStateSet('settlement_amount', null, $missing)
+            ->assertTableColumnFormattedStateSet('settlement_amount', '$0.00', $zero);
+
+        $this->assertSame(__('admin.order.placeholders.none'), $page->instance()->getTable()->getColumn('settlement_amount')->getPlaceholder());
     }
 }

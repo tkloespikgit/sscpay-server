@@ -117,6 +117,10 @@ class OrderResource extends Resource
                     ->formatStateUsing(fn ($state, $record) => number_format((float) $state, 2).' '.strtoupper((string) $record->currency))
                     ->sortable(),
                 TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))->money('usd')->sortable(),
+                TextColumn::make('settlement_amount')->label(__('admin.order.columns.amount_settled'))
+                    ->money('usd')
+                    ->placeholder(__('admin.order.placeholders.none'))
+                    ->sortable(),
                 TextColumn::make('customer_email')->label(__('admin.order.columns.customer_email'))
                     ->color('primary')
                     ->action(static::viewCustomerInfoAction()),

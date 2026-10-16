@@ -2,6 +2,12 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-16：订单列表显示实际入账金额（当前工作区，未提交）
+
+- 平台和商户共用的 `OrderResource` 新增默认可见、可排序的“入账金额（USD）”列，直接读取订单 `settlement_amount`，使用工作区已有中文键 `admin.order.columns.amount_settled` 并补齐英文标签；快照缺失时显示占位文本，不回退成交额或冒充零额。
+- 汇损已包含在实际汇率和 `converted_amount` 中，`settlement_amount` 再扣除两项支付手续费，与 `BalanceService` 入账口径一致；展示时不能重复减 `surcharge_fee`。详情页本来已有净入账字段，本次不更改资金计算、历史订单、观察者比例或成交额统计。
+- 验证：`php artisan test --compact tests/Feature/Filament/OrderListFiltersTest.php`，SQLite 内存库 13 项、74 个断言通过；新增覆盖平台净额显示、商户按净额排序、缺失快照与零净额区分。执行项目要求的 Pint dirty 格式化与 `git diff --check`；无数据库迁移、前端资源或真实外部请求。
+
 ## 2026-10-15：创建支付链接失败时向订单商户发送 Telegram 提醒（当前工作区，未提交）
 
 - `PaymentGatewayService::createPayment()` 在一次调用最终失败时派发 `PaymentLinkCreationFailed`，覆盖业务错误、连接重试耗尽、非预期响应、异常 data 类型和缺少 `pay_url`。不在共享 `request()` 内告警，避免 HTTP 重试重复提醒或其他网关接口误报；成功不发，通知异常隔离后原样抛出支付异常。
