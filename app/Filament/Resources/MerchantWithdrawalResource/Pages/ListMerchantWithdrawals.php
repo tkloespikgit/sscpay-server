@@ -25,7 +25,7 @@ class ListMerchantWithdrawals extends ListRecords
     }
 
     /**
-     * 商户发起提现申请（申请即冻结余额）。仅对"归属某商户且有 withdrawals.request
+     * 商户发起提现申请（可提现余额转入待出款）。仅对"归属某商户且有 withdrawals.request
      * 权限"的用户可见——超级管理员没有单一商户上下文，走审核而非申请。
      */
     private function requestWithdrawalAction(): Action
@@ -72,7 +72,7 @@ class ListMerchantWithdrawals extends ListRecords
                     return;
                 }
 
-                Notification::make()->title(__('admin.finance.withdrawal.requested'))->success()->send();
+                Notification::make()->title(__('settlement.withdrawal.requested'))->success()->send();
             });
     }
 }

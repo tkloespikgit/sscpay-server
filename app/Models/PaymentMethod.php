@@ -61,8 +61,10 @@ class PaymentMethod extends Model
 
             $builder->where(function (Builder $query) use ($merchantIds, $viewer) {
                 $query->whereIn('payment_methods.merchant_id', $merchantIds)
-                    ->orWhereHas('assignedMerchants', fn (Builder $q) => $q->whereIn('merchants.id', $merchantIds))
-                    ->orWhere('payment_methods.owner_id', $viewer->id);
+                    ->orWhere(fn (Builder $shared) => $shared->whereNull('payment_methods.merchant_id')
+                        ->where(fn (Builder $access) => $access
+                            ->whereHas('assignedMerchants', fn (Builder $assigned) => $assigned->whereIn('merchants.id', $merchantIds))
+                            ->orWhere('payment_methods.owner_id', $viewer->id)));
             });
         });
 
@@ -95,7 +97,8 @@ class PaymentMethod extends Model
         return $query->withoutGlobalScope(MerchantScope::class)
             ->where(function (Builder $q) use ($merchantId) {
                 $q->where('payment_methods.merchant_id', $merchantId)
-                    ->orWhereHas('assignedMerchants', fn (Builder $q2) => $q2->where('merchants.id', $merchantId));
+                    ->orWhere(fn (Builder $shared) => $shared->whereNull('payment_methods.merchant_id')
+                        ->whereHas('assignedMerchants', fn (Builder $assigned) => $assigned->where('merchants.id', $merchantId)));
             });
     }
 
@@ -148,6 +151,8 @@ class PaymentMethod extends Model
         'chargeback_fee',
         'fee_percent',
         'fee_fixed',
+        'reserve_percent',
+        'reserve_days',
         'sender_email',
         'sender_name',
         'mail_driver',
@@ -171,6 +176,8 @@ class PaymentMethod extends Model
             'chargeback_fee' => 'decimal:2',
             'fee_percent' => 'decimal:4',
             'fee_fixed' => 'decimal:2',
+            'reserve_percent' => 'decimal:4',
+            'reserve_days' => 'integer',
             // 支付方式自有 ESP 凭证，与 Application::mail_credentials 是各自独立的
             // 两份配置（见 Order::resolveMailSender()），同样用 encrypted:array 存储。
             'mail_credentials' => 'encrypted:array',
@@ -221,6 +228,28 @@ class PaymentMethod extends Model
     public function assignedMerchants(): BelongsToMany
     {
         return $this->belongsToMany(Merchant::class, 'merchant_payment_methods')->withTimestamps();
+    }
+
+    public function merchantPaymentSettings(): HasMany
+    {
+        return $this->hasMany(MerchantPaymentSetting::class);
+    }
+
+    /**
+     * @return array{fee_percent: string, fee_fixed: string, refund_fee: string, chargeback_fee: string, reserve_percent: string, reserve_days: int}
+     */
+    public function financialSettingsForMerchant(int $merchantId): array
+    {
+        $override = $this->merchantPaymentSettings()->forMerchant($merchantId)->first();
+
+        return [
+            'fee_percent' => (string) ($override?->fee_percent ?? $this->fee_percent ?? '0.0000'),
+            'fee_fixed' => (string) ($override?->fee_fixed ?? $this->fee_fixed ?? '0.00'),
+            'refund_fee' => (string) ($override?->refund_fee ?? $this->refund_fee ?? '0.00'),
+            'chargeback_fee' => (string) ($override?->chargeback_fee ?? $this->chargeback_fee ?? '0.00'),
+            'reserve_percent' => (string) ($override?->reserve_percent ?? $this->reserve_percent ?? '0.0000'),
+            'reserve_days' => (int) ($override?->reserve_days ?? $this->reserve_days ?? 0),
+        ];
     }
 
     public function configMap(): BelongsTo
@@ -284,14 +313,17 @@ class PaymentMethod extends Model
      * fee_percent 存的是百分比数值（如 3.5 表示 3.5%），公式：fee_fixed / (1 - fee_percent/100)。
      * 百分比费率 >= 100% 时无解（怎么收都会倒贴），返回 null。
      */
-    public function minTransactionAmount(): ?string
+    public function minTransactionAmount(?int $merchantId = null): ?string
     {
-        $remainingRatio = bcsub('1', bcdiv((string) $this->fee_percent, '100', 6), 6);
+        $settings = $merchantId === null
+            ? ['fee_percent' => (string) $this->fee_percent, 'fee_fixed' => (string) $this->fee_fixed]
+            : $this->financialSettingsForMerchant($merchantId);
+        $remainingRatio = bcsub('1', bcdiv($settings['fee_percent'], '100', 8), 8);
 
-        if (bccomp($remainingRatio, '0', 6) <= 0) {
+        if (bccomp($remainingRatio, '0', 8) <= 0) {
             return null;
         }
 
-        return bcdiv((string) $this->fee_fixed, $remainingRatio, 2);
+        return bcdiv($settings['fee_fixed'], $remainingRatio, 2);
     }
 }

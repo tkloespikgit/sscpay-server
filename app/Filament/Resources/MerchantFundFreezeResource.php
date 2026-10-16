@@ -16,12 +16,13 @@ use Filament\Resources\Resource;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
- * 通用人工资金冻结（资金管理），与订单/提现无关：商户管理员或超级管理员
- * 直接对商户冻结一笔资金，冻结后走人工解冻或到期自动解冻
+ * 保证金流水：展示订单结算划入的循环保证金，以及人工冻结可提现余额形成的固定保证金。
+ * 固定保证金可人工解冻或到期自动解冻，循环保证金仅到期自动释放
  * （见 BalanceService::freezeFunds()/releaseFundFreeze()，定时命令
- * fund-freezes:release-due）。解冻都需要资金操作强制 2FA（见 FinanceSecurity）。
+ * fund-freezes:release-due）。人工解冻需要资金操作强制 2FA（见 FinanceSecurity）。
  *
  * 权限：fund_freezes.view 可见列表；fund_freezes.create 可发起冻结（走列表页
  * 自定义头部动作，同 MerchantWithdrawalResource 的"申请提现"）；
@@ -42,12 +43,12 @@ class MerchantFundFreezeResource extends Resource
 
     public static function getModelLabel(): string
     {
-        return __('admin.finance.fund_freeze.model_label');
+        return __('settlement.reserve.model_label');
     }
 
     public static function getPluralModelLabel(): string
     {
-        return __('admin.finance.fund_freeze.model_label_plural');
+        return __('settlement.reserve.model_label_plural');
     }
 
     public static function table(Table $table): Table
@@ -57,9 +58,17 @@ class MerchantFundFreezeResource extends Resource
                 TextColumn::make('id')->label('#')->sortable(),
                 TextColumn::make('merchant.name')->label(__('admin.finance.fields.merchant'))->searchable()
                     ->visible(fn () => (bool) auth()->user()?->isPlatformStaff()),
+                TextColumn::make('source')->label(__('settlement.reserve.source'))
+                    ->state(fn (MerchantFundFreeze $record): string => $record->order_id ? 'rolling' : 'fixed')
+                    ->formatStateUsing(fn (string $state): string => __('settlement.reserve.sources.'.$state))
+                    ->badge(),
+                TextColumn::make('order.order_no')->label(__('settlement.fields.order'))->searchable()->placeholder('—'),
+                TextColumn::make('order.settlement.settled_at')->label(__('settlement.fields.settled_at'))->dateTime()->placeholder('—')->toggleable(),
                 TextColumn::make('amount')->label(__('admin.finance.fund_freeze.amount'))->money('usd')->sortable(),
+                TextColumn::make('remaining_amount')->label(__('settlement.reserve.remaining_amount'))
+                    ->state(fn (MerchantFundFreeze $record): string => $record->remainingAmount())->money('usd'),
                 TextColumn::make('status')->label(__('admin.finance.fields.status'))->badge()
-                    ->formatStateUsing(fn (string $state) => __('admin.finance.fund_freeze.statuses.'.$state))
+                    ->formatStateUsing(fn (string $state) => __('settlement.reserve.statuses.'.$state))
                     ->color(fn (string $state) => match ($state) {
                         MerchantFundFreeze::STATUS_FROZEN => 'warning',
                         MerchantFundFreeze::STATUS_RELEASED => 'gray',
@@ -89,9 +98,22 @@ class MerchantFundFreezeResource extends Resource
                     ->searchable(),
 
                 SelectFilter::make('status')->label(__('admin.finance.fields.status'))->options([
-                    MerchantFundFreeze::STATUS_FROZEN => __('admin.finance.fund_freeze.statuses.frozen'),
-                    MerchantFundFreeze::STATUS_RELEASED => __('admin.finance.fund_freeze.statuses.released'),
+                    MerchantFundFreeze::STATUS_FROZEN => __('settlement.reserve.statuses.frozen'),
+                    MerchantFundFreeze::STATUS_RELEASED => __('settlement.reserve.statuses.released'),
+                    MerchantFundFreeze::STATUS_CONSUMED => __('settlement.reserve.statuses.consumed'),
                 ]),
+                SelectFilter::make('source')->label(__('settlement.reserve.source'))
+                    ->options([
+                        'rolling' => __('settlement.reserve.sources.rolling'),
+                        'fixed' => __('settlement.reserve.sources.fixed'),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        return match ($data['value'] ?? null) {
+                            'rolling' => $query->whereNotNull('order_id'),
+                            'fixed' => $query->whereNull('order_id'),
+                            default => $query,
+                        };
+                    }),
             ])
             ->recordActions([
                 static::releaseAction(),
@@ -105,9 +127,9 @@ class MerchantFundFreezeResource extends Resource
             ->label(__('admin.finance.fund_freeze.release'))
             ->icon('heroicon-o-lock-open')
             ->color('success')
-            ->visible(fn (MerchantFundFreeze $record) => $record->isFrozen() && auth()->user()->can(Permissions::FUND_FREEZES_RELEASE))
+            ->visible(fn (MerchantFundFreeze $record) => $record->isFrozen() && ! $record->order_id && auth()->user()->can(Permissions::FUND_FREEZES_RELEASE))
             ->modalHeading(__('admin.finance.fund_freeze.release_heading'))
-            ->modalDescription(fn (MerchantFundFreeze $record) => __('admin.finance.fund_freeze.release_desc', ['amount' => number_format((float) $record->amount, 2)]))
+            ->modalDescription(fn (MerchantFundFreeze $record) => __('admin.finance.fund_freeze.release_desc', ['amount' => number_format((float) $record->remainingAmount(), 2)]))
             ->schema([
                 Textarea::make('release_remark')->label(__('admin.finance.fund_freeze.release_remark'))->rows(2)->maxLength(500),
                 FinanceSecurity::codeField(),

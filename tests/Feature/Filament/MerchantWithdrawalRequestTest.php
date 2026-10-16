@@ -4,6 +4,7 @@ namespace Tests\Feature\Filament;
 
 use App\Exceptions\BalanceOperationException;
 use App\Filament\Resources\MerchantResource\Pages\ListMerchants;
+use App\Filament\Resources\MerchantWithdrawalResource\Pages\ListMerchantWithdrawals;
 use App\Models\Merchant;
 use App\Models\MerchantWithdrawal;
 use App\Models\User;
@@ -19,7 +20,7 @@ use Tests\TestCase;
 
 /**
  * 商户列表页的「代发起提现」行动作：平台侧（超管 / 商户级管理员）代商户发起提现。
- * 语义必须和商户自助申请一致——冻结可提现余额、落 pending 单，不直接放款。
+ * 语义必须和商户自助申请一致——可提现余额转待出款、落 pending 单，不直接放款。
  */
 class MerchantWithdrawalRequestTest extends TestCase
 {
@@ -55,9 +56,10 @@ class MerchantWithdrawalRequestTest extends TestCase
         // 代发起也要留痕：申请人记的是平台侧操作人，不是商户自己
         $this->assertSame($admin->id, $withdrawal->requested_by);
 
-        // 冻结增加，总余额不动——放款要等审核
+        // 待出款增加，保证金和总余额不动——放款要等审核
         $this->merchant->refresh();
-        $this->assertSame('500.00', (string) $this->merchant->frozen_balance);
+        $this->assertSame('200.00', (string) $this->merchant->frozen_balance);
+        $this->assertSame('300.00', (string) $this->merchant->pending_withdrawal_balance);
         $this->assertSame('1000.00', (string) $this->merchant->balance);
     }
 
@@ -141,6 +143,28 @@ class MerchantWithdrawalRequestTest extends TestCase
         Livewire::actingAs($manager)
             ->test(ListMerchants::class)
             ->assertActionHidden(TestAction::make('requestWithdrawal')->table($this->merchant));
+    }
+
+    public function test_negative_available_balance_disables_payout_but_allows_rejection(): void
+    {
+        $admin = $this->platformUser(superAdmin: true);
+        $this->merchant->update([
+            'balance' => '100.00',
+            'frozen_balance' => '0.00',
+            'pending_withdrawal_balance' => '200.00',
+        ]);
+        $withdrawal = MerchantWithdrawal::create([
+            'merchant_id' => $this->merchant->id,
+            'amount' => '200.00',
+            'status' => MerchantWithdrawal::STATUS_PENDING,
+            'requested_by' => $admin->id,
+            'uses_pending_balance' => true,
+        ]);
+
+        Livewire::actingAs($admin)
+            ->test(ListMerchantWithdrawals::class)
+            ->assertActionDisabled(TestAction::make('approve')->table($withdrawal))
+            ->assertActionEnabled(TestAction::make('reject')->table($withdrawal));
     }
 
     /** 调用商户列表行上的「代发起提现」动作，默认带上一枚当前有效的 TOTP 验证码。 */

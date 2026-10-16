@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\BalanceOperationException;
+use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderDisputeEventReply;
@@ -66,7 +67,9 @@ class OrderDisputeService
         $images = $this->moveAttachments($data['images'] ?? [], $event->merchant_id);
 
         return DB::transaction(function () use ($event, $operator, $content, $images) {
-            $fresh = OrderDisputeEvent::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($event->id);
+            Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($event->merchant_id);
+            $fresh = OrderDisputeEvent::query()->withoutGlobalScopes()
+                ->where('merchant_id', $event->merchant_id)->lockForUpdate()->findOrFail($event->id);
 
             if (! $fresh->isProcessing()) {
                 throw new BalanceOperationException('该争议审核事件已结束，无法回复。');
@@ -79,7 +82,7 @@ class OrderDisputeService
                 'images' => $images,
                 'operator_id' => $operator->id,
             ]);
-        });
+        }, 3);
     }
 
     /**

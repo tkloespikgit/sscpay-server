@@ -210,12 +210,13 @@ class OrderCreationService
         // 7. 交易手续费快照：按锁定的支付方式当前费率算出百分比/固定手续费金额与
         // 实际到账金额，三者写死在订单上（后续商户改费率不影响已下的订单）。
         // 手续费之和超过订单 USD 金额（到账会变负）时直接拒单，不建订单记录。
-        $feePercentAmount = bcmul($convertedAmount, bcdiv((string) $paymentMethod->fee_percent, '100', 6), 2);
-        $feeFixedAmount = (string) $paymentMethod->fee_fixed;
+        $financialSettings = $paymentMethod->financialSettingsForMerchant($merchant->id);
+        $feePercentAmount = bcmul($convertedAmount, bcdiv($financialSettings['fee_percent'], '100', 8), 2);
+        $feeFixedAmount = $financialSettings['fee_fixed'];
         $totalFee = bcadd($feePercentAmount, $feeFixedAmount, 2);
 
         if (bccomp($totalFee, $convertedAmount, 2) > 0) {
-            throw new MinimumAmountNotMetException($paymentMethod->minTransactionAmount(), $convertedAmount);
+            throw new MinimumAmountNotMetException($paymentMethod->minTransactionAmount($merchant->id), $convertedAmount);
         }
 
         $settlementAmount = bcsub($convertedAmount, $totalFee, 2);
@@ -244,6 +245,7 @@ class OrderCreationService
             $sendMail,
             $feePercentAmount,
             $feeFixedAmount,
+            $financialSettings,
             $settlementAmount,
             $originalAmount,
             $autoDiscount
@@ -281,6 +283,12 @@ class OrderCreationService
                 'fee_percent_amount' => $feePercentAmount,
                 'fee_fixed_amount' => $feeFixedAmount,
                 'settlement_amount' => $settlementAmount,
+                'settlement_mode' => $merchant->settlement_mode ?? 'immediate',
+                'settlement_days' => (int) $merchant->settlement_days,
+                'reserve_percent' => $financialSettings['reserve_percent'],
+                'reserve_days' => $financialSettings['reserve_days'],
+                'refund_fee_snapshot' => $financialSettings['refund_fee'],
+                'chargeback_fee_snapshot' => $financialSettings['chargeback_fee'],
                 'customer_first_name' => $data['customer_first_name'],
                 'customer_last_name' => $data['customer_last_name'],
                 'customer_email' => $data['customer_email'],

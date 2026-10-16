@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Exceptions\BalanceOperationException;
 use App\Filament\Resources\MerchantResource\Pages;
+use App\Filament\Resources\MerchantResource\RelationManagers\PaymentSettingsRelationManager;
 use App\Filament\Support\FinanceSecurity;
 use App\Models\Merchant;
 use App\Models\User;
@@ -13,8 +14,8 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
@@ -35,7 +36,7 @@ use Illuminate\Database\Eloquent\Builder;
  * 这里不需要额外处理，Filament 默认的 DeleteAction 走的是模型的
  * SoftDeletes（软删除），不会触碰 forceDelete()。
  *
- * 国际化说明：所有面向用户的文案都走 __('admin.xxx') 读 lang/{locale}/admin.php，
+ * 国际化说明：所有面向用户的文案都通过 __() 读取 lang/{locale}/ 下的语言文件，
  * 代码注释保持中文不翻译（这是给维护这套代码的开发者看的，不是终端用户界面）。
  */
 class MerchantResource extends Resource
@@ -92,6 +93,28 @@ class MerchantResource extends Resource
                     ->helperText(__('admin.merchant.help.timezone')),
             ]),
 
+            Section::make(__('settlement.settings.title'))->schema([
+                Select::make('settlement_mode')
+                    ->label(__('settlement.fields.mode'))
+                    ->options([
+                        'immediate' => __('settlement.modes.immediate'),
+                        'shipped' => __('settlement.modes.shipped'),
+                    ])
+                    ->default('immediate')
+                    ->required()
+                    ->in(['immediate', 'shipped'])
+                    ->helperText(__('settlement.settings.mode_help')),
+                TextInput::make('settlement_days')
+                    ->label(__('settlement.fields.cycle_days'))
+                    ->integer()
+                    ->required()
+                    ->minValue(0)
+                    ->maxValue(36500)
+                    ->default(0)
+                    ->suffix(__('settlement.days'))
+                    ->helperText(__('settlement.settings.cycle_help')),
+            ])->columns(2),
+
             Section::make(__('admin.merchant.sections.remark'))->schema([
                 Textarea::make('remark')->label(__('admin.merchant.fields.remark'))->rows(3),
             ]),
@@ -111,8 +134,14 @@ class MerchantResource extends Resource
                 TextColumn::make('owner.name')->label(__('admin.merchant.fields.owner'))
                     ->visible(fn () => (bool) auth()->user()?->is_super_admin)
                     ->placeholder(__('admin.merchant.placeholders.owner_platform')),
-                TextColumn::make('balance')->label(__('admin.finance.fields.balance'))->money('usd')->sortable(),
-                TextColumn::make('frozen_balance')->label(__('admin.finance.fields.frozen_balance'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('balance')->label(__('settlement.balances.total'))->money('usd')->sortable(),
+                TextColumn::make('reserve_balance')->label(__('settlement.balances.reserve'))
+                    ->state(fn (Merchant $record): string => $record->reserveBalance())->money('usd'),
+                TextColumn::make('available_balance')->label(__('settlement.balances.available'))
+                    ->state(fn (Merchant $record): string => $record->availableBalance())->money('usd'),
+                TextColumn::make('pending_withdrawal_balance')->label(__('settlement.balances.pending_withdrawal'))
+                    ->state(fn (Merchant $record): string => $record->pendingWithdrawalBalance())->money('usd'),
+                TextColumn::make('pending_settlement_balance')->label(__('settlement.balances.pending_settlement'))->money('usd')->toggleable(),
                 TextColumn::make('applications_count')->counts('applications')->label(__('admin.merchant.fields.applications_count')),
                 TextColumn::make('created_at')->label(__('admin.merchant.fields.created_at'))->dateTime()->sortable(),
             ])
@@ -177,7 +206,7 @@ class MerchantResource extends Resource
      * 管理员的列表只有自己名下的商户；action() 里再按 manageableMerchantIds()
      * 兜一层，防的是有人手工构造 Livewire 请求指定别家商户的记录 ID。
      *
-     * 语义与商户自助申请完全一致：提交即冻结可提现余额，落一条 pending 提现单，
+     * 语义与商户自助申请完全一致：提交即将可提现余额转入待出款余额，落一条 pending 提现单，
      * 仍需在「提现管理」里审核放款（approveWithdrawal）才真正扣款——这里不做
      * "发起即放款"的捷径，放款是另一个人的另一次 2FA。
      */
@@ -190,7 +219,7 @@ class MerchantResource extends Resource
             ->visible(fn () => (bool) auth()->user()?->isPlatformStaff()
                 && auth()->user()->can(Permissions::WITHDRAWALS_REQUEST))
             ->modalHeading(__('admin.finance.withdrawal.request_for_merchant'))
-            ->modalDescription(fn (Merchant $record) => __('admin.finance.withdrawal.request_for_merchant_desc', [
+            ->modalDescription(fn (Merchant $record) => __('settlement.withdrawal.request_for_merchant_desc', [
                 'merchant' => $record->name,
                 'amount' => number_format((float) $record->availableBalance(), 2),
             ]))
@@ -238,8 +267,15 @@ class MerchantResource extends Resource
                     return;
                 }
 
-                Notification::make()->title(__('admin.finance.withdrawal.requested'))->success()->send();
+                Notification::make()->title(__('settlement.withdrawal.requested'))->success()->send();
             });
+    }
+
+    public static function getRelations(): array
+    {
+        return [
+            PaymentSettingsRelationManager::class,
+        ];
     }
 
     public static function getPages(): array
@@ -258,7 +294,8 @@ class MerchantResource extends Resource
      */
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery();
+        $query = parent::getEloquentQuery()
+            ->withSum('legacyPendingWithdrawals as legacy_pending_withdrawal_balance', 'amount');
 
         if (! auth()->user()?->is_super_admin) {
             $query->where('owner_id', auth()->id());

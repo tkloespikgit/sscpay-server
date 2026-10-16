@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 
 Schedule::command('exchange:fetch')->hourly();
@@ -16,7 +17,11 @@ Schedule::command('order-disputes:send-reminders')->everyFiveMinutes()->withoutO
 
 Schedule::command('ad-conversions:process-due')->everyMinute()->withoutOverlapping();
 
-Schedule::command('fund-freezes:release-due')->everyFiveMinutes()->withoutOverlapping();
+Schedule::command('fund-freezes:release-due')->everyTenSeconds()->runInBackground()->withoutOverlapping(5)
+    ->onFailure(fn () => Log::error('到期保证金释放任务执行失败，未完成记录将在后续调度重试。'));
+
+Schedule::command('orders:settle-due')->everyTenSeconds()->runInBackground()->withoutOverlapping(5)
+    ->onFailure(fn () => Log::error('订单记账或结算任务执行失败，未完成记录将在后续调度重试。'));
 // 订单每日统计。凌晨滚动重算最近 8 天而不是只算昨天：网关可能带着真实 paid_at
 // 延迟补推（会写进过去的某一天），这也是任务失败一次之后的自愈手段。
 // 每 3 小时那条覆盖今天 + 昨天——只算今天的话，21:00 到次日 02:00 之间

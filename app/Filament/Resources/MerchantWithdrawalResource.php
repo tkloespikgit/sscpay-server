@@ -17,7 +17,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
 /**
- * 提现管理（资金管理）。商户侧发起提现申请（申请即冻结余额），
+ * 提现管理（资金管理）。商户侧发起提现申请（可提现余额转入待出款），
  * 拥有 withdrawals.review 权限者审核放款或驳回。审核放款/驳回都需要
  * 资金操作强制 2FA（见 FinanceSecurity）。金额记账口径统一 USD。
  *
@@ -88,8 +88,12 @@ class MerchantWithdrawalResource extends Resource
             ->icon('heroicon-o-check-circle')
             ->color('success')
             ->visible(fn (MerchantWithdrawal $record) => $record->isPending() && auth()->user()->can(Permissions::WITHDRAWALS_REVIEW))
+            ->disabled(fn (MerchantWithdrawal $record): bool => bccomp($record->merchant->availableBalance(), '0', 2) < 0)
+            ->tooltip(fn (MerchantWithdrawal $record): ?string => bccomp($record->merchant->availableBalance(), '0', 2) < 0
+                ? __('settlement.withdrawal.negative_balance')
+                : null)
             ->modalHeading(__('admin.finance.withdrawal.approve_heading'))
-            ->modalDescription(fn (MerchantWithdrawal $record) => __('admin.finance.withdrawal.approve_desc', ['amount' => number_format((float) $record->amount, 2)]))
+            ->modalDescription(fn (MerchantWithdrawal $record) => __('settlement.withdrawal.approve_desc', ['amount' => number_format((float) $record->amount, 2)]))
             ->schema([
                 Textarea::make('review_remark')->label(__('admin.finance.withdrawal.review_remark'))->rows(2)->maxLength(500),
                 FinanceSecurity::codeField(),
@@ -132,7 +136,7 @@ class MerchantWithdrawalResource extends Resource
                     return;
                 }
 
-                Notification::make()->title(__('admin.finance.withdrawal.rejected'))->success()->send();
+                Notification::make()->title(__('settlement.withdrawal.rejected'))->success()->send();
             });
     }
 
@@ -150,7 +154,7 @@ class MerchantWithdrawalResource extends Resource
 
     public static function canCreate(): bool
     {
-        // 申请提现走列表页的自定义头部动作（需要冻结余额 + 2FA），不用标准新建页。
+        // 申请提现走列表页的自定义头部动作（转入待出款 + 2FA），不用标准新建页。
         return false;
     }
 

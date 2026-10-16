@@ -31,12 +31,13 @@ erDiagram
 
 | 表 / 模型 | 关键语义 |
 |---|---|
-| `merchants` / `Merchant` | 商户主体；`owner_id` 为所属平台管理员，`balance`/`frozen_balance` 为 USD 总余额/冻结额 |
+| `merchants` / `Merchant` | 商户主体；`owner_id` 为所属平台管理员；总余额、冻结额、待结算、待出款均为 USD；商户统一配置结算模式及周期 |
 | `users` / `User` | `is_super_admin`、`merchant_id` 区分超管、商户级管理员和商户用户；范围入口为 `manageableMerchantIds()` |
 | `roles`、权限相关表 | Spatie 权限；商户角色有商户归属，平台共享角色另有范围。定义见 `app/Support/Permissions.php` 与 `PermissionSeeder` |
 | `applications` / `Application` | 商户接入身份、`app_id`、加密 `api_key`、应用网站与邮件/广告配置 |
 | `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者 |
 | `merchant_payment_methods` | 系统级渠道分配给商户的多对多表；不是所有订单的商户归属表 |
+| `merchant_payment_settings` | 商户与可使用渠道的独立财务配置，交易/退款/拒付手续费、保证金比例/锁定天数；NULL 继承渠道默认值，0 为显式零值 |
 | `payment_groups` / `PaymentGroup` | 商户的路由组，`group_key` 在该商户未删除记录内唯一 |
 | `payment_group_methods` | 组内渠道，`group_id`/`method_id`，`priority` 为分流权重 |
 | `payment_method_config_maps`、`payment_method_profiles` | 网关字段模板及渠道资料附表；profile 每渠道至多一条 |
@@ -60,6 +61,8 @@ erDiagram
 | `converted_currency`、`converted_amount`、各 `*_converted` | 下单时折算金额，结算基准 USD；成交额统计使用 `converted_amount` |
 | `original_exchange_rate`、`exchange_rate`、`surcharge_*` | 市场汇率、实际汇率与汇损快照；不能用当前汇率回算历史单 |
 | `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 下单时交易手续费与净入账快照；支付入账使用 `settlement_amount` |
+| `settlement_mode`、`settlement_days` | 新单按商户保存的起算方式与周期；NULL 标记历史单，不补建结算记录 |
+| `reserve_percent`、`reserve_days`、`refund_fee_snapshot`、`chargeback_fee_snapshot` | 新单保证金及反向手续费快照；历史反向手续费快照为 NULL 时沿用原渠道规则 |
 | `refunded_amount` | 累计退款原币种金额，不是 USD |
 | `accept_language` | 浏览器语言偏好列表，nullable VARCHAR(255)；统一建单入口最多保留 255 字符，避免请求头导致建单失败 |
 | `shipping_state`、`shipping_city` | 收款链接按 PayPal `admin_area_1` / `admin_area_2` 语义保存：省州按国家转换为官方代码或名称，城市保存城镇名称；服务端与 Google 回填共用映射。其他入口协议保持原有语义，详见[收款链接地址规则](../doc/checkout-link.md#地址字段与-paypal-rest) |
@@ -98,9 +101,11 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 | 表 / 模型 | 关键语义 |
 |---|---|
-| `merchant_balance_transactions` | 总余额变动台账，含前后余额、金额、类型、关联单据与 `idempotency_key`；自动支付入账键为 `order_paid:{order_id}` |
-| `merchant_withdrawals` | `pending` 冻结金额；批准扣总余额并释放占用，驳回仅释放冻结额 |
-| `merchant_fund_freezes` | 人工资金冻结及可选到期释放；与提现/争议冻结分别记录来源，共同影响 `frozen_balance` |
+| `merchant_balance_transactions` | 总余额及分类划转台账；分类划转 `amount=0`，由 `pending_settlement_change`、`frozen_change`、`pending_withdrawal_change` 记录去向，可提现变化为总额变化减三类变化。支付/结算分别使用 `order_paid:{order_id}`、`order_settlement:{order_id}` 唯一键 |
+| `merchant_withdrawals` | 新申请 `uses_pending_balance=true`，占用 `pending_withdrawal_balance`；后台确认放款扣总额与占用，驳回只释放占用。旧记录 false，继续使用原冻结额，不回填 |
+| `merchant_fund_freezes` | `order_id=NULL` 为固定保证金，否则为本单循环保证金；原额 `amount` 不变，`remaining_amount` 保存余额，旧 NULL 回退原额；`consumed` 表示已抵扣完。系统生成允许 `frozen_by=NULL` |
+| `order_settlements` | 每订单一条结算审计记录，净额、剩余待结算额、实际保证金/可提现分配、起算/预计/实际结算时间；状态 waiting_shipment/pending/settled/cancelled |
+| `order_accounting_tasks` | 新单状态事务内写入的 paid/refund/chargeback 可靠待办，按订单+类型唯一；含次数、重试时间、完成时间、脱敏错误和需人工处理状态。执行前校验商户归属；不删除审计记录 |
 | `order_refunds` | 退款单：原币种 `amount`、USD `amount_usd` 等；同一订单允许多次部分退款 |
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
@@ -110,7 +115,11 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
 | `logistics_import_tasks`、`logistics_import_task_records` | 批量物流导入任务及逐行结果 |
 
-余额可为负；可用余额 = `balance - frozen_balance`，提现不得超过可用额。冻结/释放通常改变冻结额并维护对应业务单据，不代表每次冻结都发生总余额增减。金融审计表不能套用普通配置表的删除策略。
+余额可为负；可提现 = `balance - frozen_balance - pending_settlement_balance - pending_withdrawal_balance`。商户显示的待出款由 `pendingWithdrawalBalance()` 将新待出款加旧待审核提现合计；`reserveBalance()` 将原冻结额减去这部分旧提现。两者按读时归类，不改历史余额或流水，且保持总额 = 待结算 + 保证金/冻结 + 可提现 + 待出款。列表使用 `legacyPendingWithdrawals` 的预聚合避免逐行查询。
+
+结算及锁定天数按 N×86400 秒计算。循环保证金基数为当次结算净额，金额 bcmath 截至分；锁定天数为 0 时不冻结。新结算 `due_at` 和冻结 `release_at` 使用 DATETIME，支持较长锁定期，避免 MySQL TIMESTAMP 的 2038 年边界。新规则不追历史订单；金融审计已产生后，新增结算/可靠待办相关迁移会拒绝破坏性回滚，应使用前向修复。
+
+退款/拒付本金优先消耗本单待结算和循环保证金，其余及额外手续费扣可提现。原交易手续费不返还；固定保证金、其他订单专属金额、待出款不自动挪用。人工争议对新单只追加扣除本单待结算/循环保证金后尚未保护的部分，避免重复冻结；旧事件的冻结金额快照保持原值。金融审计表不能套用普通配置表的删除策略。
 
 ## 5. 收款链接与域名
 
@@ -155,6 +164,9 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_dispute_events.order_id_active_uniq` | 仅 `processing` 状态参与，同一订单最多一个处理中审核事件 |
 | `merchant_balance_transactions.idempotency_key` | 自动资金动作幂等；允许人工动作无幂等键 |
 | `merchant_payment_methods(merchant_id, payment_method_id)` | 渠道分配不重复 |
+| `merchant_payment_settings(merchant_id, payment_method_id)` | 商户渠道财务配置不重复 |
+| `order_settlements.order_id`、`merchant_fund_freezes.order_id` | 本单最多一次结算及一笔循环保证金，固定保证金的 NULL 不参与限制 |
+| `order_accounting_tasks(order_id, type)` | 状态重放不能重复创建同类可靠记账任务 |
 
 迁移存在 `IF`、`CONCAT`、带排序的 `GROUP_CONCAT` 等 MySQL 特征；`phpunit.xml` 目前仍使用 SQLite 内存库，测试兼容性需单独核验。不要仅根据初始建表迁移推断最终约束。
 

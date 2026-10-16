@@ -144,3 +144,15 @@
 **原因与影响：** 不能把当前市场行情当作历史市场价，也无法从已截断的历史手续费金额精确还原百分比费率。仅处理已入账、无退款/争议历史且原资金流水与净入账快照相符的订单；其余列原因跳过。原余额和台账均不改，显示“含汇损与无汇损之差”以及“本次净入账变化”两个口径，后者作为此次人工调账参考。历史统计需按报告日期另行补算，正常新单的快照规则不变。
 
 **依据：** [RecalculateOrderSurcharge](../app/Console/Commands/RecalculateOrderSurcharge.php)、[OrderSurchargeRecalculationService](../app/Services/OrderSurchargeRecalculationService.php)、[RecalculateOrderSurchargeTest](../tests/Feature/RecalculateOrderSurchargeTest.php)、[操作手册](../doc/order-surcharge-recalculation.md)。
+
+## D-17 商户独立财务配置、订单结算与保证金
+
+**状态：用户已确认；当前工作区实现，未提交（2026-10-16）。** 商户有权使用的每个渠道可独立覆盖财务条件，空值继承默认；财务参数由超管/所属管理员维护，商户只读。新单保存手续费、结算、保证金快照，后续改配置不追溯；历史订单、余额和流水不重算。
+
+支付成功按净额计入总额及待结算。商户选择支付成功或首次有效发货起算，按 N×24 小时到期；结算时按净额分入循环保证金与可提现，锁定期从实际结算开始，0 天不冻结。人工固定保证金只允许冻结可提现。争议期间暂停本单结算/循环保证金释放，恢复后保留原到期时间。
+
+退款/拒付本金依次扣本单待结算、本单循环保证金、可提现，额外手续费直接扣可提现，原交易手续费不返还。不自动挪用固定保证金、其他订单专属资金和待出款；不足允许负可提现并禁止新增提现/确认放款。提现申请占用待出款，后台确认放款即扣总额与占用，驳回恢复可提现。
+
+**原因与影响：** 同渠道不同商户需要不同财务条件，支付成功与可提现需要分开。余额分类保持同一商户行事务更新并写划转台账；现存提现以读时归类兼容，不回填原冻结额。新增可靠记账待办恢复状态已提交但账务失败的场景，统一商户优先锁序；扫描分批限量，每 10 秒后台执行，以正常负载一分钟内处理为目标，实际峰值容量仍需实测。
+
+**依据：** [MerchantPaymentSettingsService](../app/Services/MerchantPaymentSettingsService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[BalanceService](../app/Services/BalanceService.php)、[OrderAccountingService](../app/Services/OrderAccountingService.php)、[OrderSettlement](../app/Models/OrderSettlement.php)、[调度](../routes/console.php)。

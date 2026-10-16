@@ -8,11 +8,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * 商户提现单。生命周期：
- *   pending  申请中——金额已从可用余额冻结（balance 不变，frozen_balance += amount）
- *   approved 审核通过并放款——冻结转出（balance -= amount，frozen_balance -= amount），落一条 withdrawal 流水
- *   rejected 驳回——释放冻结（frozen_balance -= amount），可用余额恢复
+ *   pending  申请中——新单占用 pending_withdrawal_balance，旧单继续占用 frozen_balance。
+ *   approved 后台确认放款——扣除总余额及对应占用额。
+ *   rejected 驳回——释放对应占用额，可提现余额恢复，总余额不变。
  *
- * 冻结/释放不产生余额流水，审计以本表的状态 + reviewed_by/reviewed_at 为准。
+ * 当前操作同时保存分类划转流水；旧台账不回填。
  */
 class MerchantWithdrawal extends Model
 {
@@ -34,6 +34,7 @@ class MerchantWithdrawal extends Model
         'reviewed_by',
         'reviewed_at',
         'review_remark',
+        'uses_pending_balance',
     ];
 
     protected function casts(): array
@@ -41,6 +42,7 @@ class MerchantWithdrawal extends Model
         return [
             'amount' => 'decimal:2',
             'reviewed_at' => 'datetime',
+            'uses_pending_balance' => 'boolean',
         ];
     }
 

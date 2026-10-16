@@ -1,6 +1,6 @@
 # 系统架构
 
-核对日期：2026-09-28。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
+核对日期：2026-10-16。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
 
 ## 1. 系统职责与技术栈
 
@@ -75,7 +75,7 @@ flowchart TD
 2. 校验 `amount = subtotal + shipping_fee - discount + tax`，公式容差由 `Order::AMOUNT_TOLERANCE` 定义（当前 0.01）；商品明细按两位小数核对小计。
 3. 应用开启自动折扣时，首次建单随机减免原币种应付金额，保存原始金额及折扣快照；然后读取汇率及汇损，换算 USD。回跳域名校验的当前策略见 [D-05](decisions.md#d-05-下单域名策略)。
 4. 校验支付组归属且启用。普通路径经 `PaymentService` 筛选风控后，选当天成交额/权重最小的渠道；指定 `payment_method_key` 的路径跳过组内路由与限额检查，但仍检查渠道可用范围、启用状态和三个回跳 URL 的渠道域名。
-5. 计算并固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细。
+5. 优先使用商户与渠道的独立财务配置，空值继承渠道默认值，固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细，以及结算模式/周期、保证金比例/天数、退款与拒付手续费快照。旧订单的 `settlement_mode` 为 NULL，沿用原规则，不追溯重算。
 6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`；远端失败保留本地订单，供幂等重试恢复。
 7. 是否派发付款链接邮件由调用方决定，Service 仅保存意图。API 重试补单后的发信行为由 `OrderCreateRetryMailTest` 覆盖。
 
@@ -91,15 +91,24 @@ flowchart TD
 
 | 行为 | 当前实现 |
 |---|---|
-| 支付成功 | 首次正常进入 `paid` 后，经 `BalanceService::creditForPaidOrder()` 按 `settlement_amount` 入账，派发商户通知与广告转化 |
+| 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算；首次正常 `paid` 派发商户通知与广告转化。旧单仍沿用原即时入账 |
 | 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护 |
 | 网关 `refunded` / `confused` | 后者映射 `chargeback`；尝试自动退款/拒付记账。业务性失败保留状态并告警，支持人工补录 |
 | 网关 `disputing` | 网关争议中，更新状态并拉日志；不等同人工冻结审核 |
 | 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间网关状态不会覆盖人工审核状态 |
 | 物流 | `OrderShippingObserver` 在符合条件时推进 `shipped`，并派发物流同步 |
+| 订单结算 | `OrderSettlement` 保存本单模式、周期及保证金快照；支付或首次有效物流开始计时，到期由 `BalanceService` 将待结算分入循环保证金和可提现；争议期间暂停，到期时间不重置 |
+| 保证金 | 固定保证金只能从可提现额人工冻结；循环保证金按净结算额提取，锁定期从实际结算起算，0 天不锁定。循环保证金只到期自动释放，争议期间暂停释放 |
+| 提现 | 新申请占用独立待出款，后台确认放款即扣总额及占用，驳回恢复可提现；负可提现时禁止新增提现和确认放款，仍可驳回。旧提现保持原冻结占用方式 |
 | 订单事件日志 | `OrderEventSyncService` 拉取插件 `/order-logs` 归档；不以日志反推支付状态 |
 
 余额写操作集中在 [BalanceService](../app/Services/BalanceService.php)。锁顺序先商户行、再相关订单/业务单据。当前状态事务与退款/拒付账务事务分开，避免反向加锁造成死锁；不可描述为远端状态和本地资金全程原子提交。人工资金动作使用 `FinanceSecurity` 做 TOTP 二次验证。
+
+新单资金反向扣减依次使用本单待结算、本单未释放循环保证金，再由可提现承担；额外手续费直接扣可提现。原交易手续费不返还，不自动挪用固定保证金、其他订单专属资金或待出款。未结算金额耗尽后取消结算；循环保证金抵扣后只释放剩余额。新分类划转写总额为 0 的台账及分类变化，历史流水不回填。
+
+`OrderAccountingService` 以商户→订单→待办顺序处理新单可靠记账，失败由 `orders:settle-due` 补偿。待办 `merchant_id` 有意无外键，避免在持有订单锁的状态事务内反向请求商户锁；执行前核对商户归属。首次直接收到退款/拒付时，在同一账务事务先记录原收入再反向扣减。物流状态使用条件更新，避免覆盖并发退款；争议回复同样先锁商户，避免外键检查产生反向锁。
+
+反向待办的本金尚未扣足时，暂停该商户的提现申请/确认放款及本单循环保证金释放，避免按旧余额出款；人工补录后按实际本金记录解除限制，调度再核销待办状态。候选扫描先排除暂停项，避免限量扫描被早期暂停记录占满。
 
 漏配历史汇损可使用 `orders:recalculate-surcharge`，由 `OrderSurchargeRecalculationService` 明确按商户纠正订单快照，保留历史市场汇率及手续费金额，默认预览，仅 `--apply` 写入。只处理已入账且无反向资金/争议历史的订单，保存新旧快照报告，不修改余额或台账；人工调账差额与统计补算步骤见[操作手册](../doc/order-surcharge-recalculation.md)。
 
@@ -114,7 +123,7 @@ flowchart TD
 
 `config/queue.php` 的 Redis `retry_after` 必须大于长任务 Worker timeout。现有 `composer dev` 的默认 `queue:listen` 不能代替订阅全部业务队列的 Worker；启动方式参考部署文档。队列配置的 `after_commit` 当前为 false，新增事务内派发时要明确提交时机。
 
-以下按 [routes/console.php](../routes/console.php) 核对，共 12 个调度条目：
+以下按 [routes/console.php](../routes/console.php) 核对，共 13 个调度条目：
 
 | 命令 | 频率 |
 |---|---|
@@ -124,7 +133,8 @@ flowchart TD
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |
-| `fund-freezes:release-due` | 每 5 分钟，防重叠 |
+| `fund-freezes:release-due` | 每 10 秒，后台执行、防重叠；默认每次最多 500 条 |
+| `orders:settle-due` | 每 10 秒，后台执行、防重叠；补偿记账、启动发货周期、到期结算，每类默认最多 500 条 |
 | `order-stats:aggregate --days=8` | 每天 02:00，防重叠 |
 | `order-stats:aggregate --days=2` | 每 3 小时，防重叠 |
 | `checkout:check-cloudflare-ips` | 每周一 09:00 |
@@ -139,6 +149,7 @@ flowchart TD
 | 下单、幂等、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
 | 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRiskPaidAtTest.php` |
 | 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`tests/Feature/Filament/MerchantWithdrawalRequestTest.php` |
+| 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
 | 历史订单漏配汇损补算 | `app/Console/Commands/RecalculateOrderSurcharge.php`、`app/Services/OrderSurchargeRecalculationService.php`、[操作手册](../doc/order-surcharge-recalculation.md) | `tests/Feature/RecalculateOrderSurchargeTest.php` |
 | 统计 | `app/Services/OrderStatsAggregator.php`、`OrderStatsQueryService.php`、`DashboardService.php` | `tests/Feature/OrderStatsAggregatorTest.php`、`DashboardOrderStatsAlignmentTest.php`、`tests/Feature/Filament/OrderStatsPageTest.php` |
 | 收款链接和域名 | `app/Services/Checkout/`、`app/Http/Controllers/CheckoutLinkController.php`、`app/Models/CheckoutLink.php` | `tests/Feature/CheckoutLinkTest.php`、`tests/Feature/Filament/CheckoutLinkFormTest.php`、`MerchantDomainResourceTest.php` |

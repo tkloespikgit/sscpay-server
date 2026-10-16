@@ -8,16 +8,16 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * 通用人工资金冻结：商户管理员/超级管理员对商户直接冻结一笔资金
- * （见 BalanceService::freezeFunds()），与订单/提现无关。生命周期：
+ * 固定保证金及订单循环保证金，order_id 区分来源。生命周期：
  *
  *   frozen 冻结中 —— 已计入 merchants.frozen_balance；release_at 有值时
  *     等到期由 fund-freezes:release-due 命令自动释放，否则只能人工解冻。
  *   released 已解冻 —— 冻结已释放，release_type 区分 manual（人工，
  *     released_by 有值）/ auto（到期系统自动解冻，released_by 为 NULL）。
  *
- * 冻结/释放不产生 merchant_balance_transactions 流水（同提现/争议审核冻结
- * 的既有约定），审计以本表状态 + frozen_by/frozen_at/released_by/released_at 为准。
+ * consumed 为循环保证金已被退款或拒付抵扣；amount 保留原额，remaining_amount
+ * 保存未释放/未抵扣余额。旧记录 remaining_amount 为 NULL 时回退 amount。
+ * 新操作写分类划转流水，旧台账不回填。
  */
 class MerchantFundFreeze extends Model
 {
@@ -27,13 +27,17 @@ class MerchantFundFreeze extends Model
 
     public const STATUS_RELEASED = 'released';
 
+    public const STATUS_CONSUMED = 'consumed';
+
     public const RELEASE_TYPE_MANUAL = 'manual';
 
     public const RELEASE_TYPE_AUTO = 'auto';
 
     protected $fillable = [
         'merchant_id',
+        'order_id',
         'amount',
+        'remaining_amount',
         'status',
         'reason',
         'release_at',
@@ -49,6 +53,7 @@ class MerchantFundFreeze extends Model
     {
         return [
             'amount' => 'decimal:2',
+            'remaining_amount' => 'decimal:2',
             'release_at' => 'datetime',
             'frozen_at' => 'datetime',
             'released_at' => 'datetime',
@@ -58,6 +63,16 @@ class MerchantFundFreeze extends Model
     public function merchant(): BelongsTo
     {
         return $this->belongsTo(Merchant::class);
+    }
+
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(Order::class)->withTrashed();
+    }
+
+    public function remainingAmount(): string
+    {
+        return (string) ($this->remaining_amount ?? $this->amount);
     }
 
     public function frozenBy(): BelongsTo

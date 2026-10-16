@@ -23,6 +23,11 @@ class EditPaymentMethod extends EditRecord
      */
     protected array $previousAssignedMerchantIds = [];
 
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        return PaymentMethodResource::authorizedFinancialData($data, $this->record);
+    }
+
     protected function beforeSave(): void
     {
         $this->previousAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();

@@ -38,10 +38,10 @@ class ListMerchantFundFreezes extends ListRecords
         $canPickMerchant = (bool) $viewer?->isPlatformStaff();
 
         return Action::make('openFundFreeze')
-            ->label(__('admin.finance.fund_freeze.create'))
+            ->label(__('settlement.reserve.create'))
             ->icon('heroicon-o-lock-closed')
             ->visible(fn () => auth()->user()->can(Permissions::FUND_FREEZES_CREATE))
-            ->modalHeading(__('admin.finance.fund_freeze.create'))
+            ->modalHeading(__('settlement.reserve.create'))
             ->schema([
                 Select::make('merchant_id')
                     ->label(__('admin.finance.fields.merchant'))
@@ -60,6 +60,7 @@ class ListMerchantFundFreezes extends ListRecords
 
                 TextInput::make('amount')
                     ->label(__('admin.finance.fund_freeze.amount'))
+                    ->helperText(__('settlement.reserve.fixed_help'))
                     ->numeric()
                     ->required()
                     ->minValue(0.01)
@@ -97,7 +98,7 @@ class ListMerchantFundFreezes extends ListRecords
                     return;
                 }
 
-                Notification::make()->title(__('admin.finance.fund_freeze.created'))->success()->send();
+                Notification::make()->title(__('settlement.reserve.created'))->success()->send();
             });
     }
 }

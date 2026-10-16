@@ -8,10 +8,13 @@ use App\Models\MerchantBalanceTransaction;
 use App\Models\MerchantFundFreeze;
 use App\Models\MerchantWithdrawal;
 use App\Models\Order;
+use App\Models\OrderAccountingTask;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderRefund;
+use App\Models\OrderSettlement;
 use App\Models\User;
 use Closure;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -30,19 +33,18 @@ use Illuminate\Support\Facades\Log;
 class BalanceService
 {
     /**
-     * 支付成功后给商户入账（订单金额的 USD 口径）。幂等：同一订单只入账一次。
-     * 订单状态流转（-> paid）由调用方负责，本方法只管钱，建议放在同一外层事务里。
+     * 按净结算金额入账；新单进入待结算，旧单仍直接可提现。同一订单仅入账一次。
+     * 与状态事务分开执行；若有外层账务事务，必须先锁商户、再锁订单。
      *
      * @return MerchantBalanceTransaction|null 已入过账则返回 null
      */
     public function creditForPaidOrder(Order $order): ?MerchantBalanceTransaction
     {
-        // 按扣除支付方式手续费后的实际到账金额（settlement_amount）入账，
-        // 不是订单折算 USD 全额（converted_amount）——手续费快照在下单时已经算好。
-        $amount = (string) $order->settlement_amount;
         $key = 'order_paid:'.$order->id;
 
-        return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amount, $key) {
+        return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $key) {
+            $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->lockForUpdate()->findOrFail($order->id);
             $exists = MerchantBalanceTransaction::query()
                 ->withoutGlobalScopes()
                 ->where('idempotency_key', $key)
@@ -52,11 +54,145 @@ class BalanceService
                 return null;
             }
 
-            return $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_ORDER_PAID, $amount, [
-                'order_id' => $order->id,
+            $amount = (string) $fresh->settlement_amount;
+            $attributes = [
+                'order_id' => $fresh->id,
                 'idempotency_key' => $key,
-            ]);
+            ];
+
+            if ($fresh->settlement_mode !== null) {
+                $startedAt = $fresh->settlement_mode === 'immediate' ? ($fresh->paid_at ?? now()) : null;
+                $merchant->pending_settlement_balance = bcadd((string) $merchant->pending_settlement_balance, $amount, 2);
+                $attributes['pending_settlement_change'] = $amount;
+                $settlement = OrderSettlement::query()->create([
+                    'merchant_id' => $merchant->id,
+                    'order_id' => $fresh->id,
+                    'amount' => $amount,
+                    'remaining_amount' => $amount,
+                    'mode' => $fresh->settlement_mode,
+                    'cycle_days' => $fresh->settlement_days,
+                    'reserve_percent' => $fresh->reserve_percent ?? '0',
+                    'reserve_days' => $fresh->reserve_days ?? 0,
+                    'status' => $startedAt ? OrderSettlement::STATUS_PENDING : OrderSettlement::STATUS_WAITING_SHIPMENT,
+                    'started_at' => $startedAt,
+                    'due_at' => $startedAt?->copy()->addSeconds((int) $fresh->settlement_days * 86400),
+                ]);
+            }
+
+            $transaction = $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_ORDER_PAID, $amount, $attributes);
+
+            if (isset($settlement)) {
+                $this->startShipmentCycle($fresh, $settlement);
+                $this->settleLockedOrder($merchant, $fresh, $settlement);
+            }
+
+            return $transaction;
         });
+    }
+
+    public function startSettlementForShippedOrder(Order $order): void
+    {
+        $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order): void {
+            $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->lockForUpdate()->findOrFail($order->id);
+            $settlement = OrderSettlement::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->where('order_id', $fresh->id)->lockForUpdate()->first();
+
+            if (! $settlement) {
+                return;
+            }
+
+            $this->startShipmentCycle($fresh, $settlement);
+            $this->settleLockedOrder($merchant, $fresh, $settlement);
+        });
+    }
+
+    public function settleOrder(OrderSettlement $settlement): bool
+    {
+        return $this->mutate($settlement->merchant_id, function (Merchant $merchant) use ($settlement): bool {
+            $order = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->lockForUpdate()->findOrFail($settlement->order_id);
+            $fresh = OrderSettlement::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->where('order_id', $order->id)->lockForUpdate()->findOrFail($settlement->id);
+
+            return $this->settleLockedOrder($merchant, $order, $fresh);
+        });
+    }
+
+    private function startShipmentCycle(Order $order, OrderSettlement $settlement): void
+    {
+        if ($settlement->status !== OrderSettlement::STATUS_WAITING_SHIPMENT
+            || ! in_array($order->status, ['paid', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
+            return;
+        }
+
+        $shipping = $order->shipping()->withoutGlobalScopes()->whereNull('order_shippings.deleted_at')
+            ->oldest('created_at')->first();
+
+        if (! $shipping) {
+            return;
+        }
+
+        $startedAt = $shipping->created_at->copy();
+
+        if ($order->paid_at && $order->paid_at->greaterThan($startedAt)) {
+            $startedAt = $order->paid_at->copy();
+        }
+
+        $settlement->update([
+            'status' => OrderSettlement::STATUS_PENDING,
+            'started_at' => $startedAt,
+            'due_at' => $startedAt->copy()->addSeconds($settlement->cycle_days * 86400),
+        ]);
+    }
+
+    /** 商户、订单、结算记录已按顺序锁定；只做本地账务，禁止外部副作用。 */
+    private function settleLockedOrder(Merchant $merchant, Order $order, OrderSettlement $settlement): bool
+    {
+        if ($settlement->status !== OrderSettlement::STATUS_PENDING
+            || ! $settlement->due_at || $settlement->due_at->isFuture()
+            || ! in_array($order->status, ['paid', 'shipped', 'completed', 'partially_refunded'], true)) {
+            return false;
+        }
+
+        $amount = (string) $settlement->remaining_amount;
+        $reserve = $settlement->reserve_days > 0
+            ? bcmul($amount, bcdiv((string) $settlement->reserve_percent, '100', 8), 2)
+            : '0.00';
+        $settledAt = now();
+        $freeze = null;
+
+        if (bccomp($reserve, '0', 2) > 0) {
+            $freeze = MerchantFundFreeze::query()->create([
+                'merchant_id' => $merchant->id,
+                'order_id' => $order->id,
+                'amount' => $reserve,
+                'remaining_amount' => $reserve,
+                'status' => MerchantFundFreeze::STATUS_FROZEN,
+                'reason' => __('settlement.reserve.auto_reason'),
+                'frozen_at' => $settledAt,
+                'release_at' => $settledAt->copy()->addSeconds($settlement->reserve_days * 86400),
+            ]);
+        }
+
+        $merchant->pending_settlement_balance = bcsub((string) $merchant->pending_settlement_balance, $amount, 2);
+        $merchant->frozen_balance = bcadd((string) $merchant->frozen_balance, $reserve, 2);
+        $settlement->update([
+            'status' => OrderSettlement::STATUS_SETTLED,
+            'remaining_amount' => '0.00',
+            'reserve_amount' => $reserve,
+            'available_amount' => bcsub($amount, $reserve, 2),
+            'settled_at' => $settledAt,
+        ]);
+        $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_ORDER_SETTLEMENT, '0.00', [
+            'order_id' => $order->id,
+            'fund_freeze_id' => $freeze?->id,
+            'pending_settlement_change' => '-'.$amount,
+            'frozen_change' => $reserve,
+            'idempotency_key' => 'order_settlement:'.$order->id,
+        ]);
+
+        return true;
     }
 
     /**
@@ -99,7 +235,7 @@ class BalanceService
         }
 
         $method = $order->paymentMethodConfig();
-        $fee = $method ? (string) $method->refund_fee : '0';
+        $fee = (string) ($order->refund_fee_snapshot ?? $method?->refund_fee ?? '0');
 
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountOriginal, $operator, $reason, $fee, $idempotencyKey) {
             // 在锁内重新读取订单最新状态，做并发安全的校验：不能只信外层（加锁前）
@@ -108,6 +244,15 @@ class BalanceService
 
             $this->assertRefundable($fresh);
 
+            if ((int) $fresh->merchant_id !== (int) $merchant->id) {
+                throw new BalanceOperationException(__('settlement.errors.order_merchant_mismatch'));
+            }
+
+            if ($fresh->settlement_mode !== null) {
+                $this->creditForPaidOrder($fresh);
+                $merchant->refresh();
+            }
+
             $remaining = bcsub((string) $fresh->amount, (string) $fresh->refunded_amount, 2);
 
             if (bccomp($amountOriginal, $remaining, 2) > 0) {
@@ -115,6 +260,7 @@ class BalanceService
             }
 
             $amountUsd = bcdiv(bcmul((string) $fresh->converted_amount, $amountOriginal, 6), (string) $fresh->amount, 2);
+            $bucketChanges = $this->consumeOrderFunds($merchant, $fresh, $amountUsd);
 
             $refund = OrderRefund::query()->create([
                 'merchant_id' => $fresh->merchant_id,
@@ -129,13 +275,13 @@ class BalanceService
             ]);
 
             // 扣退款本金
-            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_REFUND, '-'.$amountUsd, [
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_REFUND, '-'.$amountUsd, array_merge($bucketChanges, [
                 'order_id' => $fresh->id,
                 'order_refund_id' => $refund->id,
                 'operator_id' => $operator?->id,
                 'reason' => $reason,
                 'idempotency_key' => $idempotencyKey ? $idempotencyKey.':principal' : null,
-            ]);
+            ]));
 
             // 扣退款手续费（>0 才落）
             if (bccomp($fee, '0', 2) > 0) {
@@ -170,7 +316,7 @@ class BalanceService
 
         $amountUsd = (string) $order->converted_amount;
         $method = $order->paymentMethodConfig();
-        $fee = $method ? (string) $method->chargeback_fee : '0';
+        $fee = (string) ($order->chargeback_fee_snapshot ?? $method?->chargeback_fee ?? '0');
 
         $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountUsd, $fee, $operator, $reason, $idempotencyKey) {
             // 在锁内重新读取订单最新状态/退款额：等锁期间订单可能已被另一笔并发的
@@ -180,12 +326,23 @@ class BalanceService
 
             $this->assertChargebackable($fresh);
 
-            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK, '-'.$amountUsd, [
+            if ((int) $fresh->merchant_id !== (int) $merchant->id) {
+                throw new BalanceOperationException(__('settlement.errors.order_merchant_mismatch'));
+            }
+
+            if ($fresh->settlement_mode !== null) {
+                $this->creditForPaidOrder($fresh);
+                $merchant->refresh();
+            }
+            $amountUsd = (string) $fresh->converted_amount;
+            $bucketChanges = $this->consumeOrderFunds($merchant, $fresh, $amountUsd);
+
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK, '-'.$amountUsd, array_merge($bucketChanges, [
                 'order_id' => $fresh->id,
                 'operator_id' => $operator?->id,
                 'reason' => $reason,
                 'idempotency_key' => $idempotencyKey ? $idempotencyKey.':principal' : null,
-            ]);
+            ]));
 
             if (bccomp($fee, '0', 2) > 0) {
                 $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK_FEE, '-'.$fee, [
@@ -257,6 +414,66 @@ class BalanceService
     }
 
     /**
+     * 本金先消耗本单待结算及循环保证金，其余由可提现余额承担。
+     * 固定保证金、其他订单及待出款均不挪用；额外手续费不走此方法。
+     *
+     * @return array{pending_settlement_change: string, frozen_change: string, fund_freeze_id?: int}
+     */
+    private function consumeOrderFunds(Merchant $merchant, Order $order, string $amount): array
+    {
+        $changes = ['pending_settlement_change' => '0.00', 'frozen_change' => '0.00'];
+
+        if ($order->settlement_mode === null) {
+            return $changes;
+        }
+
+        $settlement = OrderSettlement::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+            ->where('order_id', $order->id)->lockForUpdate()->first();
+
+        if ($settlement && in_array($settlement->status, [OrderSettlement::STATUS_WAITING_SHIPMENT, OrderSettlement::STATUS_PENDING], true)) {
+            $pending = (string) $settlement->remaining_amount;
+            $consumed = bccomp($pending, $amount, 2) < 0 ? $pending : $amount;
+            $remaining = bcsub($pending, $consumed, 2);
+            $merchant->pending_settlement_balance = bcsub((string) $merchant->pending_settlement_balance, $consumed, 2);
+            $changes['pending_settlement_change'] = '-'.$consumed;
+            $amount = bcsub($amount, $consumed, 2);
+            $settlement->remaining_amount = $remaining;
+
+            if (bccomp($remaining, '0', 2) === 0) {
+                $settlement->status = OrderSettlement::STATUS_CANCELLED;
+                $settlement->cancelled_at = now();
+            }
+
+            $settlement->save();
+        }
+
+        if (bccomp($amount, '0', 2) <= 0) {
+            return $changes;
+        }
+
+        $freeze = MerchantFundFreeze::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+            ->where('order_id', $order->id)->where('status', MerchantFundFreeze::STATUS_FROZEN)->lockForUpdate()->first();
+
+        if ($freeze) {
+            $reserve = $freeze->remainingAmount();
+            $consumed = bccomp($reserve, $amount, 2) < 0 ? $reserve : $amount;
+            $remaining = bcsub($reserve, $consumed, 2);
+            $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, $consumed, 2);
+            $freeze->remaining_amount = $remaining;
+
+            if (bccomp($remaining, '0', 2) === 0) {
+                $freeze->status = MerchantFundFreeze::STATUS_CONSUMED;
+            }
+
+            $freeze->save();
+            $changes['frozen_change'] = '-'.$consumed;
+            $changes['fund_freeze_id'] = $freeze->id;
+        }
+
+        return $changes;
+    }
+
+    /**
      * 人工调整余额（���/减）。amount 带符号，reason 必填，operator 记录操作人。
      */
     public function manualAdjust(Merchant $merchant, string|float $amount, User $operator, string $reason): MerchantBalanceTransaction
@@ -280,7 +497,7 @@ class BalanceService
     }
 
     /**
-     * 申请提现：校验不超过可用余额，冻结相应金额（balance 不变，frozen 增加）。
+     * 申请提现：可提现资金转入待出款，总余额不变。
      */
     public function requestWithdrawal(Merchant $merchant, string|float $amount, User $requester, ?string $payoutAccount = null, ?string $remark = null): MerchantWithdrawal
     {
@@ -291,28 +508,37 @@ class BalanceService
         }
 
         return $this->mutate($merchant->id, function (Merchant $locked) use ($amount, $requester, $payoutAccount, $remark) {
-            $available = bcsub((string) $locked->balance, (string) $locked->frozen_balance, 2);
+            $this->assertReversalsAccounted($locked);
+            $available = $locked->availableBalance();
 
             if (bccomp($amount, $available, 2) > 0) {
                 throw new BalanceOperationException("提现金额超过可提现余额（可提现 {$available} USD）。");
             }
 
-            $locked->frozen_balance = bcadd((string) $locked->frozen_balance, $amount, 2);
-            $locked->save();
+            $locked->pending_withdrawal_balance = bcadd((string) $locked->pending_withdrawal_balance, $amount, 2);
 
-            return MerchantWithdrawal::query()->create([
+            $withdrawal = MerchantWithdrawal::query()->create([
                 'merchant_id' => $locked->id,
                 'amount' => $amount,
                 'status' => MerchantWithdrawal::STATUS_PENDING,
                 'payout_account' => $payoutAccount,
                 'remark' => $remark,
                 'requested_by' => $requester->id,
+                'uses_pending_balance' => true,
             ]);
+            $this->writeLedger($locked, MerchantBalanceTransaction::TYPE_WITHDRAWAL_REQUEST, '0.00', [
+                'withdrawal_id' => $withdrawal->id,
+                'operator_id' => $requester->id,
+                'pending_withdrawal_change' => $amount,
+                'reason' => $remark,
+            ]);
+
+            return $withdrawal;
         });
     }
 
     /**
-     * 审核通过并放款：冻结转出（balance 与 frozen 同时减少），落一条 withdrawal 流水。
+     * 后台确认放款：扣除总余额和提现占用额；兼容旧冻结方式。
      */
     public function approveWithdrawal(MerchantWithdrawal $withdrawal, User $reviewer, ?string $remark = null): void
     {
@@ -323,14 +549,25 @@ class BalanceService
                 throw new BalanceOperationException('该提现单已被处理，无法重复操作。');
             }
 
+            $this->assertReversalsAccounted($locked);
             $amount = (string) $fresh->amount;
 
-            // 释放冻结并真正扣除余额
-            $locked->frozen_balance = bcsub((string) $locked->frozen_balance, $amount, 2);
+            if (bccomp($locked->availableBalance(), '0', 2) < 0) {
+                throw new BalanceOperationException(__('settlement.errors.negative_available'));
+            }
+
+            $bucket = $fresh->uses_pending_balance ? 'pending_withdrawal_balance' : 'frozen_balance';
+
+            if (bccomp((string) $locked->$bucket, $amount, 2) < 0) {
+                throw new BalanceOperationException(__('settlement.errors.invalid_withdrawal_hold'));
+            }
+
+            $locked->$bucket = bcsub((string) $locked->$bucket, $amount, 2);
             $this->writeLedger($locked, MerchantBalanceTransaction::TYPE_WITHDRAWAL, '-'.$amount, [
                 'withdrawal_id' => $fresh->id,
                 'operator_id' => $reviewer->id,
                 'reason' => $remark,
+                $fresh->uses_pending_balance ? 'pending_withdrawal_change' : 'frozen_change' => '-'.$amount,
             ]);
 
             $fresh->update([
@@ -343,7 +580,7 @@ class BalanceService
     }
 
     /**
-     * 驳回提现：释放冻结（frozen 减少），可用余额恢复；不产生余额流水。
+     * 驳回提现：释放占用额，可提现恢复；总余额不变，记录分类划转流水。
      */
     public function rejectWithdrawal(MerchantWithdrawal $withdrawal, User $reviewer, ?string $remark = null): void
     {
@@ -354,8 +591,14 @@ class BalanceService
                 throw new BalanceOperationException('该提现单已被处理，无法重复操作。');
             }
 
-            $locked->frozen_balance = bcsub((string) $locked->frozen_balance, (string) $fresh->amount, 2);
-            $locked->save();
+            $bucket = $fresh->uses_pending_balance ? 'pending_withdrawal_balance' : 'frozen_balance';
+            $locked->$bucket = bcsub((string) $locked->$bucket, (string) $fresh->amount, 2);
+            $this->writeLedger($locked, MerchantBalanceTransaction::TYPE_WITHDRAWAL_REJECTED, '0.00', [
+                'withdrawal_id' => $fresh->id,
+                'operator_id' => $reviewer->id,
+                'reason' => $remark,
+                $fresh->uses_pending_balance ? 'pending_withdrawal_change' : 'frozen_change' => '-'.$fresh->amount,
+            ]);
 
             $fresh->update([
                 'status' => MerchantWithdrawal::STATUS_REJECTED,
@@ -370,7 +613,7 @@ class BalanceService
      * 开启争议审核事件：冻结订单金额（converted_amount，USD），订单状态改为
      * Order::STATUS_DISPUTE_REVIEW。加锁顺序与 refund()/chargeback() 一致——
      * 先锁 Merchant（mutate()），闭包内再锁 Order，避免引入新的死锁风险。
-     * 不写余额流水（冻结/释放不改变 balance 总额，同提现冻结的既有约定）。
+     * 新单扣除本单已被待结算或循环保证金占用的部分，避免重复冻结；记录分类流水。
      *
      * 允许的起始状态：paid（正常已付款订单）、disputing（网关已推送争议中，
      * 商户需要在这个窗口期提交申诉材料）。两者共用同一套冻结/回复/结束流程，
@@ -404,6 +647,20 @@ class BalanceService
             }
 
             $amount = (string) $fresh->converted_amount;
+
+            if ($fresh->settlement_mode !== null) {
+                $this->creditForPaidOrder($fresh);
+                $merchant->refresh();
+                $settlement = OrderSettlement::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                    ->where('order_id', $fresh->id)->lockForUpdate()->first();
+                $held = $settlement && in_array($settlement->status, [OrderSettlement::STATUS_WAITING_SHIPMENT, OrderSettlement::STATUS_PENDING], true)
+                    ? (string) $settlement->remaining_amount : '0.00';
+                $freeze = MerchantFundFreeze::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                    ->where('order_id', $fresh->id)->where('status', MerchantFundFreeze::STATUS_FROZEN)->lockForUpdate()->first();
+                $held = bcadd($held, $freeze?->remainingAmount() ?? '0.00', 2);
+                $amount = bccomp($held, $amount, 2) >= 0 ? '0.00' : bcsub($amount, $held, 2);
+            }
+
             $openedAt = now();
 
             $event = OrderDisputeEvent::query()->create(array_merge($attributes, [
@@ -419,7 +676,11 @@ class BalanceService
             ]));
 
             $merchant->frozen_balance = bcadd((string) $merchant->frozen_balance, $amount, 2);
-            $merchant->save();
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_DISPUTE_FREEZE, '0.00', [
+                'order_id' => $fresh->id,
+                'operator_id' => $operator->id,
+                'frozen_change' => $amount,
+            ]);
 
             $fresh->status = Order::STATUS_DISPUTE_REVIEW;
             $fresh->save();
@@ -454,7 +715,12 @@ class BalanceService
             }
 
             $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, (string) $fresh->frozen_amount, 2);
-            $merchant->save();
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_DISPUTE_RELEASE, '0.00', [
+                'order_id' => $fresh->order_id,
+                'operator_id' => $operator?->id,
+                'frozen_change' => '-'.$fresh->frozen_amount,
+                'reason' => $remark,
+            ]);
 
             $fresh->update([
                 'status' => OrderDisputeEvent::STATUS_CLOSED,
@@ -491,7 +757,7 @@ class BalanceService
      * 通用人工冻结（与订单/提现无关）：amount 冻结进 merchants.frozen_balance，
      * reason 必填，operator 记录操作人。releaseAt 为 null 表示只能人工解冻，
      * 否则由 fund-freezes:release-due 命令到期自动释放（见 releaseFundFreeze()）。
-     * 不校验可用余额上限——允许超冻，与争议审核冻结（freezeForDisputeEvent）行为一致。
+     * 只允许冻结可提现余额，不得挪用待结算、待出款或其他保证金。
      */
     public function freezeFunds(Merchant $merchant, string|float $amount, User $operator, string $reason, ?\DateTimeInterface $releaseAt = null): MerchantFundFreeze
     {
@@ -506,9 +772,14 @@ class BalanceService
         }
 
         return $this->mutate($merchant->id, function (Merchant $locked) use ($amount, $operator, $reason, $releaseAt) {
+            if (bccomp($amount, $locked->availableBalance(), 2) > 0) {
+                throw new BalanceOperationException(__('settlement.errors.freeze_exceeds_available'));
+            }
+
             $freeze = MerchantFundFreeze::query()->create([
                 'merchant_id' => $locked->id,
                 'amount' => $amount,
+                'remaining_amount' => $amount,
                 'status' => MerchantFundFreeze::STATUS_FROZEN,
                 'reason' => $reason,
                 'release_at' => $releaseAt,
@@ -517,7 +788,12 @@ class BalanceService
             ]);
 
             $locked->frozen_balance = bcadd((string) $locked->frozen_balance, $amount, 2);
-            $locked->save();
+            $this->writeLedger($locked, MerchantBalanceTransaction::TYPE_RESERVE_FREEZE, '0.00', [
+                'fund_freeze_id' => $freeze->id,
+                'operator_id' => $operator->id,
+                'frozen_change' => $amount,
+                'reason' => $reason,
+            ]);
 
             return $freeze;
         });
@@ -534,17 +810,46 @@ class BalanceService
     public function releaseFundFreeze(MerchantFundFreeze $freeze, ?User $operator, string $releaseType, ?string $remark = null): bool
     {
         $released = $this->mutate($freeze->merchant_id, function (Merchant $merchant) use ($freeze, $operator, $releaseType, $remark) {
-            $fresh = MerchantFundFreeze::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($freeze->id);
+            $candidate = MerchantFundFreeze::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)->findOrFail($freeze->id);
+            $order = $candidate->order_id
+                ? Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)->lockForUpdate()->findOrFail($candidate->order_id)
+                : null;
+            $fresh = MerchantFundFreeze::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)->lockForUpdate()->findOrFail($freeze->id);
 
             if (! $fresh->isFrozen()) {
                 return false;
             }
 
-            $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, (string) $fresh->amount, 2);
-            $merchant->save();
+            if ($order && $releaseType !== MerchantFundFreeze::RELEASE_TYPE_AUTO) {
+                throw new BalanceOperationException(__('settlement.errors.rolling_reserve_auto_only'));
+            }
+
+            if ($releaseType === MerchantFundFreeze::RELEASE_TYPE_AUTO
+                && (! $fresh->release_at || $fresh->release_at->isFuture())) {
+                return false;
+            }
+
+            if ($order && in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
+                return false;
+            }
+
+            if ($order && $this->hasUnsettledReversals($merchant->id, $order->id)) {
+                return false;
+            }
+
+            $remaining = $fresh->remainingAmount();
+            $merchant->frozen_balance = bcsub((string) $merchant->frozen_balance, $remaining, 2);
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_RESERVE_RELEASE, '0.00', [
+                'order_id' => $order?->id,
+                'fund_freeze_id' => $fresh->id,
+                'operator_id' => $operator?->id,
+                'reason' => $remark,
+                'frozen_change' => '-'.$remaining,
+            ]);
 
             $fresh->update([
                 'status' => MerchantFundFreeze::STATUS_RELEASED,
+                'remaining_amount' => '0.00',
                 'released_by' => $operator?->id,
                 'released_at' => now(),
                 'release_type' => $releaseType,
@@ -565,6 +870,21 @@ class BalanceService
     // 内部：事务 + 行锁 + 写台账
     // ------------------------------------------------------------------
 
+    /** 反向状态已提交但账务尚未完成时，不能按旧余额继续出款。 */
+    private function assertReversalsAccounted(Merchant $merchant): void
+    {
+        if ($this->hasUnsettledReversals($merchant->id)) {
+            throw new BalanceOperationException(__('settlement.errors.unsettled_reversal'));
+        }
+    }
+
+    private function hasUnsettledReversals(int $merchantId, ?int $orderId = null): bool
+    {
+        return OrderAccountingTask::query()->withoutGlobalScopes()->where('merchant_id', $merchantId)
+            ->when($orderId !== null, fn (Builder $query) => $query->where('order_id', $orderId))
+            ->unsettledReversals()->exists();
+    }
+
     /**
      * 在事务内锁住商户行后执行回调，回调拿到的是加锁后的最新 Merchant 实例。
      */
@@ -574,7 +894,7 @@ class BalanceService
             $merchant = Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($merchantId);
 
             return $callback($merchant);
-        });
+        }, 3);
     }
 
     /**

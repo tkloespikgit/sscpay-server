@@ -3,7 +3,11 @@
 namespace App\Observers;
 
 use App\Events\OrderStatusChanged;
+use App\Models\Order;
 use App\Models\OrderShipping;
+use App\Services\BalanceService;
+use Illuminate\Support\Facades\DB;
+use Throwable;
 
 /**
  * 发货状态自动机（2.5 节）的唯一驱动源。
@@ -24,13 +28,13 @@ use App\Models\OrderShipping;
  */
 class OrderShippingObserver
 {
+    public function __construct(private readonly BalanceService $balanceService) {}
+
     /**
-     * 允许被自动推进为 shipped 的订单状态集合。如果订单已经是更靠后的终态
+     * 只有 paid 自动推进为 shipped。如果订单已经是更靠后的终态
      * （completed / cancelled / refunded），不应该被一条物流记录拉回 shipped——
      * 这类异常情况交给上层业务日志/告警去发现，而不是让 Observer 静默"纠正"状态。
      */
-    private const ADVANCEABLE_STATUSES = ['paid', 'shipped'];
-
     public function created(OrderShipping $shipping): void
     {
         $this->syncOrderStatus($shipping);
@@ -38,6 +42,10 @@ class OrderShippingObserver
 
     public function updated(OrderShipping $shipping): void
     {
+        if (! $shipping->wasChanged(['order_id', 'tracking_number', 'logistics_company', 'shipped_at', 'tracking_url'])) {
+            return;
+        }
+
         $this->syncOrderStatus($shipping);
     }
 
@@ -49,15 +57,38 @@ class OrderShippingObserver
             return;
         }
 
-        if (! in_array($order->status, self::ADVANCEABLE_STATUSES, true)) {
+        if (! in_array($order->status, ['paid', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
             return;
         }
 
-        if ($order->status !== 'shipped') {
-            $oldStatus = $order->status;
-            $order->forceFill(['status' => 'shipped'])->save();
+        $advanced = false;
 
-            event(new OrderStatusChanged($order, $oldStatus, 'shipped'));
+        if ($order->status === 'paid') {
+            $advanced = Order::query()->withoutGlobalScopes()->where('merchant_id', $shipping->merchant_id)
+                ->whereKey($order->id)->where('status', 'paid')
+                ->update(['status' => 'shipped', 'updated_at' => now()]);
+
+            if ($advanced !== 1) {
+                return;
+            }
+
+            $advanced = true;
         }
+
+        DB::afterCommit(function () use ($order, $shipping, $advanced): void {
+            try {
+                $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $shipping->merchant_id)->find($order->id);
+
+                if ($fresh) {
+                    $this->balanceService->startSettlementForShippedOrder($fresh);
+
+                    if ($advanced) {
+                        event(new OrderStatusChanged($fresh, 'paid', 'shipped'));
+                    }
+                }
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+        });
     }
 }

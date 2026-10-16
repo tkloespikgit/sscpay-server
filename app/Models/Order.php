@@ -107,6 +107,12 @@ class Order extends Model
         'fee_percent_amount',
         'fee_fixed_amount',
         'settlement_amount',
+        'settlement_mode',
+        'settlement_days',
+        'reserve_percent',
+        'reserve_days',
+        'refund_fee_snapshot',
+        'chargeback_fee_snapshot',
         'customer_first_name',
         'customer_last_name',
         'customer_email',
@@ -167,8 +173,28 @@ class Order extends Model
             'fee_percent_amount' => 'decimal:2',
             'fee_fixed_amount' => 'decimal:2',
             'settlement_amount' => 'decimal:2',
+            'settlement_days' => 'integer',
+            'reserve_percent' => 'decimal:4',
+            'reserve_days' => 'integer',
+            'refund_fee_snapshot' => 'decimal:2',
+            'chargeback_fee_snapshot' => 'decimal:2',
             'ad_params' => 'array',
         ];
+    }
+
+    public function settlement(): HasOne
+    {
+        return $this->hasOne(OrderSettlement::class);
+    }
+
+    public function fundFreezes(): HasMany
+    {
+        return $this->hasMany(MerchantFundFreeze::class);
+    }
+
+    public function accountingTasks(): HasMany
+    {
+        return $this->hasMany(OrderAccountingTask::class);
     }
 
     protected static function booted(): void

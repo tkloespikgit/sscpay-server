@@ -25,6 +25,10 @@ class Merchant extends Model
         'timezone',
         'balance',
         'frozen_balance',
+        'pending_settlement_balance',
+        'pending_withdrawal_balance',
+        'settlement_mode',
+        'settlement_days',
         'remark',
     ];
 
@@ -34,15 +38,54 @@ class Merchant extends Model
             'status' => 'boolean',
             'balance' => 'decimal:2',
             'frozen_balance' => 'decimal:2',
+            'pending_settlement_balance' => 'decimal:2',
+            'pending_withdrawal_balance' => 'decimal:2',
+            'settlement_days' => 'integer',
         ];
     }
 
     /**
-     * 可提现余额 = 总余额 - 冻结余额（冻结部分为审核中的提现单占用）。
+     * 旧提现占用仍留在 frozen_balance，新提现独立记账，不重写历史余额。
      */
     public function availableBalance(): string
     {
-        return bcsub((string) $this->balance, (string) $this->frozen_balance, 2);
+        return bcsub(bcsub(bcsub(
+            (string) $this->balance,
+            (string) $this->frozen_balance,
+            2,
+        ), (string) ($this->pending_settlement_balance ?? '0'), 2), (string) ($this->pending_withdrawal_balance ?? '0'), 2);
+    }
+
+    public function legacyPendingWithdrawals(): HasMany
+    {
+        return $this->withdrawals()->where('status', MerchantWithdrawal::STATUS_PENDING)
+            ->where('uses_pending_balance', false);
+    }
+
+    public function pendingWithdrawalBalance(): string
+    {
+        return bcadd((string) ($this->pending_withdrawal_balance ?? '0'), $this->legacyPendingWithdrawalBalance(), 2);
+    }
+
+    public function reserveBalance(): string
+    {
+        return bcsub((string) $this->frozen_balance, $this->legacyPendingWithdrawalBalance(), 2);
+    }
+
+    private function legacyPendingWithdrawalBalance(): string
+    {
+        return (string) ($this->getAttribute('legacy_pending_withdrawal_balance')
+            ?? $this->legacyPendingWithdrawals()->withoutGlobalScopes()->sum('amount'));
+    }
+
+    public function paymentSettings(): HasMany
+    {
+        return $this->hasMany(MerchantPaymentSetting::class);
+    }
+
+    public function settlements(): HasMany
+    {
+        return $this->hasMany(OrderSettlement::class);
     }
 
     /**

@@ -159,8 +159,8 @@ sudo crontab -u www-data -e
 * * * * * cd /var/www/sscpay-server && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
 ```
 
-- `schedule:run`：每分钟触发一次，Laravel 按 `APP_TIMEZONE`（PRC）判断哪些任务到期。`withoutOverlapping()` 互斥锁的清理与 `->then()` 回调都由它在本进程内完成，**cron 里只需要这一条**。
-- ⚠️ **不要把 `schedule:finish` 单独写进 crontab**：它是框架内部命令（`hidden=true`），签名为 `schedule:finish {id} {code=0}`，`{id}` 是调度事件的互斥名（`mutexName()`）。仅当某个调度事件使用 `->runInBackground()` 时，`schedule:run` 才会自动带参派生出 `schedule:finish "<mutexName>" "$?"`（见 `CommandBuilder::buildBackgroundCommand()`）。手动裸跑缺少必填参数 `id`，会直接报 `Not enough arguments (missing: "id")`。本项目所有调度任务只用 `withoutOverlapping()`、未用 `runInBackground()`，因此**根本不需要这一行**。
+- `schedule:run`：每分钟启动一次，存在子分钟任务时会持续运行到该分钟结束，每 10 秒启动资金结算/释放任务；Laravel 按 `APP_TIMEZONE`（PRC）判断到期。两项资金命令使用后台进程和防重叠锁，必须允许 PHP CLI 派生后台进程；**cron 仍只需要这一条**。多节点应共用可靠缓存并明确只由指定调度节点运行。
+- ⚠️ **不要把 `schedule:finish` 单独写进 crontab**：它是框架内部命令（`hidden=true`），签名为 `schedule:finish {id} {code=0}`，`{id}` 是调度事件的互斥名（`mutexName()`）。`runInBackground()` 任务结束时框架会自动带参调用以清理互斥锁。手动裸跑缺少 `id` 会报错。发布完成后执行 `php artisan schedule:interrupt`，让仍在当前分钟内运行的旧版本调度尽快退出；下一分钟 cron 使用新代码。
 - **必须用 `crontab -u www-data`**，让定时任务以 www-data 身份运行，写入 `storage/` 的文件属主才与 Web / Worker 一致。
 - cron 环境 `PATH` 精简（通常 `/usr/bin:/bin`），`db:backup:upload` 内部调用的 `mysqldump` 需在此 `PATH` 中；不在时在命令里写绝对路径或补充 `PATH=`。
 
@@ -169,7 +169,7 @@ sudo crontab -u www-data -e
 
 ### 4.2 已配置的调度任务清单
 
-来自 [`routes/console.php`](../routes/console.php)，共 **8 个**（`schedule:run` 每分钟评估一次，实际频率见下表）：
+来自 [`routes/console.php`](../routes/console.php)，共 **13 个调度条目**（每分钟启动入口，实际频率见下表）：
 
 | 命令 | 频率 | 说明 |
 |---|---|---|
@@ -180,7 +180,16 @@ sudo crontab -u www-data -e
 | `ad-conversions:process-due` | 每分钟（`withoutOverlapping`） | 扫描到期的广告转化通知重试记录并发起下一次尝试 |
 | `order-disputes:close-due` | 每 5 分钟（`withoutOverlapping`） | 自动结束已到期的争议事件（释放冻结资金） |
 | `order-disputes:send-reminders` | 每 5 分钟（`withoutOverlapping`） | 24 小时内到期的争议事件发 Telegram 提醒 |
-| `fund-freezes:release-due` | 每 5 分钟（`withoutOverlapping`） | 扫描到期的资金冻结记录并自动释放 |
+| `fund-freezes:release-due` | 每 10 秒，后台、防重叠 | 分批释放到期固定/循环保证金；循环保证金争议期间暂停；默认单次最多 500 条 |
+| `orders:settle-due` | 每 10 秒，后台、防重叠 | 补偿新单记账、启动发货周期、结算到期资金；每类默认单次最多 500 条 |
+| `order-stats:aggregate --days=8` | 每天 02:00 | 滚动重算统计 |
+| `order-stats:aggregate --days=2` | 每 3 小时 | 重算近期统计 |
+| `checkout:check-cloudflare-ips` | 每周一 09:00 | 核对 Cloudflare IP 段 |
+| `checkout:sync-domains` | 每 15 分钟 | 同步商户自有域名状态 |
+
+资金命令通过无锁候选扫描、逐笔商户优先行锁和幂等流水处理，不将全批次包进一个事务。`--limit=1..10000` 可手动调节单次上限；生产需监测到期积压、最早未处理到期时间、锁等待、错误日志与 `order_accounting_tasks.status=manual_review`，按实测吞吐调整，不应只增加 Worker 数。当前配置以正常负载下到期一分钟内完成为目标，数据库故障或积压期间无法承诺固定延迟。不要为清理积压批量改写金融记录状态。
+
+新增财务迁移只建立新规则所需结构，**不会回填历史订单或重算余额**。旧订单继续原入账规则；旧待审核提现继续使用原冻结额并在展示时归类。先在独立 MySQL 测试库验证升级，发布时执行新迁移；已有新结算/待办审计后禁止破坏性回滚，应前向修复。`release_at` 扩为 DATETIME，需按表规模评估 ALTER 的执行时间。
 
 ### 4.3 验证
 

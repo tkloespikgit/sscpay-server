@@ -5,9 +5,11 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\PaymentMethodResource\Pages;
 use App\Jobs\SyncSiteProductsJob;
 use App\Models\Merchant;
+use App\Models\MerchantPaymentSetting;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
+use App\Models\User;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Support\Permissions;
@@ -30,6 +32,9 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Arr;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Unique;
@@ -291,16 +296,18 @@ class PaymentMethodResource extends Resource
 
                 Section::make(__('admin.payment_method.sections.fees'))
                     ->description(__('admin.payment_method.help.fees'))
+                    ->visible(fn (?PaymentMethod $record): bool => static::canManageFinancialSettings($record))
                     ->schema([
-                        TextInput::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->numeric()->default(0)->prefix('$'),
-                        TextInput::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->numeric()->default(0)->prefix('$'),
+                        TextInput::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->numeric()->minValue(0)->rules(['decimal:0,2'])->default(0)->prefix('$'),
+                        TextInput::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->numeric()->minValue(0)->rules(['decimal:0,2'])->default(0)->prefix('$'),
                         TextInput::make('fee_percent')
                             ->label(__('admin.payment_method.fields.fee_percent'))
                             ->helperText(__('admin.payment_method.help.transaction_fees'))
                             ->numeric()
                             ->default(0)
                             ->minValue(0)
-                            ->maxValue(100)
+                            ->maxValue(99.9999)
+                            ->rules(['decimal:0,4'])
                             ->suffix('%')
                             ->live(onBlur: true),
                         TextInput::make('fee_fixed')
@@ -308,8 +315,16 @@ class PaymentMethodResource extends Resource
                             ->numeric()
                             ->default(0)
                             ->minValue(0)
+                            ->rules(['decimal:0,2'])
                             ->prefix('$')
                             ->live(onBlur: true),
+                        TextInput::make('reserve_percent')
+                            ->label(__('payment_finance.reserve_percent'))
+                            ->helperText(__('payment_finance.reserve_help'))
+                            ->numeric()->minValue(0)->maxValue(100)->rules(['decimal:0,4'])->default(0)->suffix('%'),
+                        TextInput::make('reserve_days')
+                            ->label(__('payment_finance.reserve_days'))
+                            ->integer()->minValue(0)->maxValue(36500)->default(0)->suffix(__('payment_finance.days')),
                         Placeholder::make('min_transaction_amount')
                             ->label(__('admin.payment_method.fields.min_transaction_amount'))
                             ->columnSpanFull()
@@ -349,6 +364,8 @@ class PaymentMethodResource extends Resource
     public static function table(Table $table): Table
     {
         $columns = [];
+        $viewer = auth()->user();
+        $merchantId = $viewer instanceof User && ! $viewer->isPlatformStaff() ? (int) $viewer->merchant_id : null;
 
         // 商户用户在全局 Scope 下只能看到自己的支付方式，商户列没有意义；
         // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
@@ -367,6 +384,10 @@ class PaymentMethodResource extends Resource
         }
 
         return $table
+            ->description($merchantId ? __('payment_finance.effective_description') : null)
+            ->modifyQueryUsing(fn (Builder $query) => $merchantId
+                ? $query->with(['merchantPaymentSettings' => fn (HasMany $settings) => $settings->forMerchant($merchantId)])
+                : $query)
             ->columns(array_merge($columns, [
                 TextColumn::make('method_name')->label(__('admin.payment_method.fields.method_name'))->searchable(),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
@@ -392,10 +413,24 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_day')->label(__('admin.payment_method.columns.daily_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
-                TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))->suffix('%')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'refund_fee', $merchantId))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'chargeback_fee', $merchantId))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'fee_percent', $merchantId))
+                    ->suffix('%')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'fee_fixed', $merchantId))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                TextColumn::make('reserve_percent')->label(__('payment_finance.reserve_percent'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'reserve_percent', $merchantId))
+                    ->suffix('%')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))
+                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'reserve_days', $merchantId))
+                    ->suffix(__('payment_finance.days'))->toggleable(isToggledHiddenByDefault: $merchantId === null),
                 TextColumn::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
@@ -409,6 +444,13 @@ class PaymentMethodResource extends Resource
                 DeleteAction::make()->visible(fn (PaymentMethod $record) => static::canManageRecord($record)),
             ])
             ->defaultSort('sort_order');
+    }
+
+    protected static function displayFinancialSetting(PaymentMethod $record, string $field, ?int $merchantId): string|int|null
+    {
+        $override = $merchantId === null ? null : $record->merchantPaymentSettings->firstWhere('merchant_id', $merchantId);
+
+        return $override?->{$field} ?? $record->{$field};
     }
 
     /**
@@ -663,6 +705,36 @@ class PaymentMethodResource extends Resource
     public static function canEdit($record): bool
     {
         return static::canViewAny() && static::canManageRecord($record);
+    }
+
+    public static function canManageFinancialSettings(?PaymentMethod $record = null): bool
+    {
+        $actor = auth()->user();
+
+        if (! $actor instanceof User || ! $actor->isPlatformStaff()) {
+            return false;
+        }
+
+        return $record === null || static::canManageRecord($record);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    public static function authorizedFinancialData(array $data, ?PaymentMethod $record = null): array
+    {
+        $actor = auth()->user();
+
+        if ($actor instanceof User && ! $actor->isPlatformStaff()) {
+            $data['merchant_id'] = $actor->merchant_id;
+        }
+
+        if (! static::canManageFinancialSettings($record)) {
+            return Arr::except($data, MerchantPaymentSetting::FINANCIAL_FIELDS);
+        }
+
+        return $data;
     }
 
     public static function canDelete($record): bool

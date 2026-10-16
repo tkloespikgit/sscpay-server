@@ -40,7 +40,7 @@ class PaymentService
      */
     public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd): PaymentMethod
     {
-        $candidates = $group->activePaymentMethods()->get();
+        $candidates = $group->activePaymentMethods()->forMerchant((int) $group->merchant_id)->get();
 
         // 一次 SQL 批量取全部候选的当天统计，再逐一过风控，避免每个通道一次查询。
         [$dayStart, $dayEnd] = $this->dayRange();

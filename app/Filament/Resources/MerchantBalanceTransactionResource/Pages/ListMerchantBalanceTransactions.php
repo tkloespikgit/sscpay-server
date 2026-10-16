@@ -28,10 +28,14 @@ class ListMerchantBalanceTransactions extends ListRecords
             return null;
         }
 
-        return __('admin.finance.balance_summary', [
+        $merchant->loadSum('legacyPendingWithdrawals as legacy_pending_withdrawal_balance', 'amount');
+
+        return __('settlement.balances.summary', [
             'balance' => number_format((float) $merchant->balance, 2),
-            'frozen' => number_format((float) $merchant->frozen_balance, 2),
+            'frozen' => number_format((float) $merchant->reserveBalance(), 2),
             'available' => number_format((float) $merchant->availableBalance(), 2),
+            'pending_settlement' => number_format((float) $merchant->pending_settlement_balance, 2),
+            'pending_withdrawal' => number_format((float) $merchant->pendingWithdrawalBalance(), 2),
         ]);
     }
 
