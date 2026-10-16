@@ -99,7 +99,7 @@ class OrderListFiltersTest extends TestCase
             ->assertCanSeeTableRecords([$zero, $other]);
     }
 
-    public function test_created_time_filters_default_to_today_and_can_be_cleared(): void
+    public function test_created_time_filters_start_empty_and_can_be_applied_and_cleared(): void
     {
         $this->travelTo(now()->setDate(2026, 10, 16)->setTime(12, 34, 56));
         $before = $this->makeOrder('SSC-BEFORE', 'M-BEFORE');
@@ -111,9 +111,18 @@ class OrderListFiltersTest extends TestCase
         $after = $this->makeOrder('SSC-AFTER', 'M-AFTER');
         $after->forceFill(['created_at' => '2026-10-17 00:00:00'])->save();
 
-        Livewire::test(ListOrders::class)
-            ->assertSet('tableFilters.created_from.created_from', '2026-10-16 00:00:00')
-            ->assertSet('tableFilters.created_to.created_to', '2026-10-16 23:59:59')
+        $page = Livewire::test(ListOrders::class)
+            ->assertSet('tableFilters.created_from.created_from', null)
+            ->assertSet('tableFilters.created_to.created_to', null)
+            ->assertCanSeeTableRecords([$before, $start, $end, $after]);
+
+        $table = $page->instance()->getTable();
+        $fromPicker = $table->getFilter('created_from')->getSchemaComponents()[0];
+        $toPicker = $table->getFilter('created_to')->getSchemaComponents()[0];
+
+        $page
+            ->filterTable('created_from', ['created_from' => $fromPicker->getDefaultFocusedDate()])
+            ->filterTable('created_to', ['created_to' => $toPicker->getDefaultFocusedDate()])
             ->assertCanSeeTableRecords([$start, $end])
             ->assertCanNotSeeTableRecords([$before, $after])
             ->removeTableFilter('created_from')

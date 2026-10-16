@@ -352,7 +352,6 @@ class OrderResource extends Resource
                             ->seconds()
                             ->displayFormat('Y-m-d H:i:s')
                             ->timezone(config('app.timezone'))
-                            ->default(fn (): string => now()->startOfDay()->toDateTimeString())
                             ->defaultFocusedDate(fn () => now()->startOfDay()),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
@@ -369,8 +368,22 @@ class OrderResource extends Resource
                             ->seconds()
                             ->displayFormat('Y-m-d H:i:s')
                             ->timezone(config('app.timezone'))
-                            ->default(fn (): string => now()->endOfDay()->toDateTimeString())
-                            ->defaultFocusedDate(fn () => now()->endOfDay()),
+                            ->defaultFocusedDate(fn () => now()->endOfDay())
+                            // 控件清空会将时分秒归零，重选结束日期时需恢复日末默认值。
+                            ->extraAlpineAttributes([
+                                'x-init' => <<<'JS'
+                                    const selectWithTime = selectDate.bind($data)
+                                    selectDate = (day = null) => {
+                                        if (! state) {
+                                            const date = getDefaultFocusedDate()
+                                            hour = date.hour()
+                                            minute = date.minute()
+                                            second = date.second()
+                                        }
+                                        selectWithTime(day)
+                                    }
+                                    JS,
+                            ]),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         $data['created_to'] ?? null,
