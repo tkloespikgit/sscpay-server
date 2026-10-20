@@ -1478,15 +1478,16 @@ return [
 
     // 客服订单查询模块（CustomerServiceOrderResource）。
     // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
-    'customer_service_order'  => [
-        'nav'        => '客服订单查询',
-        'labels'     => [
-            'order'  => '客服订单',
+    'customer_service_order' => [
+        'nav' => '客服订单查询',
+        'labels' => [
+            'order' => '客服订单',
             'orders' => '客服订单查询',
         ],
-        'filters'    => [
-            'start_time' => '开始时间',
-            'end_time'   => '结束时间',
+        'search' => [
+            'action' => '查询',
+            'required' => '请至少填写一个查询条件后点击查询',
+            'no_results' => '未查询到匹配的订单',
         ],
     ],
 

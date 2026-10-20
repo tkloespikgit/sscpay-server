@@ -1480,15 +1480,16 @@ return [
 
     // 客服订单查询模块（CustomerServiceOrderResource）。
     // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
-    'customer_service_order'  => [
-        'nav'        => 'Customer Service Orders',
-        'labels'     => [
-            'order'  => 'Customer Service Order',
+    'customer_service_order' => [
+        'nav' => 'Customer Service Orders',
+        'labels' => [
+            'order' => 'Customer Service Order',
             'orders' => 'Customer Service Orders',
         ],
-        'filters'    => [
-            'start_time' => 'Start time',
-            'end_time'   => 'End time',
+        'search' => [
+            'action' => 'Search',
+            'required' => 'Enter at least one search criterion, then click Search',
+            'no_results' => 'No matching orders found',
         ],
     ],
 

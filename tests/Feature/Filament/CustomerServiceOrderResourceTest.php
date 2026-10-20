@@ -5,7 +5,6 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\CustomerServiceOrderResource;
 use App\Filament\Resources\CustomerServiceOrderResource\Pages\ListCustomerServiceOrders;
 use App\Models\Merchant;
-use App\Models\Order;
 use App\Models\User;
 use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
@@ -15,6 +14,7 @@ use Filament\Tables\Table;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\TestWith;
 use ReflectionMethod;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
@@ -23,11 +23,12 @@ use Tests\TestCase;
  * 客服订单查询模块的行为约束。
  *
  * 这个模块的价值在于"给客服一个只看得到该看的字段的入口"，所以测试重点
- * 不在"列表能不能显示"，而在三件事：
- *   1. 列与筛选**只有**约定的八项，多一列少一列都不行；
+ * 不在"列表能不能显示"，而在四件事：
+ *   1. 列与筛选只有约定的七列和五项条件；
  *   2. 没有统计汇总、没有"查看"详情页——这两样会把客服不该看的信息
  *      （结算金额、物流、商户名）或不该进的操作带进来；
  *   3. 客服角色只拿到这一个权限，不会顺带获得完整订单列表入口。
+ *   4. 至少填写一个条件并点击查询后，才展示匹配订单。
  */
 class CustomerServiceOrderResourceTest extends TestCase
 {
@@ -41,14 +42,7 @@ class CustomerServiceOrderResourceTest extends TestCase
         Filament::setCurrentPanel('merchant');
     }
 
-    /**
-     * 约定的七个表格列。
-     *
-     * 需求里的八项是「系统订单号/商户订单号/原始币种金额/三方交易号/客户邮箱/
-     * 订单状态/开始时间/结束时间」，其中开始时间与结束时间对应的是**时间范围
-     * 筛选**（created_from / created_to），列表上对应的可见列是「创建时间」，
-     * 所以表格列是七项。
-     */
+    /** 约定的七个表格列，仍展示订单状态与创建时间。 */
     private const EXPECTED_COLUMNS = [
         'order_no',
         'merchant_order_no',
@@ -59,16 +53,13 @@ class CustomerServiceOrderResourceTest extends TestCase
         'created_at',
     ];
 
-    /** 约定的八个筛选项。 */
+    /** 五项查询条件，至少填写其中一项。 */
     private const EXPECTED_FILTERS = [
         'order_no',
         'merchant_order_no',
         'amount',
         'transaction_id',
         'customer_email',
-        'status',
-        'created_from',
-        'created_to',
     ];
 
     // ------------------------------------------------------------------
@@ -145,14 +136,14 @@ class CustomerServiceOrderResourceTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // 列：只有约定的六项
+    // 列：只有约定的七项
     // ------------------------------------------------------------------
 
     public function test_the_table_only_exposes_the_agreed_columns(): void
     {
         $table = $this->tableDefinition();
 
-        // 恰好是约定的六列，不多不少
+        // 恰好是约定的七列，不多不少
         $this->assertEqualsCanonicalizing(
             self::EXPECTED_COLUMNS,
             array_keys($table->getColumns())
@@ -171,27 +162,123 @@ class CustomerServiceOrderResourceTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // 筛选条件：八项
+    // 查询条件：五项，提交后才显示结果
     // ------------------------------------------------------------------
 
-    public function test_all_eight_agreed_filters_exist(): void
+    public function test_only_the_five_agreed_filters_exist(): void
     {
-        $filters = array_keys($this->tableDefinition()->getFilters());
+        $table = $this->tableDefinition();
+        $filters = array_keys($table->getFilters());
 
         $this->assertEqualsCanonicalizing(self::EXPECTED_FILTERS, $filters);
+        $this->assertFalse($table->isSearchable());
     }
 
-    public function test_it_filters_by_exact_order_no(): void
+    public function test_it_does_not_show_orders_before_searching(): void
     {
         $user = $this->customerServiceUserWithMerchant();
-        $hit = $this->makeOrder('CS-EXACT-1', 'MO-CS-1');
-        $miss = $this->makeOrder('CS-EXACT-2', 'MO-CS-2');
+        $this->makeOrder('CS-INITIAL-1', 'MO-CS-INITIAL');
 
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
-            ->filterTable('order_no', ['order_no' => 'CS-EXACT-1'])
+            ->assertCountTableRecords(0);
+    }
+
+    public function test_orders_are_hidden_when_search_conditions_are_restored_from_the_url(): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $this->makeOrder('CS-URL-1', 'MO-CS-URL');
+
+        Livewire::actingAs($user)
+            ->withQueryParams(['filters' => ['order_no' => ['order_no' => 'CS-URL-1']]])
+            ->test(ListCustomerServiceOrders::class)
+            ->assertSet('tableDeferredFilters.order_no.order_no', 'CS-URL-1')
+            ->assertCountTableRecords(0)
+            ->call('searchOrders')
+            ->assertCountTableRecords(1);
+    }
+
+    public function test_entering_a_condition_does_not_show_results_until_search_is_clicked(): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $order = $this->makeOrder('CS-DEFERRED-1', 'MO-CS-DEFERRED');
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-DEFERRED-1')
+            ->assertCountTableRecords(0)
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$order]);
+    }
+
+    #[TestWith([null])]
+    #[TestWith([''])]
+    #[TestWith(['   '])]
+    public function test_empty_or_whitespace_only_conditions_are_rejected(?string $value): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $this->makeOrder('CS-EMPTY-1', 'MO-CS-EMPTY');
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters', [
+                'order_no' => ['order_no' => $value],
+                'merchant_order_no' => ['merchant_order_no' => $value],
+                'amount' => ['amount' => $value],
+                'transaction_id' => ['transaction_id' => $value],
+                'customer_email' => ['customer_email' => $value],
+            ])
+            ->call('searchOrders')
+            ->assertCountTableRecords(0)
+            ->assertNotified(__('admin.customer_service_order.search.required'));
+    }
+
+    #[TestWith(['order_no', ' CS-EXACT-1 ', []])]
+    #[TestWith(['merchant_order_no', ' MO-CS-1 ', []])]
+    #[TestWith(['amount', ' 100.00 ', []])]
+    #[TestWith(['transaction_id', ' pi_target ', []])]
+    #[TestWith(['customer_email', ' target@ ', []])]
+    #[TestWith(['amount', '0', ['amount' => '0.00']])]
+    #[TestWith(['transaction_id', '0', ['transaction_id' => 'pi_0']])]
+    #[TestWith(['customer_email', '0', ['customer_email' => '0@example.com']])]
+    public function test_each_condition_can_search_for_matching_orders_on_its_own(string $field, string $value, array $overrides): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $hit = $this->makeOrder('CS-EXACT-1', 'MO-CS-1', array_merge([
+            'transaction_id' => 'pi_target',
+            'customer_email' => 'target@example.com',
+        ], $overrides));
+        $miss = $this->makeOrder('CS-EXACT-10', 'MO-CS-10', [
+            'amount' => '100.01',
+            'transaction_id' => 'pi_other',
+            'customer_email' => 'other@example.com',
+        ]);
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set("tableDeferredFilters.{$field}.{$field}", $value)
+            ->call('searchOrders')
             ->assertCanSeeTableRecords([$hit])
             ->assertCanNotSeeTableRecords([$miss]);
+    }
+
+    public function test_all_filled_conditions_must_match_the_order(): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $hit = $this->makeOrder('CS-COMBINED-1', 'MO-CS-COMBINED-1', ['amount' => '10.00']);
+        $sameEmail = $this->makeOrder('CS-COMBINED-2', 'MO-CS-COMBINED-2', ['amount' => '20.00']);
+        $sameAmount = $this->makeOrder('CS-COMBINED-3', 'MO-CS-COMBINED-3', [
+            'amount' => '10.00',
+            'customer_email' => 'other@example.com',
+        ]);
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters.customer_email.customer_email', 'john@example.com')
+            ->set('tableDeferredFilters.amount.amount', '10.00')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$hit])
+            ->assertCanNotSeeTableRecords([$sameEmail, $sameAmount]);
     }
 
     public function test_an_invalid_amount_filter_returns_no_rows_instead_of_ignoring_the_filter(): void
@@ -203,32 +290,55 @@ class CustomerServiceOrderResourceTest extends TestCase
         // 回答客户，比明确"查不到"危险得多。
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
-            ->filterTable('amount', ['amount' => 'abc'])
+            ->set('tableDeferredFilters.amount.amount', 'abc')
+            ->call('searchOrders')
             ->assertCanNotSeeTableRecords([$order]);
     }
 
-    public function test_it_filters_by_created_at_range(): void
+    public function test_searching_without_a_match_clears_previous_results(): void
     {
         $user = $this->customerServiceUserWithMerchant();
-        $order = $this->makeOrder('CS-RANGE-1', 'MO-CS-RANGE');
+        $order = $this->makeOrder('CS-MATCH-1', 'MO-CS-MATCH');
 
-        // makeOrder() 不接受 created_at（Eloquent 的 timestamps 会在 create()
-        // 时覆盖传入值），所以要改时间必须先建再单独写一次。
-        $threeDaysAgo = now()->subDays(3)->startOfSecond();
-        $order->forceFill(['created_at' => $threeDaysAgo])->save();
-        $order->refresh();
-
-        // 起始时间早于订单创建时间 → 筛中
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
-            ->filterTable('created_from', ['created_from' => now()->subDays(7)->format('Y-m-d H:i:s')])
-            ->assertCanSeeTableRecords([$order]);
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-MATCH-1')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$order])
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-NOT-FOUND')
+            ->call('searchOrders')
+            ->assertCountTableRecords(0);
+    }
 
-        // 起始时间晚于订单创建时间 → 筛不到
+    public function test_clearing_conditions_and_searching_hides_previous_results(): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $order = $this->makeOrder('CS-CLEAR-1', 'MO-CS-CLEAR');
+
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
-            ->filterTable('created_from', ['created_from' => now()->subDay()->format('Y-m-d H:i:s')])
-            ->assertCanNotSeeTableRecords([$order]);
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-CLEAR-1')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$order])
+            ->set('tableDeferredFilters.order_no.order_no', '')
+            ->call('searchOrders')
+            ->assertCountTableRecords(0)
+            ->assertNotified(__('admin.customer_service_order.search.required'));
+    }
+
+    public function test_resetting_the_filters_hides_previous_results(): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $order = $this->makeOrder('CS-RESET-1', 'MO-CS-RESET');
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-RESET-1')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$order])
+            ->call('resetTableFiltersForm')
+            ->assertCountTableRecords(0)
+            ->assertNotNotified();
     }
     // ------------------------------------------------------------------
     // 取消的两项：统计汇总、查看详情
@@ -240,7 +350,7 @@ class CustomerServiceOrderResourceTest extends TestCase
 
         // 汇总会在页脚暴露金额口径合计——客服不需要，也不该看到。
         // 直接检查 Table 定义：本模块没有调用任何 ->summarizer()，
-        // 所以六列的 summarizers 都应为空数组。
+        // 所以七列的 summarizers 都应为空数组。
         $page = Livewire::actingAs($user)->test(ListCustomerServiceOrders::class);
         $table = $page->instance()->getTable();
 
@@ -300,6 +410,8 @@ class CustomerServiceOrderResourceTest extends TestCase
 
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters.order_no.order_no', 'CS-QUERY-1')
+            ->call('searchOrders')
             ->callAction(TestAction::make('queryOrderStatus')->table($order));
 
         $this->assertSame('paid', $order->refresh()->status);
@@ -326,6 +438,8 @@ class CustomerServiceOrderResourceTest extends TestCase
 
         Livewire::actingAs($user)
             ->test(ListCustomerServiceOrders::class)
+            ->set('tableDeferredFilters.customer_email.customer_email', 'john@example.com')
+            ->call('searchOrders')
             ->assertCanSeeTableRecords([$ownOrder])
             ->assertCanNotSeeTableRecords([$otherOrder]);
     }

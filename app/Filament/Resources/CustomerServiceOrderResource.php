@@ -8,14 +8,12 @@ use App\Services\OrderPaymentStatusService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Support\Permissions;
 use Filament\Actions\Action;
-use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\Filter;
-use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -26,8 +24,8 @@ use Illuminate\Database\Eloquent\Builder;
  * 客服往往只需要回答"这笔订单查到没有、客户邮箱是什么、三方交易号是多少"，
  * 不需要、也不应该看到结算金额（涉及平台与商户分成）、物流、发货等信息。
  * 因此这里刻意不复用 OrderResource：
- *   - 列只保留 8 项（系统订单号/商户订单号/原始币种金额/三方交易号/客户邮箱/
- *     订单状态/开始时间/结束时间对应的时间范围筛选）；
+ *   - 列只保留系统订单号、商户订单号、原始币种金额、三方交易号、客户邮箱、
+ *     订单状态与创建时间；前五项作为查询条件，至少填写一项并提交后才显示结果；
  *   - 不带 currencyStats 汇总统计（汇总会把金额口径直接暴露在页脚）；
  *   - 不带 ViewAction（详情页信息量远大于列表，不适合客服角色）。
  *
@@ -73,10 +71,13 @@ class CustomerServiceOrderResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(fn (Builder $query, Pages\ListCustomerServiceOrders $livewire): Builder => $query->when(
+                ! $livewire->hasSearchFilters(),
+                fn (Builder $query): Builder => $query->whereRaw('1 = 0')
+            ))
             ->columns([
                 TextColumn::make('order_no')
                     ->label(__('admin.order.columns.order_no'))
-                    ->searchable()
                     ->copyable()
                     // 与完整订单列表一致：订单进人工争议审核后订单号标红，便于客服识别异常单。
                     ->color(fn ($record) => $record->activeDisputeEvent ? 'danger' : null)
@@ -84,19 +85,16 @@ class CustomerServiceOrderResource extends Resource
 
                 TextColumn::make('merchant_order_no')
                     ->label(__('admin.order.columns.merchant_order_no'))
-                    ->searchable()
                     ->copyable()
                     ->placeholder(__('admin.order.placeholders.none')),
 
                 TextColumn::make('transaction_id')
                     ->label(__('admin.order.columns.transaction_id'))
-                    ->searchable()
                     ->copyable()
                     ->placeholder(__('admin.order.placeholders.none')),
 
                 TextColumn::make('customer_email')
                     ->label(__('admin.order.columns.customer_email'))
-                    ->searchable()
                     ->copyable()
                     ->placeholder(__('admin.order.placeholders.none')),
 
@@ -120,8 +118,6 @@ class CustomerServiceOrderResource extends Resource
                     })
                     ->sortable(),
 
-                // 创建时间：客服回答"这笔订单是什么时候下的"时最常问的一项，
-                // 也是起止时间筛选所对应的落库字段，放出来便于核对筛选结果。
                 TextColumn::make('created_at')
                     ->label(__('admin.order.columns.created_at'))
                     ->dateTime()
@@ -185,8 +181,8 @@ class CustomerServiceOrderResource extends Resource
                             ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['transaction_id'] ?? null,
-                        fn ($q, $transactionId) => $q->where('transaction_id', 'like', '%'.$transactionId.'%')
+                        trim((string) ($data['transaction_id'] ?? '')) !== '',
+                        fn ($q) => $q->where('transaction_id', 'like', '%'.trim((string) $data['transaction_id']).'%')
                     )),
 
                 Filter::make('customer_email')
@@ -197,46 +193,19 @@ class CustomerServiceOrderResource extends Resource
                             ->placeholder(__('admin.order.filters.customer_email_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['customer_email'] ?? null,
-                        fn ($q, $email) => $q->where('customer_email', 'like', '%'.$email.'%')
-                    )),
-
-                SelectFilter::make('status')
-                    ->label(__('admin.order.filters.status'))
-                    ->multiple()
-                    ->options(self::statusOptions()),
-
-                Filter::make('created_from')
-                    ->label(__('admin.customer_service_order.filters.start_time'))
-                    ->schema([
-                        DateTimePicker::make('created_from')
-                            ->label(__('admin.customer_service_order.filters.start_time'))
-                            ->native(false)
-                            ->seconds()
-                            ->displayFormat('Y-m-d H:i:s')
-                            ->timezone(config('app.timezone')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['created_from'] ?? null,
-                        fn ($q, $date) => $q->where('created_at', '>=', $date)
-                    )),
-
-                Filter::make('created_to')
-                    ->label(__('admin.customer_service_order.filters.end_time'))
-                    ->schema([
-                        DateTimePicker::make('created_to')
-                            ->label(__('admin.customer_service_order.filters.end_time'))
-                            ->native(false)
-                            ->seconds()
-                            ->displayFormat('Y-m-d H:i:s')
-                            ->timezone(config('app.timezone')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['created_to'] ?? null,
-                        fn ($q, $date) => $q->where('created_at', '<=', $date)
+                        trim((string) ($data['customer_email'] ?? '')) !== '',
+                        fn ($q) => $q->where('customer_email', 'like', '%'.trim((string) $data['customer_email']).'%')
                     )),
             ])
             ->filtersLayout(FiltersLayout::AboveContent)
+            ->deferFilters()
+            ->filtersApplyAction(fn (Action $action): Action => $action
+                ->label(__('admin.customer_service_order.search.action'))
+                ->action('searchOrders'))
+            ->emptyStateHeading(fn (Pages\ListCustomerServiceOrders $livewire): string => $livewire->hasSearchFilters()
+                ? __('admin.customer_service_order.search.no_results')
+                : __('admin.customer_service_order.search.required'))
+            ->emptyStateDescription(null)
             ->defaultSort('created_at', 'desc')
             // 只保留"查询订单"，不给 ViewAction/查看客户信息/查看物流。
             // 刻意不设 toolbarActions([])/bulkActions([])——OrderResource 也没设，
@@ -244,33 +213,6 @@ class CustomerServiceOrderResource extends Resource
             ->recordActions([
                 static::queryStatusAction(),
             ]);
-    }
-
-    /**
-     * 状态筛选项。
-     *
-     * 与 OrderResource 的 status 筛选项**保持同一份清单**（含 shipped /
-     * completed / dispute_review 等纯中台侧状态——它们不会出现在网关回调里，
-     * 但客服确实需要按这些状态筛）。这里没有复用对方的常量是因为那份是
-     * 内联数组，两边各写一份是这个模块刻意保持"独立于完整订单列表"的代价；
-     * 新增订单状态时这两处都要同步。
-     */
-    private static function statusOptions(): array
-    {
-        return [
-            'pending' => __('admin.order.statuses.pending'),
-            'paid' => __('admin.order.statuses.paid'),
-            'shipped' => __('admin.order.statuses.shipped'),
-            'completed' => __('admin.order.statuses.completed'),
-            'cancelled' => __('admin.order.statuses.cancelled'),
-            'failed' => __('admin.order.statuses.failed'),
-            'expired' => __('admin.order.statuses.expired'),
-            'disputing' => __('admin.order.statuses.disputing'),
-            'dispute_review' => __('admin.order.statuses.dispute_review'),
-            'partially_refunded' => __('admin.order.statuses.partially_refunded'),
-            'refunded' => __('admin.order.statuses.refunded'),
-            'chargeback' => __('admin.order.statuses.chargeback'),
-        ];
     }
 
     /**
