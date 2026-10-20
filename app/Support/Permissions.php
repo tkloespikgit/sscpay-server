@@ -74,6 +74,17 @@ final class Permissions
 
     public const ORDER_DISPUTES_CLOSE = 'order_disputes.close';   // 手动结束争议审核事件（释放资金）
 
+    /**
+     * 客服订单查询模块的访问权限。
+     *
+     * 与 orders.view 分开是刻意的：orders.view 能进完整订单列表（含商户名、
+     * 结算金额、物流、余额相关列）和订单详情页；本权限只放行"客服订单查询"
+     * 这个精简列表（系统订单号/商户订单号/原始金额/三方交易号/客户邮箱/
+     * 状态/起止时间八项）。客服角色只配这一个权限，拿到的是只读查询入口，
+     * 不会顺带获得完整订单列表、详情页和发货/退款等写操作。
+     */
+    public const CUSTOMER_SERVICE_ORDERS_VIEW = 'customer_service_orders.view';
+
     public static function platformOnly(): array
     {
         return [
@@ -111,6 +122,7 @@ final class Permissions
             self::ORDER_DISPUTES_OPEN,
             self::ORDER_DISPUTES_REPLY,
             self::ORDER_DISPUTES_CLOSE,
+            self::CUSTOMER_SERVICE_ORDERS_VIEW,
         ];
     }
 
