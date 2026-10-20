@@ -66,7 +66,7 @@
 
 ## D-08 网关争议与人工审核分开
 
-**状态：已实现。** 网关 `disputing` 与人工 `dispute_review` 是两套机制；人工审核期间忽略网关状态覆盖并可告警。审核开立/关闭冻结或释放快照金额，拟定的 `final_action` 不自动执行退款/拒付。
+**状态：已实现；主动查询的 `paid` 例外由 D-18 补充。** 网关 `disputing` 与人工 `dispute_review` 是两套机制；人工审核期间忽略 webhook 状态覆盖并可告警。主动查询返回 `paid` 可纠正订单状态，审核事件与冻结独立保留。审核开立/关闭冻结或释放快照金额，拟定的 `final_action` 不自动执行退款/拒付。
 
 **原因与影响：** 人工收集材料及截止期限不能被异步网关消息打断。单订单同时最多一个处理中事件，由行锁与生成列唯一约束共同保护。
 
@@ -156,3 +156,23 @@
 **原因与影响：** 同渠道不同商户需要不同财务条件，支付成功与可提现需要分开。余额分类保持同一商户行事务更新并写划转台账；现存提现以读时归类兼容，不回填原冻结额。新增可靠记账待办恢复状态已提交但账务失败的场景，统一商户优先锁序；扫描分批限量，每 10 秒后台执行，以正常负载一分钟内处理为目标，实际峰值容量仍需实测。
 
 **依据：** [MerchantPaymentSettingsService](../app/Services/MerchantPaymentSettingsService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[BalanceService](../app/Services/BalanceService.php)、[OrderAccountingService](../app/Services/OrderAccountingService.php)、[OrderSettlement](../app/Models/OrderSettlement.php)、[调度](../routes/console.php)。
+
+## D-18 主动查询已支付结果优先于本地状态
+
+**状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** `OrderPaymentStatusService::queryAndApply()` 查询网关返回 `paid` 时，无论本地是过期、失败、退款、拒付、已完成或人工审核等状态，都纠正为 `paid`；本地已为 `paid` 时幂等跳过。此例外补充 D-08，webhook 与查询非 `paid` 结果继续使用原有状态守卫。
+
+**原因与影响：** 主动核对确认付款后，本地终态不能阻止支付状态纠正。从未支付状态恢复 `paid` 复用 `BalanceService` 入账幂等与首次通知；曾收款订单仅纠正状态，不重复入账、商户通知、广告转化或指定渠道付款提醒。首次支付/失败时间、退款金额、资金台账和人工审核冻结均保留，不将状态纠正解释为撤销退款/拒付或关闭审核。已存在拒付本金流水时，无论当前状态如何，都禁止再次退款或拒付，防止纠正状态后重复扣款。
+
+商户 `/api/order/query` 仍只读取本地状态；定时补查仍只选择最近 48 小时未收款的 `pending` 订单，不因本规则扩大扫描范围。
+
+**依据：** [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[BalanceService](../app/Services/BalanceService.php)、[SendTelegramNotification](../app/Listeners/SendTelegramNotification.php)、[查询回归测试](../tests/Feature/OrderPaymentStatusQueryTest.php)、[退款/拒付测试](../tests/Feature/GatewayRefundChargebackTest.php)。
+
+## D-19 待支付订单按创建时间最多自动补查两次
+
+**状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** 最近 48 小时的 `pending` 且 `paid_at` 为空的订单，分别在创建满 30 分钟、90 分钟时获得一次定时补查机会，每单最多两次。调度由每 30 分钟执行改为每分钟扫描，避免整点/半点调度使任意创建时间的订单晚查近半小时；繁忙或停机时在窗口内顺延，每轮每单最多补一次。
+
+**原因与影响：** 避免未付款订单在 48 小时内反复请求网关。订单持久化 `pending_status_query_count` 与 `pending_status_last_queried_at`，在网关调用之前按当前状态、窗口、到期条件及原次数原子领取，异常、未知状态和缺凭证都消耗一次，重复或并发调用不会突破两次上限。第一次查询后已离开待支付状态则停止；手工查询不计入自动额度，客户端内部连接重试仍沿用原策略。
+
+首次部署须执行新增迁移。此前没有可恢复的查询计数，历史订单默认从 0 累计并保留 48 小时窗口，不从日志推断次数；回滚/重建计数会重开额度，生产优先前向修复。本规则仅改变定时查询的选择和次数，支付状态落地继续遵循 D-18。
+
+**依据：** [PendingOrderStatusSyncService](../app/Services/PendingOrderStatusSyncService.php)、[Order](../app/Models/Order.php)、[迁移](../database/migrations/2026_10_17_024742_add_pending_status_query_tracking_to_orders_table.php)、[调度](../routes/console.php)、[回归测试](../tests/Feature/SyncPendingOrderStatusesTest.php)。

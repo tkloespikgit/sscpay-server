@@ -89,15 +89,17 @@ flowchart TD
 
 [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，最终统一进入状态应用逻辑。它处理状态映射、行锁、重复/乱序守卫、首次 `paid_at`/`failed_at`、账务和通知编排。
 
-`PendingOrderStatusSyncService` 每 30 分钟对全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单逐笔调用 `queryAndApply()`，补偿支付回调遗漏。查询窗口包含起止时刻，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔缺凭证、远端失败或未知状态计入失败并继续，命令最终返回非零并记录调度失败日志；日志归档仍由 `OrderEventSyncService` 单独负责。
+`PendingOrderStatusSyncService` 每分钟扫描全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单，按创建满 30 分钟、90 分钟两个时点逐笔调用 `queryAndApply()`，每单最多自动补查两次。次数与最近领取时间持久化到订单，查询前用符合到期条件与原次数的原子更新领取；缺凭证、远端失败或未知状态也消耗一次，单轮每单最多一次。第一次已离开待支付状态时不再二查；停机错过时点则在 48 小时内分轮补查，实际执行顺延到下一次扫描，不承诺秒级触发。
+
+查询窗口包含 48 小时及 30/90 分钟边界，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔失败继续，命令最终返回非零并记录调度失败日志；手工查询不占用自动补查次数，网关客户端内部连接重试沿用原配置。日志归档仍由 `OrderEventSyncService` 单独负责。
 
 | 行为 | 当前实现 |
 |---|---|
-| 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算；首次正常 `paid` 派发商户通知与广告转化。旧单仍沿用原即时入账 |
-| 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护 |
+| 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算（经 `BalanceService::creditForPaidOrder()`）；首次正常 `paid` 派发商户通知与广告转化；曾收款状态恢复 `paid` 不重复触发首次支付副作用。旧单仍沿用原即时入账 |
+| 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护；主动查询返回 `paid` 时允许覆盖任意本地状态，保留原支付时间和资金审计记录 |
 | 网关 `refunded` / `confused` | 后者映射 `chargeback`；尝试自动退款/拒付记账。业务性失败保留状态并告警，支持人工补录 |
 | 网关 `disputing` | 网关争议中，更新状态并拉日志；不等同人工冻结审核 |
-| 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间网关状态不会覆盖人工审核状态 |
+| 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间 webhook 不覆盖人工审核状态，主动查询为 `paid` 可纠正订单状态，但不关闭审核事件或释放冻结 |
 | 物流 | `OrderShippingObserver` 在符合条件时推进 `shipped`，并派发物流同步 |
 | 订单结算 | `OrderSettlement` 保存本单模式、周期及保证金快照；支付或首次有效物流开始计时，到期由 `BalanceService` 将待结算分入循环保证金和可提现；争议期间暂停，到期时间不重置 |
 | 保证金 | 固定保证金只能从可提现额人工冻结；循环保证金按净结算额提取，锁定期从实际结算起算，0 天不锁定。循环保证金只到期自动释放，争议期间暂停释放 |
@@ -111,6 +113,8 @@ flowchart TD
 `OrderAccountingService` 以商户→订单→待办顺序处理新单可靠记账，失败由 `orders:settle-due` 补偿。待办 `merchant_id` 有意无外键，避免在持有订单锁的状态事务内反向请求商户锁；执行前核对商户归属。首次直接收到退款/拒付时，在同一账务事务先记录原收入再反向扣减。物流状态使用条件更新，避免覆盖并发退款；争议回复同样先锁商户，避免外键检查产生反向锁。
 
 反向待办的本金尚未扣足时，暂停该商户的提现申请/确认放款及本单循环保证金释放，避免按旧余额出款；人工补录后按实际本金记录解除限制，调度再核销待办状态。候选扫描先排除暂停项，避免限量扫描被早期暂停记录占满。
+
+主动查询将退款/拒付订单纠正为 `paid` 时，不撤销既有扣款或修改退款累计额；已存在拒付本金流水的订单仍不可再退款或拒付，资金资格不能仅按纠正后的状态判断。规则与适用边界见 [D-18](decisions.md#d-18-主动查询已支付结果优先于本地状态)。
 
 漏配历史汇损可使用 `orders:recalculate-surcharge`，由 `OrderSurchargeRecalculationService` 明确按商户纠正订单快照，保留历史市场汇率及手续费金额，默认预览，仅 `--apply` 写入。只处理已入账且无反向资金/争议历史的订单，保存新旧快照报告，不修改余额或台账；人工调账差额与统计补算步骤见[操作手册](../doc/order-surcharge-recalculation.md)。
 
@@ -132,7 +136,7 @@ flowchart TD
 | `exchange:fetch` | 每小时 |
 | `db:backup:upload` | 每 6 小时 |
 | `order-events:sync` | 每分钟，防重叠 |
-| `orders:sync-pending-status` | 每 30 分钟，防重叠；查询最近 48 小时待支付订单 |
+| `orders:sync-pending-status` | 每分钟扫描，防重叠；最近 48 小时待支付订单在创建满 30/90 分钟各补查一次，最多两次 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |

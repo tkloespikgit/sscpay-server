@@ -372,6 +372,10 @@ class BalanceService
             throw new BalanceOperationException("当前订单状态「{$order->status}」不可退款，只有已收款的订单才能退款。");
         }
 
+        if (self::hasChargebackLedger($order)) {
+            throw new BalanceOperationException('该订单已完成拒付扣款，不能再退款。');
+        }
+
         if ($order->status === 'refunded'
             && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) >= 0) {
             throw new BalanceOperationException('该订单已全额退款并完成扣款，不能重复退款。');
@@ -379,8 +383,8 @@ class BalanceService
     }
 
     /**
-     * 订单当前是否还能拒付。规则同 assertRefundable()：chargeback 状态的订单
-     * 只有在还没落过拒付流水（即钱没扣）时才放行，用于补录网关拒付。
+     * 订单当前是否还能拒付。只有还没落过拒付流水（即钱没扣）时才放行，
+     * 防止查询将状态纠正为 paid 后重复扣款，同时支持补录网关拒付。
      *
      * @throws BalanceOperationException
      */
@@ -394,7 +398,7 @@ class BalanceService
             throw new BalanceOperationException('该订单已发生退款，不能再做拒付，请人工处理。');
         }
 
-        if ($order->status === 'chargeback' && self::hasChargebackLedger($order)) {
+        if (self::hasChargebackLedger($order)) {
             throw new BalanceOperationException('该订单已完成拒付扣款，不能重复拒付。');
         }
     }

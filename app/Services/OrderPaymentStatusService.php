@@ -39,8 +39,9 @@ use Illuminate\Support\Facades\Log;
  * 重复投递的 payload 到达时订单早已是目标状态，直接跳过，不重复触发
  * 入账/通知/Telegram。主动查询场景同理复用这个判断。
  *
- * 回退保护：已经终态的订单（failed/cancelled/expired/refunded/chargeback/
- * completed）不再接受任何状态覆盖；已经收过款的订单族（paid 及其后续流转
+ * 主动查询返回 paid 时以网关结果为准，允许覆盖任意本地状态；其他场景继续
+ * 使用回退保护：已经终态的订单（failed/cancelled/expired/refunded/chargeback/
+ * completed）不再接受状态覆盖；已经收过款的订单族（paid 及其后续流转
  * 状态）不允许被 pending/failed/cancelled/expired 这类"还没收到钱"的状态
  * 往回改——网关不应该把一笔已经到账的订单覆盖成没到账，出现这种数据大概率
  * 是乱序投递或插件侧异常，只记警告日志，不落库。
@@ -83,7 +84,7 @@ class OrderPaymentStatusService
     private const PAID_FAMILY_STATUSES = ['paid', 'shipped', 'completed', 'partially_refunded', 'disputing'];
 
     /**
-     * 真正终态：到这些状态后不再接受任何后续状态覆盖。
+     * 终态保护：只有主动查询返回 paid 时允许覆盖。
      */
     private const TERMINAL_STATUSES = ['failed', 'cancelled', 'expired', 'refunded', 'chargeback', 'completed'];
 
@@ -205,7 +206,8 @@ class OrderPaymentStatusService
 
     /**
      * 主动查询该订单在插件侧的最新状态并按需更新本地状态（文档第七节），
-     * 供后台"查询最新状态"按钮使用。
+     * 供后台"查询最新状态"按钮和定时补查使用。返回 paid 时覆盖任意本地状态，
+     * 已有支付时间、退款/拒付台账和人工审核冻结不随状态纠正而重置。
      *
      * @return array{queried_status:string,mapped_status:?string,old_status:string,new_status:string,changed:bool}
      *
@@ -247,7 +249,10 @@ class OrderPaymentStatusService
         }
 
         $targetStatus = self::STATUS_MAP[$pluginStatus];
-        $oldStatus = $this->applyStatus($order, $targetStatus, $data);
+
+        // 主动查询以网关结果为准：返回 paid 时允许覆盖本地任意状态（含 failed 等终态），
+        // 因为网关是付款事实的权威来源，本地先判失败、网关后报成功是常见时序。
+        $oldStatus = $this->applyStatus($order, $targetStatus, $data, allowPaidOverride: true);
 
         return [
             'queried_status' => $pluginStatus,
@@ -260,30 +265,28 @@ class OrderPaymentStatusService
 
     /**
      * 状态落库 + 副作用（入账/通知/日志重拉/Telegram），handle() 与
-     * queryAndApply() 共用。事务内加行锁读取最新���态并落库，避免并发下的竞态；
+     * queryAndApply() 共用。事务内加行锁读取最新状态并落库，避免并发下的竞态；
      * 成功后把 $order 刷新为最新数据，方便调用方直接用同一个实例继续操作。
      *
      * @return string|null 实际发生变化时返回变化前的状态，被幂等/回退保护跳过时返回 null
      */
-    private function applyStatus(Order $order, string $targetStatus, array $payload): ?string
+    private function applyStatus(Order $order, string $targetStatus, array $payload, bool $allowPaidOverride = false): ?string
     {
-        // 订单当前处于人工审核事件中时，shouldApply() 会把这条网关消息整个吞掉
-        // （人工审核结果优先，见该方法内的守卫注释）——但如果这条被吞的消息恰好
+        // 订单当前处于人工审核事件中时，除主动查询返回 paid 外，shouldApply() 会
+        // 把网关消息吞掉（见该方法内的守卫注释）——但如果这条被吞的消息恰好
         // 就是这次审核在等的最终结果（网关那边争议已经判下来了），审核期间冻结的
         // 资金不会自动解冻，必须有人手动去关闭审核事件才会释放。这里单独记一下
         // 这种情况，事务提交后（不占用行锁）发条 Telegram 提醒，避免运营/财务
         // 只能靠自己盯着网关后台才知道"这时候该去把审核事件关掉放钱了"。
         $ignoredDuringDisputeReview = false;
 
-        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, &$ignoredDuringDisputeReview) {
+        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $allowPaidOverride, &$ignoredDuringDisputeReview) {
             $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
             $old = $locked->status;
 
-            if ($old === Order::STATUS_DISPUTE_REVIEW) {
-                $ignoredDuringDisputeReview = true;
-            }
+            if (! $this->shouldApply($old, $targetStatus, $allowPaidOverride)) {
+                $ignoredDuringDisputeReview = $old === Order::STATUS_DISPUTE_REVIEW;
 
-            if (! $this->shouldApply($old, $targetStatus)) {
                 return null;
             }
 
@@ -330,6 +333,8 @@ class OrderPaymentStatusService
             $this->alertDisputeReviewGatewayStatusIgnored($order, $targetStatus);
         }
 
+        $order->refresh();
+
         if ($oldStatus === null) {
             if ($order->settlement_mode !== null) {
                 $this->processAccounting($order, $targetStatus, $payload);
@@ -339,11 +344,19 @@ class OrderPaymentStatusService
             return null;
         }
 
-        $order->refresh();
-
-        // paid 的二义性（文档第五节第 5 点）：从 disputing 回退到 paid 是"争议胜诉"，
-        // 不是首次支付成功，不重复入账、不重复推首单商户通知。
-        if ($targetStatus === 'paid' && $oldStatus !== 'disputing') {
+        // paid 的二义性（文档第五节第 5 点）：只有从"从未收款状态族"
+        // （pending/failed/cancelled/expired）进入 paid 才是**首次**支付成功，
+        // 才入账、才推首单商户通知。
+        //
+        // 已经收过钱的状态族（paid/shipped/completed/partially_refunded）、
+        // 争议中（disputing）、人工审核中（dispute_review）恢复到 paid 时
+        // 都**不重复入账**：
+        //   - disputing → paid 是"争议胜诉"，钱早就入过账了；
+        //   - dispute_review → paid 是人工审核期间网关报了 paid，
+        //     钱同样早就收过（余额里已有），重复入账会多给商户钱，
+        //     而审核事件和冻结资金要等人工关闭事件才释放，不能在这里动。
+        if ($targetStatus === 'paid'
+            && in_array($oldStatus, Order::NEVER_PAID_STATUSES, true)) {
             if ($order->settlement_mode === null) {
                 $this->balanceService->creditForPaidOrder($order);
             } else {
@@ -547,10 +560,14 @@ class OrderPaymentStatusService
         ]));
     }
 
-    private function shouldApply(string $oldStatus, string $targetStatus): bool
+    private function shouldApply(string $oldStatus, string $targetStatus, bool $allowPaidOverride): bool
     {
         if ($oldStatus === $targetStatus) {
             return false;
+        }
+
+        if ($allowPaidOverride && $targetStatus === 'paid') {
+            return true;
         }
 
         // 订单当前处于人工发起的争议审核事件中（见 OrderDisputeService）：

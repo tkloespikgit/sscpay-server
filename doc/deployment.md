@@ -177,7 +177,7 @@ sudo crontab -u www-data -e
 | `exchange:fetch` | 每小时 | 拉取汇率更新 `exchange_rates`，向 `exchange_rate_histories` 追加快照并按保留期清理 |
 | `db:backup:upload` | 每 6 小时 | `mysqldump` 导出 → gzip → 上传阿里云 OSS `backups/` → 清理本地临时文件 |
 | `order-events:sync` | 每分钟（`withoutOverlapping`） | 逐笔拉取插件 `/order-logs` 归档订单日志，实际间隔由 `order_event.sync_interval` 动态控制 |
-| `orders:sync-pending-status` | 每 30 分钟（`withoutOverlapping`） | 查询最近 48 小时内创建、`pending` 且 `paid_at` 为空的订单最新状态，复用状态落地和入账；单笔失败继续，整轮有失败时返回非零 |
+| `orders:sync-pending-status` | 每分钟扫描（`withoutOverlapping`） | 最近 48 小时创建、`pending` 且 `paid_at` 为空的订单按创建满 30/90 分钟各补查一次，每单最多两次，失败也计次；单笔失败继续，整轮有失败时返回非零 |
 | `order-notifications:process-due` | 每分钟（`withoutOverlapping`） | 扫描到期的失败通知记录并发起下一次尝试 |
 | `ad-conversions:process-due` | 每分钟（`withoutOverlapping`） | 扫描到期的广告转化通知重试记录并发起下一次尝试 |
 | `order-disputes:close-due` | 每 5 分钟（`withoutOverlapping`） | 自动结束已到期的争议事件（释放冻结资金） |
