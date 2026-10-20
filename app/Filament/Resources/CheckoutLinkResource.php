@@ -93,6 +93,7 @@ class CheckoutLinkResource extends Resource
                         ->disabled(! $canPickMerchant)
                         ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
+                        ->columnSpanFull()
                         // 换商户后，上一个商户的应用/支付组/域名全部失效，
                         // 不清掉会把别家商户的资源挂到这条链接上。
                         ->afterStateUpdated(function (Set $set) {

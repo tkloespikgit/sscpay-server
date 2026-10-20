@@ -3,8 +3,8 @@
 use App\Http\Controllers\DisputeAttachmentController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PaymentPageController;
+use App\Http\Controllers\PurchaseOrderController;
 use Illuminate\Support\Facades\Route;
-
 
 // 争议审核事件的图片凭证（后台详情页灯箱用）。放在 web.php 而不是某个面板里，
 // 是因为管理端和商户端两个面板都要用同一个地址。
@@ -18,10 +18,16 @@ Route::get('/dispute-attachments/{type}/{record}/{index}', [DisputeAttachmentCon
     ->whereNumber(['record', 'index'])
     ->name('dispute-attachments.show');
 
+Route::get('/purchase-orders/{purchaseOrder}', [PurchaseOrderController::class, 'show'])
+    ->whereNumber('purchaseOrder')
+    ->name('purchase-orders.show');
+
+Route::get('/purchase-orders/{purchaseOrder}/details', [PurchaseOrderController::class, 'details'])
+    ->whereNumber('purchaseOrder')
+    ->name('purchase-orders.details');
 
 Route::get('/payment/{token}', [PaymentPageController::class, 'show'])->name('payment.show');
 Route::post('/payment/{token}/confirm', [PaymentPageController::class, 'confirm'])->name('payment.confirm');
 Route::get('/payment/expired', fn () => view('payment.expired'))->name('payment.expired');
-
 
 Route::get('/', [HomeController::class, 'show'])->name('home.show');
