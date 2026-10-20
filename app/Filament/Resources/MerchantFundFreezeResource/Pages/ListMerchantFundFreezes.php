@@ -15,6 +15,7 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
+use Illuminate\Support\Carbon;
 
 class ListMerchantFundFreezes extends ListRecords
 {
@@ -85,12 +86,22 @@ class ListMerchantFundFreezes extends ListRecords
                     $user = auth()->user();
                     FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
                     $merchant = Merchant::query()->findOrFail($data['merchant_id']);
+
+                    // DateTimePicker 的表单值是**字符串**（'Y-m-d H:i:s'），
+                    // 必须转成 DateTimeInterface 再传给 BalanceService——直接传字符串
+                    // 会触发 TypeError（freezeFunds 第 5 参声明的是 ?DateTimeInterface）。
+                    $releaseAt = null;
+
+                    if (filled($data['release_at'] ?? null)) {
+                        $releaseAt = Carbon::parse($data['release_at']);
+                    }
+
                     app(BalanceService::class)->freezeFunds(
                         $merchant,
                         $data['amount'],
                         $user,
                         $data['reason'],
-                        $data['release_at'] ?? null,
+                        $releaseAt,
                     );
                 } catch (BalanceOperationException $e) {
                     Notification::make()->title($e->getMessage())->danger()->send();

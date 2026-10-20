@@ -12,6 +12,7 @@ use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use PragmaRX\Google2FA\Google2FA;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -122,6 +123,113 @@ class MerchantReserveResourceTest extends TestCase
             ->assertTableColumnStateSet('pending_settlement_change', '-90.00', record: $transaction)
             ->assertTableColumnStateSet('frozen_change', '9.00', record: $transaction)
             ->assertTableColumnStateSet('available_change', '81.00', record: $transaction);
+    }
+
+    /**
+     * 回归：创建固定保证金时选了「计划解冻时间」不能报 TypeError。
+     *
+     * 背景：Filament 的 DateTimePicker 提交的表单值是 'Y-m-d H:i:s' **字符串**，
+     * 而 BalanceService::freezeFunds() 第 5 参声明为 ?DateTimeInterface，
+     * 直接把字符串透传过去会抛：
+     *   Argument #5 ($releaseAt) must be of type ?DateTimeInterface, string given
+     *
+     * 这条用例把整条链路（表单 → Action → 服务层）跑一遍，
+     * 断言 release_at 真的落库了，且不是空值。
+     */
+    public function test_creating_a_fixed_reserve_with_a_release_at_accepts_the_datetime_picker_string(): void
+    {
+        $this->createMerchantAndApplication();
+        $user = $this->reserveUser();
+        $user->givePermissionTo(Permissions::FUND_FREEZES_CREATE);
+        $user->givePermissionTo(Permissions::FINANCE_VIEW);
+
+        $this->giveMerchantBalance('100.00');
+
+        $releaseAt = now()->addDays(7)->startOfSecond();
+
+        Livewire::actingAs($user)
+            ->test(ListMerchantFundFreezes::class)
+            ->callAction(
+                TestAction::make('openFundFreeze'),
+                [
+                    'merchant_id' => $this->merchant->id,
+                    'amount' => '30.00',
+                    // 关键：模拟 DateTimePicker 交上来的字符串
+                    'release_at' => $releaseAt->format('Y-m-d H:i:s'),
+                    'reason' => '固定保证金',
+                    'mfa_code' => $this->validTotp($user),
+                ],
+            );
+
+        $freeze = MerchantFundFreeze::query()
+            ->where('reason', '固定保证金')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($freeze, '应成功创建冻结记录');
+        $this->assertSame('30.00', number_format((float) $freeze->amount, 2, '.', ''));
+        $this->assertNotNull($freeze->release_at, 'release_at 应已落库');
+        $this->assertSame(
+            $releaseAt->format('Y-m-d H:i:s'),
+            $freeze->release_at->format('Y-m-d H:i:s'),
+            'release_at 应与表单选择的时间一致'
+        );
+    }
+
+    /**
+     * 回归：不选解冻时间（留空）时 release_at 应为 null，而不是空字符串。
+     */
+    public function test_creating_a_fixed_reserve_without_a_release_at_stores_null(): void
+    {
+        $this->createMerchantAndApplication();
+        $user = $this->reserveUser();
+        $user->givePermissionTo(Permissions::FUND_FREEZES_CREATE);
+        $user->givePermissionTo(Permissions::FINANCE_VIEW);
+
+        $this->giveMerchantBalance('100.00');
+
+        Livewire::actingAs($user)
+            ->test(ListMerchantFundFreezes::class)
+            ->callAction(
+                TestAction::make('openFundFreeze'),
+                [
+                    'merchant_id' => $this->merchant->id,
+                    'amount' => '15.00',
+                    'release_at' => null,
+                    'reason' => '无解冻时间',
+                    'mfa_code' => $this->validTotp($user),
+                ],
+            );
+
+        $freeze = MerchantFundFreeze::query()
+            ->where('reason', '无解冻时间')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($freeze, '应成功创建冻结记录');
+        $this->assertNull($freeze->release_at, 'release_at 应为 null（只能人工解冻）');
+    }
+
+    /**
+     * 资金操作要过 step-up 2FA（FinanceSecurity::assertVerified），
+     * 这里给测试用户绑定 TOTP secret 并生成一个当前有效的验证码。
+     */
+    private function validTotp(User $user): string
+    {
+        $secret = 'JBSWY3DPEHPK3PXP';
+        $user->forceFill(['app_authentication_secret' => $secret])->save();
+
+        return app(Google2FA::class)->getCurrentOtp($secret);
+    }
+
+    /**
+     * 冻结只能冻结"可提现余额"（availableBalance），新商户余额是 0，
+     * 所以先给它充值，否则 freezeFunds 会被
+     * settlement.errors.freeze_exceeds_available 拦掉——测的就不是日期类型问题了。
+     */
+    private function giveMerchantBalance(string $amount): void
+    {
+        $this->merchant->forceFill(['balance' => $amount])->save();
     }
 
     private function reserveUser(): User

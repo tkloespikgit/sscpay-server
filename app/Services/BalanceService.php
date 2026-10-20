@@ -15,6 +15,7 @@ use App\Models\OrderSettlement;
 use App\Models\User;
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -759,9 +760,15 @@ class BalanceService
      * 否则由 fund-freezes:release-due 命令到期自动释放（见 releaseFundFreeze()）。
      * 只允许冻结可提现余额，不得挪用待结算、待出款或其他保证金。
      */
-    public function freezeFunds(Merchant $merchant, string|float $amount, User $operator, string $reason, ?\DateTimeInterface $releaseAt = null): MerchantFundFreeze
+    public function freezeFunds(Merchant $merchant, string|float $amount, User $operator, string $reason, \DateTimeInterface|string|null $releaseAt = null): MerchantFundFreeze
     {
         $amount = $this->normalize($amount);
+
+        // $releaseAt 允许传字符串：Filament 的 DateTimePicker 提交上来的表单值
+        // 就是 'Y-m-d H:i:s' 字符串，直接传给 ?DateTimeInterface 会 TypeError
+        // （Argument #5 must be of type ?DateTimeInterface, string given）。
+        // 这里统一规范化，调用方不必各自记得转换。
+        $releaseAt = $this->normalizeDateTime($releaseAt);
 
         if (bccomp($amount, '0', 2) <= 0) {
             throw new BalanceOperationException('冻结金额必须大于 0。');
@@ -921,5 +928,34 @@ class BalanceService
     private function normalize(string|float $amount): string
     {
         return bcadd((string) $amount, '0', 2);
+    }
+
+    /**
+     * 把可能来自表单的时间值统一成 DateTimeInterface。
+     *
+     * 背景：Filament 的 DateTimePicker 提交的是 'Y-m-d H:i:s' 字符串，
+     * 而 freezeFunds() 的 $releaseAt 声明为 ?DateTimeInterface —— 直接传字符串
+     * 会抛 TypeError。这里兼容字符串入参，统一用 Carbon 解析成系统时区的时间。
+     *
+     * @param  \DateTimeInterface|string|null  $value
+     */
+    private function normalizeDateTime(\DateTimeInterface|string|null $value): ?\DateTimeInterface
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+
+            // 空字符串（表单里字段填了又清空）按"不设解冻时间"处理
+            if ($value === '') {
+                return null;
+            }
+
+            return Carbon::parse($value);
+        }
+
+        return $value;
     }
 }
