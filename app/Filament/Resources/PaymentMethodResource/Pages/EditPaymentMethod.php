@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
+use App\Filament\Support\GeneratePurchaseOrderAction;
 use App\Filament\Support\MailCredentialsAction;
 use App\Filament\Support\PaymentMethodProfileAction;
 use Filament\Actions\Action;
@@ -31,6 +32,7 @@ class EditPaymentMethod extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            GeneratePurchaseOrderAction::make(),
             PaymentMethodProfileAction::make(),
             MailCredentialsAction::make(),
             $this->getDetachFromAllPaymentGroupsAction(),
