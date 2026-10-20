@@ -39,6 +39,7 @@ return [
             'application_admin'     => '网站应用管理员',
             'finance_admin'         => '财务管理员',
             'payment_channel_admin' => '支付通道管理员',
+            'customer_service'         => '客服订单查看',
         ],
         'permissions'       => [
             'applications_manage'      => '管理应用',
@@ -67,6 +68,8 @@ return [
             'order_disputes_open'      => '开立争议审核',
             'order_disputes_reply'     => '回复争议审核',
             'order_disputes_close'     => '结束争议审核',
+            'customer_service_orders_view' => '查看客服订单',
+
         ],
     ],
 
@@ -1470,6 +1473,20 @@ return [
             'sync_now_failed'      => '汇率同步未产生新数据',
             'sync_now_failed_hint' => '请检查系统配置 exchange.supported_currencies 是否已填写，以及 services.exchange_rate 的接口地址与密钥是否正确。',
             'sync_now_exception'   => '汇率同步执行异常：:error',
+        ],
+    ],
+
+    // 客服订单查询模块（CustomerServiceOrderResource）。
+    // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
+    'customer_service_order'  => [
+        'nav'        => '客服订单查询',
+        'labels'     => [
+            'order'  => '客服订单',
+            'orders' => '客服订单查询',
+        ],
+        'filters'    => [
+            'start_time' => '开始时间',
+            'end_time'   => '结束时间',
         ],
     ],
 

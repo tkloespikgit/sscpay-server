@@ -182,6 +182,13 @@ class MerchantRoleProvisioningService
                 'label' => '支付通道管理员',
                 'permissions' => [Permissions::PAYMENT_METHODS_MANAGE, Permissions::PAYMENT_GROUPS_MANAGE],
             ],
+            // 客服角色：只给"客服订单查询"这一个权限。
+            // 刻意不含 ORDERS_VIEW —— 否则会连带放行完整订单列表和订单详情页
+            // （那里能看到结算金额、商户名、物流等客服不需要也不该看到的信息）。
+            'customer_service' => [
+                'label' => '客服订单查看',
+                'permissions' => [Permissions::CUSTOMER_SERVICE_ORDERS_VIEW],
+            ],
         ];
     }
 

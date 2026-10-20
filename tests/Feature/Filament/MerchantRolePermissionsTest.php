@@ -79,8 +79,14 @@ class MerchantRolePermissionsTest extends TestCase
         $this->assertSame($platformPermissions, $platformRole->fresh()->permissions->pluck('name')->sort()->values()->all());
 
         // 重新进入页面仍是保存值；重复同步不会重复建角色。
+        // 数量取自内置角色定义本身（商户管理员/订单管理员/物流管理员/
+        // 网站应用管理员/财务管理员/支付通道管理员/客服订单查看），
+        // 写死数字的话以后再加角色这里就会假失败。
         Livewire::test(MerchantRolePermissions::class)->assertFormSet($data)->call('save')->assertHasNoFormErrors();
-        $this->assertSame(6, Role::where('merchant_id', $second->id)->count());
+        $this->assertSame(
+            count(app(\App\Services\MerchantRoleProvisioningService::class)->definitions()),
+            Role::where('merchant_id', $second->id)->count()
+        );
     }
 
     public function test_only_enabled_super_admins_in_the_platform_panel_can_access_and_save(): void

@@ -41,6 +41,7 @@ return [
             'application_admin' => 'Application Administrator',
             'finance_admin' => 'Finance Administrator',
             'payment_channel_admin' => 'Payment Channel Administrator',
+            'customer_service' => 'Customer Service',
         ],
         'permissions' => [
             'applications_manage' => 'Manage applications',
@@ -69,6 +70,8 @@ return [
             'order_disputes_open' => 'Open dispute reviews',
             'order_disputes_reply' => 'Reply to dispute reviews',
             'order_disputes_close' => 'Close dispute reviews',
+            'customer_service_orders_view' => 'View customer service orders',
+
         ],
     ],
 
@@ -1472,6 +1475,20 @@ return [
             'sync_now_failed' => 'The sync did not produce any new data',
             'sync_now_failed_hint' => 'Check that the exchange.supported_currencies system config is filled in, and that the services.exchange_rate endpoint URL and API key are correct.',
             'sync_now_exception' => 'Rate sync failed with an exception: :error',
+        ],
+    ],
+
+    // 客服订单查询模块（CustomerServiceOrderResource）。
+    // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
+    'customer_service_order'  => [
+        'nav'        => 'Customer Service Orders',
+        'labels'     => [
+            'order'  => 'Customer Service Order',
+            'orders' => 'Customer Service Orders',
+        ],
+        'filters'    => [
+            'start_time' => 'Start time',
+            'end_time'   => 'End time',
         ],
     ],
 
