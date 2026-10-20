@@ -100,9 +100,9 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 `Order::NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired']`。`paidEver()` 取其补集，包含发货、完成、部分退款、退款、拒付、网关争议和人工争议审核状态。新增状态会影响风控和统计，必须同步审查这个口径。
 
-主动查询网关返回 `paid` 时可以纠正任意本地状态，仍保留首次 `paid_at`、`failed_at`、`refunded_amount` 和退款/拒付台账；人工审核事件及其冻结金额也独立保留。曾收款状态恢复 `paid` 不重放首次支付入账；已扣拒付本金的订单按流水阻止再次退款或拒付。详见 [D-17](decisions.md#d-17-主动查询已支付结果优先于本地状态)。
+主动查询网关返回 `paid` 时可以纠正任意本地状态，仍保留首次 `paid_at`、`failed_at`、`refunded_amount` 和退款/拒付台账；人工审核事件及其冻结金额也独立保留。曾收款状态恢复 `paid` 不重放首次支付入账；已扣拒付本金的订单按流水阻止再次退款或拒付。详见 [D-18](decisions.md#d-18-主动查询已支付结果优先于本地状态)。
 
-定时补查使用 `orders_pending_status_sync_index(status, paid_at, pending_status_query_count, created_at)` 支持全平台到期扫描。新增迁移只添加补查字段及索引，历史查询没有可恢复的次数记录，既有订单从 0 开始累计，仍限最近 48 小时；不会按历史日志臆测已执行次数。回滚会删除补查计数和时间，生产优先前向修复，避免重新开放已消耗的补查机会。详见 [D-18](decisions.md#d-18-待支付订单按创建时间最多自动补查两次)。
+定时补查使用 `orders_pending_status_sync_index(status, paid_at, pending_status_query_count, created_at)` 支持全平台到期扫描。新增迁移只添加补查字段及索引，历史查询没有可恢复的次数记录，既有订单从 0 开始累计，仍限最近 48 小时；不会按历史日志臆测已执行次数。回滚会删除补查计数和时间，生产优先前向修复，避免重新开放已消耗的补查机会。详见 [D-19](decisions.md#d-19-待支付订单按创建时间最多自动补查两次)。
 
 | 表 / 模型 | 关键语义 |
 |---|---|
