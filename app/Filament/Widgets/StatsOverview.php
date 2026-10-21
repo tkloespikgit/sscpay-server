@@ -2,12 +2,18 @@
 
 namespace App\Filament\Widgets;
 
+use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 
 class StatsOverview extends StatsOverviewWidget
 {
+    public static function canView(): bool
+    {
+        return AdminDashboard::canAccess();
+    }
+
     /**
      * 列数按角色区分：超级管理员有 5 张卡片（含"总商户数"）走 5 列；
      * 商户用户看不到"总商户数"，只剩 4 张卡片走 4 列，保证一行排齐。

@@ -2,20 +2,33 @@
 
 namespace Tests\Feature\Filament;
 
+use App\Filament\Pages\AdminDashboard;
+use App\Filament\Resources\CarrierResource;
+use App\Filament\Resources\CheckoutLinkResource;
 use App\Filament\Resources\CustomerServiceOrderResource;
 use App\Filament\Resources\CustomerServiceOrderResource\Pages\ListCustomerServiceOrders;
+use App\Filament\Widgets\OrderTrendChart;
+use App\Filament\Widgets\PaymentMethodBreakdownChart;
+use App\Filament\Widgets\PaymentSuccessRate;
+use App\Filament\Widgets\StatsOverview;
+use App\Models\CheckoutLink;
 use App\Models\Merchant;
+use App\Models\PaymentGroup;
 use App\Models\User;
 use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
+use Filament\Navigation\NavigationGroup;
+use Filament\Navigation\NavigationItem;
 use Filament\Tables\Table;
+use Filament\Widgets\Widget;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\TestWith;
 use ReflectionMethod;
+use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -133,6 +146,146 @@ class CustomerServiceOrderResourceTest extends TestCase
             $builtIn['customer_service']['permissions'],
             '客服角色只能有客服订单查询这一个权限，不含 ORDERS_VIEW'
         );
+    }
+
+    public function test_the_customer_service_role_only_sees_the_customer_service_query_navigation(): void
+    {
+        $user = $this->userWithDefaultMerchantRole('客服订单查看');
+        $this->actingAs($user);
+
+        $navigationUrls = collect(Filament::getNavigation())
+            ->flatMap(fn (NavigationGroup $group): array => collect($group->getItems())->all())
+            ->map(fn (NavigationItem $item): ?string => $item->getUrl())
+            ->all();
+
+        $this->assertSame([CustomerServiceOrderResource::getUrl()], $navigationUrls);
+
+        foreach (Filament::getCurrentPanel()->getResources() as $resource) {
+            $this->assertSame(
+                $resource === CustomerServiceOrderResource::class,
+                $resource::canViewAny(),
+                "客服账号对 {$resource} 的访问权限不符合预期",
+            );
+        }
+
+        foreach (Filament::getCurrentPanel()->getPages() as $page) {
+            $this->assertFalse($page::canAccess(), "客服账号不应访问 {$page}");
+        }
+
+        Livewire::test(ListCustomerServiceOrders::class)->assertOk();
+    }
+
+    public function test_the_customer_service_role_is_redirected_from_the_panel_home_to_the_query_page(): void
+    {
+        $user = $this->userWithDefaultMerchantRole('客服订单查看');
+
+        $this->actingAs($user)
+            ->get(route('filament.merchant.home'))
+            ->assertRedirect(CustomerServiceOrderResource::getUrl());
+    }
+
+    public function test_the_customer_service_role_cannot_open_other_pages_directly(): void
+    {
+        $user = $this->userWithDefaultMerchantRole('客服订单查看');
+        $group = PaymentGroup::create([
+            'merchant_id' => $this->merchant->id,
+            'group_key' => 'customer_service_test',
+            'group_name' => 'Customer service test',
+            'is_active' => true,
+        ]);
+        $link = CheckoutLink::create([
+            'merchant_id' => $this->merchant->id,
+            'application_id' => $this->application->id,
+            'payment_group_id' => $group->id,
+            'title' => 'Customer checkout',
+            'link_name' => 'Private checkout link',
+            'currency' => 'USD',
+            'amount_mode' => CheckoutLink::MODE_FIXED,
+            'fixed_amount' => '10.00',
+        ]);
+        $this->actingAs($user);
+
+        foreach ([
+            AdminDashboard::getUrl(),
+            CarrierResource::getUrl(),
+            CheckoutLinkResource::getUrl(),
+            CheckoutLinkResource::getUrl('create'),
+            CheckoutLinkResource::getUrl('edit', ['record' => $link]),
+        ] as $url) {
+            $this->get($url)->assertForbidden();
+        }
+    }
+
+    public function test_a_merchant_admin_keeps_dashboard_and_carrier_access(): void
+    {
+        $user = $this->userWithDefaultMerchantRole('商户管理员');
+        $this->actingAs($user);
+
+        $this->assertTrue(AdminDashboard::canAccess());
+        $this->assertTrue(CarrierResource::canViewAny());
+        $this->get(route('filament.merchant.home'))->assertRedirect(AdminDashboard::getUrl());
+        $this->get(AdminDashboard::getUrl())->assertOk();
+        $this->get(CarrierResource::getUrl())->assertOk();
+    }
+
+    public function test_a_super_admin_keeps_dashboard_and_carrier_access(): void
+    {
+        $this->createMerchantAndApplication();
+        $user = User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]);
+        $user->givePermissionTo(Permissions::CUSTOMER_SERVICE_ORDERS_VIEW);
+        Filament::setCurrentPanel('admin');
+        $this->actingAs($user);
+
+        $this->assertTrue(AdminDashboard::canAccess());
+        $this->assertTrue(CarrierResource::canViewAny());
+        $this->get(route('filament.admin.home'))->assertRedirect(AdminDashboard::getUrl());
+        $this->get(AdminDashboard::getUrl())->assertOk();
+        $this->get(CarrierResource::getUrl())->assertOk();
+    }
+
+    #[TestWith(['role'])]
+    #[TestWith(['direct'])]
+    public function test_additional_permissions_preserve_a_customer_service_users_other_authorized_pages(string $permissionSource): void
+    {
+        $user = $this->userWithDefaultMerchantRole('客服订单查看');
+
+        if ($permissionSource === 'role') {
+            $user->assignRole(Role::query()
+                ->where('merchant_id', $this->merchant->id)
+                ->where('name', '订单管理员')
+                ->firstOrFail());
+        } else {
+            $user->givePermissionTo(Permissions::CHECKOUT_LINKS_MANAGE);
+        }
+
+        $this->actingAs($user->fresh());
+
+        $this->assertTrue(CustomerServiceOrderResource::canViewAny());
+        $this->assertTrue(CheckoutLinkResource::canViewAny());
+        $this->assertTrue(AdminDashboard::canAccess());
+        $this->assertTrue(CarrierResource::canViewAny());
+        $this->get(CheckoutLinkResource::getUrl())->assertOk();
+    }
+
+    /** @param class-string<Widget> $widgetClass */
+    #[TestWith([StatsOverview::class])]
+    #[TestWith([PaymentSuccessRate::class])]
+    #[TestWith([OrderTrendChart::class])]
+    #[TestWith([PaymentMethodBreakdownChart::class])]
+    public function test_dashboard_widgets_reject_existing_snapshots_after_access_is_restricted_to_customer_service(string $widgetClass): void
+    {
+        $user = $this->userWithDefaultMerchantRole('商户管理员');
+        $this->actingAs($user);
+        $widget = Livewire::withoutLazyLoading()->test($widgetClass)->assertOk();
+
+        $user->syncRoles(Role::query()
+            ->where('merchant_id', $this->merchant->id)
+            ->where('name', '客服订单查看')
+            ->firstOrFail());
+        $this->actingAs($user->fresh());
+
+        $this->assertFalse($widgetClass::canView());
+        $widget->call('$refresh')->assertForbidden();
     }
 
     // ------------------------------------------------------------------
@@ -447,6 +600,23 @@ class CustomerServiceOrderResourceTest extends TestCase
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
+
+    private function userWithDefaultMerchantRole(string $roleName): User
+    {
+        $this->createMerchantAndApplication();
+
+        $user = User::factory()->create([
+            'merchant_id' => $this->merchant->id,
+            'is_super_admin' => false,
+            'status' => true,
+        ]);
+        $user->assignRole(Role::query()
+            ->where('merchant_id', $this->merchant->id)
+            ->where('name', $roleName)
+            ->firstOrFail());
+
+        return $user->fresh();
+    }
 
     /** 建商户 + 带客服权限的用户，并返回该用户。 */
     private function customerServiceUserWithMerchant(): User

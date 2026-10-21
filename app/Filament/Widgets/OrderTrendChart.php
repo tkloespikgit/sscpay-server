@@ -2,11 +2,17 @@
 
 namespace App\Filament\Widgets;
 
+use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\ChartWidget;
 
 class OrderTrendChart extends ChartWidget
 {
+    public static function canView(): bool
+    {
+        return AdminDashboard::canAccess();
+    }
+
     public function getHeading(): ?string
     {
         return __('admin.dashboard.charts.order_trend');
