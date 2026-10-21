@@ -39,7 +39,7 @@ return [
             'application_admin'     => '网站应用管理员',
             'finance_admin'         => '财务管理员',
             'payment_channel_admin' => '支付通道管理员',
-            'customer_service'         => '客服订单查看',
+            'customer_service'         => '客服订单管理员',
         ],
         'permissions'       => [
             'applications_manage'      => '管理应用',
@@ -1074,6 +1074,7 @@ return [
         ],
         'groups'      => [
             'exchange'    => '汇率',
+            'order' => '订单',
             'order_event' => '订单事件',
             'payment'     => '支付',
             'security'    => '安全',
@@ -1088,6 +1089,12 @@ return [
         ],
         'actions'     => [
             'add_item' => '添加一项',
+        ],
+        'order_status_colors' => [
+            'helper' => '填写 JSON 对象，将订单状态映射到颜色：gray（灰色）、primary（主题色）、success（绿色）、info（蓝色）、warning（琥珀色）、danger（红色）。可只配置部分状态，遗漏状态使用默认颜色。示例：{"paid":"info","refunded":"danger"}。',
+            'invalid_object' => '请填写有效的 JSON 对象，例如 {"paid":"info"}，不能使用数组、字符串、数字或 null。',
+            'unknown_status' => '未知的订单状态：:status。请使用已有的订单状态键。',
+            'invalid_color' => '订单状态 :status 的颜色必须是以下字符串之一：:colors。',
         ],
     ],
 
@@ -1478,15 +1485,16 @@ return [
 
     // 客服订单查询模块（CustomerServiceOrderResource）。
     // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
-    'customer_service_order'  => [
-        'nav'        => '客服订单查询',
-        'labels'     => [
-            'order'  => '客服订单',
+    'customer_service_order' => [
+        'nav' => '客服订单查询',
+        'labels' => [
+            'order' => '客服订单',
             'orders' => '客服订单查询',
         ],
-        'filters'    => [
-            'start_time' => '开始时间',
-            'end_time'   => '结束时间',
+        'search' => [
+            'action' => '查询',
+            'required' => '请至少填写一个查询条件后点击查询',
+            'no_results' => '未查询到匹配的订单',
         ],
     ],
 

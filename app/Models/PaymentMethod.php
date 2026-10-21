@@ -19,6 +19,11 @@ class PaymentMethod extends Model
     use HasFactory;
     use SoftDeletes;
 
+    public function purchaseOrders(): HasMany
+    {
+        return $this->hasMany(PurchaseOrder::class);
+    }
+
     /**
      * merchant_id 为 NULL 表示"系统级"支付方式（挂在管理员名下），可通过
      * assignedMerchants() 中间表分配给多个商户使用，见下方 booted()。

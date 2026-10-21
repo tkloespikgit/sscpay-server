@@ -39,7 +39,7 @@
                 </div>
                 <div class="flex justify-between">
                     <dt class="text-slate-500">{{ __('checkout.result.status') }}</dt>
-                    <dd class="font-medium">{{ $order->status }}</dd>
+                    <dd class="font-medium" style="color: {{ \App\Support\OrderStatusColor::cssColor($order->status) }}">{{ $order->status }}</dd>
                 </div>
             </dl>
         @endif

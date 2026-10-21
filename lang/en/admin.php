@@ -71,7 +71,6 @@ return [
             'order_disputes_reply' => 'Reply to dispute reviews',
             'order_disputes_close' => 'Close dispute reviews',
             'customer_service_orders_view' => 'View customer service orders',
-
         ],
     ],
 
@@ -1077,6 +1076,7 @@ return [
         ],
         'groups' => [
             'exchange' => 'Exchange Rate',
+            'order' => 'Orders',
             'order_event' => 'Order Events',
             'payment' => 'Payment',
             'security' => 'Security',
@@ -1091,6 +1091,12 @@ return [
         ],
         'actions' => [
             'add_item' => 'Add Item',
+        ],
+        'order_status_colors' => [
+            'helper' => 'Enter a JSON object mapping order statuses to colors: gray, primary (theme), success (green), info (blue), warning (amber), or danger (red). You may override individual statuses; omitted statuses use their default colors. Example: {"paid":"info","refunded":"danger"}.',
+            'invalid_object' => 'Enter a valid JSON object such as {"paid":"info"}. Arrays, strings, numbers, and null are not allowed.',
+            'unknown_status' => 'Unknown order status: :status. Use an existing order status key.',
+            'invalid_color' => 'The color for order status :status must be one of these strings: :colors.',
         ],
     ],
 
@@ -1200,9 +1206,8 @@ return [
             'status' => 'Status',
             'payment_methods' => 'Bound Payment Methods',
             'amount_display_ratio' => 'Amount Display Ratio',
-            'owner' => 'Whoever creates an observer maintains it. Leave blank to keep it managed by platform super admins only.',
-            'created_at' => 'Created At',
             'owner' => 'Owner',
+            'created_at' => 'Created At',
         ],
         'placeholders' => [
             'owner_platform' => 'Platform-managed',
@@ -1480,15 +1485,16 @@ return [
 
     // 客服订单查询模块（CustomerServiceOrderResource）。
     // 列与筛选刻意只暴露客服职责范围内的信息，不含结算金额/物流/商户名。
-    'customer_service_order'  => [
-        'nav'        => 'Customer Service Orders',
-        'labels'     => [
-            'order'  => 'Customer Service Order',
+    'customer_service_order' => [
+        'nav' => 'Customer Service Orders',
+        'labels' => [
+            'order' => 'Customer Service Order',
             'orders' => 'Customer Service Orders',
         ],
-        'filters'    => [
-            'start_time' => 'Start time',
-            'end_time'   => 'End time',
+        'search' => [
+            'action' => 'Search',
+            'required' => 'Enter at least one search criterion, then click Search',
+            'no_results' => 'No matching orders found',
         ],
     ],
 

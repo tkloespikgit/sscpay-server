@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Support\OrderStatusColor;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -153,5 +154,15 @@ class SystemConfigSeeder extends Seeder
                 ])
             );
         }
+
+        DB::table('system_configs')->insertOrIgnore([
+            'config_key' => OrderStatusColor::CONFIG_KEY,
+            'config_value' => json_encode(OrderStatusColor::DEFAULT_COLORS, JSON_THROW_ON_ERROR),
+            'value_type' => 'json',
+            'group' => 'order',
+            'description' => '全站订单状态颜色（JSON 对象）：状态代码对应 gray / primary / success / info / warning / danger',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
     }
 }

@@ -84,6 +84,20 @@ erDiagram
 
 `order_matched_items.product_name` 使用非空 `TEXT` 保存站点商品名称快照，避免站点商品名（`site_products.name` 最多 500 字符）或远端创建响应的长名称在建单时超出旧 255 字符列。原始 `order_items` 与 `checkout_link_items` 的名称长度和输入协议保持 255 字符。新增迁移 `2026_10_16_153313` 仅扩容匹配快照名称；如含超过 255 字符的名称（包括软删除记录），回滚会拒绝缩回旧列宽，避免截断历史数据。
 
+### 支付方式进货单（2026-10-19，当前工作区）
+
+`purchase_orders` 是独立的本地进货留档，不参与 `orders` 支付状态、商户余额或成交统计。通过 `payment_method_id` 关联支付方式，`created_by` 保留生成用户；两者的物理删除受外键限制，关系包含软删除记录。`order_no` 固定 19 位（`33` 加 17 位随机数字），`transaction_id` 为下单时间 `YmdHis` 加 20 位随机数字，各有独立唯一约束。
+
+`ordered_at` 可设置；`paid_at` 为下单后 1 秒至 1 小时，`shipped_at` 为付款后 1–2 天，`received_at` 为发货后 3–5 天，均按系统时区保存模拟时间。`currency` 固定 `CNY`，`subtotal` 为商品明细之和，`total = subtotal + shipping_fee - discount`；默认运费/优惠分别为商品合计的 3%–8% / 10%–20%，允许手动编辑非负金额，优惠不超过商品合计。
+
+`purchase_orders.perks_words` 为可空 JSON 数组，`null` 表示尚未初始化（包括迁移前的历史订单），空数组表示已初始化且不展示权益。生成进货单时不选权益词；启用的超级管理员首次打开采购页或详情页时，在事务行锁内从 10 个候选词中随机选取 4–8 个并保存，保持候选原有顺序且不重复。后续访问复用保存的数组，不重新随机；初始化不改变 `updated_at`、金额或商品快照。
+
+`purchase_order_items` 保存商品名称（优先中文翻译）、SKU、USD 原价 `source_price = site_products.price_min`、人民币 `unit_price`、数量和行金额 `subtotal`；单价按 USD 原价 × 7 × 0.3 四舍五入两位小数。金额列为 `decimal(20,2)`，计算使用 bcmath，修改源商品不回写快照。商品物理删除仅将可空 `site_product_id` 置空；进货单物理删除才级联删除其明细，后台不提供删除入口。
+
+采购页面沿用上述快照，图片和供需方资料没有额外保存快照：分别读取 `site_products.image_url` 和支付方式当前档案，商品关联不存在或图片地址不安全时显示占位。编辑运费/优惠后重新打开或刷新采购页面会显示最新金额；页面首次读取只初始化权益词。
+
+采购订单详情的收货人/手机号使用档案 `legal_representative_name` / `legal_representative_phone`，收货地址取 `stock_addresses` 字符串数组中首个非空地址（无可用值时回退 `company_address`）。卖家联系人与供货商名称分别使用 `supplier_contact_person`、`supplier_name`，其他卖家资料同样读取当前档案；这些字段不是进货时的快照，修改档案后页面会变化。采购单尚无物流公司和运单号字段，详情页不从模拟时间推导物流单号。
+
 ### 应用自动折扣（2026-09-30，当前工作区）
 
 `applications.is_auto_discount_enabled` 默认关闭，仅影响新订单。按折扣前应付金额、订单原币种计算：不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50，以 0.01 为步长。极小金额缩小随机范围，至少保留 0.01 应付；金额不超过 0.01 时跳过。

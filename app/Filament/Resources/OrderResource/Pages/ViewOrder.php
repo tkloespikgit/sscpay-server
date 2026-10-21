@@ -23,6 +23,7 @@ use App\Services\BalanceService;
 use App\Services\OrderDisputeService;
 use App\Services\OrderEventSyncService;
 use App\Services\OrderShippingService;
+use App\Support\OrderStatusColor;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DateTimePicker;
@@ -51,7 +52,8 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('order_no')->label(__('admin.order.fields.order_no'))->copyable(),
                     TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no')),
                     TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
-                        ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state)),
+                        ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
+                        ->color(fn (string $state): string => OrderStatusColor::get($state)),
                     TextEntry::make('source')->label(__('admin.order.fields.source')),
                     TextEntry::make('platform')->label(__('admin.order.fields.platform'))->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('paymentMethod.method_name')->label(__('admin.order.fields.payment_method'))

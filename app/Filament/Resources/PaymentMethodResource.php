@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\PaymentMethodResource\Pages;
+use App\Filament\Resources\PaymentMethodResource\RelationManagers\PurchaseOrdersRelationManager;
 use App\Jobs\SyncSiteProductsJob;
 use App\Models\Merchant;
 use App\Models\MerchantPaymentSetting;
@@ -681,6 +682,11 @@ class PaymentMethodResource extends Resource
         }
 
         return $code;
+    }
+
+    public static function getRelations(): array
+    {
+        return [PurchaseOrdersRelationManager::class];
     }
 
     public static function getPages(): array
