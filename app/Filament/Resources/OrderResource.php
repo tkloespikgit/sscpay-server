@@ -11,6 +11,7 @@ use App\Models\PaymentMethod;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Support\OrderStatusColor;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
@@ -96,17 +97,7 @@ class OrderResource extends Resource
                 TextColumn::make('status')->label(__('admin.order.columns.status'))
                     ->badge()
                     ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
-                    ->color(fn (string $state) => match ($state) {
-                        'pending' => 'gray',
-                        'paid' => 'info',
-                        'shipped' => 'warning',
-                        'completed' => 'success',
-                        'disputing' => 'warning',
-                        'dispute_review' => 'warning',
-                        'partially_refunded' => 'warning',
-                        'cancelled', 'failed', 'expired', 'refunded', 'chargeback' => 'danger',
-                        default => 'gray',
-                    }),
+                    ->color(fn (string $state): string => OrderStatusColor::get($state)),
                 // 展示 payment_methods.method_name；老数据/关联已被硬删除时兜底回退到
                 // 冗余存的 method_code，保证列不会空着。
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))

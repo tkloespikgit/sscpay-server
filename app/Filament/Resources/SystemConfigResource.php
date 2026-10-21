@@ -5,10 +5,12 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\SystemConfigResource\Pages;
 use App\Models\SystemConfig;
 use App\Services\MerchantRoleProvisioningService;
+use App\Support\OrderStatusColor;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
@@ -19,6 +21,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * 系统配置管理（超管专属）：汇率汇损、订单事件同步、付款链接有效期、
@@ -86,7 +89,15 @@ class SystemConfigResource extends Resource
                     ->label(__('admin.system_config.fields.config_value'))
                     ->simple(TextInput::make('value')->required())
                     ->addActionLabel(__('admin.system_config.actions.add_item'))
-                    ->visible(fn (Get $get) => $get('value_type') === SystemConfig::TYPE_JSON),
+                    ->visible(fn (Get $get, ?SystemConfig $record): bool => $get('value_type') === SystemConfig::TYPE_JSON
+                        && $record?->config_key !== OrderStatusColor::CONFIG_KEY),
+
+                Textarea::make('value_json_object')
+                    ->label(__('admin.system_config.fields.config_value'))
+                    ->helperText(__('admin.system_config.order_status_colors.helper'))
+                    ->rows(18)
+                    ->required()
+                    ->visible(fn (?SystemConfig $record): bool => $record?->config_key === OrderStatusColor::CONFIG_KEY),
 
                 Toggle::make('value_boolean')
                     ->label(__('admin.system_config.fields.config_value'))
@@ -129,6 +140,7 @@ class SystemConfigResource extends Resource
             ->filters([
                 SelectFilter::make('group')->label(__('admin.system_config.fields.group'))->options([
                     'exchange' => __('admin.system_config.groups.exchange'),
+                    'order' => __('admin.system_config.groups.order'),
                     'order_event' => __('admin.system_config.groups.order_event'),
                     'payment' => __('admin.system_config.groups.payment'),
                     'security' => __('admin.system_config.groups.security'),
@@ -164,6 +176,11 @@ class SystemConfigResource extends Resource
     public static function canCreate(): bool
     {
         return false;
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return static::canViewAny();
     }
 
     public static function canDelete($record): bool

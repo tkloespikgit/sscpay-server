@@ -8,6 +8,7 @@ use App\Models\Observer;
 use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Support\ObserverOrderStatus;
+use App\Support\OrderStatusColor;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\TextInput;
@@ -97,11 +98,7 @@ class OrderResource extends Resource
                 TextColumn::make('status')->label(__('admin.order.columns.status'))
                     ->badge()
                     ->formatStateUsing(fn (string $state) => ObserverOrderStatus::label($state))
-                    ->color(fn (string $state) => match (ObserverOrderStatus::group($state)) {
-                        'paid' => 'success',
-                        'disputing' => 'warning',
-                        default => 'danger',
-                    }),
+                    ->color(fn (string $state): string => OrderStatusColor::get($state)),
 
                 TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
                     ->placeholder(__('admin.order.placeholders.not_shipped'))

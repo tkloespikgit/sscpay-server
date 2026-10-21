@@ -1077,6 +1077,7 @@ return [
         ],
         'groups' => [
             'exchange' => 'Exchange Rate',
+            'order' => 'Orders',
             'order_event' => 'Order Events',
             'payment' => 'Payment',
             'security' => 'Security',
@@ -1091,6 +1092,12 @@ return [
         ],
         'actions' => [
             'add_item' => 'Add Item',
+        ],
+        'order_status_colors' => [
+            'helper' => 'Enter a JSON object mapping order statuses to colors: gray, primary (theme), success (green), info (blue), warning (amber), or danger (red). You may override individual statuses; omitted statuses use their default colors. Example: {"paid":"info","refunded":"danger"}.',
+            'invalid_object' => 'Enter a valid JSON object such as {"paid":"info"}. Arrays, strings, numbers, and null are not allowed.',
+            'unknown_status' => 'Unknown order status: :status. Use an existing order status key.',
+            'invalid_color' => 'The color for order status :status must be one of these strings: :colors.',
         ],
     ],
 

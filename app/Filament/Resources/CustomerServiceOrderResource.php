@@ -6,6 +6,7 @@ use App\Filament\Resources\CustomerServiceOrderResource\Pages;
 use App\Models\Order;
 use App\Services\OrderPaymentStatusService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Support\OrderStatusColor;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Forms\Components\TextInput;
@@ -109,13 +110,7 @@ class CustomerServiceOrderResource extends Resource
                     ->label(__('admin.order.columns.status'))
                     ->badge()
                     ->formatStateUsing(fn ($state) => __('admin.order.statuses.'.$state))
-                    ->color(fn ($state) => match ($state) {
-                        'paid' => 'success',
-                        'pending' => 'warning',
-                        'failed', 'expired', 'cancelled' => 'danger',
-                        'refunded', 'chargeback' => 'info',
-                        default => 'gray',
-                    })
+                    ->color(fn (string $state): string => OrderStatusColor::get($state))
                     ->sortable(),
 
                 TextColumn::make('created_at')
