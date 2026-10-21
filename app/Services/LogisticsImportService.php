@@ -11,6 +11,14 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use PhpOffice\PhpSpreadsheet\Cell\Cell;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
+use PhpOffice\PhpSpreadsheet\RichText\RichText;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 
 /**
  * 物流批量导入（4.6 节）：按订单列表当前筛选条件导出模板 → 商户填写 → 上传 OSS →
@@ -259,7 +267,7 @@ class LogisticsImportService
     }
 
     /**
-     * 读取阶段：CSV -> logistics_import_task_records。
+     * 读取阶段：CSV / Excel -> logistics_import_task_records。
      *
      * @return int 实际落库的行数（不含表头、不含空行）
      */
@@ -276,7 +284,7 @@ class LogisticsImportService
         $buffer = [];
         $count = 0;
 
-        foreach ($this->readRows($localPath) as $rowNumber => $row) {
+        foreach ($this->readRows($localPath, $task->file_name) as $rowNumber => $row) {
             $buffer[] = [
                 'task_id' => $task->id,
                 'order_id' => null,
@@ -501,7 +509,41 @@ class LogisticsImportService
      *
      * @throws \RuntimeException 文件打不开、没有表头、或表头里找不到 order_no 列
      */
-    private function readRows(string $localPath): \Generator
+    private function readRows(string $localPath, string $fileName): \Generator
+    {
+        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        $rows = in_array($extension, ['xlsx', 'xls'], true)
+            ? $this->readSpreadsheetRows($localPath)
+            : $this->readCsvRows($localPath);
+        $header = null;
+        $map = [];
+
+        foreach ($rows as $rowNumber => $cells) {
+            if ($header === null) {
+                $header = $cells;
+                $map = $this->mapHeader($header);
+
+                if (! isset($map['order_no'])) {
+                    throw new \RuntimeException('模板缺少 order_no 列，请先用「导出物流模板」下载最新模板，填好后上传');
+                }
+
+                continue;
+            }
+
+            if ($this->isBlankRow($cells) || $this->isInstructionRow($cells)) {
+                continue;
+            }
+
+            yield $rowNumber => $this->cellValues($map, $header, $cells);
+        }
+
+        if ($header === null) {
+            throw new \RuntimeException('文件内容为空或缺少表头行');
+        }
+    }
+
+    /** @return \Generator<int, array<int, string|null>> */
+    private function readCsvRows(string $localPath): \Generator
     {
         $handle = fopen($localPath, 'r');
 
@@ -510,38 +552,98 @@ class LogisticsImportService
         }
 
         try {
-            $header = fgetcsv($handle);
-
-            if ($header === false || $header === null) {
-                throw new \RuntimeException('文件内容为空或缺少表头行');
-            }
-
-            $map = $this->mapHeader($header);
-
-            if (! isset($map['order_no'])) {
-                throw new \RuntimeException('模板缺少 order_no 列，请先用「导出物流模板」下载最新模板，填好后原样上传');
-            }
-
-            $rowNumber = 1; // 表头占第 1 行
+            $rowNumber = 0;
 
             while (($cells = fgetcsv($handle)) !== false) {
                 $rowNumber++;
-
-                // Excel 另存 CSV 常在末尾留若干空行，整行都是空白时直接跳过，不计入总数
-                if ($this->isBlankRow($cells)) {
-                    continue;
-                }
-
-                // 模板第二行是填写说明（# 开头），原样回传时跳过，不计入总数
-                if ($this->isInstructionRow($cells)) {
-                    continue;
-                }
-
-                yield $rowNumber => $this->cellValues($map, $header, $cells);
+                yield $rowNumber => $cells;
             }
         } finally {
             fclose($handle);
         }
+    }
+
+    /**
+     * 只读取首张工作表，每批保留 500 行单元格，避免整本工作簿常驻内存。
+     * 临时文件没有扩展名，内容识别限定 Excel Reader，禁止回退到 HTML 等格式。
+     *
+     * @return \Generator<int, array<int, string>>
+     */
+    private function readSpreadsheetRows(string $localPath): \Generator
+    {
+        if (! class_exists(IOFactory::class)) {
+            throw new \RuntimeException('Excel 解析组件尚未安装，请联系管理员或暂时使用 CSV 文件');
+        }
+
+        $reader = IOFactory::createReaderForFile($localPath, [IOFactory::READER_XLSX, IOFactory::READER_XLS]);
+        $worksheetInfo = $reader->listWorksheetInfo($localPath)[0] ?? null;
+
+        if ($worksheetInfo === null) {
+            throw new \RuntimeException('Excel 文件没有可读取的工作表');
+        }
+
+        $reader->setLoadSheetsOnly($worksheetInfo['worksheetName']);
+        $reader->setReadEmptyCells(false);
+        $originalCalendar = ExcelDate::getExcelCalendar();
+
+        for ($startRow = 1; $startRow <= $worksheetInfo['totalRows']; $startRow += self::CHUNK_SIZE) {
+            $endRow = min($startRow + self::CHUNK_SIZE - 1, $worksheetInfo['totalRows']);
+            $reader->setReadFilter(new class($startRow, $endRow) implements IReadFilter
+            {
+                public function __construct(private readonly int $startRow, private readonly int $endRow) {}
+
+                public function readCell(string $columnAddress, int $row, string $worksheetName = ''): bool
+                {
+                    return $row >= $this->startRow && $row <= $this->endRow;
+                }
+            });
+
+            $spreadsheet = null;
+
+            try {
+                $spreadsheet = $reader->load($localPath);
+                $sheet = $spreadsheet->getSheet(0);
+                $rows = [];
+
+                foreach ($sheet->getCoordinates() as $coordinate) {
+                    $cell = $sheet->getCell($coordinate);
+                    $rows[$cell->getRow()][Coordinate::columnIndexFromString($cell->getColumn()) - 1] = $this->spreadsheetCellValue($cell, $spreadsheet->getExcelCalendar());
+                }
+
+                for ($rowNumber = $startRow; $rowNumber <= $endRow; $rowNumber++) {
+                    yield $rowNumber => $rows[$rowNumber] ?? [];
+                }
+            } finally {
+                $spreadsheet?->disconnectWorksheets();
+                ExcelDate::setExcelCalendar($originalCalendar);
+            }
+        }
+    }
+
+    private function spreadsheetCellValue(Cell $cell, int $calendar): string
+    {
+        // 使用文件内已有缓存值，避免导入时执行公式或访问外部工作簿。
+        $value = $cell->getDataType() === DataType::TYPE_FORMULA ? $cell->getOldCalculatedValue() : $cell->getValue();
+
+        if ($value === null) {
+            return '';
+        }
+
+        if ($value instanceof RichText) {
+            return $value->getPlainText();
+        }
+
+        if (is_string($value)) {
+            return $value;
+        }
+
+        $format = $cell->getStyle()->getNumberFormat()->getFormatCode();
+
+        if (is_numeric($value) && ExcelDate::isDateTimeFormatCode($format)) {
+            return ExcelDate::excelToDateTimeObject((float) $value, config('app.timezone'), $calendar)->format('Y-m-d H:i:s');
+        }
+
+        return NumberFormat::toFormattedString($value, $format);
     }
 
     /**

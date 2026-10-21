@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\CarrierResource\Pages;
 use App\Models\Carrier;
+use App\Models\User;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
@@ -19,7 +20,7 @@ use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 
 /**
- * 系统支持的物流承运商清单（由 CarrierSeeder 落库）。所有商户用户都能查看，
+ * 系统支持的物流承运商清单（由 CarrierSeeder 落库）。除专属客服外的后台用户可查看，
  * 只有超级管理员能新建/编辑/删除——这份清单是 order/ship API、手工录入物流、
  * CSV 批量导入物流三个入口共用的校验依据（见 Carrier::isValidCode()），
  * 商户自己不该有能力往里面塞一个野生 carrier_code。
@@ -130,12 +131,13 @@ class CarrierResource extends Resource
     }
 
     /**
-     * 所有能进后台的用户（商户 + 超管）都能看这份清单，不做权限门槛，
-     * 只在写操作上区分身份。
+     * 专属客服只开放订单查询，其余后台用户可查看清单；写操作仍仅允许超管。
      */
     public static function canViewAny(): bool
     {
-        return true;
+        $user = auth()->user();
+
+        return $user instanceof User && ! $user->isCustomerServiceOnly();
     }
 
     public static function canCreate(): bool

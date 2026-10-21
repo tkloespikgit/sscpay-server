@@ -2,6 +2,7 @@
 
 namespace App\Filament\Widgets;
 
+use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\Concerns\InteractsWithPageFilters;
 use Filament\Widgets\StatsOverviewWidget;
@@ -19,6 +20,11 @@ use Filament\Widgets\StatsOverviewWidget\Stat;
 class PaymentSuccessRate extends StatsOverviewWidget
 {
     use InteractsWithPageFilters;
+
+    public static function canView(): bool
+    {
+        return AdminDashboard::canAccess();
+    }
 
     public function getHeading(): ?string
     {

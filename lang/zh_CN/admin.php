@@ -681,10 +681,10 @@ return [
             'export_logistics_template'       => '导出物流模板',
             'upload_logistics'                => '上传物流单号',
             'create_manual_order'             => '创建支付订单',
-            'csv_file'                        => 'CSV 文件',
+            'import_file'                     => 'CSV / Excel 文件',
             'merchant_required'               => '请先在上方筛选条件中选择「商户」后再操作',
             'upload_forbidden'                => '超级管理员不能上传物流信息，请由该商户的用户登录后上传',
-            'upload_logistics_hint'           => '请先用「导出物流模板」下载 CSV。可填写的列共 5 个：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空不改动）、remark（备注，选填）；其余列仅供核对，改了不生效。填好后原样上传，表头和第二行的说明行请勿删除。',
+            'upload_logistics_hint'           => '支持上传 CSV、XLSX、XLS，Excel 仅读取第一张工作表；导出模板仍为 CSV。请先用「导出物流模板」下载，并将订单编号、物流单号设为文本，避免前导零丢失或长数字精度变化。可填写的列共 5 个：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空不改动）、remark（备注，选填）；其余列仅供核对，改了不生效。填好后上传，表头和第二行的说明行请勿删除。',
             // 写进导出模板第二行的说明（以 # 开头，上传时整行跳过），
             // 内容必须与 LogisticsImportService::HEADER_ALIASES 支持的字段保持一致
             'logistics_template_note'         => '可填写列：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，格式 2026-09-22 15:30:00，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空则不改动已有链接）、remark（备注，选填）。其余列仅供核对，修改不生效。本行以 # 开头，上传时会被忽略，请勿删除表头。',

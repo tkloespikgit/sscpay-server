@@ -7,10 +7,12 @@ use App\Filament\Widgets\OrderTrendChart;
 use App\Filament\Widgets\PaymentMethodBreakdownChart;
 use App\Filament\Widgets\PaymentSuccessRate;
 use App\Filament\Widgets\StatsOverview;
+use App\Models\User;
 use App\Services\DashboardService;
 use Filament\Forms\Components\Select;
 use Filament\Pages\Dashboard as BaseDashboard;
 use Filament\Pages\Dashboard\Concerns\HasFiltersForm;
+use Filament\Panel;
 use Filament\Schemas\Schema;
 
 /**
@@ -26,6 +28,16 @@ class AdminDashboard extends BaseDashboard
 {
     use HasFiltersForm;
 
+    /** 面板根路径交由 Filament 按可访问导航跳转，客服直接进入订单查询。 */
+    protected static string $routePath = '/dashboard';
+
+    public static function canAccess(array $parameters = []): bool
+    {
+        $user = auth()->user();
+
+        return $user instanceof User && ! $user->isCustomerServiceOnly();
+    }
+
     /**
      * 强制沿用内置 Dashboard 页面的 slug（"dashboard"），而不是让 Filament
      * 按类名 "AdminDashboard" 自动生成 "admin-dashboard"。
@@ -37,7 +49,7 @@ class AdminDashboard extends BaseDashboard
      * （RouteNotFoundException）。这个自定义 Dashboard 是要"替换"内置的那个，
      * 而不是新增一个平行的页面，所以必须占用同一个 slug。
      */
-    public static function getSlug(?\Filament\Panel $panel = null): string
+    public static function getSlug(?Panel $panel = null): string
     {
         return 'dashboard';
     }

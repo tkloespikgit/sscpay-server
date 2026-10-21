@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Permissions;
 use Filament\Auth\MultiFactor\App\Concerns\InteractsWithAppAuthentication;
 use Filament\Auth\MultiFactor\App\Concerns\InteractsWithAppAuthenticationRecovery;
 use Filament\Auth\MultiFactor\App\Contracts\HasAppAuthentication;
@@ -121,6 +122,19 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
     public function isPlatformStaff(): bool
     {
         return $this->is_super_admin || $this->isMerchantManager();
+    }
+
+    /**
+     * 仅有客服订单查询权限的账号，不开放仪表盘、承运商等通用业务页面。
+     * 以有效权限集判断，保留多角色和用户直接授权的叠加行为。
+     */
+    public function isCustomerServiceOnly(): bool
+    {
+        return ! $this->is_super_admin
+            && $this->can(Permissions::CUSTOMER_SERVICE_ORDERS_VIEW)
+            && $this->getAllPermissions()->pluck('name')
+                ->diff([Permissions::CUSTOMER_SERVICE_ORDERS_VIEW])
+                ->isEmpty();
     }
 
     /**
