@@ -37,7 +37,12 @@ class LogisticsUploadTest extends TestCase
     #[TestWith(['txt'])]
     #[TestWith(['xlsx'])]
     #[TestWith(['xls'])]
-    public function test_upload_stores_the_file_and_queues_a_task_for_the_current_merchant(string $extension): void
+    #[TestWith(['xls', null, 1500])]
+    #[TestWith(['xls', 'application/x-ole-storage'])]
+    #[TestWith(['xls', 'application/vnd.ms-office'])]
+    #[TestWith(['xls', 'application/msexcel'])]
+    #[TestWith(['xls', 'application/x-msexcel'])]
+    public function test_upload_stores_the_file_and_queues_a_task_for_the_current_merchant(string $extension, ?string $mimeType = null, int $rowCount = 1): void
     {
         $this->createMerchantAndApplication();
         $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'is_super_admin' => false, 'status' => true]);
@@ -47,9 +52,10 @@ class LogisticsUploadTest extends TestCase
         Storage::fake('oss');
         Queue::fake([ProcessLogisticsImportJob::class]);
         Http::preventStrayRequests();
-        $content = $this->fileContent($extension);
+        $content = $this->fileContent($extension, $rowCount);
         $file = UploadedFile::fake()->createWithContent('logistics.'.$extension, $content);
-        $file->mimeType(mime_content_type($file->getRealPath()));
+        // Livewire 仅检测前 64 KiB，大 XLS 可能因此被识别为通用 OLE 容器。
+        $file->mimeType($mimeType ?? (new \finfo(FILEINFO_MIME_TYPE))->buffer(substr($content, 0, 64 * 1024)));
 
         Livewire::test(ListOrders::class)
             ->callAction('uploadLogistics', ['file' => $file])
@@ -71,7 +77,9 @@ class LogisticsUploadTest extends TestCase
         Queue::assertPushed(ProcessLogisticsImportJob::class, fn (ProcessLogisticsImportJob $job): bool => $job->taskId === $task->id && $job->queue === 'low');
     }
 
-    public function test_upload_rejects_an_unsupported_file_without_creating_a_task(): void
+    #[TestWith(['logistics.png'])]
+    #[TestWith(['logistics.xls'])]
+    public function test_upload_rejects_an_unsupported_file_without_creating_a_task(string $fileName): void
     {
         $this->createMerchantAndApplication();
         $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'is_super_admin' => false, 'status' => true]);
@@ -80,7 +88,28 @@ class LogisticsUploadTest extends TestCase
         Storage::fake('local');
         Storage::fake('oss');
         Queue::fake();
-        $file = UploadedFile::fake()->image('logistics.png');
+        $file = UploadedFile::fake()->image($fileName)->mimeType('image/png');
+
+        Livewire::test(ListOrders::class)
+            ->callAction('uploadLogistics', ['file' => $file])
+            ->assertHasActionErrors(['file']);
+
+        $this->assertDatabaseCount('logistics_import_tasks', 0);
+        $this->assertSame([], Storage::disk('oss')->allFiles());
+        Queue::assertNothingPushed();
+    }
+
+    public function test_upload_rejects_an_ole_file_with_an_unsupported_extension(): void
+    {
+        $this->createMerchantAndApplication();
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'is_super_admin' => false, 'status' => true]);
+        $user->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::LOGISTICS_IMPORTS_MANAGE]);
+        $this->actingAs($user);
+        Storage::fake('local');
+        Storage::fake('oss');
+        Queue::fake();
+        $file = UploadedFile::fake()->createWithContent('logistics.doc', $this->fileContent('xls'))
+            ->mimeType('application/x-ole-storage');
 
         Livewire::test(ListOrders::class)
             ->callAction('uploadLogistics', ['file' => $file])
@@ -125,7 +154,7 @@ class LogisticsUploadTest extends TestCase
         Queue::assertNothingPushed();
     }
 
-    private function fileContent(string $extension): string
+    private function fileContent(string $extension, int $rowCount = 1): string
     {
         if (in_array($extension, ['csv', 'txt'], true)) {
             return "order_no,logistics_company,tracking_number\nSSC-0001,ups,000012345678901234\n";
@@ -134,9 +163,13 @@ class LogisticsUploadTest extends TestCase
         $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->fromArray(['order_no', 'logistics_company', 'tracking_number']);
-        $sheet->setCellValueExplicit('A2', 'SSC-0001', DataType::TYPE_STRING);
-        $sheet->setCellValue('B2', 'ups');
-        $sheet->setCellValueExplicit('C2', '000012345678901234', DataType::TYPE_STRING);
+
+        for ($row = 2; $row <= $rowCount + 1; $row++) {
+            $sheet->setCellValueExplicit('A'.$row, 'SSC-'.$row, DataType::TYPE_STRING);
+            $sheet->setCellValue('B'.$row, 'ups');
+            $sheet->setCellValueExplicit('C'.$row, '000012345678901234', DataType::TYPE_STRING);
+        }
+
         $temporaryFile = tmpfile();
 
         try {
