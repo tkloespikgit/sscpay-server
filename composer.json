@@ -17,6 +17,7 @@
     "giggsey/libphonenumber-for-php": "^9.0",
     "laravel/framework": "^12.0",
     "laravel/tinker": "^2.10.1",
+    "phpoffice/phpspreadsheet": "^5.10",
     "spatie/laravel-permission": "^6.25"
   },
   "require-dev": {

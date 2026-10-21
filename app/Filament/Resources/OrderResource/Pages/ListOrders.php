@@ -75,8 +75,13 @@ class ListOrders extends ListRecords
                 ->modalDescription(fn () => __('admin.order.actions.upload_logistics_hint'))
                 ->schema([
                     FileUpload::make('file')
-                        ->label(__('admin.order.actions.csv_file'))
-                        ->acceptedFileTypes(['text/csv', 'text/plain'])
+                        ->label(__('admin.order.actions.import_file'))
+                        ->acceptedFileTypes([
+                            'text/csv',
+                            'text/plain',
+                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            'application/vnd.ms-excel',
+                        ])
                         ->required()
                         ->disk('local')
                         ->directory('logistics-imports-tmp'),
