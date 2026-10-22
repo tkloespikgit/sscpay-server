@@ -45,3 +45,6 @@ Schedule::command('checkout:check-cloudflare-ips')->weeklyOn(1, '09:00');
 // 收款链接：刷新商户自有域名在 Cloudflare 侧的证书状态。证书签发是异步的，
 // 商户加完 DCV 记录后不会有人通知我们，只能主动轮询。
 Schedule::command('checkout:sync-domains')->everyFifteenMinutes()->withoutOverlapping();
+
+// 物流上传记录保留 90 天（业务确认）：明细表随行数线性增长，过期任务连明细一起清掉。
+Schedule::command('logistics-imports:prune --days=90')->dailyAt('03:10')->withoutOverlapping();
