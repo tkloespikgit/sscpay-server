@@ -23,6 +23,7 @@ return [
 
     'log_viewer'                => [
         'nav_label' => '日志查看',
+        'scope_description' => '优先读取最近修改的日志文件，合计不超过 :size MiB，显示其中最新 :count 条记录；超大文件会跳过。筛选和统计仅限这些记录，完整历史请查看服务器日志。',
     ],
 
     'role_permissions'          => [
@@ -745,7 +746,7 @@ return [
             'order_no'                   => '系统订单号',
             'order_no_placeholder'       => '支持模糊搜索',
             'merchant_order_no'          => '商户订单号',
-            'exact_placeholder'          => '精准搜索，请输入完整单号',
+            'merchant_order_no_placeholder' => '支持模糊搜索',
             'transaction_id'             => '三方交易号',
             'transaction_id_placeholder' => '支持模糊搜索',
             'created_from'               => '开始时间',
@@ -782,6 +783,9 @@ return [
             'manual_status_change_success'    => '订单状态已更新',
             'resend_payment_link_mail'        => '立即重发付款链接邮件',
             'resend_payment_link_mail_queued' => '已加入发送队列',
+            'copy_payment_link' => '复制 WordPress 付款链接',
+            'payment_link_copied' => 'WordPress 付款链接已复制',
+            'payment_link_copy_failed' => '复制失败，请确认使用 HTTPS 并允许浏览器访问剪贴板后重试',
         ],
         'sections'           => [
             'order_info'    => '订单信息',
@@ -792,6 +796,7 @@ return [
         'fields'             => [
             'order_no'                        => '系统订单号',
             'merchant_order_no'               => '商户订单号',
+            'wp_order_id' => 'WordPress 订单 ID',
             'status'                          => '状态',
             'source'                          => '来源',
             'platform'                        => '平台',

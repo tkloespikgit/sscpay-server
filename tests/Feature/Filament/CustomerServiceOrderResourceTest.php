@@ -386,7 +386,7 @@ class CustomerServiceOrderResourceTest extends TestCase
             ->assertNotified(__('admin.customer_service_order.search.required'));
     }
 
-    #[TestWith(['order_no', ' CS-EXACT-1 ', []])]
+    #[TestWith(['order_no', ' CS-MATCH-1 ', []])]
     #[TestWith(['merchant_order_no', ' MO-CS-1 ', []])]
     #[TestWith(['amount', ' 100.00 ', []])]
     #[TestWith(['transaction_id', ' pi_target ', []])]
@@ -397,11 +397,11 @@ class CustomerServiceOrderResourceTest extends TestCase
     public function test_each_condition_can_search_for_matching_orders_on_its_own(string $field, string $value, array $overrides): void
     {
         $user = $this->customerServiceUserWithMerchant();
-        $hit = $this->makeOrder('CS-EXACT-1', 'MO-CS-1', array_merge([
+        $hit = $this->makeOrder('CS-MATCH-1', 'MO-CS-1', array_merge([
             'transaction_id' => 'pi_target',
             'customer_email' => 'target@example.com',
         ], $overrides));
-        $miss = $this->makeOrder('CS-EXACT-10', 'MO-CS-10', [
+        $miss = $this->makeOrder('CS-OTHER-2', 'MO-OTHER-2', [
             'amount' => '100.01',
             'transaction_id' => 'pi_other',
             'customer_email' => 'other@example.com',
@@ -412,6 +412,28 @@ class CustomerServiceOrderResourceTest extends TestCase
             ->set("tableDeferredFilters.{$field}.{$field}", $value)
             ->call('searchOrders')
             ->assertCanSeeTableRecords([$hit])
+            ->assertCanNotSeeTableRecords([$miss]);
+    }
+
+    #[TestWith(['order_no'])]
+    #[TestWith(['merchant_order_no'])]
+    #[TestWith(['transaction_id'])]
+    public function test_identifier_filters_match_contained_text_even_when_a_complete_number_is_entered(string $field): void
+    {
+        $user = $this->customerServiceUserWithMerchant();
+        $hit = $this->makeOrder('CS-FUZZY-1', 'MO-FUZZY-1', [$field => 'PREFIX-MATCH-1']);
+        $similar = $this->makeOrder('CS-FUZZY-2', 'MO-FUZZY-2', [$field => 'PREFIX-MATCH-10']);
+        $miss = $this->makeOrder('CS-OTHER-3', 'MO-OTHER-3', [$field => 'PREFIX-OTHER-3']);
+
+        Livewire::actingAs($user)
+            ->test(ListCustomerServiceOrders::class)
+            ->set("tableDeferredFilters.{$field}.{$field}", ' MATCH ')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$hit, $similar])
+            ->assertCanNotSeeTableRecords([$miss])
+            ->set("tableDeferredFilters.{$field}.{$field}", 'PREFIX-MATCH-1')
+            ->call('searchOrders')
+            ->assertCanSeeTableRecords([$hit, $similar])
             ->assertCanNotSeeTableRecords([$miss]);
     }
 

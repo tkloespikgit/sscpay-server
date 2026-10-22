@@ -142,18 +142,16 @@ class OrderResource extends Resource
             // "表格 <tfoot>"，没有"搜索栏下方"这个位置。
             // 筛选项按「订单信息 → 归属维度 → 状态维度 → 时间范围」分组排列。
             ->filters([
-                // 订单号 / 商户订单号走精准匹配（两者都有唯一索引，等值查询直接走索引，
-                // 不像 like '%x%' 那样全表扫）。需要模糊找单可以用右上角的全局搜索框。
                 Filter::make('order_no')
                     ->label(__('admin.order.filters.order_no'))
                     ->schema([
                         TextInput::make('order_no')
                             ->label(__('admin.order.filters.order_no'))
-                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                            ->placeholder(__('admin.order.filters.order_no_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         trim((string) ($data['order_no'] ?? '')) !== '',
-                        fn ($q) => $q->where('order_no', trim((string) $data['order_no']))
+                        fn (Builder $q): Builder => $q->where('order_no', 'like', '%'.trim((string) $data['order_no']).'%')
                     )),
 
                 Filter::make('merchant_order_no')
@@ -161,11 +159,11 @@ class OrderResource extends Resource
                     ->schema([
                         TextInput::make('merchant_order_no')
                             ->label(__('admin.order.filters.merchant_order_no'))
-                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                            ->placeholder(__('admin.order.filters.merchant_order_no_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         trim((string) ($data['merchant_order_no'] ?? '')) !== '',
-                        fn ($q) => $q->where('merchant_order_no', trim((string) $data['merchant_order_no']))
+                        fn (Builder $q): Builder => $q->where('merchant_order_no', 'like', '%'.trim((string) $data['merchant_order_no']).'%')
                     )),
 
                 Filter::make('amount')
@@ -198,8 +196,8 @@ class OrderResource extends Resource
                             ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['transaction_id'] ?? null,
-                        fn ($q, $transactionId) => $q->where('transaction_id', 'like', '%'.$transactionId.'%')
+                        trim((string) ($data['transaction_id'] ?? '')) !== '',
+                        fn (Builder $q): Builder => $q->where('transaction_id', 'like', '%'.trim((string) $data['transaction_id']).'%')
                     )),
 
                 Filter::make('customer_email')

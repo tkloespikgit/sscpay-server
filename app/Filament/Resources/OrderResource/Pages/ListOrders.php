@@ -91,7 +91,13 @@ class ListOrders extends ListRecords
                             'text/plain',
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                             'application/vnd.ms-excel',
+                            'application/msexcel',
+                            'application/x-msexcel',
+                            'application/vnd.ms-office',
+                            'application/x-ole-storage',
                         ])
+                        ->mimeTypeMap(['xls' => 'application/vnd.ms-excel'])
+                        ->rules(['extensions:csv,txt,xlsx,xls'])
                         ->required()
                         ->disk('local')
                         ->directory('logistics-imports-tmp')
