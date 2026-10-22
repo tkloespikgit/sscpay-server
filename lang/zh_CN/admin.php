@@ -23,6 +23,7 @@ return [
 
     'log_viewer'                => [
         'nav_label' => '日志查看',
+        'scope_description' => '优先读取最近修改的日志文件，合计不超过 :size MiB，显示其中最新 :count 条记录；超大文件会跳过。筛选和统计仅限这些记录，完整历史请查看服务器日志。',
     ],
 
     'role_permissions'          => [

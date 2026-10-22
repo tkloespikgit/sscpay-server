@@ -3,6 +3,8 @@
 namespace App\Providers\Filament;
 
 use AchyutN\FilamentLogViewer\FilamentLogViewer;
+use App\Filament\Pages\LogViewer;
+use App\Filament\Support\RecentLogProvider;
 use App\Providers\Filament\Concerns\ConfiguresSharedPanelSettings;
 use Filament\Panel;
 use Filament\PanelProvider;
@@ -36,6 +38,8 @@ class AdminPanelProvider extends PanelProvider
                 // Laravel 日志查看（achyutn/filament-log-viewer）：挂在"平台管理"分组下，仅超管可见。
                 // 导航分组/标签用闭包传入，保证在请求期解析，走 admin.nav / admin.log_viewer 翻译键。
                 FilamentLogViewer::make()
+                    ->providerClass(RecentLogProvider::class)
+                    ->pageClass(LogViewer::class)
                     ->authorize(fn (): bool => (bool) auth()->user()?->is_super_admin)
                     ->navigationGroup(fn (): string => __('admin.nav.platform'))
                     ->navigationLabel(fn (): string => __('admin.log_viewer.nav_label'))
