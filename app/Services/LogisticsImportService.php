@@ -7,7 +7,9 @@ use App\Models\Carrier;
 use App\Models\LogisticsImportTask;
 use App\Models\LogisticsImportTaskRecord;
 use App\Models\Order;
+use App\Support\XlsxExport;
 use Carbon\Carbon;
+use Generator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -24,7 +26,7 @@ use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
  * 物流批量导入（4.6 节）：按订单列表当前筛选条件导出模板 → 商户填写 → 上传 OSS →
  * 队列异步处理 → 逐行明细落 logistics_import_task_records → Telegram 通知商户。
  *
- * 两个方向共用同一套表头（TEMPLATE_HEADERS）：导出的 CSV 商户填完可直接回传，
+ * 两个方向共用同一套表头（TEMPLATE_HEADERS）：导出的 XLSX 商户填完可直接回传，
  * 因此解析端必须认得导出端的全部列名，见 HEADER_ALIASES。
  *
  * 可填写的列只有 5 个：logistics_company / tracking_number（必填）、
@@ -35,7 +37,7 @@ use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 class LogisticsImportService
 {
     /**
-     * CSV 表头。列顺序即导出顺序，与后台订单列表展示的字段一一对应；
+     * 模板表头。列顺序即导出顺序，与后台订单列表展示的字段一一对应；
      * 表头用英文字段名（而不是中文标题）是为了让上传解析不依赖界面语言，
      * 商户填写时也只需照列名对号入座。
      */
@@ -119,20 +121,10 @@ class LogisticsImportService
      * @param  int|null  $merchantId  可选的单商户限制；null 时保留查询的权限范围与筛选。
      *                                调用方负责提供已授权的查询，不能移除租户 scope。
      * @param  Builder  $query  订单列表页已应用筛选/搜索的查询（ListOrders::getFilteredTableQuery()）
-     * @return string 带 UTF-8 BOM 的 CSV 文本（BOM 是为了 Excel 直接双击打开不乱码）
+     * @return string XLSX 文件内容；非金额字段使用文本单元格，金额保留数值类型。
      */
     public function generateTemplate(?int $merchantId, Builder $query): string
     {
-        $handle = fopen('php://temp/maxmemory:8388608', 'r+');
-
-        if ($handle === false) {
-            throw new \RuntimeException('无法创建导出文件缓冲区');
-        }
-
-        fwrite($handle, "\xEF\xBB\xBF");
-        fputcsv($handle, self::TEMPLATE_HEADERS);
-        fputcsv($handle, $this->templateNoteRow());
-
         // select('orders.*')：表格查询可能带着列的聚合子查询（withCount 等），
         // 导出只需要订单本身的字段，显式收敛 select 也顺便保证 lazyById() 能拿到 id。
         // lazyById 按主键分批取，内存占用与文件行数无关。
@@ -147,20 +139,21 @@ class LogisticsImportService
             ->with(['merchant', 'application', 'shipping', 'paymentMethod'])
             ->lazyById(self::CHUNK_SIZE);
 
-        foreach ($orders as $order) {
-            fputcsv($handle, array_values($this->buildRow($order)));
-        }
+        $rows = function () use ($orders): Generator {
+            yield XlsxExport::row(self::TEMPLATE_HEADERS);
+            yield XlsxExport::row($this->templateNoteRow());
+            $amountColumns = array_keys(array_intersect(self::TEMPLATE_HEADERS, ['amount', 'converted_amount']));
 
-        rewind($handle);
-        $csv = stream_get_contents($handle);
-        fclose($handle);
+            foreach ($orders as $order) {
+                yield XlsxExport::row(array_values($this->buildRow($order)), $amountColumns);
+            }
+        };
 
-        return $csv;
+        return XlsxExport::contents($rows(), rowLimit: XlsxExport::MAX_ROWS_PER_SHEET);
     }
 
     /**
-     * 模板第二行的填写说明。补齐到和表头一样的列数，Excel 里不会出现
-     * 参差不齐的一行，商户另存回传时 fgetcsv 拿到的列数也保持一致。
+     * 模板第二行的填写说明，补齐到和表头一样的列数，保留完整的列映射。
      *
      * @return array<int, string>
      */
@@ -174,7 +167,7 @@ class LogisticsImportService
 
     /**
      * 一行订单 -> TEMPLATE_HEADERS 顺序的取值。日期统一格式化成
-     * 'Y-m-d H:i:s'（CSV 里放 Carbon 对象会被序列化成 ISO8601 带时区，商户不好读）。
+     * 'Y-m-d H:i:s'，以文本保留系统时区下的完整时间。
      */
     private function buildRow(Order $order): array
     {
@@ -505,11 +498,11 @@ class LogisticsImportService
      * 逐行读取 CSV，产出 [行号 => ['raw' => 原始列, 'order_no' => ..., ...]]。
      * 用生成器而不是一次性 file_get_contents + parse，保证大文件不吃内存。
      *
-     * @return \Generator<int, array<string, mixed>>
+     * @return Generator<int, array<string, mixed>>
      *
      * @throws \RuntimeException 文件打不开、没有表头、或表头里找不到 order_no 列
      */
-    private function readRows(string $localPath, string $fileName): \Generator
+    private function readRows(string $localPath, string $fileName): Generator
     {
         $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
         $rows = in_array($extension, ['xlsx', 'xls'], true)
@@ -542,8 +535,8 @@ class LogisticsImportService
         }
     }
 
-    /** @return \Generator<int, array<int, string|null>> */
-    private function readCsvRows(string $localPath): \Generator
+    /** @return Generator<int, array<int, string|null>> */
+    private function readCsvRows(string $localPath): Generator
     {
         $handle = fopen($localPath, 'r');
 
@@ -567,9 +560,9 @@ class LogisticsImportService
      * 只读取首张工作表，每批保留 500 行单元格，避免整本工作簿常驻内存。
      * 临时文件没有扩展名，内容识别限定 Excel Reader，禁止回退到 HTML 等格式。
      *
-     * @return \Generator<int, array<int, string>>
+     * @return Generator<int, array<int, string>>
      */
-    private function readSpreadsheetRows(string $localPath): \Generator
+    private function readSpreadsheetRows(string $localPath): Generator
     {
         if (! class_exists(IOFactory::class)) {
             throw new \RuntimeException('Excel 解析组件尚未安装，请联系管理员或暂时使用 CSV 文件');

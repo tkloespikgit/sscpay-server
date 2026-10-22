@@ -12,8 +12,10 @@ use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use OverflowException;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\Concerns\CreatesTestOrders;
+use Tests\Concerns\ReadsSpreadsheets;
 use Tests\TestCase;
 
 /**
@@ -24,6 +26,7 @@ use Tests\TestCase;
 class OrderListFiltersTest extends TestCase
 {
     use CreatesTestOrders;
+    use ReadsSpreadsheets;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -209,11 +212,25 @@ class OrderListFiltersTest extends TestCase
 
     public function test_export_without_merchant_filter_downloads_current_results(): void
     {
+        $this->freezeTime();
         $this->makeOrder('SSC-EXPORT', 'M-EXPORT');
 
         Livewire::test(ListOrders::class)
             ->callAction('exportLogisticsTemplate')
-            ->assertFileDownloaded('logistics_template_'.now()->format('Ymd_His').'.csv');
+            ->assertFileDownloaded('logistics_template_'.now()->format('Ymd_His').'.xlsx');
+    }
+
+    public function test_export_reports_when_the_template_exceeds_single_sheet_capacity(): void
+    {
+        $this->mock(LogisticsImportService::class)
+            ->shouldReceive('generateTemplate')
+            ->once()
+            ->andThrow(new OverflowException);
+
+        Livewire::test(ListOrders::class)
+            ->callAction('exportLogisticsTemplate')
+            ->assertNotified(__('admin.order.actions.export_too_many_rows'))
+            ->assertNoFileDownloaded();
     }
 
     public function test_export_preserves_filters_and_merchant_permissions(): void
@@ -225,24 +242,20 @@ class OrderListFiltersTest extends TestCase
 
         $service = app(LogisticsImportService::class);
         $page = Livewire::test(ListOrders::class)->filterTable('status', ['paid']);
-        $csv = $service->generateTemplate(null, $page->instance()->getFilteredTableQuery());
-        $this->assertStringContainsString('SSC-OWN', $csv);
-        $this->assertStringContainsString('SSC-OTHER', $csv);
-        $this->assertStringNotContainsString('SSC-PENDING', $csv);
+        $rows = $this->spreadsheetRows($service->generateTemplate(null, $page->instance()->getFilteredTableQuery()));
+        $this->assertSame(['SSC-OWN', 'SSC-OTHER'], array_column(array_slice($rows, 2), 4));
 
         $merchantUser = User::create([
             'name' => 'Merchant User', 'email' => 'export@example.com',
             'password' => bcrypt('secret'), 'merchant_id' => $this->merchant->id,
         ]);
         $this->actingAs($merchantUser);
-        $csv = $service->generateTemplate(null, Order::query()->where('status', 'paid'));
-        $this->assertStringContainsString('SSC-OWN', $csv);
-        $this->assertStringNotContainsString('SSC-OTHER', $csv);
-        $this->assertStringNotContainsString('SSC-PENDING', $csv);
+        $rows = $this->spreadsheetRows($service->generateTemplate(null, Order::query()->where('status', 'paid')));
+        $this->assertSame(['SSC-OWN'], array_column(array_slice($rows, 2), 4));
 
         // 显式传入其他商户也不能绕过登录用户的租户范围。
-        $csv = $service->generateTemplate($otherMerchant->id, Order::query());
-        $this->assertStringNotContainsString('SSC-OTHER', $csv);
+        $rows = $this->spreadsheetRows($service->generateTemplate($otherMerchant->id, Order::query()));
+        $this->assertSame([], array_slice($rows, 2));
 
         $manager = User::create([
             'name' => 'Manager', 'email' => 'manager-export@example.com',
@@ -250,9 +263,8 @@ class OrderListFiltersTest extends TestCase
         ]);
         $this->merchant->update(['owner_id' => $manager->id]);
         $this->actingAs($manager);
-        $csv = $service->generateTemplate(null, Order::query()->where('status', 'paid'));
-        $this->assertStringContainsString('SSC-OWN', $csv);
-        $this->assertStringNotContainsString('SSC-OTHER', $csv);
+        $rows = $this->spreadsheetRows($service->generateTemplate(null, Order::query()->where('status', 'paid')));
+        $this->assertSame(['SSC-OWN'], array_column(array_slice($rows, 2), 4));
     }
 
     /**
