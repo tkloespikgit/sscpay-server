@@ -109,6 +109,27 @@ class LogisticsImportService
      */
     private const ERROR_LOG_LIMIT = 100;
 
+    /**
+     * 「失败行导出」的表头。
+     *
+     * 只导出商户需要修改的字段 + 失败原因，不重复整份模板的核对列：
+     * 上传解析按表头名映射（见 HEADER_ALIASES），缺列不影响解析，所以商户把这份
+     * 文件改完可以直接重传，不必再回原始模板里翻行号。
+     */
+    public const FAILED_EXPORT_HEADERS = [
+        'row_number',
+        'order_no',
+        'logistics_company',
+        'tracking_number',
+        'shipped_at',
+        'tracking_url',
+        'remark',
+        'error_message',
+    ];
+
+    /** 失败行导出的单次上限，防止一个全失败的大文件把内存和响应时间拖爆。 */
+    private const FAILED_EXPORT_LIMIT = 5000;
+
     // ------------------------------------------------------------------
     // 导出
     // ------------------------------------------------------------------
@@ -156,6 +177,64 @@ class LogisticsImportService
         fclose($handle);
 
         return $csv;
+    }
+
+    /**
+     * 导出某个导入任务的失败行，供商户改正后重新上传。
+     *
+     * 几个刻意的取舍：
+     *
+     *   - 只查 status=failed；pending 行在正常流程下不会残留，出现即说明任务中断，
+     *     不该被当作"可修正的失败行"导出，避免商户误以为重传能补上。
+     *   - 用 cursor() 而不是 get()：一次导入可能上万行，这里虽然加了上限，
+     *     也不该把整个结果集读进内存。
+     *   - 超过 FAILED_EXPORT_LIMIT 只导前 N 行，不截断成静默丢数据：调用方会把这个
+     *     上限展示在按钮提示里，商户知道自己拿到的是前 N 条。
+     *   - 带 UTF-8 BOM，Excel 双击直接打开不乱码（与 generateTemplate 一致）。
+     */
+    public function failedRowsCsv(LogisticsImportTask $task): string
+    {
+        $handle = fopen('php://temp/maxmemory:8388608', 'r+');
+
+        if ($handle === false) {
+            throw new \RuntimeException('无法创建导出文件缓冲区');
+        }
+
+        fwrite($handle, "\xEF\xBB\xBF");
+        fputcsv($handle, self::FAILED_EXPORT_HEADERS);
+
+        $records = LogisticsImportTaskRecord::query()
+            ->withoutGlobalScopes()
+            ->where('task_id', $task->id)
+            ->where('status', LogisticsImportTaskRecord::STATUS_FAILED)
+            ->orderBy('row_number')
+            ->limit(self::FAILED_EXPORT_LIMIT)
+            ->cursor();
+
+        foreach ($records as $record) {
+            fputcsv($handle, [
+                $record->row_number,
+                $record->order_no,
+                $record->logistics_company,
+                $record->tracking_number,
+                $record->shipped_at,
+                $record->tracking_url,
+                $record->remark,
+                $record->error_message,
+            ]);
+        }
+
+        rewind($handle);
+        $csv = stream_get_contents($handle);
+        fclose($handle);
+
+        return $csv;
+    }
+
+    /** 失败行导出的行数上限，供界面提示使用。 */
+    public function failedRowsExportLimit(): int
+    {
+        return self::FAILED_EXPORT_LIMIT;
     }
 
     /**
@@ -237,7 +316,10 @@ class LogisticsImportService
     {
         $task = LogisticsImportTask::query()->withoutGlobalScopes()->findOrFail($taskId);
 
-        $task->update(['status' => 'processing']);
+        // markProcessing() 而不是直接 update status：顺手写 started_at 并清空上一次的
+        // finished_at。Job 配了 3 次重试，重跑时必须把旧的收尾时间抹掉，否则页面上会
+        // 同时出现"已结束"和"解析中"。
+        $task->markProcessing();
 
         $localPath = null;
 
@@ -485,7 +567,7 @@ class LogisticsImportService
     }
 
     /**
-     * 统一收尾：回写总行数并 fire 事件通知商户 Telegram。
+     * 统一收尾：回写总行数、记录结束时间并 fire 事件通知商户 Telegram。
      * 无论成功、部分失败还是文件级失败都必须走到这里，否则商户永远等不到通知。
      */
     private function finish(LogisticsImportTask $task, ?int $totalRecords = null): void
@@ -493,6 +575,10 @@ class LogisticsImportService
         if ($totalRecords !== null) {
             $task->update(['total_records' => $totalRecords]);
         }
+
+        // 结束时间单独写，不塞进 markCompleted/markFailed：两个分支都要有收尾时间，
+        // 放在这里只需要维护一处（后续新增分支也不会漏）。
+        $task->markFinished();
 
         event(new LogisticsImportCompleted($task->fresh()));
     }

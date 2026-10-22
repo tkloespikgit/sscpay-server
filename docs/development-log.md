@@ -2,6 +2,16 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-10-22：物流上传记录页（当前工作区，未提交）
+
+- 用户确认：上传记录入口只放订单列表页头（不做导航菜单）；超管可只读查看全部商户；"解决记录"指逐行解析记录；本期只做失败行导出 CSV，重新解析/重试留二期；记录解析起止时间但页面不展示耗时；明细保留 90 天。
+- `logistics_import_tasks` 新增 `original_file_name`（历史数据为 NULL，展示回退 `file_name`）、`started_at`、`finished_at` 及 `(merchant_id, created_at)` 索引。原来 `file_name` 存的是 Filament 随机保存名，与迁移注释"原始文件名"不符，现在把语义拆开：`file_name` = 保存名，`original_file_name` = 商户本地名。上传动作改用 `storeFileNamesIn()`；OSS 路径不再带 `logistics-imports-tmp/` 前缀（历史路径不回填）。Telegram 导入完成通知改用原始文件名。
+- 新增只读资源 `LogisticsImportTaskResource`（权限沿用 `logistics_imports.manage`，超管经 `Gate::before` 可查看全部商户），列表展示上传时间、上传/保存文件名、解析状态、总/成功/失败条数与操作人；详情页含摘要、文件级错误、中断提示和逐行明细 RelationManager（分页 50，可搜订单号）。状态展示把 `completed + fail_count>0` 区分为"部分成功/全部失败"，`processing` 超 30 分钟标"解析中断"。
+- 新增 `logistics-imports:prune --days=90 [--dry-run]`：按 `created_at` 每批 200 条物理删除任务与明细（含已软删任务），每日 03:10 调度。只用软删除无法清理明细表，不满足保留期目标。
+- 失败行导出 `LogisticsImportService::failedRowsCsv()`：只导 `status=failed`，列为 `row_number/order_no/logistics_company/tracking_number/shipped_at/tracking_url/remark/error_message`，带 UTF-8 BOM，单次上限 5000 行；导入端按表头名映射，商户改完可直接重传。
+- 验证：新增 `LogisticsImportTaskLogTest` **14 项 / 44 断言**，覆盖原名回退、起止时间、文件级失败收尾、卡死判定边界、失败行导出（只含失败行）、清理命令（含软删与 dry-run）、商户隔离与超管全量可见、后台列表/详情页及明细 RelationManager 真实渲染；全量 `php artisan test` **408 项通过、4 项 MySQL 专用跳过，3828 个断言**。Pint 已格式化，`git diff --check` 未发现空白问题。
+- 已在本地开发库执行新增迁移（`order_system`），未在业务库或生产执行；队列与外部接口均以模拟方式验证。遗留：`sync_status` 语义混淆、CSV 导入仅支持首次发货、同步 Job 无自动重试等既有问题不在本期范围。
+
 ## 2026-10-21：修复合并后的客服查询与英文文案回退（当前工作区，未暂存）
 
 - 移除 `CustomerServiceOrderResource` 合并后恢复的四处 `searchable()` 及未使用的筛选组件引用，关闭额外全局搜索，保留五项条件提交查询、默认隐藏和商户隔离。

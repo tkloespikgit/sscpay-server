@@ -612,6 +612,80 @@ return [
         ],
     ],
 
+    // 物流上传记录：订单列表页头的只读列表 + 详情页逐行解析记录，
+    // 见 App\Filament\Resources\LogisticsImportTaskResource。
+    'logistics_import_task'     => [
+        'model_label'        => '物流上传记录',
+        'model_label_plural' => '物流上传记录',
+        'nav_label'          => '物流上传记录',
+        'statuses'           => [
+            'pending'             => '待处理',
+            'processing'          => '解析中',
+            'completed'           => '已完成',
+            'failed'              => '文件解析失败',
+            // completed 且 fail_count>0 时在页面上替换掉「已完成」：
+            // 任务结束了不代表每一行都进去了，直接显示完成会误导商户。
+            'partially_completed' => '部分成功',
+            'all_failed'          => '全部失败',
+            // processing 超过 30 分钟（worker 中断）
+            'stale'               => '解析中断',
+        ],
+        'fields'             => [
+            'created_at'         => '上传时间',
+            'original_file_name' => '上传文件名',
+            'file_name'          => '保存文件名',
+            'merchant'           => '商户',
+            'operator'           => '操作人',
+            'status'             => '解析状态',
+            'total_records'      => '总行数',
+            'success_count'      => '成功条数',
+            'fail_count'         => '失败条数',
+        ],
+        'filters'            => [
+            'status'       => '解析状态',
+            'created_from' => '上传开始时间',
+            'created_to'   => '上传结束时间',
+        ],
+        'sections'           => [
+            'summary'    => '上传概要',
+            'file_error' => '文件级错误',
+            'stale_hint' => '任务可能已中断',
+        ],
+        'actions'            => [
+            'export_failed_rows' => '导出失败行',
+        ],
+        'placeholders'       => [
+            'none'             => '—',
+            'legacy_file_name' => '历史记录：上传时未保存原始文件名，这里显示的是系统保存名',
+            'stale_hint'       => '该任务已超过 30 分钟未结束，通常是队列 worker 中断。请联系运维检查 worker 后重新上传，本页不提供重跑入口。',
+        ],
+    ],
+
+    'logistics_import_task_record' => [
+        'title'        => '解析记录',
+        'fields'       => [
+            'row_number'        => '行号',
+            'order_no'          => '系统订单号',
+            'logistics_company' => '承运商',
+            'tracking_number'   => '物流单号',
+            'shipped_at'        => '发货时间（原值）',
+            'status'            => '解析状态',
+            'error_message'     => '失败原因',
+            'raw_data'          => '原始行数据',
+        ],
+        'statuses'     => [
+            'pending' => '待处理',
+            'success' => '成功',
+            'failed'  => '失败',
+        ],
+        'filters'      => [
+            'status' => '解析状态',
+        ],
+        'placeholders' => [
+            'none' => '—',
+        ],
+    ],
+
     'order'                     => [
         'model_label'        => '订单',
         'model_label_plural' => '订单',
@@ -680,6 +754,7 @@ return [
         'actions'            => [
             'export_logistics_template'       => '导出物流模板',
             'upload_logistics'                => '上传物流单号',
+            'logistics_import_tasks'          => '物流上传记录',
             'create_manual_order'             => '创建支付订单',
             'import_file'                     => 'CSV / Excel 文件',
             'merchant_required'               => '请先在上方筛选条件中选择「商户」后再操作',
