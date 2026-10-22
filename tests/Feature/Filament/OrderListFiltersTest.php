@@ -12,11 +12,12 @@ use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
 /**
- * 订单列表筛选栏的回归测试：订单号/商户订单号走精准匹配（不是 like），
+ * 订单列表筛选栏的回归测试：系统订单号、商户订单号与三方交易号支持包含匹配，
  * 订单状态与支付方式支持多选。这几条都是纯 Filament 声明式配置，
  * 写错了页面不会报错、只会静默筛错数据，所以用组件测试兜住。
  */
@@ -42,31 +43,42 @@ class OrderListFiltersTest extends TestCase
         Filament::setCurrentPanel('admin');
     }
 
-    public function test_order_no_and_merchant_order_no_filters_match_exactly(): void
+    #[TestWith(['order_no', ' C-100 ', 'SSC-1001'])]
+    #[TestWith(['merchant_order_no', ' -200 ', 'M-2001'])]
+    #[TestWith(['transaction_id', ' X-300 ', 'TX-3001'])]
+    public function test_order_identifier_filters_match_partial_and_full_values(string $field, string $partial, string $full): void
     {
-        $target = $this->makeOrder('SSC-1001', 'M-2001');
-        // 前缀相同：模糊匹配会把它一起捞出来，精准匹配不会。
-        $similar = $this->makeOrder('SSC-100', 'M-200');
+        $target = $this->makeOrder('SSC-1001', 'M-2001', ['transaction_id' => 'TX-3001']);
+        $similar = $this->makeOrder('SSC-100', 'M-200', ['transaction_id' => 'TX-300']);
+        $unrelated = $this->makeOrder('SSC-OTHER', 'M-OTHER', ['transaction_id' => 'TX-OTHER']);
 
         Livewire::test(ListOrders::class)
+            ->filterTable($field, [$field => $partial])
             ->assertCanSeeTableRecords([$target, $similar])
-            ->filterTable('order_no', ['order_no' => 'SSC-100'])
-            ->assertCanSeeTableRecords([$similar])
-            ->assertCanNotSeeTableRecords([$target]);
-
-        Livewire::test(ListOrders::class)
-            ->filterTable('merchant_order_no', ['merchant_order_no' => 'M-2001'])
+            ->assertCanNotSeeTableRecords([$unrelated])
+            ->filterTable($field, [$field => $full])
             ->assertCanSeeTableRecords([$target])
-            ->assertCanNotSeeTableRecords([$similar]);
+            ->assertCanNotSeeTableRecords([$similar, $unrelated])
+            ->filterTable($field, [$field => 'NO-MATCH'])
+            ->assertCountTableRecords(0);
     }
 
-    public function test_order_no_filter_trims_pasted_whitespace(): void
+    #[TestWith(['order_no'])]
+    #[TestWith(['merchant_order_no'])]
+    #[TestWith(['transaction_id'])]
+    public function test_order_identifier_filters_accept_zero_and_ignore_blank_values(string $field): void
     {
-        $target = $this->makeOrder('SSC-1001', 'M-2001');
+        $target = $this->makeOrder('SSC-0', 'M-0', ['transaction_id' => 'TX-0']);
+        $other = $this->makeOrder('SSC-OTHER', 'M-OTHER', ['transaction_id' => 'TX-OTHER']);
 
         Livewire::test(ListOrders::class)
-            ->filterTable('order_no', ['order_no' => '  SSC-1001 '])
-            ->assertCanSeeTableRecords([$target]);
+            ->filterTable($field, [$field => '0'])
+            ->assertCanSeeTableRecords([$target])
+            ->assertCanNotSeeTableRecords([$other])
+            ->filterTable($field, [$field => '   '])
+            ->assertCanSeeTableRecords([$target, $other])
+            ->filterTable($field, [$field => ''])
+            ->assertCanSeeTableRecords([$target, $other]);
     }
 
     public function test_amount_filter_matches_original_currency_amount_exactly(): void

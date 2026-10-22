@@ -678,7 +678,7 @@ return [
             'order_no' => 'Order No.',
             'order_no_placeholder' => 'Fuzzy search supported',
             'merchant_order_no' => 'Merchant Order No.',
-            'exact_placeholder' => 'Exact match — enter the full number',
+            'merchant_order_no_placeholder' => 'Fuzzy search supported',
             'transaction_id' => 'Transaction ID',
             'transaction_id_placeholder' => 'Fuzzy search supported',
             'created_from' => 'Start Time',
@@ -712,6 +712,9 @@ return [
             'manual_status_change_success' => 'Order status updated',
             'resend_payment_link_mail' => 'Resend Payment Link Email',
             'resend_payment_link_mail_queued' => 'Queued for sending',
+            'copy_payment_link' => 'Copy WordPress Payment Link',
+            'payment_link_copied' => 'WordPress payment link copied',
+            'payment_link_copy_failed' => 'Copy failed. Use HTTPS and allow clipboard access in your browser, then try again.',
         ],
         'sections' => [
             'order_info' => 'Order Information',
@@ -722,6 +725,7 @@ return [
         'fields' => [
             'order_no' => 'Order No.',
             'merchant_order_no' => 'Merchant Order No.',
+            'wp_order_id' => 'WordPress Order ID',
             'status' => 'Status',
             'source' => 'Source',
             'platform' => 'Platform',
