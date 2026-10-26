@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\OrderResource\Pages;
 
+use App\Filament\Resources\LogisticsImportTaskResource;
 use App\Filament\Resources\OrderResource;
 use App\Jobs\ProcessLogisticsImportJob;
 use App\Models\LogisticsImportTask;
@@ -28,6 +29,15 @@ class ListOrders extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            // 物流上传记录（只读列表）。入口只放这里，不做独立导航菜单（业务确认）。
+            // 超管也可见：平台侧需要能查"商户传了什么、哪一行失败"，但上传能力仍然
+            // 只给商户账号（见 canUploadLogistics()）。
+            Action::make('logisticsImportTasks')
+                ->label(__('admin.order.actions.logistics_import_tasks'))
+                ->icon('heroicon-o-document-arrow-up')
+                ->visible(fn () => (bool) auth()->user()?->can(Permissions::LOGISTICS_IMPORTS_MANAGE))
+                ->url(fn () => LogisticsImportTaskResource::getUrl('index')),
+
             Action::make('exportLogisticsTemplate')
                 ->label(__('admin.order.actions.export_logistics_template'))
                 ->icon('heroicon-o-arrow-down-tray')
@@ -102,7 +112,11 @@ class ListOrders extends ListRecords
                         ->rules(['extensions:csv,txt,xlsx,xls'])
                         ->required()
                         ->disk('local')
-                        ->directory('logistics-imports-tmp'),
+                        ->directory('logistics-imports-tmp')
+                        // 存原始文件名。Filament 默认用随机串落盘，不加这句的话
+                        // 「上传记录」里只能看到 01M5GRAZ...csv，商户认不出自己传了哪个文件。
+                        // 单文件时 state 是字符串，多文件才是数组，取用时见 resolveOriginalFileName()。
+                        ->storeFileNamesIn('original_file_name'),
                 ])
                 ->action(function (array $data) {
                     // 兜底再判一次：正常情况下 visible() 已经把超管挡在 mountAction 之前，
@@ -125,8 +139,12 @@ class ListOrders extends ListRecords
                     }
 
                     $localTmpPath = $data['file'];
+                    $storedFileName = basename($localTmpPath);
+                    $originalFileName = self::resolveOriginalFileName($data);
 
-                    $ossPath = "merchants/{$merchantId}/logistics_imports/".now()->format('Y-m-d')."/{$localTmpPath}";
+                    // 只拼保存文件名，不再把本地的 logistics-imports-tmp/ 前缀带进 OSS 路径
+                    // （历史记录的 oss_path 里仍带着这层 tmp 目录，属于遗留格式，不做回填）。
+                    $ossPath = "merchants/{$merchantId}/logistics_imports/".now()->format('Y-m-d')."/{$storedFileName}";
                     Storage::disk('oss')->put($ossPath, Storage::disk('local')->get($localTmpPath));
                     Storage::disk('local')->delete($localTmpPath);
 
@@ -135,9 +153,10 @@ class ListOrders extends ListRecords
                     $task = LogisticsImportTask::query()->withoutGlobalScopes()->create([
                         'merchant_id' => $merchantId,
                         'operator_id' => auth()->id(),
-                        'file_name' => basename($localTmpPath),
+                        'file_name' => $storedFileName,
+                        'original_file_name' => $originalFileName,
                         'oss_path' => $ossPath,
-                        'status' => 'pending',
+                        'status' => LogisticsImportTask::STATUS_PENDING,
                     ]);
 
                     ProcessLogisticsImportJob::dispatch($task->id);
@@ -178,5 +197,31 @@ class ListOrders extends ListRecords
     private static function uploadMerchantId(): ?int
     {
         return self::canUploadLogistics() ? (int) auth()->user()->merchant_id : null;
+    }
+
+    /**
+     * 取上传时的原始文件名。
+     *
+     * FileUpload::storeFileNamesIn() 的 state 形态：单文件是字符串，多文件是数组。
+     * 这个动作只收一个文件，但接口是复用的，两种形态都兜住，避免以后改成多文件时
+     * 这里静默拿到 null。
+     *
+     * 截断到 255 是列长度限制；不去掉扩展名也不做 basename —— 展示层用，不参与路径拼接。
+     */
+    private static function resolveOriginalFileName(array $data): ?string
+    {
+        $value = $data['original_file_name'] ?? null;
+
+        if (is_array($value)) {
+            $value = reset($value) ?: null;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : mb_substr($value, 0, 255);
     }
 }

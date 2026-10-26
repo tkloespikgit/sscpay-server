@@ -134,6 +134,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
 | `logistics_import_tasks`、`logistics_import_task_records` | 批量物流导入任务及逐行结果 |
 
+物流导入任务表的两个文件名语义不同：`original_file_name` 是商户上传时的本地文件名（2026-10-22 起记录，历史数据为 NULL，展示时回退 `file_name`），`file_name` 是 OSS 上的保存名（Filament 随机串）。`started_at`/`finished_at` 记录解析起止，仅用于识别 worker 中断与审计，不在界面展示耗时；`status=processing` 且 `started_at` 超过 30 分钟按中断处理。任务表只存汇总数，逐行结果一律查明细表。记录保留 90 天，由 `logistics-imports:prune` 每日分批物理删除任务及其明细（含已软删任务）。
+
 余额可为负；可提现 = `balance - frozen_balance - pending_settlement_balance - pending_withdrawal_balance`。商户显示的待出款由 `pendingWithdrawalBalance()` 将新待出款加旧待审核提现合计；`reserveBalance()` 将原冻结额减去这部分旧提现。两者按读时归类，不改历史余额或流水，且保持总额 = 待结算 + 保证金/冻结 + 可提现 + 待出款。列表使用 `legacyPendingWithdrawals` 的预聚合避免逐行查询。
 
 结算及锁定天数按 N×86400 秒计算。循环保证金基数为当次结算净额，金额 bcmath 截至分；锁定天数为 0 时不冻结。新结算 `due_at` 和冻结 `release_at` 使用 DATETIME，支持较长锁定期，避免 MySQL TIMESTAMP 的 2038 年边界。新规则不追历史订单；金融审计已产生后，新增结算/可靠待办相关迁移会拒绝破坏性回滚，应使用前向修复。

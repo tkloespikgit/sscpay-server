@@ -618,6 +618,78 @@ return [
         ],
     ],
 
+    'logistics_import_task' => [
+        'model_label' => 'Logistics Upload Record',
+        'model_label_plural' => 'Logistics Upload Records',
+        'nav_label' => 'Logistics Upload Records',
+        'statuses' => [
+            'pending' => 'Pending',
+            'processing' => 'Processing',
+            'completed' => 'Completed',
+            'failed' => 'File Failed',
+            // Replaces "Completed" when fail_count > 0: a finished task does not mean
+            // every row was imported, and showing "Completed" alone misleads merchants.
+            'partially_completed' => 'Partially Succeeded',
+            'all_failed' => 'All Rows Failed',
+            // Stuck in processing for more than 30 minutes (worker died).
+            'stale' => 'Interrupted',
+        ],
+        'fields' => [
+            'created_at' => 'Uploaded At',
+            'original_file_name' => 'Uploaded File Name',
+            'file_name' => 'Stored File Name',
+            'merchant' => 'Merchant',
+            'operator' => 'Operator',
+            'status' => 'Parse Status',
+            'total_records' => 'Total Rows',
+            'success_count' => 'Succeeded',
+            'fail_count' => 'Failed',
+        ],
+        'filters' => [
+            'status' => 'Parse Status',
+            'created_from' => 'Uploaded From',
+            'created_to' => 'Uploaded Until',
+        ],
+        'sections' => [
+            'summary' => 'Upload Summary',
+            'file_error' => 'File-level Error',
+            'stale_hint' => 'Task May Be Interrupted',
+        ],
+        'actions' => [
+            'export_failed_rows' => 'Export Failed Rows',
+        ],
+        'placeholders' => [
+            'none' => '—',
+            'legacy_file_name' => 'Legacy record: the original file name was not stored; the stored file name is shown instead.',
+            'stale_hint' => 'This task has not finished for more than 30 minutes, which usually means the queue worker stopped. Ask operations to check the worker, then upload the file again. Re-running is not available on this page.',
+        ],
+    ],
+
+    'logistics_import_task_record' => [
+        'title' => 'Parse Records',
+        'fields' => [
+            'row_number' => 'Row',
+            'order_no' => 'Order No.',
+            'logistics_company' => 'Carrier',
+            'tracking_number' => 'Tracking No.',
+            'shipped_at' => 'Shipped At (raw)',
+            'status' => 'Parse Status',
+            'error_message' => 'Failure Reason',
+            'raw_data' => 'Raw Row Data',
+        ],
+        'statuses' => [
+            'pending' => 'Pending',
+            'success' => 'Succeeded',
+            'failed' => 'Failed',
+        ],
+        'filters' => [
+            'status' => 'Parse Status',
+        ],
+        'placeholders' => [
+            'none' => '—',
+        ],
+    ],
+
     'order' => [
         'model_label' => 'Order',
         'model_label_plural' => 'Orders',
@@ -686,6 +758,7 @@ return [
         'actions' => [
             'export_logistics_template' => 'Export Logistics Template',
             'upload_logistics' => 'Upload Tracking Numbers',
+            'logistics_import_tasks' => 'Logistics Upload Records',
             'create_manual_order' => 'Create Paid Order',
             'import_file' => 'CSV / Excel File',
             'merchant_required' => 'Please select a merchant in the filters above first',

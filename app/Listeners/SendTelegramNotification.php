@@ -83,7 +83,9 @@ class SendTelegramNotification implements ShouldQueue
         $task = $event->task;
 
         $message = __('admin.telegram_notification.logistics_import_completed', [
-            'file_name' => $task->file_name,
+            // 显示商户自己上传时的文件名，而不是 Filament 生成的随机存储名；
+            // 历史任务没有 original_file_name，displayFileName() 会回退到保存名。
+            'file_name' => $task->displayFileName(),
             'total' => $task->total_records,
             'success' => $task->success_count,
             'failed' => $task->fail_count,

@@ -9,6 +9,16 @@
 - 物流模板限制在 Excel 单表容量内（最多 1,048,574 条订单加两行表头/说明），超限时提示缩小筛选范围且不提供下载，避免自动分表后上传仅读首表造成遗漏。
 - 验证：`LogisticsTemplateTest`、`OrderListFiltersTest`、`ObserverOrdersTest`、`LogisticsSpreadsheetImportTest` 联跑 46 项、458 个断言通过。覆盖实际 XLSX 类型/格式、长数字/前导零/纯数字名称、公式样式文本、空物流号填写格、金额与观察者比例、导出填写后回传、旧 CSV/XLS/XLSX 导入、筛选及租户授权；容量边界使用小规模上限验证，并验证超限通知与无下载。使用 SQLite 内存库及伪造存储/队列，未访问业务库或真实外部服务。Pint dirty、语法、文档相对链接及 `git diff --check` 通过；保留中文语言包原有排版。未进行桌面 Excel 手工操作或超百万行文件实测。
 
+## 2026-10-22：物流上传记录页（当前工作区，未提交）
+
+- 用户确认：上传记录入口只放订单列表页头（不做导航菜单）；超管可只读查看全部商户；"解决记录"指逐行解析记录；本期只做失败行导出 CSV，重新解析/重试留二期；记录解析起止时间但页面不展示耗时；明细保留 90 天。
+- `logistics_import_tasks` 新增 `original_file_name`（历史数据为 NULL，展示回退 `file_name`）、`started_at`、`finished_at` 及 `(merchant_id, created_at)` 索引。原来 `file_name` 存的是 Filament 随机保存名，与迁移注释"原始文件名"不符，现在把语义拆开：`file_name` = 保存名，`original_file_name` = 商户本地名。上传动作改用 `storeFileNamesIn()`；OSS 路径不再带 `logistics-imports-tmp/` 前缀（历史路径不回填）。Telegram 导入完成通知改用原始文件名。
+- 新增只读资源 `LogisticsImportTaskResource`（权限沿用 `logistics_imports.manage`，超管经 `Gate::before` 可查看全部商户），列表展示上传时间、上传/保存文件名、解析状态、总/成功/失败条数与操作人；详情页含摘要、文件级错误、中断提示和逐行明细 RelationManager（分页 50，可搜订单号）。状态展示把 `completed + fail_count>0` 区分为"部分成功/全部失败"，`processing` 超 30 分钟标"解析中断"。
+- 新增 `logistics-imports:prune --days=90 [--dry-run]`：按 `created_at` 每批 200 条物理删除任务与明细（含已软删任务），每日 03:10 调度。只用软删除无法清理明细表，不满足保留期目标。
+- 失败行导出 `LogisticsImportService::failedRowsCsv()`：只导 `status=failed`，列为 `row_number/order_no/logistics_company/tracking_number/shipped_at/tracking_url/remark/error_message`，带 UTF-8 BOM，单次上限 5000 行；导入端按表头名映射，商户改完可直接重传。
+- 验证：新增 `LogisticsImportTaskLogTest` **14 项 / 44 断言**，覆盖原名回退、起止时间、文件级失败收尾、卡死判定边界、失败行导出（只含失败行）、清理命令（含软删与 dry-run）、商户隔离与超管全量可见、后台列表/详情页及明细 RelationManager 真实渲染；全量 `php artisan test` **408 项通过、4 项 MySQL 专用跳过，3828 个断言**。Pint 已格式化，`git diff --check` 未发现空白问题。
+- 已在本地开发库执行新增迁移（`order_system`），未在业务库或生产执行；队列与外部接口均以模拟方式验证。遗留：`sync_status` 语义混淆、CSV 导入仅支持首次发货、同步 Job 无自动重试等既有问题不在本期范围。
+
 ## 2026-10-22：限制后台日志查看器内存占用（当前工作区，未提交）
 
 - 排查生产日志页在 PHP 128 MiB 限制下于 Redis 调用处内存耗尽。已安装日志插件 v2.5.0 会在分页前加载所有解析记录，并把整块结果永久缓存；读取旧缓存后才比较文件指纹。插件原配置只限制单个文件，未限制累计日志量。
