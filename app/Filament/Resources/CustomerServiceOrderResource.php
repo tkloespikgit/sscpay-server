@@ -125,11 +125,11 @@ class CustomerServiceOrderResource extends Resource
                     ->schema([
                         TextInput::make('order_no')
                             ->label(__('admin.order.filters.order_no'))
-                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                            ->placeholder(__('admin.order.filters.order_no_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         trim((string) ($data['order_no'] ?? '')) !== '',
-                        fn ($q) => $q->where('order_no', trim((string) $data['order_no']))
+                        fn (Builder $q): Builder => $q->where('order_no', 'like', '%'.trim((string) $data['order_no']).'%')
                     )),
 
                 Filter::make('merchant_order_no')
@@ -137,11 +137,11 @@ class CustomerServiceOrderResource extends Resource
                     ->schema([
                         TextInput::make('merchant_order_no')
                             ->label(__('admin.order.filters.merchant_order_no'))
-                            ->placeholder(__('admin.order.filters.exact_placeholder')),
+                            ->placeholder(__('admin.order.filters.merchant_order_no_placeholder')),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
                         trim((string) ($data['merchant_order_no'] ?? '')) !== '',
-                        fn ($q) => $q->where('merchant_order_no', trim((string) $data['merchant_order_no']))
+                        fn (Builder $q): Builder => $q->where('merchant_order_no', 'like', '%'.trim((string) $data['merchant_order_no']).'%')
                     )),
 
                 Filter::make('amount')

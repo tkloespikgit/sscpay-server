@@ -11,12 +11,16 @@ use App\Support\ObserverOrderStatus;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Tests\Concerns\CreatesTestOrders;
+use Tests\Concerns\ReadsSpreadsheets;
 use Tests\TestCase;
 
 class ObserverOrdersTest extends TestCase
 {
     use CreatesTestOrders;
+    use ReadsSpreadsheets;
     use RefreshDatabase;
 
     private Observer $observer;
@@ -73,24 +77,29 @@ class ObserverOrdersTest extends TestCase
 
         $service = app(ObserverOrderExportService::class);
         $page = Livewire::test(ListOrders::class)->searchTable('MATCH-');
-        ob_start();
-        $service->download($this->observer, $page->instance()->getFilteredTableQuery())->sendContent();
-        $csv = ob_get_clean();
-        $this->assertSame(31, count(array_filter(explode("\n", trim($csv)))));
-        $this->assertStringNotContainsString('IGNORE-SEARCH', $csv);
-        $this->assertStringNotContainsString('MATCH-OUTSIDE', $csv);
-        $this->assertStringNotContainsString('MATCH-PENDING', $csv);
+        $rows = $this->spreadsheetRows($this->downloadContents(
+            $service->download($this->observer, $page->instance()->getFilteredTableQuery())
+        ));
+        $this->assertCount(31, $rows);
+        $orderNumbers = array_column(array_slice($rows, 1), 0);
+        $this->assertNotContains('IGNORE-SEARCH', $orderNumbers);
+        $this->assertNotContains('MATCH-OUTSIDE', $orderNumbers);
+        $this->assertNotContains('MATCH-PENDING', $orderNumbers);
 
         // 即使传入未经授权过滤的查询，导出也必须重新限定渠道及状态。
-        ob_start();
-        $service->download($this->observer, Order::withoutGlobalScopes())->sendContent();
-        $csv = ob_get_clean();
-        $this->assertStringNotContainsString('MATCH-OUTSIDE', $csv);
-        $this->assertStringNotContainsString('MATCH-PENDING', $csv);
+        $rows = $this->spreadsheetRows($this->downloadContents(
+            $service->download($this->observer, Order::withoutGlobalScopes())
+        ));
+        $orderNumbers = array_column(array_slice($rows, 1), 0);
+        $this->assertCount(31, $orderNumbers);
+        $this->assertContains('IGNORE-SEARCH', $orderNumbers);
+        $this->assertNotContains('MATCH-OUTSIDE', $orderNumbers);
+        $this->assertNotContains('MATCH-PENDING', $orderNumbers);
     }
 
     public function test_date_range_and_export_keep_authorization_and_scaled_amounts(): void
     {
+        $this->freezeTime();
         $start = $this->makeOrder('SSC-START', 'M-START', ['status' => 'paid', 'payment_method_id' => $this->methodId, 'created_at' => '2026-10-01 00:00:00']);
         $end = $this->makeOrder('SSC-END', 'M-END', ['status' => 'shipped', 'payment_method_id' => $this->methodId, 'created_at' => '2026-10-02 23:59:59']);
         $before = $this->makeOrder('SSC-BEFORE', 'M-BEFORE', ['status' => 'paid', 'payment_method_id' => $this->methodId, 'created_at' => '2026-09-30 23:59:59']);
@@ -104,16 +113,64 @@ class ObserverOrdersTest extends TestCase
             ->filterTable('status', 'paid')
             ->assertCanSeeTableRecords([$start, $end])->assertCanNotSeeTableRecords([$before, $after, $outside]);
         $response = app(ObserverOrderExportService::class)->download($this->observer, $page->instance()->getFilteredTableQuery());
-        ob_start();
-        $response->sendContent();
-        $csv = ob_get_clean();
-        $this->assertStringContainsString('SSC-START', $csv);
-        $this->assertStringContainsString('SSC-END', $csv);
-        foreach (['SSC-BEFORE', 'SSC-AFTER', 'SSC-OUTSIDE', '100.00'] as $excluded) {
-            $this->assertStringNotContainsString($excluded, $csv);
+        $rows = array_slice($this->spreadsheetRows($this->downloadContents($response)), 1);
+        $this->assertSame(['SSC-START', 'SSC-END'], array_column($rows, 0));
+        foreach ($rows as $row) {
+            $this->assertSame(50.0, (float) $row[5]);
+            $this->assertSame(50.0, (float) $row[7]);
         }
-        $this->assertStringContainsString('50.00', $csv);
-        $page->callAction('exportOrders')->assertFileDownloaded('observer_orders_'.now()->format('Ymd_His').'.csv');
+        $page->callAction('exportOrders')->assertFileDownloaded('observer_orders_'.now()->format('Ymd_His').'.xlsx');
         $this->assertFalse(OrderResource::getEloquentQuery()->whereKey($outside->id)->exists());
+    }
+
+    public function test_export_preserves_numeric_identifiers_and_formula_like_text_with_numeric_amounts(): void
+    {
+        $orderNumber = '001234567890123456789012345678';
+        $trackingNumber = '009876543210987654321098765432';
+        $merchantName = '000123456789012345678';
+        $this->merchant->update(['name' => $merchantName]);
+        $this->observer->paymentMethods()->firstOrFail()->update(['method_name' => '=1+1']);
+        $order = $this->makeOrder($orderNumber, 'M-NUMERIC', [
+            'status' => 'shipped', 'payment_method_id' => $this->methodId,
+            'amount' => '123.40', 'converted_amount' => '98.76',
+        ]);
+        $order->shipping()->create([
+            'merchant_id' => $this->merchant->id, 'logistics_company' => 'ups',
+            'tracking_number' => $trackingNumber, 'shipped_at' => now(), 'operator_id' => 0,
+        ]);
+
+        $response = app(ObserverOrderExportService::class)->download($this->observer, Order::query());
+        $workbook = $this->readSpreadsheet($this->downloadContents($response));
+
+        try {
+            $sheet = $workbook->getActiveSheet();
+            $this->assertSame('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $response->headers->get('Content-Type'));
+            foreach (['A2' => $orderNumber, 'B2' => $merchantName, 'C2' => '=1+1', 'E2' => $trackingNumber] as $coordinate => $value) {
+                $this->assertSame($value, $sheet->getCell($coordinate)->getValue());
+            }
+            foreach (['A2', 'B2', 'C2', 'D2', 'E2', 'G2', 'I2'] as $coordinate) {
+                $this->assertSame(DataType::TYPE_STRING, $sheet->getCell($coordinate)->getDataType());
+                $this->assertSame('@', $sheet->getStyle($coordinate)->getNumberFormat()->getFormatCode());
+            }
+            foreach (['F2' => '61.70', 'H2' => '49.38'] as $coordinate => $amount) {
+                $this->assertSame(DataType::TYPE_NUMERIC, $sheet->getCell($coordinate)->getDataType());
+                $this->assertSame($amount, $sheet->getCell($coordinate)->getFormattedValue());
+            }
+        } finally {
+            $workbook->disconnectWorksheets();
+        }
+    }
+
+    private function downloadContents(StreamedResponse $response): string
+    {
+        ob_start();
+
+        try {
+            $response->sendContent();
+
+            return (string) ob_get_contents();
+        } finally {
+            ob_end_clean();
+        }
     }
 }

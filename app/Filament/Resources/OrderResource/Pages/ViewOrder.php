@@ -39,6 +39,8 @@ use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Illuminate\Support\Js;
 
 class ViewOrder extends ViewRecord
 {
@@ -51,6 +53,9 @@ class ViewOrder extends ViewRecord
                 Grid::make(3)->schema([
                     TextEntry::make('order_no')->label(__('admin.order.fields.order_no'))->copyable(),
                     TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no')),
+                    TextEntry::make('wp_order_id')->label(__('admin.order.fields.wp_order_id'))
+                        ->copyable()
+                        ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
                         ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
                         ->color(fn (string $state): string => OrderStatusColor::get($state)),
@@ -75,7 +80,7 @@ class ViewOrder extends ViewRecord
                         ->badge()
                         ->color('danger'),
                 ]),
-            ]),
+            ])->headerActions([$this->copyPaymentLinkAction()]),
 
             Section::make(__('admin.order.sections.amount_info'))->schema([
                 Grid::make(4)->schema([
@@ -246,6 +251,31 @@ class ViewOrder extends ViewRecord
             $this->chargebackAction(),
             $this->manualStatusChangeAction(),
         ];
+    }
+
+    private function copyPaymentLinkAction(): Action
+    {
+        return Action::make('copyPaymentLink')
+            ->label(__('admin.order.actions.copy_payment_link'))
+            ->icon(Heroicon::ClipboardDocument)
+            ->color('gray')
+            ->visible(fn (Order $record): bool => filled($record->pay_url))
+            ->alpineClickHandler(function (Order $record): string {
+                $payUrl = Js::from($record->pay_url);
+                $successMessage = Js::from(__('admin.order.actions.payment_link_copied'));
+                $failureMessage = Js::from(__('admin.order.actions.payment_link_copy_failed'));
+
+                return <<<JS
+                    (async () => {
+                        try {
+                            await window.navigator.clipboard.writeText({$payUrl});
+                            new FilamentNotification().title({$successMessage}).success().send();
+                        } catch {
+                            new FilamentNotification().title({$failureMessage}).danger().send();
+                        }
+                    })()
+                    JS;
+            });
     }
 
     /**

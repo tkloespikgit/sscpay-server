@@ -25,6 +25,7 @@ return [
 
     'log_viewer' => [
         'nav_label' => 'Log Viewer',
+        'scope_description' => 'Reads recent log files up to :size MiB in total and shows their latest :count entries. Larger files are skipped. Filters and counts apply only to these entries; view server logs for the full history.',
     ],
 
     'role_permissions' => [
@@ -676,7 +677,7 @@ return [
             'order_no' => 'Order No.',
             'order_no_placeholder' => 'Fuzzy search supported',
             'merchant_order_no' => 'Merchant Order No.',
-            'exact_placeholder' => 'Exact match — enter the full number',
+            'merchant_order_no_placeholder' => 'Fuzzy search supported',
             'transaction_id' => 'Transaction ID',
             'transaction_id_placeholder' => 'Fuzzy search supported',
             'created_from' => 'Start Time',
@@ -689,9 +690,10 @@ return [
             'import_file' => 'CSV / Excel File',
             'merchant_required' => 'Please select a merchant in the filters above first',
             'upload_forbidden' => 'Super admins cannot upload tracking numbers — please have a user of that merchant sign in and upload the file',
-            'upload_logistics_hint' => 'Upload CSV, XLSX or XLS files. Only the first Excel worksheet is read; templates are still exported as CSV. Download the template via "Export Logistics Template" and format order numbers and tracking numbers as text to preserve leading zeros and long numbers. Five columns are editable: logistics_company (carrier code, required), tracking_number (required), shipped_at (optional, defaults to the file upload time), tracking_url (optional, left blank keeps the existing link) and remark (optional). All other columns are for reference only and changes to them have no effect. Keep the header and the note row when uploading.',
+            'upload_logistics_hint' => 'Upload CSV, XLSX or XLS files. Only the first Excel worksheet is read. Download the XLSX file via "Export Logistics Template": order amounts are numeric and all other fields are formatted as text to preserve numeric identifiers and leading zeros. Keep the XLSX file format and text column formats when filling it in. Five columns are editable: logistics_company (carrier code, required), tracking_number (required), shipped_at (optional, defaults to the file upload time), tracking_url (optional, left blank keeps the existing link) and remark (optional). All other columns are for reference only and changes to them have no effect. Keep the header and the note row when uploading.',
             'logistics_template_note' => 'Editable columns: logistics_company (carrier code, required), tracking_number (required), shipped_at (optional, format 2026-09-22 15:30:00, defaults to the file upload time), tracking_url (optional, left blank keeps the existing link), remark (optional). All other columns are for reference only and changes have no effect. This row starts with # and is ignored on upload; do not delete the header row.',
             'export_failed' => 'Export failed: unable to read the current list query, please refresh the page and try again',
+            'export_too_many_rows' => 'A logistics template can contain at most 1,048,574 orders. Narrow the filters and export in batches.',
             'upload_success' => 'File uploaded, processing in background. You will get a Telegram notification when it finishes.',
             'query_status' => 'Query Latest Status',
             'query_status_not_found' => 'This order does not exist on the plugin side — check whether the payment order was actually created',
@@ -710,6 +712,9 @@ return [
             'manual_status_change_success' => 'Order status updated',
             'resend_payment_link_mail' => 'Resend Payment Link Email',
             'resend_payment_link_mail_queued' => 'Queued for sending',
+            'copy_payment_link' => 'Copy WordPress Payment Link',
+            'payment_link_copied' => 'WordPress payment link copied',
+            'payment_link_copy_failed' => 'Copy failed. Use HTTPS and allow clipboard access in your browser, then try again.',
         ],
         'sections' => [
             'order_info' => 'Order Information',
@@ -720,6 +725,7 @@ return [
         'fields' => [
             'order_no' => 'Order No.',
             'merchant_order_no' => 'Merchant Order No.',
+            'wp_order_id' => 'WordPress Order ID',
             'status' => 'Status',
             'source' => 'Source',
             'platform' => 'Platform',

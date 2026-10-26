@@ -8,12 +8,14 @@ use App\Models\LogisticsImportTask;
 use App\Models\User;
 use App\Services\LogisticsImportService;
 use App\Support\Permissions;
+use App\Support\XlsxExport;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
+use OverflowException;
 
 /**
  * 导出使用列表当前筛选和搜索条件，范围限定为登录账号可管理的商户。
@@ -57,11 +59,21 @@ class ListOrders extends ListRecords
                         $query->whereIn('orders.merchant_id', $manageableIds);
                     }
 
-                    $csv = $service->generateTemplate(null, $query);
+                    try {
+                        $contents = $service->generateTemplate(null, $query);
+                    } catch (OverflowException) {
+                        Notification::make()
+                            ->title(__('admin.order.actions.export_too_many_rows'))
+                            ->danger()
+                            ->send();
+
+                        return null;
+                    }
 
                     return response()->streamDownload(
-                        fn () => print ($csv),
-                        'logistics_template_'.now()->format('Ymd_His').'.csv'
+                        fn () => print ($contents),
+                        'logistics_template_'.now()->format('Ymd_His').'.xlsx',
+                        ['Content-Type' => XlsxExport::CONTENT_TYPE],
                     );
                 }),
 
@@ -81,7 +93,13 @@ class ListOrders extends ListRecords
                             'text/plain',
                             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                             'application/vnd.ms-excel',
+                            'application/msexcel',
+                            'application/x-msexcel',
+                            'application/vnd.ms-office',
+                            'application/x-ole-storage',
                         ])
+                        ->mimeTypeMap(['xls' => 'application/vnd.ms-excel'])
+                        ->rules(['extensions:csv,txt,xlsx,xls'])
                         ->required()
                         ->disk('local')
                         ->directory('logistics-imports-tmp'),
