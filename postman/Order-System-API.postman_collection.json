@@ -1,14 +1,43 @@
 {
   "info": {
     "_postman_id": "6f2c1a9e-4b7d-4e3a-9c5f-8d2e4a7b1c30",
-    "name": "多商户订单系统 - Order API",
-    "description": "App-ID + 签名鉴权（sign 放请求体里）。签名逻辑写在 Collection 级别的 Pre-request Script 里，对本 Collection 下所有请求自动生效，不需要每个请求单独配置。\n\n使用前先在 Environment 里填好 base_url / app_id / api_key / group_key（这几个值在系统后台「应用管理」「支付组」里能找到）。\n\n可选：payment_method_key（后台「支付方式」的 method_code）。填了之后，仅对请求体里已经带有 payment_method_key 字段的请求生效（即「创建订单 - 指定支付渠道」那个示例），用来跳过支付组路由与限额风控；此时请求体里的 notify_url / return_url / cancel_url 必须改成该支付方式绑定的站点域名，否则会被 PAYMENT_METHOD_DOMAIN_MISMATCH 拒单。",
+    "name": "多商户订单系统 - 建单 / 查询 / 物流 / Webhook",
+    "description": "按 2026-10-28 当前工作区代码核对。完整协议见仓库 doc/api.md。\n\n## 开始使用\n1. 导入同目录 Order-System-Local.postman_environment.json 并选中环境。base_url 必须包含 /api，末尾不加斜杠；生产使用 API_DOMAIN 对应的部署地址。\n2. 填写 app_id / api_key / group_key 以及三个回跳地址。平台枚举、启用的支付组、承运商以后台配置为准。金额一律传十进制字符串。\n3. 先发「创建订单」，再发「重试原建单」和两种查询。脚本会保存实际商户单号、完整原请求和返回的系统单号；超时/502 应复用原请求，不要重新 AUTO 建单。\n4. 物流录入使用 shipping_merchant_order_no 指定可发货订单，不能直接给刚创建的 pending 订单发货。\n\n## 四种调用方向\n- 商户 → 本系统：POST {{base_url}}/order/create、/order/query、/order/ship。App-ID/Timestamp/X-Nonce + body.sign。\n- WordPress 网关 → 本系统：POST {{base_url}}/webhooks/payment-gateway/status。独立 X-PGA-Signature 对最终原始 JSON 字节签名。\n- 本系统 → 商户 notify_url：仅首次支付成功自动通知，复用商户签名；退款/拒付/发货不自动发送此通知。\n- 本系统 → 商户站点 /api/fulfillment/shipment：依据附件 v1.1（2026-10-26）的外部协议示例，当前后端未自动接入。与 /order/ship 的字段和覆盖/分批语义不同。\n\n## 联调开关\nWebhook 示例默认跳过；在测试环境设置 enable_webhook_examples=true 后单独发送。模拟网关 paid 会改变订单状态并触发真实业务副作用，应使用测试单。gateway_s_order_id 需从当前网关引用取得，故障切换后可能不等于 order_no，不能自动回填猜测。\n附件物流示例设置 enable_fulfillment_examples=true 后单独发送，使用接收站点签发的 fulfillment_app_id / fulfillment_api_key；请先确认接收方部署情况。附件“已上线”和“确认后实现”的表述不一致，本集合未验证五站状态。\n\n## 签名脚本\n先完成变量替换，再计算签名并写回请求。使用当前 Postman 支持的 Web Crypto API，无额外 npm 依赖。商户接口时间误差 ±300 秒，nonce 保存 300 秒；附件站点接口 nonce 为 600 秒。每次调用重新生成 Timestamp/X-Nonce/sign；网关 webhook 不做 canonicalize，不带商户签名字段。\n\n脚本 API 依据：[Postman 全局对象](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-require) 与 [skipRequest](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-execution)。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "last_order_no", "value": "" },
-    { "key": "last_merchant_order_no", "value": "" },
-    { "key": "last_payment_link_token", "value": "" }
+    {
+      "key": "last_order_no",
+      "value": ""
+    },
+    {
+      "key": "last_merchant_order_no",
+      "value": ""
+    },
+    {
+      "key": "last_payment_link_token",
+      "value": ""
+    },
+    {
+      "key": "last_payment_url",
+      "value": ""
+    },
+    {
+      "key": "last_pay_url",
+      "value": ""
+    },
+    {
+      "key": "last_create_body",
+      "value": ""
+    },
+    {
+      "key": "last_converted_amount",
+      "value": ""
+    },
+    {
+      "key": "last_payment_method",
+      "value": ""
+    }
   ],
   "event": [
     {
@@ -16,105 +45,533 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "// ============================================================",
-          "// 统一签名脚本：对 Collection 下所有请求生效。",
-          "//",
-          "// 【重要】签名字段一律不要写成 {{变量}} 放在请求体文本里 ——",
-          "// Postman 对 body 里的 {{}} 做变量替换发生在这个脚本执行完之后，",
-          "// 如果签名时用的是还没替换的占位符文本，和实际发出去的字节不一致，",
-          "// 服务端验签必然失败。需要动态值的地方（如 group_key、",
-          "// merchant_order_no）都在下面用 JS 直接改 bodyObj，不依赖模板替换。",
-          "// ============================================================",
-          "",
-          "const appId = pm.environment.get('app_id');",
-          "const apiKey = pm.environment.get('api_key');",
-          "",
-          "if (!appId || !apiKey) {",
-          "    console.warn('请先在当前 Environment 里配置 app_id 和 api_key');",
-          "}",
-          "",
-          "let bodyObj = {};",
-          "if (pm.request.body && pm.request.body.mode === 'raw' && pm.request.body.raw) {",
-          "    try {",
-          "        bodyObj = JSON.parse(pm.request.body.raw);",
-          "    } catch (e) {",
-          "        bodyObj = {};",
+          "// 所有变量先替换，签名后发送同一份 body；不输出密钥、签名或客户资料。",
+          "async function prepareRequest() {",
+          "    const url = pm.variables.replaceIn(pm.request.url.toString()).split('?')[0];",
+          "    const isGateway = url.endsWith('/webhooks/payment-gateway/status');",
+          "    const isFulfillment = url.endsWith('/api/fulfillment/shipment');",
+          "    const isOrder = /\\/order\\/(create|query|ship)$/.test(url);",
+          "    if (isFulfillment && String(pm.variables.get('enable_fulfillment_examples')) !== 'true') {",
+          "        console.info('外部站点物流示例已跳过：联调时开启 enable_fulfillment_examples');",
+          "        pm.execution.skipRequest();",
+          "        return;",
           "    }",
-          "}",
-          "",
-          "// 用 Environment 里配置的 group_key 覆盖请求体里写死的示例值，",
-          "// 方便切换商户/支付组测试时不用逐个改请求体文本",
-          "const envGroupKey = pm.environment.get('group_key');",
-          "if (envGroupKey && Object.prototype.hasOwnProperty.call(bodyObj, 'group_key')) {",
-          "    bodyObj.group_key = envGroupKey;",
-          "}",
-          "",
-          "// payment_method_key（指定支付渠道）同理：只对请求体里已经带了这个字段的请求生效，",
-          "// 避免把普通下单请求也误改成指定渠道模式（那样三个回跳地址会变成必填，",
-          "// 而且域名还要和渠道绑定站点一致）。",
-          "const envPaymentMethodKey = pm.environment.get('payment_method_key');",
-          "if (envPaymentMethodKey && Object.prototype.hasOwnProperty.call(bodyObj, 'payment_method_key')) {",
-          "    bodyObj.payment_method_key = envPaymentMethodKey;",
-          "}",
-          "",
-          "// merchant_order_no 写 \"AUTO\" 时自动生成一个基于时间戳的唯一值，",
-          "// 避免每次跑集合都因为幂等机制（同一 merchant_order_no 返回同一订单）而拿到旧数据。",
-          "// 如果是故意要测试幂等性，把请求体里的 merchant_order_no 改成一个固定字符串，",
-          "// 连续跑两次，应该会收到一模一样的 order_no。",
-          "if (bodyObj.merchant_order_no === 'AUTO') {",
-          "    bodyObj.merchant_order_no = 'TEST' + Date.now();",
-          "}",
-          "",
-          "delete bodyObj.sign;",
-          "",
-          "// 规范化编码：关联数组（对象）按 key 递归排序，数组保持原顺序。",
-          "// 必须和服务端 App\\Http\\Middleware\\ApiAuthentication::canonicalize() 逐字节一致。",
-          "function ksortRecursive(value) {",
-          "    if (Array.isArray(value)) {",
-          "        return value.map(ksortRecursive);",
+          "    if (!isOrder && !isFulfillment && String(pm.variables.get('enable_webhook_examples')) !== 'true') {",
+          "        console.info('Webhook 示例已跳过：联调时开启 enable_webhook_examples');",
+          "        pm.execution.skipRequest();",
+          "        return;",
           "    }",
-          "    if (value !== null && typeof value === 'object') {",
-          "        const sorted = {};",
-          "        Object.keys(value).sort().forEach(function (k) {",
-          "            sorted[k] = ksortRecursive(value[k]);",
-          "        });",
-          "        return sorted;",
+          "    if (url.endsWith('/order/ship') && !pm.variables.get('shipping_merchant_order_no')) {",
+          "        console.info('请配置 shipping_merchant_order_no，选择允许发货的测试订单');",
+          "        pm.execution.skipRequest();",
+          "        return;",
           "    }",
-          "    return value;",
+          "    function required(name) {",
+          "        const value = pm.variables.get(name);",
+          "        if (value === undefined || value === null || String(value).trim() === '' || /\\{\\{[^{}]+\\}\\}/.test(String(value))) {",
+          "            throw new Error('请配置变量：' + name);",
+          "        }",
+          "        return String(value);",
+          "    }",
+          "    function hex(bytes) {",
+          "        return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');",
+          "    }",
+          "    async function hmac(message, secret) {",
+          "        const encoder = new TextEncoder();",
+          "        const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);",
+          "        return hex(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(message))));",
+          "    }",
+          "    // 与 SignatureCanonicalizer 一致；列表保持顺序。业务金额使用字符串。",
+          "    function sortRecursive(value) {",
+          "        if (Array.isArray(value)) { return value.map(sortRecursive); }",
+          "        if (value !== null && typeof value === 'object') {",
+          "            const keys = Object.keys(value).sort();",
+          "            // PHP json_decode(..., true) 会把空对象变为可编码为 [] 的空数组。",
+          "            if (keys.length === 0) { return []; }",
+          "            const sorted = Object.create(null);",
+          "            keys.forEach((key) => { sorted[key] = sortRecursive(value[key]); });",
+          "            return sorted;",
+          "        }",
+          "        return value;",
+          "    }",
+          "    let raw = pm.variables.replaceIn(pm.request.body.raw);",
+          "    if (/\\{\\{[^{}]+\\}\\}/.test(raw)) { throw new Error('请求体有未配置的变量，请先填写环境或先创建订单'); }",
+          "    let body;",
+          "    try { body = JSON.parse(raw); } catch (error) { throw new Error('请求体必须是有效 JSON：' + error.message); }",
+          "    if (!body || Array.isArray(body) || typeof body !== 'object') { throw new Error('请求体必须是 JSON 对象'); }",
+          "    pm.request.headers.upsert({ key: 'Content-Type', value: 'application/json' });",
+          "    pm.request.headers.upsert({ key: 'Accept', value: 'application/json' });",
+          "    ['App-ID', 'Timestamp', 'X-Nonce', 'X-PGA-Signature'].forEach((key) => pm.request.headers.remove(key));",
+          "    if (isGateway) {",
+          "        required('gateway_s_order_id');",
+          "        // raw 已完成变量替换；保留空格、字段顺序和换行，不解析后重新编码。",
+          "        const signature = await hmac(raw, required('gateway_shared_secret'));",
+          "        pm.request.body.raw = raw;",
+          "        pm.request.headers.upsert({ key: 'X-PGA-Signature', value: signature });",
+          "        return;",
+          "    }",
+          "    if (body.merchant_order_no === 'AUTO') {",
+          "        body.merchant_order_no = 'TEST' + Date.now() + hex(crypto.getRandomValues(new Uint8Array(4)));",
+          "    }",
+          "    if (Object.prototype.hasOwnProperty.call(body, 'payment_method_key') && !body.payment_method_key) {",
+          "        throw new Error('指定渠道请求需填写 payment_method_key');",
+          "    }",
+          "    const appId = required(isFulfillment ? 'fulfillment_app_id' : 'app_id');",
+          "    const apiKey = required(isFulfillment ? 'fulfillment_api_key' : 'api_key');",
+          "    delete body.sign;",
+          "    const timestamp = Math.floor(Date.now() / 1000).toString();",
+          "    const nonce = hex(crypto.getRandomValues(new Uint8Array(16)));",
+          "    const canonical = JSON.stringify(sortRecursive(body)).replace(/\\u2028/g, '\\\\u2028').replace(/\\u2029/g, '\\\\u2029');",
+          "    body.sign = await hmac(appId + '\\n' + timestamp + '\\n' + nonce + '\\n' + canonical, apiKey);",
+          "    pm.request.body.raw = JSON.stringify(body);",
+          "    pm.request.headers.upsert({ key: 'App-ID', value: appId });",
+          "    pm.request.headers.upsert({ key: 'Timestamp', value: timestamp });",
+          "    pm.request.headers.upsert({ key: 'X-Nonce', value: nonce });",
           "}",
-          "",
-          "const canonicalBody = JSON.stringify(ksortRecursive(bodyObj));",
-          "const timestamp = Math.floor(Date.now() / 1000).toString();",
-          "const nonce = CryptoJS.lib.WordArray.random(16).toString(CryptoJS.enc.Hex);",
-          "",
-          "const stringToSign = appId + '\\n' + timestamp + '\\n' + nonce + '\\n' + canonicalBody;",
-          "const sign = CryptoJS.HmacSHA256(stringToSign, apiKey).toString(CryptoJS.enc.Hex);",
-          "",
-          "bodyObj.sign = sign;",
-          "",
-          "// 写回去的是最终确定、不再含任何 {{占位符}} 的完整 JSON 文本，",
-          "// 之后 Postman 的变量替换找不到东西可替换，签名和实际发送字节保持一致。",
-          "if (pm.request.body && pm.request.body.mode === 'raw') {",
-          "    pm.request.body.raw = JSON.stringify(bodyObj);",
-          "}",
-          "",
-          "pm.request.headers.upsert({ key: 'App-ID', value: appId });",
-          "pm.request.headers.upsert({ key: 'Timestamp', value: timestamp });",
-          "pm.request.headers.upsert({ key: 'X-Nonce', value: nonce });",
-          "pm.request.headers.upsert({ key: 'Content-Type', value: 'application/json' });",
-          "",
-          "console.log('StringToSign:', stringToSign);",
-          "console.log('Sign:', sign);"
+          "try {",
+          "    await prepareRequest();",
+          "} catch (error) {",
+          "    // 解析/变量/签名失败必须停止发送，不能降级成空对象请求。",
+          "    pm.execution.skipRequest();",
+          "    throw error;",
+          "}"
         ]
       }
     }
   ],
   "item": [
     {
-      "name": "订单管理",
+      "name": "商户 API：建单 → 查询 → 物流",
+      "description": "本系统已实现的三个POST接口；基本联调先执行01-04，05需指定可发货测试订单。",
       "item": [
         {
-          "name": "创建订单（happy path）",
+          "name": "01 创建订单（普通支付组路由）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/create",
+            "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+          },
+          "response": [
+            {
+              "name": "200 新订单（示例值；幂等响应 status 取当前值）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"payment_link_token\": \"example-token\",\n    \"payment_url\": \"http://localhost:30035/payment/example-token\",\n    \"pay_url\": \"https://gateway.example.com/pay/example-token\",\n    \"converted_currency\": \"USD\",\n    \"converted_amount\": \"205.20\",\n    \"exchange_rate\": \"1.080000\",\n    \"payment_method\": \"paypal\",\n    \"status\": \"pending\"\n  }\n}"
+            },
+            {
+              "name": "409 同一商户订单号金额/币种冲突",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+              },
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 409,\n  \"msg\": \"The order details conflict with the existing order.\",\n  \"error_code\": \"ORDER_DETAILS_CONFLICT\"\n}"
+            },
+            {
+              "name": "502 网关失败（保留本地订单，复用原请求补建）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+              },
+              "status": "Bad Gateway",
+              "code": 502,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 502,\n  \"msg\": \"Payment gateway request failed.\",\n  \"error_code\": \"GATEWAY_ERROR\"\n}"
+            },
+            {
+              "name": "404 支付组不存在/未启用（不带 error_code）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 404,\n  \"msg\": \"Resource not found.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const original = JSON.parse(pm.request.body.raw);",
+                  "delete original.sign;",
+                  "pm.collectionVariables.set('last_create_body', JSON.stringify(original));",
+                  "pm.collectionVariables.set('last_merchant_order_no', original.merchant_order_no);",
+                  "// 在发出前保存，网络超时也能原单重试；清除上一张单的结果，避免混查。",
+                  "['last_order_no', 'last_payment_link_token', 'last_payment_url', 'last_pay_url', 'last_converted_amount', 'last_payment_method'].forEach((key) => pm.collectionVariables.unset(key));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "delete sent.sign;",
+                  "// 网关失败也保存原单，后续补建复用同一商户单号。",
+                  "if (pm.response.code === 200 || pm.response.code === 502) {",
+                  "    pm.collectionVariables.set('last_create_body', JSON.stringify(sent));",
+                  "    pm.collectionVariables.set('last_merchant_order_no', sent.merchant_order_no);",
+                  "}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "if (pm.response.code === 200 && json.code === 0 && json.data) {",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    pm.collectionVariables.set('last_payment_url', json.data.payment_url);",
+                  "    pm.collectionVariables.set('last_pay_url', json.data.pay_url || '');",
+                  "    pm.collectionVariables.set('last_converted_amount', json.data.converted_amount);",
+                  "    pm.collectionVariables.set('last_payment_method', json.data.payment_method);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02 重试原建单（幂等复用 / 502 补建）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{last_create_body}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/create",
+            "description": "先运行01。完整复用上次实际请求，脚本仅重算鉴权头和sign。已取得付款链接时原样返回本地订单；缺链接时补建，普通路由仍可故障切换。金额/币种与旧单冲突返回409 ORDER_DETAILS_CONFLICT。原send_mail意图不随重试改变。原请求在发出前自动存入last_create_body，网络超时也可原单重试。"
+          },
+          "response": [
+            {
+              "name": "200 幂等返回（状态可能已支付）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{{last_create_body}}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "先运行01。完整复用上次实际请求，脚本仅重算鉴权头和sign。已取得付款链接时原样返回本地订单；缺链接时补建，普通路由仍可故障切换。金额/币种与旧单冲突返回409 ORDER_DETAILS_CONFLICT。原send_mail意图不随重试改变。超时后可在last_create_body填写发出前保存的原请求。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"payment_link_token\": \"example-token\",\n    \"payment_url\": \"http://localhost:30035/payment/example-token\",\n    \"pay_url\": \"https://gateway.example.com/pay/example-token\",\n    \"converted_currency\": \"USD\",\n    \"converted_amount\": \"205.20\",\n    \"exchange_rate\": \"1.080000\",\n    \"payment_method\": \"paypal\",\n    \"status\": \"paid\"\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const previous = pm.collectionVariables.get('last_order_no');",
+                  "",
+                  "const json = pm.response.json();",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "delete sent.sign;",
+                  "// 网关失败也保存原单，后续补建复用同一商户单号。",
+                  "if (pm.response.code === 200 || pm.response.code === 502) {",
+                  "    pm.collectionVariables.set('last_create_body', JSON.stringify(sent));",
+                  "    pm.collectionVariables.set('last_merchant_order_no', sent.merchant_order_no);",
+                  "}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "if (pm.response.code === 200 && json.code === 0 && json.data) {",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    pm.collectionVariables.set('last_payment_url', json.data.payment_url);",
+                  "    pm.collectionVariables.set('last_pay_url', json.data.pay_url || '');",
+                  "    pm.collectionVariables.set('last_converted_amount', json.data.converted_amount);",
+                  "    pm.collectionVariables.set('last_payment_method', json.data.payment_method);",
+                  "}",
+                  "",
+                  "if (previous && pm.response.code === 200 && json.code === 0) {",
+                  "    pm.test('复用同一本地订单号', function () { pm.expect(json.data.order_no).to.eql(previous); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03 查询订单（按 order_no）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_no\": \"{{last_order_no}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/query",
+            "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+          },
+          "response": [
+            {
+              "name": "200 本地订单快照",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"order_no\": \"{{last_order_no}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/query",
+                "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"merchant_order_no\": \"TEST202610280001\",\n    \"status\": \"paid\",\n    \"platform\": \"wordpress\",\n    \"currency\": \"EUR\",\n    \"amount\": \"190.00\",\n    \"converted_amount\": \"205.20\",\n    \"payment_method\": \"paypal\",\n    \"created_at\": \"2026-10-28T10:00:00+08:00\"\n  }\n}"
+            },
+            {
+              "name": "404 查无订单（包括非当前商户订单）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"order_no\": \"{{last_order_no}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/query",
+                "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 404,\n  \"msg\": \"Order not found\",\n  \"error_code\": \"ORDER_NOT_FOUND\"\n}"
+            }
+          ],
           "event": [
             {
               "listen": "test",
@@ -122,57 +579,376 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
-                  "",
                   "const json = pm.response.json();",
-                  "",
-                  "pm.test('code === 0', function () { pm.expect(json.code).to.eql(0); });",
-                  "",
-                  "if (json && json.data) {",
-                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
-                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
-                  "    console.log('order_no:', json.data.order_no);",
-                  "    console.log('payment_url:', json.data.payment_url);",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "if (json.data) {",
+                  "    pm.test('查询编号匹配', function () {",
+                  "        if (sent.order_no) { pm.expect(json.data.order_no).to.eql(sent.order_no); }",
+                  "        if (sent.merchant_order_no) { pm.expect(json.data.merchant_order_no).to.eql(sent.merchant_order_no); }",
+                  "    });",
                   "}"
                 ]
               }
             }
+          ]
+        },
+        {
+          "name": "04 查询订单（按 merchant_order_no）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"{{last_merchant_order_no}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/query",
+            "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+          },
+          "response": [
+            {
+              "name": "200 本地订单快照",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{last_merchant_order_no}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/query",
+                "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"merchant_order_no\": \"TEST202610280001\",\n    \"status\": \"paid\",\n    \"platform\": \"wordpress\",\n    \"currency\": \"EUR\",\n    \"amount\": \"190.00\",\n    \"converted_amount\": \"205.20\",\n    \"payment_method\": \"paypal\",\n    \"created_at\": \"2026-10-28T10:00:00+08:00\"\n  }\n}"
+            },
+            {
+              "name": "404 查无订单（包括非当前商户订单）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{last_merchant_order_no}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/query",
+                "description": "POST JSON，编号放请求体并参与签名；不是GET/query参数。至少传一个编号，同时传两个时必须指向同一订单（AND）。只读取本地状态，不主动请求网关，不返回物流字段或付款链接。查询范围是当前App-ID所属商户。缺编号422使用Laravel默认{message,errors}，不同于建单/物流的{code,msg,errors}。"
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 404,\n  \"msg\": \"Order not found\",\n  \"error_code\": \"ORDER_NOT_FOUND\"\n}"
+            }
           ],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/order/create",
-              "host": ["{{base_url}}"],
-              "path": ["order", "create"]
-            },
-            "description": "180.00(小计) + 15.00(运费) - 10.00(折扣) + 5.00(税) = 190.00，和 amount 对得上，走正常成功路径。\n\nmerchant_order_no 写 \"AUTO\"，Pre-request Script 会自动换成基于时间戳的唯一值，避免重复跑集合时命中幂等逻辑返回旧订单。"
-          }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "if (json.data) {",
+                  "    pm.test('查询编号匹配', function () {",
+                  "        if (sent.order_no) { pm.expect(json.data.order_no).to.eql(sent.order_no); }",
+                  "        if (sent.merchant_order_no) { pm.expect(json.data.merchant_order_no).to.eql(sent.merchant_order_no); }",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "创建订单 - 幂等测试（连续跑两次应返回同一订单）",
+          "name": "05 同步物流到本系统（按商户订单号）",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"merchant_order_no\": \"IDEMPOTENCY-TEST-0001\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\n  \"merchant_order_no\": \"{{shipping_merchant_order_no}}\",\n  \"logistics_company\": \"{{logistics_company}}\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
-            "url": {
-              "raw": "{{base_url}}/order/create",
-              "host": ["{{base_url}}"],
-              "path": ["order", "create"]
+            "url": "{{base_url}}/order/ship",
+            "description": "配置 shipping_merchant_order_no 为已支付测试单。logistics_company 必须是后台已启用的承运商代码（大小写不敏感），不是自由名称；tracking_number ≤100；shipped_at 必填，推荐带时区ISO8601；tracking_url 可选，省略会清空旧链接。\n\n允许 paid/shipped/partially_refunded/disputing；仅paid推进为shipped，其余保持。每单仅一条有效物流，重传或换运单会覆盖，不保留分批记录。HTTP200表示本地保存成功，后台队列是否成功同步渠道须另查；不会往商户notify_url发送发货通知。\n\n当前后台只调用WordPress插件 /wp-json/payment-plugin/v1/sync-tracking（query凭证），开启sync_logistics且凭证齐全时执行；远端s_order_id使用当前网关引用。仅data.synced_to_remote=true才标渠道同步成功。Job无业务自动重试，失败需后台重试。详见仓库 doc/wordpress/s-system-sync-tracking.md。"
+          },
+          "response": [
+            {
+              "name": "200 本地保存成功（非渠道同步结果）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{shipping_merchant_order_no}}\",\n  \"logistics_company\": \"{{logistics_company}}\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/ship",
+                "description": "配置 shipping_merchant_order_no 为已支付测试单。logistics_company 必须是后台已启用的承运商代码（大小写不敏感），不是自由名称；tracking_number ≤100；shipped_at 必填，推荐带时区ISO8601；tracking_url 可选，省略会清空旧链接。\n\n允许 paid/shipped/partially_refunded/disputing；仅paid推进为shipped，其余保持。每单仅一条有效物流，重传或换运单会覆盖，不保留分批记录。HTTP200表示本地保存成功，后台队列是否成功同步渠道须另查；不会往商户notify_url发送发货通知。\n\n当前后台只调用WordPress插件 /wp-json/payment-plugin/v1/sync-tracking（query凭证），开启sync_logistics且凭证齐全时执行；远端s_order_id使用当前网关引用。仅data.synced_to_remote=true才标渠道同步成功。Job无业务自动重试，失败需后台重试。详见仓库 doc/wordpress/s-system-sync-tracking.md。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"merchant_order_no\": \"TEST202610280001\",\n    \"status\": \"shipped\",\n    \"logistics_company\": \"DHL\",\n    \"tracking_number\": \"001234567890\",\n    \"tracking_url\": \"https://www.dhl.com/track?id=001234567890\",\n    \"shipped_at\": \"2026-10-28T10:00:00+08:00\"\n  }\n}"
             },
-            "description": "merchant_order_no 是固定字符串（不是 AUTO），第一次跑会真的创建订单，第二次跑应该收到完全相同的 order_no —— 这是在验证 2.2 节的幂等性铁律（联合唯一索引 + 命中直接返回已存在订单）。"
-          }
-        },
+            {
+              "name": "422 当前订单状态不允许发货（msg为示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{shipping_merchant_order_no}}\",\n  \"logistics_company\": \"{{logistics_company}}\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/ship",
+                "description": "配置 shipping_merchant_order_no 为已支付测试单。logistics_company 必须是后台已启用的承运商代码（大小写不敏感），不是自由名称；tracking_number ≤100；shipped_at 必填，推荐带时区ISO8601；tracking_url 可选，省略会清空旧链接。\n\n允许 paid/shipped/partially_refunded/disputing；仅paid推进为shipped，其余保持。每单仅一条有效物流，重传或换运单会覆盖，不保留分批记录。HTTP200表示本地保存成功，后台队列是否成功同步渠道须另查；不会往商户notify_url发送发货通知。\n\n当前后台只调用WordPress插件 /wp-json/payment-plugin/v1/sync-tracking（query凭证），开启sync_logistics且凭证齐全时执行；远端s_order_id使用当前网关引用。仅data.synced_to_remote=true才标渠道同步成功。Job无业务自动重试，失败需后台重试。详见仓库 doc/wordpress/s-system-sync-tracking.md。"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 422,\n  \"msg\": \"订单当前状态不允许录入物流信息。\",\n  \"error_code\": \"INVALID_ORDER_STATUS\"\n}"
+            },
+            {
+              "name": "422 字段校验失败（示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{shipping_merchant_order_no}}\",\n  \"logistics_company\": \"{{logistics_company}}\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/ship",
+                "description": "配置 shipping_merchant_order_no 为已支付测试单。logistics_company 必须是后台已启用的承运商代码（大小写不敏感），不是自由名称；tracking_number ≤100；shipped_at 必填，推荐带时区ISO8601；tracking_url 可选，省略会清空旧链接。\n\n允许 paid/shipped/partially_refunded/disputing；仅paid推进为shipped，其余保持。每单仅一条有效物流，重传或换运单会覆盖，不保留分批记录。HTTP200表示本地保存成功，后台队列是否成功同步渠道须另查；不会往商户notify_url发送发货通知。\n\n当前后台只调用WordPress插件 /wp-json/payment-plugin/v1/sync-tracking（query凭证），开启sync_logistics且凭证齐全时执行；远端s_order_id使用当前网关引用。仅data.synced_to_remote=true才标渠道同步成功。Job无业务自动重试，失败需后台重试。详见仓库 doc/wordpress/s-system-sync-tracking.md。"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 422,\n  \"msg\": \"Validation failed\",\n  \"errors\": {\n    \"logistics_company\": [\n      \"承运商代码必须存在且已启用。\"\n    ]\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('物流本地保存成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "if (json.data) {",
+                  "    const sent = JSON.parse(pm.request.body.raw);",
+                  "    pm.test('物流单号匹配', function () { pm.expect(json.data.tracking_number).to.eql(sent.tracking_number); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "建单校验与指定渠道（按需单独运行）",
+      "item": [
         {
-          "name": "创建订单 - 金额不符（预期 422 AMOUNT_MISMATCH）",
+          "name": "06 金额公式不符（预期422）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"999.99\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/create",
+            "description": "使用新的商户单号测试金额公式；不覆盖成功建单的last_create_body。预期AMOUNT_MISMATCH。"
+          },
+          "response": [
+            {
+              "name": "422 AMOUNT_MISMATCH",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"999.99\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "使用新的商户单号测试金额公式；不覆盖成功建单的last_create_body。预期AMOUNT_MISMATCH。"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 422,\n  \"msg\": \"Order amount does not match the amount formula.\",\n  \"error_code\": \"AMOUNT_MISMATCH\"\n}"
+            }
+          ],
           "event": [
             {
               "listen": "test",
@@ -180,118 +956,723 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 422', function () { pm.response.to.have.status(422); });",
-                  "",
-                  "const json = pm.response.json();",
-                  "pm.test('error_code === AMOUNT_MISMATCH', function () {",
-                  "    pm.expect(json.error_code).to.eql('AMOUNT_MISMATCH');",
-                  "});"
+                  "pm.test('AMOUNT_MISMATCH', function () { pm.expect(pm.response.json().error_code).to.eql('AMOUNT_MISMATCH'); });"
                 ]
               }
             }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"999.99\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://merchant.example.com/api/payment/callback\",\n  \"return_url\": \"https://merchant.example.com/order/success\",\n  \"cancel_url\": \"https://merchant.example.com/order/cancel\"\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/order/create",
-              "host": ["{{base_url}}"],
-              "path": ["order", "create"]
-            },
-            "description": "故意把 amount 改成 999.99，和 subtotal+shipping_fee-discount+tax(=190.00) 对不上，应该触发 2.1 节的金额公式铁律拒单。"
-          }
+          ]
         },
         {
-          "name": "创建订单 - 指定支付渠道（payment_method_key）",
+          "name": "07 创建订单（指定支付渠道）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\",\n  \"payment_method_key\": \"{{payment_method_key}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/create",
+            "description": "payment_method_key为后台method_code。group_key仍必填且需归属当前商户、启用。渠道需为商户自有或已分配的共享渠道并启用；跳过组内路由和限额检查，失败不切换。三个URL必须全部匹配渠道绑定的站点域名（忽略大小写、www.和端口），请调整环境notify_url/return_url/cancel_url。预期成功200；422不作为正例通过。"
+          },
+          "response": [
+            {
+              "name": "200 指定渠道成功（示例值）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\",\n  \"payment_method_key\": \"{{payment_method_key}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "payment_method_key为后台method_code。group_key仍必填且需归属当前商户、启用。渠道需为商户自有或已分配的共享渠道并启用；跳过组内路由和限额检查，失败不切换。三个URL必须全部匹配渠道绑定的站点域名（忽略大小写、www.和端口），请调整环境notify_url/return_url/cancel_url。预期成功200；422不作为正例通过。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\",\n  \"data\": {\n    \"order_no\": \"ORD202610280001\",\n    \"payment_link_token\": \"example-token\",\n    \"payment_url\": \"http://localhost:30035/payment/example-token\",\n    \"pay_url\": \"https://gateway.example.com/pay/example-token\",\n    \"converted_currency\": \"USD\",\n    \"converted_amount\": \"205.20\",\n    \"exchange_rate\": \"1.080000\",\n    \"payment_method\": \"paypal\",\n    \"status\": \"pending\"\n  }\n}"
+            },
+            {
+              "name": "422 指定渠道回跳域名不符",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://merchant.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\",\n  \"payment_method_key\": \"{{payment_method_key}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/order/create",
+                "description": "payment_method_key为后台method_code。group_key仍必填且需归属当前商户、启用。渠道需为商户自有或已分配的共享渠道并启用；跳过组内路由和限额检查，失败不切换。三个URL必须全部匹配渠道绑定的站点域名（忽略大小写、www.和端口），请调整环境notify_url/return_url/cancel_url。预期成功200；422不作为正例通过。"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 422,\n  \"msg\": \"Callback URLs must match the payment method domain.\",\n  \"error_code\": \"PAYMENT_METHOD_DOMAIN_MISMATCH\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const original = JSON.parse(pm.request.body.raw);",
+                  "delete original.sign;",
+                  "pm.collectionVariables.set('last_create_body', JSON.stringify(original));",
+                  "pm.collectionVariables.set('last_merchant_order_no', original.merchant_order_no);",
+                  "// 在发出前保存，网络超时也能原单重试；清除上一张单的结果，避免混查。",
+                  "['last_order_no', 'last_payment_link_token', 'last_payment_url', 'last_pay_url', 'last_converted_amount', 'last_payment_method'].forEach((key) => pm.collectionVariables.unset(key));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "delete sent.sign;",
+                  "// 网关失败也保存原单，后续补建复用同一商户单号。",
+                  "if (pm.response.code === 200 || pm.response.code === 502) {",
+                  "    pm.collectionVariables.set('last_create_body', JSON.stringify(sent));",
+                  "    pm.collectionVariables.set('last_merchant_order_no', sent.merchant_order_no);",
+                  "}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "if (pm.response.code === 200 && json.code === 0 && json.data) {",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    pm.collectionVariables.set('last_payment_url', json.data.payment_url);",
+                  "    pm.collectionVariables.set('last_pay_url', json.data.pay_url || '');",
+                  "    pm.collectionVariables.set('last_converted_amount', json.data.converted_amount);",
+                  "    pm.collectionVariables.set('last_payment_method', json.data.payment_method);",
+                  "}",
+                  "",
+                  "if (pm.response.code === 200 && json.code === 0) {",
+                  "    pm.test('指定渠道与返回一致', function () { pm.expect(json.data.payment_method).to.eql(sent.payment_method_key); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "支付 Webhook（测试环境手动开启）",
+      "description": "两种方向与签名不同；enable_webhook_examples默认false。",
+      "item": [
+        {
+          "name": "08 网关 → 本系统（模拟 payment_status）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"payment_status\",\n  \"s_order_id\": \"{{gateway_s_order_id}}\",\n  \"wp_order_id\": 12345,\n  \"payment_method\": \"paypal_rest\",\n  \"status\": \"paid\",\n  \"transaction_id\": \"TEST-TRANSACTION-001\",\n  \"amount\": \"{{last_converted_amount}}\",\n  \"currency\": \"USD\",\n  \"paid_at\": \"2026-10-28 02:00:00\",\n  \"updated_at\": \"2026-10-28 02:00:00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/webhooks/payment-gateway/status",
+            "description": "开启enable_webhook_examples后单独调用；填gateway_shared_secret（payment_gateway.webhook_secret）和当前gateway_s_order_id。默认status=paid；测试退款可改refunded，拒付必须用confused（映射chargeback），会自动尝试资金记账。\n\n只用X-PGA-Signature=HMAC-SHA256(最终原始JSON字节,共享密钥)。脚本先替换变量，保留原body的空格/字段顺序/换行签名并发送，不加App-ID/Timestamp/X-Nonce/sign。时间字段为UTC；修改金额和wp_order_id为该测试单实际网关值。\n\n允许pending/paid/failed/cancelled/expired/refunded/disputing/confused。签名失败401；合法签名非payment_status事件返回ignored；未知订单/状态/旧网关尝试会被忽略但仍返回ok，所以200不能证明状态已更新，应再调用本地订单查询核对。真实异常返回5xx。不要在默认示例添加account_forbidden，该字段会禁用渠道。"
+          },
+          "response": [
+            {
+              "name": "200 已接收（也可能忽略未知订单/旧引用）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"event\": \"payment_status\",\n  \"s_order_id\": \"{{gateway_s_order_id}}\",\n  \"wp_order_id\": 12345,\n  \"payment_method\": \"paypal_rest\",\n  \"status\": \"paid\",\n  \"transaction_id\": \"TEST-TRANSACTION-001\",\n  \"amount\": \"{{last_converted_amount}}\",\n  \"currency\": \"USD\",\n  \"paid_at\": \"2026-10-28 02:00:00\",\n  \"updated_at\": \"2026-10-28 02:00:00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/webhooks/payment-gateway/status",
+                "description": "开启enable_webhook_examples后单独调用；填gateway_shared_secret（payment_gateway.webhook_secret）和当前gateway_s_order_id。默认status=paid；测试退款可改refunded，拒付必须用confused（映射chargeback），会自动尝试资金记账。\n\n只用X-PGA-Signature=HMAC-SHA256(最终原始JSON字节,共享密钥)。脚本先替换变量，保留原body的空格/字段顺序/换行签名并发送，不加App-ID/Timestamp/X-Nonce/sign。时间字段为UTC；修改金额和wp_order_id为该测试单实际网关值。\n\n允许pending/paid/failed/cancelled/expired/refunded/disputing/confused。签名失败401；合法签名非payment_status事件返回ignored；未知订单/状态/旧网关尝试会被忽略但仍返回ok，所以200不能证明状态已更新，应再调用本地订单查询核对。真实异常返回5xx。不要在默认示例添加account_forbidden，该字段会禁用渠道。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\"\n}"
+            },
+            {
+              "name": "200 忽略非 payment_status 事件",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"event\": \"payment_status\",\n  \"s_order_id\": \"{{gateway_s_order_id}}\",\n  \"wp_order_id\": 12345,\n  \"payment_method\": \"paypal_rest\",\n  \"status\": \"paid\",\n  \"transaction_id\": \"TEST-TRANSACTION-001\",\n  \"amount\": \"{{last_converted_amount}}\",\n  \"currency\": \"USD\",\n  \"paid_at\": \"2026-10-28 02:00:00\",\n  \"updated_at\": \"2026-10-28 02:00:00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/webhooks/payment-gateway/status",
+                "description": "开启enable_webhook_examples后单独调用；填gateway_shared_secret（payment_gateway.webhook_secret）和当前gateway_s_order_id。默认status=paid；测试退款可改refunded，拒付必须用confused（映射chargeback），会自动尝试资金记账。\n\n只用X-PGA-Signature=HMAC-SHA256(最终原始JSON字节,共享密钥)。脚本先替换变量，保留原body的空格/字段顺序/换行签名并发送，不加App-ID/Timestamp/X-Nonce/sign。时间字段为UTC；修改金额和wp_order_id为该测试单实际网关值。\n\n允许pending/paid/failed/cancelled/expired/refunded/disputing/confused。签名失败401；合法签名非payment_status事件返回ignored；未知订单/状态/旧网关尝试会被忽略但仍返回ok，所以200不能证明状态已更新，应再调用本地订单查询核对。真实异常返回5xx。不要在默认示例添加account_forbidden，该字段会禁用渠道。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ignored\"\n}"
+            },
+            {
+              "name": "401 原始请求体签名无效",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"event\": \"payment_status\",\n  \"s_order_id\": \"{{gateway_s_order_id}}\",\n  \"wp_order_id\": 12345,\n  \"payment_method\": \"paypal_rest\",\n  \"status\": \"paid\",\n  \"transaction_id\": \"TEST-TRANSACTION-001\",\n  \"amount\": \"{{last_converted_amount}}\",\n  \"currency\": \"USD\",\n  \"paid_at\": \"2026-10-28 02:00:00\",\n  \"updated_at\": \"2026-10-28 02:00:00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/webhooks/payment-gateway/status",
+                "description": "开启enable_webhook_examples后单独调用；填gateway_shared_secret（payment_gateway.webhook_secret）和当前gateway_s_order_id。默认status=paid；测试退款可改refunded，拒付必须用confused（映射chargeback），会自动尝试资金记账。\n\n只用X-PGA-Signature=HMAC-SHA256(最终原始JSON字节,共享密钥)。脚本先替换变量，保留原body的空格/字段顺序/换行签名并发送，不加App-ID/Timestamp/X-Nonce/sign。时间字段为UTC；修改金额和wp_order_id为该测试单实际网关值。\n\n允许pending/paid/failed/cancelled/expired/refunded/disputing/confused。签名失败401；合法签名非payment_status事件返回ignored；未知订单/状态/旧网关尝试会被忽略但仍返回ok，所以200不能证明状态已更新，应再调用本地订单查询核对。真实异常返回5xx。不要在默认示例添加account_forbidden，该字段会禁用渠道。"
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 401,\n  \"message\": \"invalid signature\"\n}"
+            }
+          ],
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('HTTP 200（成功）或 422（渠道/域名不匹配）', function () {",
-                  "    pm.expect([200, 422]).to.include(pm.response.code);",
-                  "});",
-                  "",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
                   "const json = pm.response.json();",
-                  "const requested = JSON.parse(pm.request.body.raw).payment_method_key;",
-                  "",
-                  "if (pm.response.code === 200) {",
-                  "    pm.test('锁定的支付方式就是指定的渠道', function () {",
-                  "        pm.expect(json.data.payment_method).to.eql(requested);",
-                  "    });",
-                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
-                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
-                  "    console.log('order_no:', json.data.order_no, 'pay_url:', json.data.pay_url);",
-                  "} else {",
-                  "    pm.test('422 时错误码与指定渠道相关', function () {",
-                  "        pm.expect(['PAYMENT_METHOD_NOT_AVAILABLE', 'PAYMENT_METHOD_DOMAIN_MISMATCH', 'CALLBACK_DOMAIN_NOT_ALLOWED']).to.include(json.error_code);",
-                  "    });",
-                  "    console.warn('拒单：', json.error_code, json.msg);",
-                  "}"
+                  "pm.test('回调已接收（另查订单确认是否应用）', function () { pm.expect(json).to.include({ code: 0, message: 'ok' }); });"
                 ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "09 本系统 → 商户（模拟 notify_url 支付通知）",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"EUR\",\n  \"group_key\": \"group_default\",\n  \"platform\": \"wordpress\",\n  \"payment_method_key\": \"paypal\",\n  \"subtotal\": \"180.00\",\n  \"shipping_fee\": \"15.00\",\n  \"discount\": \"10.00\",\n  \"tax\": \"5.00\",\n  \"amount\": \"190.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_sku\": \"SKU-1001\",\n      \"product_id\": \"WP-1001\",\n      \"product_url\": \"https://shop.example.com/product/mechanical-keyboard\",\n      \"product_name\": \"Mechanical Keyboard\",\n      \"product_description\": \"Blue switches, RGB backlight\",\n      \"unit_price\": \"90.00\",\n      \"quantity\": 2\n    }\n  ],\n  \"notify_url\": \"https://shop.example.com/wp-json/my-plugin/v1/webhook\",\n  \"return_url\": \"https://shop.example.com/checkout/order-received/123/\",\n  \"cancel_url\": \"https://shop.example.com/cart/\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\n  \"order_no\": \"{{last_order_no}}\",\n  \"merchant_order_no\": \"{{last_merchant_order_no}}\",\n  \"status\": \"paid\",\n  \"currency\": \"EUR\",\n  \"amount\": \"190.00\",\n  \"converted_currency\": \"USD\",\n  \"converted_amount\": \"{{last_converted_amount}}\",\n  \"payment_method\": \"{{last_payment_method}}\",\n  \"occurred_at\": \"2026-10-28T10:00:00+08:00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
-            "url": {
-              "raw": "{{base_url}}/order/create",
-              "host": ["{{base_url}}"],
-              "path": ["order", "create"]
+            "url": "{{notify_url}}",
+            "description": "开启enable_webhook_examples后单独调用商户测试回调地址。复用app_id/api_key及App-ID/Timestamp/X-Nonce + body.sign，与商户建单签名相同。amount/currency按真实订单快照修改（自动折扣开启时尤其要核对）。\n\n实际系统仅首次从未支付转paid时自动发notify_url；退款/拒付/物流/曾支付状态恢复paid均不重复通知。occurred_at为首次通知事件时间，不是paid_at；重试保持业务payload，鉴权头和sign每次刷新。默认共尝试5次（含首次），失败等待30/300/1800/3600秒，由每分钟任务扫描；单次超时10秒。任意HTTP2xx成功，不检查body。商户应验签并按订单+状态幂等处理。"
+          },
+          "response": [
+            {
+              "name": "200 商户确认（body仅示例，系统不检查）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"order_no\": \"{{last_order_no}}\",\n  \"merchant_order_no\": \"{{last_merchant_order_no}}\",\n  \"status\": \"paid\",\n  \"currency\": \"EUR\",\n  \"amount\": \"190.00\",\n  \"converted_currency\": \"USD\",\n  \"converted_amount\": \"{{last_converted_amount}}\",\n  \"payment_method\": \"{{last_payment_method}}\",\n  \"occurred_at\": \"2026-10-28T10:00:00+08:00\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{notify_url}}",
+                "description": "开启enable_webhook_examples后单独调用商户测试回调地址。复用app_id/api_key及App-ID/Timestamp/X-Nonce + body.sign，与商户建单签名相同。amount/currency按真实订单快照修改（自动折扣开启时尤其要核对）。\n\n实际系统仅首次从未支付转paid时自动发notify_url；退款/拒付/物流/曾支付状态恢复paid均不重复通知。occurred_at为首次通知事件时间，不是paid_at；重试保持业务payload，鉴权头和sign每次刷新。默认共尝试5次（含首次），失败等待30/300/1800/3600秒，由每分钟任务扫描；单次超时10秒。任意HTTP2xx成功，不检查body。商户应验签并按订单+状态幂等处理。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('商户返回任意2xx即确认通知', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "外部站点物流回传（附件 v1.1，尚未自动接入）",
+      "description": "enable_fulfillment_examples默认false；不是本系统API，不代表已验证接收方上线。",
+      "item": [
+        {
+          "name": "10 外部站点物流回传（首批 / 同运单幂等重发）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
-            "description": "指定支付渠道示例：payment_method_key 传后台「支付方式」的 method_code（这里写的是 paypal）。传了这个参数后，系统不再在支付组里做加权均匀分配，也不再校验单笔/当日金额/当日笔数/当月金额这些限额，直接用这个渠道建单（group_key 仍然必填）。\n\n代价：notify_url / return_url / cancel_url 三个地址必须全部传齐，且域名要与该支付方式绑定的「网站域名」一致（比较时忽略大小写、www. 前缀与端口）。跑之前先把示例里的 shop.example.com 换成你自己站点的域名，把 payment_method_key 换成真实的 method_code（也可以只填 Environment 里的 payment_method_key 变量，Pre-request Script 会覆盖请求体里的值）。\n\n域名对不上会得到 422 PAYMENT_METHOD_DOMAIN_MISMATCH，渠道不存在/不属于该商户/已停用会得到 422 PAYMENT_METHOD_NOT_AVAILABLE，两种情况都不会创建订单。指定渠道时回跳域名只以该支付方式绑定的「网站域名」为准，不再叠加校验应用绑定的网站域名（二者是二选一，此时不会再触发 CALLBACK_DOMAIN_NOT_ALLOWED）。"
-          }
+            "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+          },
+          "response": [
+            {
+              "name": "200 新批次或重复去重",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\"\n}"
+            },
+            {
+              "name": "401 外部站点响应（msg除404外为示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 1,\n  \"msg\": \"invalid signature\"\n}"
+            },
+            {
+              "name": "404 外部站点响应（msg除404外为示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+              },
+              "status": "Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 2,\n  \"msg\": \"order not found\"\n}"
+            },
+            {
+              "name": "422 外部站点响应（msg除404外为示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 3,\n  \"msg\": \"validation failed\"\n}"
+            },
+            {
+              "name": "500 外部站点响应（msg除404外为示意）",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{tracking_number}}\",\n  \"tracking_url\": \"{{tracking_url}}\",\n  \"shipped_at\": \"{{shipped_at}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+              },
+              "status": "Internal Server Error",
+              "code": 500,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 9,\n  \"msg\": \"internal server error\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('站点记录成功或幂等去重', function () { pm.expect(pm.response.json()).to.include({ code: 0, msg: 'success' }); });"
+                ]
+              }
+            }
+          ]
         },
         {
-          "name": "查询订单 - 按 order_no",
+          "name": "11 外部站点物流回传（不同运单，追加第二批）",
           "request": {
-            "method": "GET",
-            "header": [],
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{fulfillment_second_tracking_number}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
-            "url": {
-              "raw": "{{base_url}}/order/query?order_no={{last_order_no}}",
-              "host": ["{{base_url}}"],
-              "path": ["order", "query"],
-              "query": [{ "key": "order_no", "value": "{{last_order_no}}" }]
-            },
-            "description": "order_no 取自「创建订单（happy path）」请求的 Test Script 存下来的 collection 变量，先跑那个请求再跑这个。\n\nGET 请求也带了一个 body（只有签名需要，query 参数不受影响），因为 /order/query 走的是同一套 api.auth 中间件，同样要求 body 里有 sign 字段。"
-          }
-        },
-        {
-          "name": "查询订单 - 按 merchant_order_no",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "body": {
-              "mode": "raw",
-              "raw": "{}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/order/query?merchant_order_no=IDEMPOTENCY-TEST-0001",
-              "host": ["{{base_url}}"],
-              "path": ["order", "query"],
-              "query": [{ "key": "merchant_order_no", "value": "IDEMPOTENCY-TEST-0001" }]
-            },
-            "description": "配合上面的幂等测试请求一起用，查一下那个固定 merchant_order_no 对应的订单状态。"
-          }
+            "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
+          },
+          "response": [
+            {
+              "name": "200 第二批发货记录成功",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"merchant_order_no\": \"{{fulfillment_merchant_order_no}}\",\n  \"carrier\": \"DHL\",\n  \"carrier_code\": \"dhl\",\n  \"tracking_number\": \"{{fulfillment_second_tracking_number}}\",\n  \"items\": [\n    {\n      \"sku\": \"SKU-1001\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"code\": 0,\n  \"msg\": \"success\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('站点记录成功或幂等去重', function () { pm.expect(pm.response.json()).to.include({ code: 0, msg: 'success' }); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
-  ]
+  ],
+  "auth": {
+    "type": "noauth"
+  }
 }
