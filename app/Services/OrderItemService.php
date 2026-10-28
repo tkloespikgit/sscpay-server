@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\OrderItemPreparationException;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\OrderMatchedItem;
@@ -17,7 +18,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use RuntimeException;
 
 /**
  * 订单商品服务：下单未传商品明细时，从选定支付方式绑定的站点商品
@@ -62,6 +62,12 @@ class OrderItemService
     /** 远端创建商品时 SKU 冲突的重新生成重试次数。 */
     private const CREATE_SKU_RETRIES = 3;
 
+    /** 源商品读取、创建重试及响应丢失后的 SKU 查询所需的最大远端等待时间。 */
+    public static function maximumRemotePreparationSeconds(int $itemCount): int
+    {
+        return max(0, $itemCount) * self::CREATE_HTTP_TIMEOUT * (self::CREATE_SKU_RETRIES + 2);
+    }
+
     /**
      * 从支付方式的站点商品变体中随机匹配出一份订单商品明细。
      *
@@ -77,11 +83,11 @@ class OrderItemService
     public function matchItems(PaymentMethod $paymentMethod, string $targetGoodsAmount, string $actualRate): array
     {
         if (bccomp($targetGoodsAmount, '0', 2) <= 0) {
-            throw new RuntimeException('可用于匹配的商品金额必须大于 0，无法自动匹配商品');
+            throw new OrderItemPreparationException('可用于匹配的商品金额必须大于 0，无法自动匹配商品');
         }
 
         if (bccomp($actualRate, '0', 6) <= 0) {
-            throw new RuntimeException('汇率不合法，无法自动匹配商品');
+            throw new OrderItemPreparationException('汇率不合法，无法自动匹配商品');
         }
 
         $candidates = SiteProductVariation::query()
@@ -93,7 +99,7 @@ class OrderItemService
             ->values();
 
         if ($candidates->isEmpty()) {
-            throw new RuntimeException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品变体，请先同步商品");
+            throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品变体，请先同步商品");
         }
 
         // 先折算单价再匹配，避免逐行换汇截断后商品总额低于目标金额。
@@ -144,7 +150,7 @@ class OrderItemService
         $orderItems = $order->items()->get();
 
         if ($orderItems->isEmpty()) {
-            throw new RuntimeException('订单没有商品明细，CREATE 模式无法匹配商品');
+            throw new OrderItemPreparationException('订单没有商品明细，CREATE 模式无法匹配商品');
         }
 
         $candidates = SiteProductVariation::query()
@@ -154,7 +160,7 @@ class OrderItemService
             ->get();
 
         if ($candidates->isEmpty()) {
-            throw new RuntimeException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品，请先同步商品");
+            throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品，请先同步商品");
         }
 
         // 补单重试复用池：按"美金单价"索引上一轮已创建的商品行。
@@ -174,7 +180,7 @@ class OrderItemService
             $targetUsd = number_format((float) $orderItem->converted_unit_price, 2, '.', '');
 
             if (bccomp($targetUsd, '0', 2) <= 0) {
-                throw new RuntimeException('订单明细折算后的美金单价必须大于 0，CREATE 模式无法匹配商品');
+                throw new OrderItemPreparationException('订单明细折算后的美金单价必须大于 0，CREATE 模式无法匹配商品');
             }
 
             $subtotal = bcadd($subtotal, (string) $orderItem->total_price, 2);
@@ -205,7 +211,7 @@ class OrderItemService
                 ->first();
 
             if ($template === null) {
-                throw new RuntimeException("支付方式 {$paymentMethod->method_code} 站点没有单价高于 {$targetUsd} 美金的商品，CREATE 模式无法复制改价创建商品");
+                throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 站点没有单价高于 {$targetUsd} 美金的商品，CREATE 模式无法复制改价创建商品");
             }
 
             // 3. 复用顺序：本次运行内同价已创建的（多行补单时后续行必须指向同一商品）
@@ -255,7 +261,7 @@ class OrderItemService
         $orderItems = $order->items()->get();
 
         if ($orderItems->isEmpty()) {
-            throw new RuntimeException('订单没有商品明细，COPY 模式无法匹配商品');
+            throw new OrderItemPreparationException('订单没有商品明细，COPY 模式无法匹配商品');
         }
 
         $candidates = SiteProductVariation::query()
@@ -265,7 +271,7 @@ class OrderItemService
             ->get();
 
         if ($candidates->isEmpty()) {
-            throw new RuntimeException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品，请先同步商品");
+            throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 没有可用于匹配的站点商品，请先同步商品");
         }
 
         // 补单重试复用池：按"USD 单价 + 替换后名称（忽略大小写）"复合键索引上一轮已创建的商品行。
@@ -286,7 +292,7 @@ class OrderItemService
             $targetUsd = number_format((float) $orderItem->converted_unit_price, 2, '.', '');
 
             if (bccomp($targetUsd, '0', 2) <= 0) {
-                throw new RuntimeException('订单明细折算后的美金单价必须大于 0，COPY 模式无法匹配商品');
+                throw new OrderItemPreparationException('订单明细折算后的美金单价必须大于 0，COPY 模式无法匹配商品');
             }
 
             $subtotal = bcadd($subtotal, (string) $orderItem->total_price, 2);
@@ -327,7 +333,7 @@ class OrderItemService
                 ->first();
 
             if ($template === null) {
-                throw new RuntimeException("支付方式 {$paymentMethod->method_code} 站点没有单价不低于 {$targetUsd} 美金的商品，COPY 模式无法复制改价创建商品");
+                throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 站点没有单价不低于 {$targetUsd} 美金的商品，COPY 模式无法复制改价创建商品");
             }
 
             // 3. 复用顺序：本次运行内同名同价已创建的（多行补单时后续行必须指向同一商品）
@@ -393,7 +399,7 @@ class OrderItemService
         $priceOf = fn (SiteProductVariation $variation) => bcdiv($this->variationPrice($variation), $actualRate, 2);
         $candidates = $candidates->filter(fn (SiteProductVariation $variation) => bccomp($priceOf($variation), '0', 2) > 0);
         if ($candidates->isEmpty()) {
-            throw new RuntimeException('站点商品折算后的单价均小于 0.01，无法自动匹配商品');
+            throw new OrderItemPreparationException('站点商品折算后的单价均小于 0.01，无法自动匹配商品');
         }
         $lines = [];
         $remaining = $targetAmount;
@@ -449,7 +455,7 @@ class OrderItemService
             }
 
             if (bccomp($targetAmount, $capacity, 2) > 0) {
-                throw new RuntimeException("站点商品容量不足：按单品最多 {$hardMax} 件计算，可用商品总额 {$capacity}（订单币种），低于目标金额 {$targetAmount}（订单币种），无法自动匹配商品");
+                throw new OrderItemPreparationException("站点商品容量不足：按单品最多 {$hardMax} 件计算，可用商品总额 {$capacity}（订单币种），低于目标金额 {$targetAmount}（订单币种），无法自动匹配商品");
             }
         }
 
@@ -493,7 +499,7 @@ class OrderItemService
                 ?? $poolUnder($hardLimit)->sortBy($priceOf)->first();
 
             if ($picked === null) {
-                throw new RuntimeException('站点商品均已达到最大匹配件数，无法继续匹配商品');
+                throw new OrderItemPreparationException('站点商品均已达到最大匹配件数，无法继续匹配商品');
             }
 
             $lines[] = ['variation' => $picked, 'price' => $priceOf($picked), 'quantity' => 1];
@@ -538,7 +544,7 @@ class OrderItemService
     private function remoteCreateProduct(PaymentMethod $paymentMethod, SiteProductVariation $template, string $targetUsd, callable $resolveName): array
     {
         if (blank($paymentMethod->domain) || blank($paymentMethod->domain_client_id) || blank($paymentMethod->domain_client_sk)) {
-            throw new RuntimeException("支付方式 {$paymentMethod->method_code} 站点配置不完整：缺少网站域名或 WooCommerce REST API 密钥，无法创建商品");
+            throw new OrderItemPreparationException("支付方式 {$paymentMethod->method_code} 站点配置不完整：缺少网站域名或 WooCommerce REST API 密钥，无法创建商品");
         }
 
         // 站点侧认证插件（WooKeyAuthenticator）不认标准 HTTP Basic Auth，明文 Authorization 头
@@ -599,7 +605,7 @@ class OrderItemService
                 $created = $this->findRemoteProductBySku($http, $base, (string) $payload['sku']);
 
                 if ($created === null) {
-                    throw new RuntimeException("连接站点创建商品失败：{$e->getMessage()}", 0, $e);
+                    throw new OrderItemPreparationException("连接站点创建商品失败：{$e->getMessage()}", 0, $e);
                 }
 
                 break;
@@ -620,7 +626,7 @@ class OrderItemService
 
             $this->logRemoteFailure('WooCommerce 创建商品失败', $paymentMethod, $base, $response->status(), $response->body());
 
-            throw new RuntimeException(sprintf(
+            throw new OrderItemPreparationException(sprintf(
                 'WooCommerce 创建商品失败（%d）：%s',
                 $response->status(),
                 mb_substr($response->body(), 0, 200)
@@ -628,7 +634,7 @@ class OrderItemService
         }
 
         if ($created === null) {
-            throw new RuntimeException('WooCommerce 创建商品失败：SKU 多次冲突，请稍后重试');
+            throw new OrderItemPreparationException('WooCommerce 创建商品失败：SKU 多次冲突，请稍后重试');
         }
 
         $firstImage = collect($created['images'] ?? [])->first();
@@ -642,7 +648,7 @@ class OrderItemService
         ];
 
         if ($result['woo_product_id'] <= 0) {
-            throw new RuntimeException('WooCommerce 创建商品返回了非预期的响应：'.mb_substr((string) json_encode($created), 0, 200));
+            throw new OrderItemPreparationException('WooCommerce 创建商品返回了非预期的响应：'.mb_substr((string) json_encode($created), 0, 200));
         }
 
         $this->storeCreatedProduct($paymentMethod, $result, $targetUsd);
@@ -656,13 +662,13 @@ class OrderItemService
         try {
             $response = $http->get($url);
         } catch (ConnectionException $e) {
-            throw new RuntimeException("连接站点读取源商品失败：{$e->getMessage()}", 0, $e);
+            throw new OrderItemPreparationException("连接站点读取源商品失败：{$e->getMessage()}", 0, $e);
         }
 
         if (! $response->successful()) {
             $this->logRemoteFailure('WooCommerce 读取源商品失败', $paymentMethod, $url, $response->status(), $response->body());
 
-            throw new RuntimeException(sprintf(
+            throw new OrderItemPreparationException(sprintf(
                 'WooCommerce 读取源商品失败（%d）：%s',
                 $response->status(),
                 mb_substr($response->body(), 0, 200)

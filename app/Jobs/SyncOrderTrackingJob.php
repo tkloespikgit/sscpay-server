@@ -71,7 +71,7 @@ class SyncOrderTrackingJob implements ShouldQueue
         [$carrierCode, $isOtherCarrier] = Carrier::resolveTrackingCode($shipping->logistics_company);
 
         $payload = [
-            's_order_id' => $order->order_no,
+            's_order_id' => $order->gatewayOrderReference(),
             'tracking_number' => $shipping->tracking_number,
             'carrier_code' => $carrierCode,
             'is_other_carrier' => $isOtherCarrier,

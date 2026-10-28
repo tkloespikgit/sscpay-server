@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Exceptions\OrderItemPreparationException;
 use App\Models\PaymentMethod;
 use App\Models\SiteProduct;
 use App\Services\OrderCreationService;
@@ -48,7 +49,7 @@ class OrderMatchDiscountTest extends TestCase
         $this->createMerchantAndApplication();
         $method = $this->makePaymentMethod('match');
         $this->product($method, '16.00');
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(OrderItemPreparationException::class);
         $this->expectExceptionMessage('站点商品容量不足');
         app(OrderItemService::class)->matchItems($method, '48.01', '1');
     }

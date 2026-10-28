@@ -26,7 +26,7 @@ use Illuminate\Support\Facades\Http;
  * 【用法】
  *   php artisan webhook:simulate-stripe {order_no} [--status=paid] [--url=]
  *
- *   {order_no}  中台订单号（orders.order_no / s_order_id），必填。
+ *   {order_no}  中台订单号（orders.order_no），必填；自动解析当前网关尝试标识。
  *   --status    模拟的插件侧状态，默认 paid。可选值见
  *               OrderPaymentStatusService::STATUS_MAP：
  *               pending / paid / failed / cancelled / expired /
@@ -46,7 +46,7 @@ use Illuminate\Support\Facades\Http;
 class SimulateStripeWebhook extends Command
 {
     protected $signature = 'webhook:simulate-stripe
-                            {order_no : 中台订单号（orders.order_no / s_order_id）}
+                            {order_no : 中台订单号（orders.order_no）}
                             {--status=paid : 模拟的插件侧状态，默认 paid}
                             {--url= : 覆盖目标地址，默认用本地 APP_URL}';
 
@@ -69,10 +69,10 @@ class SimulateStripeWebhook extends Command
 
         // 构造 PGA 转发后的 payment_status 回调体。
         // 字段与 doc/s-system-payment-status-notify.md 第二节一致：
-        // s_order_id 是中台 order_no，transaction_id 是 Stripe 的 pi_xxx。
+        // s_order_id 使用当前网关尝试标识，transaction_id 是 Stripe 的 pi_xxx。
         $payload = [
             'event' => 'payment_status',
-            's_order_id' => $order->order_no,
+            's_order_id' => $order->gatewayOrderReference(),
             'status' => $status,
             'wp_order_id' => (int) ($order->wp_order_id ?? 0),
             'transaction_id' => 'pi_sim_'.substr(bin2hex(random_bytes(8)), 0, 12),

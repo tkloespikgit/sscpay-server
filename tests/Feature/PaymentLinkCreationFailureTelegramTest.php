@@ -16,11 +16,11 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 use Throwable;
-use TypeError;
 
 class PaymentLinkCreationFailureTelegramTest extends TestCase
 {
@@ -119,15 +119,30 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
         $this->assertStringContainsString('pay_url', $this->singleTelegramRequest()['text']);
     }
 
-    public function test_an_invalid_data_type_is_notified_without_replacing_the_type_error(): void
+    public function test_an_invalid_data_type_is_notified_as_a_gateway_error(): void
     {
         $order = $this->contextOrder();
         $this->fakePay(Http::response(['code' => 0, 'data' => 'invalid data'], 200));
 
         $error = $this->failure(fn () => $this->client()->createPayment($this->payload($order), $order));
 
-        $this->assertInstanceOf(TypeError::class, $error);
+        $this->assertInstanceOf(PaymentGatewayException::class, $error);
+        $this->assertSame(200, $error->httpStatus);
+        $this->assertSame(['code' => 0, 'data' => 'invalid data'], $error->response);
+        $this->assertStringContainsString('非预期的 data 格式', $error->getMessage());
         $this->assertStringContainsString($order->order_no, $this->singleTelegramRequest()['text']);
+    }
+
+    public function test_a_success_code_with_a_failed_http_status_is_rejected_and_notified(): void
+    {
+        $order = $this->contextOrder();
+        $this->fakePay(Http::response(['code' => 0, 'data' => ['pay_url' => 'https://pay.example.com/checkout']], 503));
+
+        $error = $this->failure(fn () => $this->client()->createPayment($this->payload($order), $order));
+
+        $this->assertInstanceOf(PaymentGatewayException::class, $error);
+        $this->assertSame(503, $error->httpStatus);
+        $this->assertStringContainsString('503', $this->singleTelegramRequest()['text']);
     }
 
     public function test_success_neither_dispatches_a_failure_event_nor_sends_a_failure_message(): void
@@ -143,6 +158,38 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
         $this->assertSame('https://pay.example.com/checkout', $result['pay_url']);
         Event::assertNotDispatched(PaymentLinkCreationFailed::class);
         $this->assertNoTelegramRequests();
+    }
+
+    /** @param array<string, mixed> $invalidFields */
+    #[DataProvider('invalidCreationResults')]
+    public function test_invalid_creation_fields_raise_one_gateway_failure_event(array $invalidFields): void
+    {
+        $order = $this->contextOrder();
+        Event::fake([PaymentLinkCreationFailed::class]);
+        $this->fakePay(Http::response(['code' => 0, 'data' => array_replace([
+            's_order_id' => $order->order_no,
+            'pay_url' => 'https://pay.example.com/checkout',
+            'wp_order_id' => 123,
+        ], $invalidFields)]));
+
+        $error = $this->failure(fn () => $this->client()->createPayment($this->payload($order), $order));
+
+        $this->assertInstanceOf(PaymentGatewayException::class, $error);
+        Event::assertDispatchedTimes(PaymentLinkCreationFailed::class, 1);
+        Http::assertSentCount(1);
+    }
+
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function invalidCreationResults(): array
+    {
+        return [
+            'array payment url' => [['pay_url' => ['https://pay.example.com/checkout']]],
+            'unsafe payment url scheme' => [['pay_url' => 'javascript:alert(1)']],
+            'oversized payment url' => [['pay_url' => 'https://pay.example.com/'.str_repeat('a', 2048)]],
+            'another order reference' => [['s_order_id' => 'OTHERORDER']],
+            'array wordpress order id' => [['wp_order_id' => [123]]],
+            'zero wordpress order id' => [['wp_order_id' => 0]],
+        ];
     }
 
     public function test_html_in_order_details_and_failure_reason_is_escaped(): void

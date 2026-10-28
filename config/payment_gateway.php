@@ -25,6 +25,12 @@ return [
     'retry_times' => (int) env('PGA_RETRY_TIMES', 2),
     'retry_sleep_ms' => (int) env('PGA_RETRY_SLEEP_MS', 300),
 
+    // 普通支付组下单在一次请求中最多尝试的不同渠道数（包含首选渠道）。
+    'failover_max_attempts' => (int) env('PGA_FAILOVER_MAX_ATTEMPTS', 3),
+
+    // 覆盖多渠道请求及同步商品准备；实际锁租期还会根据远端超时预算向上调整。
+    'creation_lock_seconds' => (int) env('PGA_CREATION_LOCK_SECONDS', 600),
+
     // 验证插件回调签名（X-PGA-Signature）用的密钥
     'webhook_secret' => env('PGA_WEBHOOK_SECRET', ''),
 ];

@@ -125,17 +125,18 @@ class OrderPaymentStatusService
             return;
         }
 
-        $order = Order::query()->withoutGlobalScopes()->where('order_no', $sOrderId)->first();
+        $order = Order::query()->withoutGlobalScopes()
+            ->where(fn ($query) => $query->where('gateway_order_no', $sOrderId)
+                ->orWhere(fn ($legacy) => $legacy->whereNull('gateway_order_no')->where('order_no', $sOrderId)))
+            ->first();
 
         if (! $order) {
-            Log::warning('payment_status webhook: 找不到对应订单，忽略', ['s_order_id' => $sOrderId]);
+            Log::warning('payment_status webhook: 找不到当前网关尝试对应的订单，忽略过期或未知回调', ['s_order_id' => $sOrderId]);
 
             return;
         }
 
-        $this->disablePaymentMethodIfForbidden($order, $payload);
-
-        $this->applyStatus($order, self::STATUS_MAP[$pluginStatus], $payload);
+        $this->applyStatus($order, self::STATUS_MAP[$pluginStatus], $payload, $sOrderId, checkForbiddenAccount: true);
     }
 
     /**
@@ -144,21 +145,26 @@ class OrderPaymentStatusService
      * 避免后续订单继续路由到一个已经下不了单的通道。只在当前仍是启用状态时才处理+
      * 告警，避免同一事件重试多次时重复发 Telegram。
      */
-    private function disablePaymentMethodIfForbidden(Order $order, array $payload): void
+    private function disablePaymentMethodIfForbidden(Order $order, array $payload): ?PaymentMethod
     {
         if (empty($payload['account_forbidden'])) {
-            return;
+            return null;
         }
 
         $method = $order->paymentMethodConfig();
 
         if (! $method || ! $method->is_active) {
-            return;
+            return null;
         }
 
         $method->is_active = false;
         $method->save();
 
+        return $method;
+    }
+
+    private function notifyForbiddenPaymentMethod(Order $order, PaymentMethod $method): void
+    {
         $recipientIds = $this->forbiddenNoticeRecipients($order, $method);
 
         Log::warning('payment_status webhook: 支付通道账号已被标记为不可用，自动禁用', [
@@ -216,6 +222,7 @@ class OrderPaymentStatusService
      */
     public function queryAndApply(Order $order): array
     {
+        $gatewayReference = $order->gatewayOrderReference();
         $method = $order->paymentMethodConfig();
 
         if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
@@ -228,7 +235,7 @@ class OrderPaymentStatusService
                 $method->domain_client_id,
                 $method->domain_client_sk,
             )
-            ->orderQuery($order->order_no);
+            ->orderQuery($gatewayReference);
 
         $pluginStatus = (string) ($data['status'] ?? '');
         $beforeStatus = $order->status;
@@ -252,7 +259,7 @@ class OrderPaymentStatusService
 
         // 主动查询以网关结果为准：返回 paid 时允许覆盖本地任意状态（含 failed 等终态），
         // 因为网关是付款事实的权威来源，本地先判失败、网关后报成功是常见时序。
-        $oldStatus = $this->applyStatus($order, $targetStatus, $data, allowPaidOverride: true);
+        $oldStatus = $this->applyStatus($order, $targetStatus, $data, $gatewayReference, allowPaidOverride: true);
 
         return [
             'queried_status' => $pluginStatus,
@@ -270,8 +277,14 @@ class OrderPaymentStatusService
      *
      * @return string|null 实际发生变化时返回变化前的状态，被幂等/回退保护跳过时返回 null
      */
-    private function applyStatus(Order $order, string $targetStatus, array $payload, bool $allowPaidOverride = false): ?string
-    {
+    private function applyStatus(
+        Order $order,
+        string $targetStatus,
+        array $payload,
+        string $gatewayReference,
+        bool $allowPaidOverride = false,
+        bool $checkForbiddenAccount = false,
+    ): ?string {
         // 订单当前处于人工审核事件中时，除主动查询返回 paid 外，shouldApply() 会
         // 把网关消息吞掉（见该方法内的守卫注释）——但如果这条被吞的消息恰好
         // 就是这次审核在等的最终结果（网关那边争议已经判下来了），审核期间冻结的
@@ -279,9 +292,28 @@ class OrderPaymentStatusService
         // 这种情况，事务提交后（不占用行锁）发条 Telegram 提醒，避免运营/财务
         // 只能靠自己盯着网关后台才知道"这时候该去把审核事件关掉放钱了"。
         $ignoredDuringDisputeReview = false;
+        $staleGatewayReference = false;
+        $disabledMethod = null;
 
-        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $allowPaidOverride, &$ignoredDuringDisputeReview) {
+        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $gatewayReference, $allowPaidOverride, $checkForbiddenAccount, &$ignoredDuringDisputeReview, &$staleGatewayReference, &$disabledMethod) {
+            $disabledMethod = null;
             $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
+            if ($locked->gatewayOrderReference() !== $gatewayReference
+                || (filled($payload['s_order_id'] ?? null) && (string) $payload['s_order_id'] !== $gatewayReference)) {
+                $staleGatewayReference = true;
+                Log::warning('payment_status: 忽略已切换渠道的网关状态', [
+                    'order_no' => $locked->order_no,
+                    's_order_id' => $gatewayReference,
+                    'current_gateway_order_no' => $locked->gatewayOrderReference(),
+                ]);
+
+                return null;
+            }
+
+            if ($checkForbiddenAccount) {
+                $disabledMethod = $this->disablePaymentMethodIfForbidden($locked, $payload);
+            }
+
             $old = $locked->status;
 
             if (! $this->shouldApply($old, $targetStatus, $allowPaidOverride)) {
@@ -329,11 +361,19 @@ class OrderPaymentStatusService
             return $old;
         }, 3);
 
+        $order->refresh();
+
+        if ($staleGatewayReference) {
+            return null;
+        }
+
+        if ($disabledMethod) {
+            $this->notifyForbiddenPaymentMethod($order, $disabledMethod);
+        }
+
         if ($ignoredDuringDisputeReview) {
             $this->alertDisputeReviewGatewayStatusIgnored($order, $targetStatus);
         }
-
-        $order->refresh();
 
         if ($oldStatus === null) {
             if ($order->settlement_mode !== null) {

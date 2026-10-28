@@ -51,10 +51,11 @@ erDiagram
 
 | 字段组 | 语义与限制 |
 |---|---|
-| `order_no` | 本地系统订单号，同时作为插件 `s_order_id`；通过生成器与唯一约束处理碰撞 |
+| `order_no` | 稳定的本地系统订单号，商户 API、通知及后台继续使用；通过生成器与唯一约束处理碰撞 |
+| `gateway_order_no` | 可空、唯一的当前网关尝试引用。切换渠道时重新生成并作为插件 `s_order_id`；NULL 时由 `gatewayOrderReference()` 回退 `order_no`，兼容未切换和历史订单 |
 | `merchant_id` + `merchant_order_no` | 未软删订单的幂等键。重复请求比较 `currency` 和原始请求金额 `original_amount`（历史订单为空时回退 `amount`），并非校验所有明细字段一致 |
 | `application_id`、`payment_group_id` | 建单应用与支付组 |
-| `payment_method_id`、`payment_method` | 渠道 ID 与代码快照。当前渠道代码在未删除渠道中全局唯一；历史解析复用 `paymentMethodConfig()` |
+| `payment_method_id`、`payment_method` | 当前渠道 ID 与代码快照。未获得支付链接的普通路由订单可在同请求故障切换时更新；当前渠道代码在未删除渠道中全局唯一，历史解析复用 `paymentMethodConfig()` |
 | `designated_payment_method_key` | 记录本次是否显式指定渠道，区别于普通组内路由 |
 | `source`、`platform`、`checkout_link_id` | 入口来源（`api`/`manual`/`checkout_link`）、平台类型、可选的收款链接关联 |
 | `currency`、`subtotal`、`shipping_fee`、`discount`、`tax`、`amount` | 订单原币种金额；公式容差当前为 0.01，商品小计按两位小数核对 |
@@ -72,6 +73,8 @@ erDiagram
 | `pending_status_query_count`、`pending_status_last_queried_at` | 定时补查已领取次数（默认 0）和最近领取时间（默认 NULL）；创建满 30/90 分钟各一次，最多两次，调用网关前原子递增，失败也计次；手工查询不占用 |
 
 金额计算应保持十进制字符串/bcmath；数据库金额多为 `decimal`，模型用相应 decimal cast。远端 JSON 或现存风控部分代码有 float 转换，不应据此将账务计算改为浮点运算。
+
+普通组内路由切换渠道时保留本地订单、原始商品、应付金额、汇率和自动折扣，按新渠道的商户财务配置重算交易手续费、`settlement_amount`、保证金比例/天数及退款/拒付手续费快照，并清除旧渠道匹配商品后重建。`gateway_order_no` 随切换更新，支付创建、查询、日志和物流均使用当前引用；旧尝试的回调或查询结果不能更新已切换订单。新增迁移 `2026_10_28_142012` 仅增加可空字段及唯一约束，不回填历史数据；首次部署须执行迁移。详见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
 
 历史漏配汇损的专用纠错入口 `orders:recalculate-surcharge` 是修改汇率快照的显式例外：保留 `original_exchange_rate` 和手续费金额，更新实际汇率、汇损、订单折算字段及净入账；原币金额、原台账均不改。仅处理已入账无退款/争议订单，必须保留命令生成的新旧快照审计报告；余额由人工另记调整流水，历史统计按受影响日期补算。详见[汇损补算](../doc/order-surcharge-recalculation.md)。
 
@@ -177,6 +180,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | 约束 | 当前含义 |
 |---|---|
 | `orders.order_no_uniq`、`payment_link_token_uniq` | 未删除订单的系统号/付款 token 唯一 |
+| `orders.gateway_order_no` | 非空网关尝试引用在全表唯一；NULL 兼容未切换和历史订单，软删除不释放已保存引用 |
+| `order_events.order_no_log_id_uniq` | 有效日志按 `order_no + gateway_order_no + external_log_id` 唯一；原始及历史尝试的来源为空字符串，跨渠道相同外部日志 ID 不相互覆盖 |
 | `orders(merchant_id, merchant_order_no_uniq)` | 商户内有效订单幂等 |
 | `payment_methods.method_code_uniq` | 有效渠道代码全局唯一，已由 2026-09-21 迁移替换早期商户内唯一规则 |
 | `applications.app_id_uniq` | 有效应用 ID 全局唯一 |
@@ -189,7 +194,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_settlements.order_id`、`merchant_fund_freezes.order_id` | 本单最多一次结算及一笔循环保证金，固定保证金的 NULL 不参与限制 |
 | `order_accounting_tasks(order_id, type)` | 状态重放不能重复创建同类可靠记账任务 |
 
-迁移存在 `IF`、`CONCAT`、带排序的 `GROUP_CONCAT` 等 MySQL 特征；`phpunit.xml` 目前仍使用 SQLite 内存库，测试兼容性需单独核验。不要仅根据初始建表迁移推断最终约束。
+迁移存在 `IF`、`CONCAT`、带排序的 `GROUP_CONCAT` 等 MySQL 特征；`phpunit.xml` 目前仍使用 SQLite 内存库，测试兼容性需单独核验。不要仅根据初始建表迁移推断最终约束。2026-10-28 的订单和事件日志网关引用迁移在已有非空尝试引用时拒绝回滚，避免丢失远端定位及日志来源；生产优先前向修复。
 
 新增数据结构同时检查：模型 fillable/casts/关系、权限与租户范围、现有数据回填、索引、删除策略、相关 FormRequest/Resource 和测试。种子顺序见 `DatabaseSeeder`，商户角色创建前必须已存在权限记录。
 

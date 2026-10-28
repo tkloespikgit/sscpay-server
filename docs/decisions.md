@@ -20,15 +20,15 @@
 
 ## D-03 本地订单先提交，远端失败可补单
 
-**状态：已实现。** 商户订单号级缓存锁串行化重复请求；本地订单与商品在事务内写入，HTTP 建品/建支付单在事务外执行。重复请求金额/币种相符且缺少 `pay_url` 时补建远端，沿用原 `s_order_id`。
+**状态：已实现；固定渠道及远端引用规则由 [D-20](#d-20-前三候选随机路由与同请求网关故障切换) 部分替代。** 商户订单号级缓存锁串行化重复请求；本地订单与商品在事务内写入，HTTP 建品/建支付单在事务外执行。重复请求金额/币种相符且缺少 `pay_url` 时补建远端，同一渠道尝试沿用已有 `s_order_id`；普通路由失败切换渠道时使用新的远端引用。
 
-**原因与影响：** 外部 HTTP 不应长期占有数据库事务。远端失败保留本地快照，不能重算汇率或换渠道后当作新单。插件侧同一 `s_order_id` 幂等是恢复链路的依赖；缓存锁租期是有限的，不能据此保证任意长的远端调用绝无并发。
+**原因与影响：** 外部 HTTP 不应长期占有数据库事务。远端失败保留本地订单、原始金额和汇率；渠道切换不创建新的本地订单，但须按 D-20 更新渠道财务快照。插件侧同一 `s_order_id` 幂等是恢复链路的依赖；缓存锁租期是有限的，不能据此保证任意长的远端调用绝无并发。
 
 **依据：** [OrderCreationService](../app/Services/OrderCreationService.php)、[OrderCreateRetryMailTest](../tests/Feature/OrderCreateRetryMailTest.php)。
 
 ## D-04 下单时锁定渠道，额度按渠道全局统计
 
-**状态：已实现。** 普通路由先筛风控，再按“当日已成交额 / 组内权重”选最小值；平局按权重降序、ID 升序。限额统计按 `payment_method_id` 跨商户、系统时区和 `paid_at` 计算，历史空时间回退 `created_at`。
+**状态：已实现；单一最小负载选择由 [D-20](#d-20-前三候选随机路由与同请求网关故障切换) 的前三候选随机规则替代。** 普通路由继续先筛风控，再按“当日已成交额 / 组内权重”升序排列；平局按权重降序、ID 升序。限额统计按 `payment_method_id` 跨商户、系统时区和 `paid_at` 计算，历史空时间回退 `created_at`。
 
 **原因与影响：** 分摊渠道负载，且共享渠道不能因商户不同的时区和范围重复获得额度。已发货/退款/拒付仍属于曾经支付成功，不能让这些状态释放成交额度。指定渠道是显式例外：跳过路由/限额，但不跳过商户可用范围、启用状态、有效支付组与渠道域名检查。
 
@@ -184,3 +184,19 @@
 **原因与影响：** CSV 不能指定单元格类型，Excel 自动推断会使纯数字编号显示为科学计数、丢失前导零或长数字精度。统一使用已安装的 OpenSpout 按行写出 XLSX，显式字符串单元格也能保留公式样式文本的原值；不添加公式、单引号或制表符来伪装文本。导出保留查询筛选、商户及观察者权限范围，物流 XLSX 可填写后直接上传，旧 CSV/XLS 导入仍支持。物流模板最多容纳 1,048,574 条订单及两行表头/说明，超限拒绝下载并提示分批筛选，防止自动分表后上传遗漏后续工作表。仅改变文件表示，不修改数据库中的编号或金额。
 
 **依据：** [XlsxExport](../app/Support/XlsxExport.php)、[LogisticsImportService](../app/Services/LogisticsImportService.php)、[ObserverOrderExportService](../app/Services/ObserverOrderExportService.php)、[物流导出与回传测试](../tests/Feature/LogisticsTemplateTest.php)、[观察者导出测试](../tests/Feature/Filament/ObserverOrdersTest.php)。
+
+## D-20 前三候选随机路由与同请求网关故障切换
+
+**状态：当前工作区实现，未提交（2026-10-28，按用户要求）；整体验证结果见开发记录。** 部分替代 D-03 的渠道固定和远端引用规则、D-04 的单一最小负载选择；商户幂等、原金额/汇率快照、渠道授权及统计口径保持。
+
+普通组内路由先筛选启用、商户可使用且通过限额风控的渠道，再沿用“当天已成交金额 / 组内权重”升序、权重降序、ID 升序，从前三个候选中等概率随机选择；不足三个时全部参与。待支付订单仍不计成交负载，随机结果可能连续相同，不承诺逐单轮转或严格的成交占比。
+
+网关失败时在同一次下单请求内排除已尝试渠道，再按相同规则重选；`payment_gateway.failover_max_attempts` 默认 3，含首选渠道。候选耗尽或达到上限时返回最后的网关异常并保留本地订单；不会将故障排除后的耗尽当成初次风控失败发送提醒。指定 `payment_method_key` 的订单保留直连语义，不自动切换；成功取得支付链接后，幂等请求直接复用。
+
+**原因与影响：** 仅看已成交金额时，尚未付款的连续订单会因排名不变集中到同一渠道；随机候选让新流量分散，当前请求内切换减少商户手工重试。每次切换都重新检查渠道可用性和限额，在同一本地订单上更新渠道、交易手续费、净入账、保证金及退款/拒付手续费快照，并清除旧匹配商品重新准备。原始商品、金额、汇率和首次自动折扣保持，不重复建立本地订单或产生资金流水。
+
+`orders.gateway_order_no` 保存可空且唯一的当前远端引用，切换时重新生成；`Order::gatewayOrderReference()` 对 NULL 回退本地 `order_no`。插件 `/pay`、查询、日志和物流调用统一使用当前引用；webhook 与主动查询在状态落地前再次核对引用，防止旧尝试的迟到结果改变新渠道订单或触发其账务。商户侧订单号、支付 token 和协议字段保持不变。新引用用于隔离尝试，不能代替网关的远端取消接口；超时仍可能意味着旧站点已经创建过未返回链接的订单。
+
+事件日志将网关尝试加入生成列唯一约束，保留旧渠道和新渠道相同外部日志 ID 的不同记录。首次部署须执行订单和事件日志两项迁移；历史订单引用保持 NULL，历史日志来源保持空字符串，不改写历史远端编号。已有尝试引用或来源日志时拒绝破坏性回滚。回归测试使用模拟 HTTP，不触发真实建单或账务。
+
+**依据：** [PaymentService](../app/Services/PaymentService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[Order](../app/Models/Order.php)、[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[网关配置](../config/payment_gateway.php)、[迁移](../database/migrations/2026_10_28_142012_add_gateway_order_no_to_orders_table.php)、[路由测试](../tests/Feature/PaymentRoutingTest.php)、[故障切换测试](../tests/Feature/OrderCreationFailoverTest.php)。

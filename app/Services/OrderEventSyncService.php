@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\Log;
  * 这个接口是"按 s_order_id 单笔查询"，不是全局增量 feed，所以本服务的同步
  * 单位是"订单"而不是"事件"：每轮遍历一批"活跃订单"——近期新建的，或状态
  * 仍可能变化（pending/paid/disputing）的——对每笔订单调用一次 /order-logs，
- * 取回的日志按 (order_no, external_log_id) 幂等写入。
+ * 取回的日志按 (order_no, gateway_order_no, external_log_id) 幂等写入。
  *
  * 鉴权用该订单锁定的支付方式（Order::payment_method -> PaymentMethod）上
  * 配置的站点 WooCommerce REST API 密钥（domain_client_id / domain_client_sk，
@@ -114,6 +114,7 @@ class OrderEventSyncService
     {
         $stats['orders_checked']++;
 
+        $gatewayReference = $order->gatewayOrderReference();
         $method = $this->resolvePaymentMethod($order, $methodCache);
 
         if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
@@ -129,13 +130,24 @@ class OrderEventSyncService
                     $method->domain_client_id,
                     $method->domain_client_sk,
                 )
-                ->orderLogs($order->order_no);
+                ->orderLogs($gatewayReference);
         } catch (PaymentGatewayException $e) {
             $stats['orders_failed']++;
             Log::warning('OrderEventSyncService: order-logs request failed, skipped', [
                 'order_no' => $order->order_no,
                 'pga_code' => $e->pgaCode,
                 'message' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $currentOrder = Order::query()->withoutGlobalScopes()->find($order->id);
+        if ($currentOrder?->gatewayOrderReference() !== $gatewayReference
+            || (filled($result['s_order_id'] ?? null) && (string) $result['s_order_id'] !== $gatewayReference)) {
+            Log::warning('OrderEventSyncService: 渠道已切换或响应引用不匹配，跳过本次日志归档', [
+                'order_no' => $order->order_no,
+                's_order_id' => $gatewayReference,
             ]);
 
             return;
@@ -184,6 +196,7 @@ class OrderEventSyncService
         OrderEvent::query()->withoutGlobalScopes()->updateOrCreate(
             [
                 'order_no' => $order->order_no,
+                'gateway_order_no' => $order->gateway_order_no ?? '',
                 'external_log_id' => $logEntry['id'],
             ],
             [

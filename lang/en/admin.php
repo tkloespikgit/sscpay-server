@@ -486,7 +486,7 @@ return [
         'relation_manager' => [
             'title' => 'Payment Methods',
             'priority' => 'Traffic Weight',
-            'priority_help' => 'Higher value takes a larger share (e.g. 200 vs 100 splits orders roughly 2:1)',
+            'priority_help' => 'Eligible methods are ranked by today\'s paid volume divided by weight, then one is chosen at random from the top three (or all if fewer). A higher weight ranks earlier at the same volume; no fixed order ratio is guaranteed.',
         ],
     ],
 

@@ -8,6 +8,7 @@ use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderDetailsConflictException;
+use App\Exceptions\OrderItemPreparationException;
 use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
@@ -24,6 +25,8 @@ use App\Services\PaymentGateway\PaymentGatewayService;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）、商户后台手工建单、收款链接落地页下单
@@ -37,11 +40,10 @@ use Illuminate\Support\Facades\DB;
  *      不一致则拒绝，不新建也不请求远端。
  *   2. 金额公式校验（2.1 节）。
  *   3. 商品明细小计校验（3.8 节：subtotal 必须等于所有明细 total_price 之和）。
- *   4. 回跳域名一致性校验（notify_url / return_url / cancel_url 必须与本次下单所属
- *      应用绑定的域名 applications.website 一致；商户维度的 allowed_domains 白名单已废弃）。
+ *   4. 普通下单的应用域名校验当前关闭；指定渠道仍校验三个回跳地址与渠道域名一致。
  *   5. 汇率 + 汇损快照计算（2.3 节），换算出 USD 金额。
- *   6. 锁定唯一支付方式（2.4 节，最新决定：不返回列表，直接锁死）：默认按支付组做
- *      加权均匀分配 + 风控阈值筛选；商户传了 payment_method_key 时直接使用该渠道
+ *   6. 默认按支付组做风控筛选，从负载排序前三的渠道中随机选择；
+ *      商户传了 payment_method_key 时直接使用该渠道
  *      （跳过组内路由与限额风控），代价是强制校验三个回跳地址都落在该渠道绑定的
  *      电商网站域名上。
  *   7. 交易手续费快照 + 最小金额校验：按锁定的支付方式当前的 fee_percent/fee_fixed
@@ -53,8 +55,9 @@ use Illuminate\Support\Facades\DB;
  *
  * 注意：第 1~7 步都在数据库事务之外完成，只有第 8 步才开事务——这样风控检查、
  * 汇率读取这些"只读"操作不会持有不必要的事务/锁时间，失败时也不需要回滚任何东西。
- * 第 9 步同样在事务外（HTTP 调用不占事务）：远程失败时订单已落库，
- * 重新下单命中幂等分支会自动补创建（插件 /pay 对同一 s_order_id 幂等）。
+ * 第 9 步同样在事务外（HTTP 调用不占事务）：普通路由网关失败后，在本次请求内
+ * 换渠道并刷新渠道快照，最多尝试配置的渠道数。每次切换生成独立 s_order_id；
+ * 同一渠道尝试的重试沿用其标识。本地订单保留，后续幂等请求可以继续补建。
  */
 class OrderCreationService
 {
@@ -93,7 +96,19 @@ class OrderCreationService
         // 锁粒度精确到单笔订单，不影响其他订单（含同商户的其他订单）的并发处理。
         $lockKey = "order-create:{$merchant->id}:{$data['merchant_order_no']}";
 
-        return Cache::lock($lockKey, 30)->block(10, fn () => $this->createOrderLocked(
+        $existingItemCount = Order::query()->forMerchant($merchant->id)
+            ->where('merchant_order_no', $data['merchant_order_no'])
+            ->withCount('items')->first(['id'])?->items_count ?? 0;
+        $itemCount = max(count($data['items']), (int) $existingItemCount);
+        $httpAttempts = max(1, (int) config('payment_gateway.retry_times', 2));
+        $gatewaySeconds = $httpAttempts * max(1, (int) config('payment_gateway.timeout', 15))
+            + (int) ceil(max(0, (int) config('payment_gateway.retry_sleep_ms', 300)) * $httpAttempts / 1000);
+        $lockSeconds = max(
+            (int) config('payment_gateway.creation_lock_seconds', 600),
+            60 + $this->maxPaymentAttempts() * ($gatewaySeconds + OrderItemService::maximumRemotePreparationSeconds($itemCount)),
+        );
+
+        return Cache::lock($lockKey, $lockSeconds)->block(10, fn () => $this->createOrderLocked(
             $data,
             $merchant,
             $application,
@@ -122,7 +137,7 @@ class OrderCreationService
             // 幂等命中：上次下单若在远程创建支付订单这一步失败过（订单已落库但没有
             // pay_url），这里自动补一次——插件 /pay 对同一 s_order_id 幂等，不会重复创建。
             if (blank($existing->pay_url)) {
-                $this->createRemotePayment($existing, $existing->paymentMethodConfig());
+                $this->createPaymentWithFailover($existing, $existing->paymentMethodConfig(), $merchant);
             }
 
             return $existing;
@@ -202,24 +217,15 @@ class OrderCreationService
             ->firstOrFail(); // 找不到组本身就是配置错误，直接抛 404 类异常由上层处理
 
         // 传了 payment_method_key 就直接用该渠道（不走组内路由、不查限额风控）；
-        // 没传则维持原有的加权均匀分配 + 风控筛选。
-        $paymentMethod = filled($data['payment_method_key'] ?? null)
-            ? $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data)
-            : $this->paymentService->resolvePaymentMethod($group, (float) $convertedAmount);
-
-        // 7. 交易手续费快照：按锁定的支付方式当前费率算出百分比/固定手续费金额与
-        // 实际到账金额，三者写死在订单上（后续商户改费率不影响已下的订单）。
-        // 手续费之和超过订单 USD 金额（到账会变负）时直接拒单，不建订单记录。
-        $financialSettings = $paymentMethod->financialSettingsForMerchant($merchant->id);
-        $feePercentAmount = bcmul($convertedAmount, bcdiv($financialSettings['fee_percent'], '100', 8), 2);
-        $feeFixedAmount = $financialSettings['fee_fixed'];
-        $totalFee = bcadd($feePercentAmount, $feeFixedAmount, 2);
-
-        if (bccomp($totalFee, $convertedAmount, 2) > 0) {
-            throw new MinimumAmountNotMetException($paymentMethod->minTransactionAmount($merchant->id), $convertedAmount);
+        // 没传则在风控通过的渠道中按负载排序，从前三个随机抽取。
+        // 7. 按渠道和商户费率保存财务快照；普通路由跳过手续费超过金额的候选。
+        if (filled($data['payment_method_key'] ?? null)) {
+            $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data);
+            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant->id, $convertedAmount);
+        } else {
+            $excludedMethodIds = [];
+            [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant->id, $convertedAmount, $excludedMethodIds);
         }
-
-        $settlementAmount = bcsub($convertedAmount, $totalFee, 2);
 
         // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
         // 手工建单固定传布尔 true（保持"手工建单必发"的既有行为）。落库而不是只在
@@ -243,10 +249,7 @@ class OrderCreationService
             $taxConverted,
             $surchargeFee,
             $sendMail,
-            $feePercentAmount,
-            $feeFixedAmount,
-            $financialSettings,
-            $settlementAmount,
+            $financialSnapshot,
             $originalAmount,
             $autoDiscount
         ) {
@@ -280,15 +283,9 @@ class OrderCreationService
                 'surcharge_type' => $rate['surcharge_type'],
                 'surcharge_amount' => $rate['surcharge_amount'],
                 'surcharge_fee' => $surchargeFee,
-                'fee_percent_amount' => $feePercentAmount,
-                'fee_fixed_amount' => $feeFixedAmount,
-                'settlement_amount' => $settlementAmount,
+                ...$financialSnapshot,
                 'settlement_mode' => $merchant->settlement_mode ?? 'immediate',
                 'settlement_days' => (int) $merchant->settlement_days,
-                'reserve_percent' => $financialSettings['reserve_percent'],
-                'reserve_days' => $financialSettings['reserve_days'],
-                'refund_fee_snapshot' => $financialSettings['refund_fee'],
-                'chargeback_fee_snapshot' => $financialSettings['chargeback_fee'],
                 'customer_first_name' => $data['customer_first_name'],
                 'customer_last_name' => $data['customer_last_name'],
                 'customer_email' => $data['customer_email'],
@@ -340,9 +337,175 @@ class OrderCreationService
         }
 
         // 9. 调支付网关插件 /pay 远程创建支付订单，获取收银台支付链接。
-        $this->createRemotePayment($order, $paymentMethod);
+        $this->createPaymentWithFailover($order, $paymentMethod, $merchant);
 
         return $order;
+    }
+
+    /**
+     * @return array{fee_percent_amount: string, fee_fixed_amount: string, settlement_amount: string, reserve_percent: string, reserve_days: int, refund_fee_snapshot: string, chargeback_fee_snapshot: string}
+     */
+    private function financialSnapshot(PaymentMethod $method, int $merchantId, string $amountUsd): array
+    {
+        $settings = $method->financialSettingsForMerchant($merchantId);
+        $percentFee = bcmul($amountUsd, bcdiv($settings['fee_percent'], '100', 8), 2);
+        $totalFee = bcadd($percentFee, $settings['fee_fixed'], 2);
+
+        if (bccomp($totalFee, $amountUsd, 2) > 0) {
+            throw new MinimumAmountNotMetException($method->minTransactionAmount($merchantId), $amountUsd);
+        }
+
+        return [
+            'fee_percent_amount' => $percentFee,
+            'fee_fixed_amount' => $settings['fee_fixed'],
+            'settlement_amount' => bcsub($amountUsd, $totalFee, 2),
+            'reserve_percent' => $settings['reserve_percent'],
+            'reserve_days' => $settings['reserve_days'],
+            'refund_fee_snapshot' => $settings['refund_fee'],
+            'chargeback_fee_snapshot' => $settings['chargeback_fee'],
+        ];
+    }
+
+    private function maxPaymentAttempts(): int
+    {
+        return max(1, (int) config('payment_gateway.failover_max_attempts', 3));
+    }
+
+    /**
+     * @param  list<int>  $excludedMethodIds
+     * @return array{0: PaymentMethod, 1: array<string, int|string>}
+     */
+    private function resolveGroupPaymentMethod(PaymentGroup $group, int $merchantId, string $amountUsd, array &$excludedMethodIds): array
+    {
+        $amountError = null;
+
+        while (true) {
+            try {
+                $method = $this->paymentService->resolvePaymentMethod($group, (float) $amountUsd, $excludedMethodIds);
+            } catch (NoAvailablePaymentMethodException $error) {
+                throw $amountError ?? $error;
+            }
+
+            try {
+                return [$method, $this->financialSnapshot($method, $merchantId, $amountUsd)];
+            } catch (MinimumAmountNotMetException $error) {
+                $amountError = $error;
+                $excludedMethodIds[] = (int) $method->id;
+            }
+        }
+    }
+
+    /** 普通组内路由失败时立即换渠道；指定渠道和已收款订单不参与切换。 */
+    private function createPaymentWithFailover(Order $order, ?PaymentMethod $method, Merchant $merchant): void
+    {
+        $excludedMethodIds = [];
+
+        for ($attempt = 1; $attempt <= $this->maxPaymentAttempts(); $attempt++) {
+            if ($order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
+                return;
+            }
+
+            if ($method) {
+                $excludedMethodIds[] = (int) $method->id;
+            }
+            $attemptReference = $order->gatewayOrderReference();
+            $attemptMethodId = $order->payment_method_id;
+
+            try {
+                $this->createRemotePayment($order, $method);
+
+                return;
+            } catch (PaymentGatewayException|OrderItemPreparationException $error) {
+                if ($error instanceof OrderItemPreparationException) {
+                    $error = new PaymentGatewayException('支付渠道商品准备失败，无法生成支付链接', previous: $error);
+                }
+                $order->refresh();
+
+                if (filled($order->pay_url) || $order->paid_at !== null
+                    || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
+                    return;
+                }
+
+                if (filled($order->designated_payment_method_key) || $attempt >= $this->maxPaymentAttempts()
+                    || ! in_array($order->status, ['pending', 'failed'], true)
+                    || $order->gatewayOrderReference() !== $attemptReference || $order->payment_method_id !== $attemptMethodId) {
+                    throw $error;
+                }
+
+                $group = PaymentGroup::query()->forMerchant($merchant->id)
+                    ->where('is_active', true)->find($order->payment_group_id);
+
+                if (! $group) {
+                    throw $error;
+                }
+
+                try {
+                    [$nextMethod, $snapshot] = $this->resolveGroupPaymentMethod($group, $merchant->id, (string) $order->converted_amount, $excludedMethodIds);
+                } catch (NoAvailablePaymentMethodException|MinimumAmountNotMetException) {
+                    throw $error;
+                }
+
+                if (! $this->switchPaymentMethod($order, $nextMethod, $snapshot)) {
+                    $order->refresh();
+
+                    if (filled($order->pay_url) || $order->paid_at !== null
+                        || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
+                        return;
+                    }
+
+                    throw $error;
+                }
+
+                $method = $nextMethod;
+            }
+        }
+    }
+
+    /** @param array<string, int|string> $financialSnapshot */
+    private function switchPaymentMethod(Order $order, PaymentMethod $method, array $financialSnapshot): bool
+    {
+        $oldReference = $order->gatewayOrderReference();
+        $oldMethodId = $order->payment_method_id;
+        $switched = DB::transaction(function () use ($order, $method, $financialSnapshot, $oldReference, $oldMethodId): bool {
+            $locked = Order::query()->forMerchant($order->merchant_id)->lockForUpdate()->findOrFail($order->id);
+
+            if ($locked->gatewayOrderReference() !== $oldReference || $locked->payment_method_id !== $oldMethodId
+                || $locked->paid_at !== null || filled($locked->pay_url)
+                || ! in_array($locked->status, ['pending', 'failed'], true)) {
+                return false;
+            }
+
+            $locked->update([
+                ...$financialSnapshot,
+                'payment_method_id' => $method->id,
+                'payment_method' => $method->method_code,
+                'gateway_order_no' => 'GW'.Str::ulid(),
+                'status' => 'pending',
+                'pay_url' => null,
+                'wp_order_id' => null,
+                'transaction_id' => null,
+                'invoice_number' => null,
+                'subject' => null,
+            ]);
+            $locked->matchedItems()->delete();
+
+            return true;
+        }, 3);
+
+        $order->refresh();
+
+        if ($switched) {
+            Log::warning('支付链接创建失败，切换组内渠道继续下单', [
+                'order_no' => $order->order_no,
+                'merchant_id' => $order->merchant_id,
+                'previous_payment_method_id' => $oldMethodId,
+                'payment_method_id' => $method->id,
+                'previous_gateway_order_no' => $oldReference,
+                'gateway_order_no' => $order->gatewayOrderReference(),
+            ]);
+        }
+
+        return $switched;
     }
 
     /**
@@ -496,7 +659,7 @@ class OrderCreationService
         }
 
         $payload = [
-            's_order_id' => $order->order_no,
+            's_order_id' => $order->gatewayOrderReference(),
             // 按客户原始币种收款（订单上的原币种金额）
             'amount' => (float) $order->amount,
             'subtotal' => (float) $order->subtotal,
@@ -557,10 +720,19 @@ class OrderCreationService
             )
             ->createPayment($payload, $order);
 
-        $order->update([
-            'pay_url' => $result['pay_url'] ?? null,
-            'wp_order_id' => $result['wp_order_id'] ?? null,
-        ]);
+        DB::transaction(function () use ($order, $paymentMethod, $payload, $result): void {
+            $locked = Order::query()->forMerchant($order->merchant_id)->lockForUpdate()->findOrFail($order->id);
+
+            if ($locked->gatewayOrderReference() !== $payload['s_order_id'] || $locked->payment_method_id !== $paymentMethod->id) {
+                throw new PaymentGatewayException('订单已切换到其他支付尝试，忽略旧网关响应');
+            }
+
+            $order->update([
+                'pay_url' => $result['pay_url'],
+                'wp_order_id' => $result['wp_order_id'] ?? $locked->wp_order_id,
+            ]);
+        }, 3);
+        $order->refresh();
     }
 
     /**

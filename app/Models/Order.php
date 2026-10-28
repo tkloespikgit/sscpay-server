@@ -75,6 +75,7 @@ class Order extends Model
         'payment_group_id',
         'checkout_link_id',
         'order_no',
+        'gateway_order_no',
         'invoice_number',
         'subject',
         'merchant_order_no',
@@ -348,6 +349,12 @@ class Order extends Model
             ->withTrashed()
             ->where('method_code', $this->payment_method)
             ->first();
+    }
+
+    /** 当前网关尝试的幂等标识；未切换渠道的订单兼容原系统订单号。 */
+    public function gatewayOrderReference(): string
+    {
+        return (string) ($this->gateway_order_no ?: $this->order_no);
     }
 
     /**

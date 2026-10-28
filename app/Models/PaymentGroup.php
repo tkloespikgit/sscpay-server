@@ -57,7 +57,8 @@ class PaymentGroup extends Model
     }
 
     /**
-     * 按组内优先级（priority 越小越优先）排序的支付方式，仅含启用中的。
+     * 组内支付方式及路由权重，包含启用和停用记录。
+     * 实际下单由 PaymentService 筛选并按负载排序，从前三个候选中随机选择。
      */
     public function paymentMethods(): BelongsToMany
     {

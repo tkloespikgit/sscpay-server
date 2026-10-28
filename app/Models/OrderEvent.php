@@ -21,6 +21,7 @@ class OrderEvent extends Model
     protected $fillable = [
         'merchant_id',
         'order_no',
+        'gateway_order_no',
         'external_log_id',
         'level',
         'message',

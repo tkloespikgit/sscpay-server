@@ -8,16 +8,15 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Random\Randomizer;
 
 /**
  * 支付路由服务（分散流量防打满策略）。
  *
- * 按最新业务决定：下单时就要锁死唯一的支付方式，不再返回候选列表给前端选择。
- * 策略为加权均匀分配：组内启用的支付方式按各自权重（pivot priority，数值越大
- * 占比越高）分摊进单，每笔订单路由给"当天已成交金额 / 权重"最小且通过风控的
- * 通道，长期下来各通道的当天成交额会收敛到配置的占比，避免单通道先打满日限额。
- * 全部候选都不通过风控则整单失败（NoAvailablePaymentMethodException，
- * 调用方应让整个下单事务回滚）。
+ * 组内启用且商户可用的支付方式先通过风控，再按"当天已成交金额 / 权重"
+ * 升序排列，从前三个通道中等概率随机选择一个；不足三个时全部参与。
+ * 网关失败后可排除本次已尝试的通道，按相同规则重新选择，避免重复尝试。
+ * 全部候选都不通过风控则抛 NoAvailablePaymentMethodException。
  *
  * "当天/当月"窗口按系统默认时区（config('app.timezone')）确定，不跟随支付组时区——
  * 详见 dayRange() 的注释。统计维度是支付方式本身
@@ -33,14 +32,22 @@ use Illuminate\Support\Facades\Cache;
  */
 class PaymentService
 {
-    public function __construct(private readonly TelegramNotificationService $telegram) {}
+    public function __construct(
+        private readonly TelegramNotificationService $telegram,
+        private readonly Randomizer $randomizer = new Randomizer,
+    ) {}
 
     /**
+     * @param  list<int>  $excludedMethodIds  本次下单已尝试或已排除的支付方式。
+     *
      * @throws NoAvailablePaymentMethodException
      */
-    public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd): PaymentMethod
+    public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd, array $excludedMethodIds = []): PaymentMethod
     {
-        $candidates = $group->activePaymentMethods()->forMerchant((int) $group->merchant_id)->get();
+        $candidates = $group->activePaymentMethods()
+            ->forMerchant((int) $group->merchant_id)
+            ->whereNotIn('payment_methods.id', $excludedMethodIds)
+            ->get();
 
         // 一次 SQL 批量取全部候选的当天统计，再逐一过风控，避免每个通道一次查询。
         [$dayStart, $dayEnd] = $this->dayRange();
@@ -57,12 +64,14 @@ class PaymentService
         }
 
         if ($passing === []) {
-            $this->alertNoAvailablePaymentMethod($group, $amountUsd, $candidates->count());
+            if ($excludedMethodIds === []) {
+                $this->alertNoAvailablePaymentMethod($group, $amountUsd, $candidates->count());
+            }
 
             throw new NoAvailablePaymentMethodException($group->group_key);
         }
 
-        return $this->pickLeastLoaded($passing, $dailyStats);
+        return $this->pickAmongLeastLoaded($passing, $dailyStats);
     }
 
     /**
@@ -97,13 +106,13 @@ class PaymentService
     }
 
     /**
-     * 在通过风控的通道里，挑"当天已成交金额 / 权重"最小（最欠载）的那个。
-     * 平局时权重大的优先，再平按 id 升序保证结果确定。
+     * 在通过风控的通道里，按"当天已成交金额 / 权重"排列后，从前三个随机选择。
+     * 排名相同时权重大的优先，再按 id 升序确定候选范围。
      *
      * @param  PaymentMethod[]  $methods
      * @param  array<int, array{amount: float, count: int}>  $dailyStats
      */
-    private function pickLeastLoaded(array $methods, array $dailyStats): PaymentMethod
+    private function pickAmongLeastLoaded(array $methods, array $dailyStats): PaymentMethod
     {
         usort($methods, function (PaymentMethod $a, PaymentMethod $b) use ($dailyStats) {
             return [
@@ -117,7 +126,7 @@ class PaymentService
             ];
         });
 
-        return $methods[0];
+        return $methods[$this->randomizer->getInt(0, min(3, count($methods)) - 1)];
     }
 
     /**

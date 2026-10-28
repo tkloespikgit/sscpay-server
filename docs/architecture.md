@@ -83,19 +83,21 @@ flowchart TD
 
 主要入口：[OrderCreationService.php](../app/Services/OrderCreationService.php)。
 
-1. 对 `merchant_id + merchant_order_no` 加缓存锁（当前租期 30 秒、等待 10 秒）。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用快照/渠道。旧单没有 `pay_url` 时尝试远端补单。
+1. 对 `merchant_id + merchant_order_no` 加缓存锁。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用本地订单和金额快照。已有 `pay_url` 时直接返回；缺少链接时沿用当前渠道补建，普通组内路由仍可按下面的故障切换规则继续尝试。
 2. 校验 `amount = subtotal + shipping_fee - discount + tax`，公式容差由 `Order::AMOUNT_TOLERANCE` 定义（当前 0.01）；商品明细按两位小数核对小计。
 3. 应用开启自动折扣时，首次建单随机减免原币种应付金额，保存原始金额及折扣快照；然后读取汇率及汇损，换算 USD。回跳域名校验的当前策略见 [D-05](decisions.md#d-05-下单域名策略)。
-4. 校验支付组归属且启用。普通路径经 `PaymentService` 筛选风控后，选当天成交额/权重最小的渠道；指定 `payment_method_key` 的路径跳过组内路由与限额检查，但仍检查渠道可用范围、启用状态和三个回跳 URL 的渠道域名。
+4. 校验支付组归属且启用。普通路径经 `PaymentService` 筛选风控后，按当天成交额/权重升序、权重降序、ID 升序排列，从前三个候选中等概率随机选择；不足三个时全部参与。指定 `payment_method_key` 的路径跳过组内路由与限额检查，但仍检查渠道可用范围、启用状态和三个回跳 URL 的渠道域名，并且不自动切换渠道。
 5. 优先使用商户与渠道的独立财务配置，空值继承渠道默认值，固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细，以及结算模式/周期、保证金比例/天数、退款与拒付手续费快照。旧订单的 `settlement_mode` 为 NULL，沿用原规则，不追溯重算。
-6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`；远端失败保留本地订单，供幂等重试恢复。
+6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`。普通组内路由遇到网关失败或明确的商品准备失败（`OrderItemPreparationException`）时，在当前请求内排除已尝试渠道、重新筛选候选并随机选择；默认最多尝试三个不同渠道（含首选，见 `payment_gateway.failover_max_attempts`）。首次及切换选择都跳过手续费超过订单金额的候选。没有剩余候选或达到上限时保留本地订单并返回最后的网关错误，仍可幂等补建。
 7. 是否派发付款链接邮件由调用方决定，Service 仅保存意图。API 重试补单后的发信行为由 `OrderCreateRetryMailTest` 覆盖。
+
+切换只改变同一本地订单的渠道及相关快照：按新渠道和商户配置重算交易手续费、净入账、保证金及退款/拒付手续费，清除旧渠道匹配商品后重新准备；原始金额、汇率和首次自动折扣保持不变。`order_no`、商户订单号及付款 token 不变，`gateway_order_no` 为每次渠道切换生成新的插件 `s_order_id`；未切换及历史订单该字段为 NULL，`Order::gatewayOrderReference()` 回退本地 `order_no`。支付创建、主动查询、日志和物流回传统一使用当前远端引用，webhook 和查询结果落地前核对当前引用，忽略旧渠道尝试的迟到结果。相关决策见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
 
 `PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息发送给订单商户的已启用机器人。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号或渠道商户推断接收人。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
 
 两类明细不可混用：`order_items` 保存商户原始商品，`order_matched_items` 保存发给支付站点的商品。`OrderItemService` 支持 `MATCH`、`VIRTUAL`、`CREATE`、`COPY`；同站点直连优先于模式选择。`CREATE`/`COPY` 需要远端真实商品 ID，因此下单过程同步建品。
 
-锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；风控当前统计已成交数据，不能宣称它严格串行化所有渠道订单。
+锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；租期至少为 `payment_gateway.creation_lock_seconds`（默认 600 秒），并按最大渠道尝试数、HTTP 重试及原始商品条数的同步建品超时预算向上调整。切换和写入链接时另以订单行锁核对当前尝试，已收款或已有链接时不切换。风控当前统计已成交数据，待支付订单不计负载。前三候选随机允许连续碰巧选中同一渠道，不保证逐单轮转、固定进单比例或严格串行化所有渠道订单。
 
 ## 4. 支付状态与账务
 
@@ -165,8 +167,8 @@ flowchart TD
 
 | 任务 | 首先阅读 | 现有测试入口 |
 |---|---|---|
-| 下单、幂等、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
-| 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRiskPaidAtTest.php` |
+| 下单、幂等、网关切换、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreationFailoverTest.php`、`OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
+| 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRoutingTest.php`、`PaymentRiskPaidAtTest.php` |
 | 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`tests/Feature/Filament/MerchantWithdrawalRequestTest.php` |
 | 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
 | 历史订单漏配汇损补算 | `app/Console/Commands/RecalculateOrderSurcharge.php`、`app/Services/OrderSurchargeRecalculationService.php`、[操作手册](../doc/order-surcharge-recalculation.md) | `tests/Feature/RecalculateOrderSurchargeTest.php` |

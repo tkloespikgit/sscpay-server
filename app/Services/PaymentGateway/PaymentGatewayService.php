@@ -107,14 +107,28 @@ class PaymentGatewayService
         try {
             $result = $this->request('pay', $payload);
 
-            // 插件业务成功却缺少 pay_url，同样属于创建支付链接失败。
-            if (blank($result['pay_url'] ?? null)) {
-                Log::warning('支付网关插件 /pay 返回成功但缺少 pay_url', [
+            $payUrl = $result['pay_url'] ?? null;
+            if (! is_string($payUrl) || blank($payUrl) || strlen($payUrl) > 2048
+                || filter_var($payUrl, FILTER_VALIDATE_URL) === false
+                || ! in_array(parse_url($payUrl, PHP_URL_SCHEME), ['http', 'https'], true)) {
+                Log::warning('支付网关插件 /pay 返回成功但 pay_url 无效', [
                     's_order_id' => $payload['s_order_id'] ?? null,
                     'response' => $result,
                 ]);
 
-                throw new PaymentGatewayException('支付网关插件 /pay 返回成功但未提供 pay_url，无法生成收银台链接', -1, 200, $result);
+                throw new PaymentGatewayException('支付网关插件 /pay 返回成功但未提供有效 pay_url，无法生成收银台链接', -1, 200, $result);
+            }
+
+            if (array_key_exists('s_order_id', $result)
+                && (! is_string($result['s_order_id']) || $result['s_order_id'] !== (string) ($payload['s_order_id'] ?? ''))) {
+                throw new PaymentGatewayException('支付网关插件 /pay 返回的 s_order_id 与当前请求不匹配', -1, 200, $result);
+            }
+
+            $wpOrderId = $result['wp_order_id'] ?? null;
+            if ($wpOrderId !== null
+                && ((! is_int($wpOrderId) && ! is_string($wpOrderId))
+                    || filter_var($wpOrderId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false)) {
+                throw new PaymentGatewayException('支付网关插件 /pay 返回的 wp_order_id 无效', -1, 200, $result);
             }
 
             return $result;
@@ -132,7 +146,7 @@ class PaymentGatewayService
         try {
             // 商户必须来自可信本地订单，不根据渠道所有者或客户端 payload 推断。
             if (! $order || ! $order->exists || ! $order->merchant_id
-                || (string) ($payload['s_order_id'] ?? '') !== (string) $order->order_no) {
+                || (string) ($payload['s_order_id'] ?? '') !== $order->gatewayOrderReference()) {
                 Log::warning('创建支付链接失败提醒已跳过：缺少匹配的本地订单上下文');
 
                 return;
@@ -373,7 +387,26 @@ class PaymentGatewayService
             );
         }
 
-        return $body['data'] ?? [];
+        if (! $response->successful()) {
+            throw new PaymentGatewayException(
+                "接口 /{$path} 返回失败状态（HTTP {$response->status()}）",
+                -1,
+                $response->status(),
+                $body,
+            );
+        }
+
+        $data = $body['data'] ?? [];
+        if (! is_array($data)) {
+            throw new PaymentGatewayException(
+                "接口 /{$path} 返回了非预期的 data 格式（HTTP {$response->status()}）",
+                -1,
+                $response->status(),
+                $body,
+            );
+        }
+
+        return $data;
     }
 
     /** 凭证指纹：只保留首尾各 4 位和长度，既能核对"是不是同一把 key"，又不落明文。 */
