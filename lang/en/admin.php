@@ -57,6 +57,7 @@ return [
             'logistics_imports_manage' => 'Import logistics',
             'order_events_view' => 'View order events',
             'telegram_manage' => 'Manage Telegram notifications',
+            'logistics_tracking_manage' => 'Manage logistics tracking credentials',
             'users_manage' => 'Manage users',
             'fund_freezes_view' => 'View fund freezes',
             'fund_freezes_create' => 'Freeze funds',
@@ -119,6 +120,7 @@ return [
             'website' => 'Website Domain',
             'status' => 'Enabled (API calls are rejected while disabled)',
             'is_auto_discount_enabled' => 'Automatic Discount',
+            'is_logistics_tracking_enabled' => 'Logistics Tracking Lookup',
             'is_order_email_enabled' => 'Enable Order Emails',
             'payment_link_mail_template' => 'Payment Link Email Body',
             'remark' => 'Remark',
@@ -128,6 +130,7 @@ return [
         ],
         'help' => [
             'auto_discount' => 'Random discount in the order currency: 0.01–0.10 for original payable amounts up to 200, or 0.01–0.50 above 200. Keeps at least 0.01 payable; skips amounts too small to discount. Applies to new orders only.',
+            'logistics_tracking' => 'When enabled, only newly created orders register for logistics tracking and anomaly checks. Existing orders are unchanged.',
             'api_key' => 'Merchants use this to sign requests. Keep it secret — do not share it with anyone who does not need it.',
             'payment_link_mail_template' => 'Leave blank to use the system default template. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved. Different applications under the same merchant can each have their own body.',
         ],
@@ -730,6 +733,7 @@ return [
             'platform' => 'Platform',
             'created_at' => 'Created At',
             'shipping_status' => 'Shipping Status',
+            'tracking_trail' => 'Tracking Trail',
             'sync_status' => 'Tracking Sync Status',
         ],
         'filters' => [
@@ -742,6 +746,9 @@ return [
             'shipping_shipped' => 'Shipped',
             'shipping_unshipped' => 'Not Shipped',
             'sync_status' => 'Tracking Sync Status',
+            'logistics_anomaly' => 'Logistics Anomaly',
+            'logistics_anomaly_yes' => 'Anomalous',
+            'logistics_anomaly_no' => 'Normal',
             'settlement_status' => 'Settlement Status',
             'settlement_pending' => 'Pending settlement (marked refunded/charged back, not deducted)',
             'customer_email' => 'Customer Email',
@@ -802,6 +809,7 @@ return [
             'status' => 'Status',
             'source' => 'Source',
             'platform' => 'Platform',
+            'logistics_tracking_snapshot' => 'Logistics Tracking Snapshot',
             'payment_method' => 'Payment Method',
             'transaction_id' => 'Transaction ID',
             'created_at' => 'Created At',
@@ -838,11 +846,29 @@ return [
             'remark' => 'Remark',
             'sync_status' => 'Tracking Sync Status',
             'sync_message' => 'Sync Result',
+            'tracking_provider' => 'Tracking Provider',
+            'tracking_status' => 'Tracking Status',
+            'tracking_sub_status' => 'Tracking Sub-status',
+            'tracking_last_event_at' => 'Latest Event Time',
+            'tracking_last_event_desc' => 'Latest Event',
+            'tracking_delivered_at' => 'Delivered At',
+            'tracking_error' => 'Tracking Error',
+            'logistics_anomaly' => 'Logistics Anomaly',
+            'logistics_anomaly_reason' => 'Anomaly Reason',
+            'logistics_anomaly_at' => 'Anomaly Flagged At',
             'manual_status_target' => 'Target Status',
             'manual_status_reason' => 'Reason',
         ],
+        'logistics_anomaly_reasons' => [
+            'no_delivery_15d' => 'No delivery more than 15 days after shipment',
+            'stale_5d' => 'No tracking update for more than 5 days',
+        ],
+        'help' => [
+            'logistics_tracking_snapshot' => 'Copied from the application toggle at order creation; does not change when the application setting changes later.',
+        ],
         'placeholders' => [
             'not_shipped' => 'Not shipped yet',
+            'no_tracking_status' => 'No tracking yet',
             'none' => '—',
         ],
         'actions_shipping' => [
@@ -852,10 +878,14 @@ return [
             'success_saved' => 'Shipment saved',
             'sync_now' => 'Sync Now',
             'sync_now_queued' => 'Queued for sync, refresh shortly to see the result',
+            'poll_tracking' => 'Refresh Tracking',
+            'poll_tracking_success' => 'Tracking status updated',
+            'poll_tracking_failed' => 'No new tracking data (check gates, credentials, or try again later)',
         ],
         'modals' => [
             'customer_info_heading' => 'Customer Information',
             'shipping_info_heading' => 'Shipping Information',
+            'tracking_trail_heading' => 'Tracking Trail',
             'close' => 'Close',
         ],
         'stats' => [
@@ -1160,6 +1190,7 @@ return [
             'payment' => 'Payment',
             'security' => 'Security',
             'notify' => 'Notifications',
+            'logistics' => 'Logistics Tracking',
         ],
         'value_types' => [
             'string' => 'String',
@@ -1359,6 +1390,41 @@ return [
         ],
     ],
 
+    'logistics_tracking' => [
+        'nav_label' => 'Logistics Tracking',
+        'fields' => [
+            'merchant' => 'Merchant',
+            'driver' => 'Logistics driver',
+            'base_url' => 'API Base URL',
+            'api_token' => 'API Token',
+            'webhook_secret' => 'Webhook Secret',
+            'webhook_url' => 'Webhook callback URL',
+        ],
+        'help' => [
+            'driver' => 'Choose from drivers enabled by the platform; credentials and Base URL are configured per merchant.',
+            'base_url' => 'API root URL for the selected logistics driver. What to enter depends on that provider — it is not necessarily 17TRACK. Leave blank to use the driver’s default (if any).',
+            'base_url_seventeen_track' => 'Current provider is 17TRACK: enter its Tracking API URL; leave blank to use https://api.17track.net/track/v2.4.',
+            'api_token' => 'API key from your logistics provider.',
+            'webhook_secret' => 'Webhook signing secret from your logistics provider.',
+            'api_token_seventeen_track' => 'API key from your logistics provider. Current provider is 17TRACK: its API Key and webhook signing secret are the same value — enter it in both fields.',
+            'webhook_secret_seventeen_track' => '17TRACK has no separate webhook secret; use the same 17TRACK API Key as above.',
+            'webhook_url' => 'Paste this URL into your logistics provider webhook settings. Regenerating the token invalidates the old URL immediately.',
+            'webhook_url_empty' => 'The callback URL appears after you save.',
+        ],
+        'validation' => [
+            'driver_unavailable' => 'The selected driver is not in the platform allow-list. Choose another or contact an admin.',
+        ],
+        'actions' => [
+            'save' => 'Save',
+            'regenerate_webhook_token' => 'Regenerate callback token',
+        ],
+        'notifications' => [
+            'saved' => 'Logistics tracking settings saved',
+            'webhook_token_regenerated' => 'Callback token regenerated — update the URL in your logistics provider console',
+            'regenerate_requires_save' => 'Save settings before regenerating the token',
+        ],
+    ],
+
     'mail' => [
         'payment_link' => [
             'subject' => '[:merchant] Your Payment Invitation - Order :order_no',
@@ -1382,6 +1448,7 @@ return [
         'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
         'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
         'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
+        'unshipped_overdue' => "⏰ Overdue unshipped orders\n\n:count order(s) have been paid for more than :hours hours without logistics.\nPlease ship or import tracking soon.\n\n:list",
         'dispute_review_gateway_status_ignored' => "🔔 Gateway status update (during dispute review)\n\nOrder: :order_no\nLatest gateway status: :status\nThis order is currently under manual dispute review, so this status update was not applied automatically. Please verify the actual outcome with the gateway and manually close the review event to release the frozen funds if appropriate.",
         'gateway_reversal_settle_failed' => "⚠️ Gateway refund/chargeback auto-settlement failed\n\nOrder: :order_no\nGateway status: :status\nError: :error\n\nThe order status was updated but the amount has **not** been deducted from the merchant balance. Please settle it manually from the order detail page.",
         'gateway_reversal_amount_mismatch' => "⚠️ Gateway amount differs from the order amount\n\nOrder: :order_no\nGateway amount: :gateway_amount :currency\nOrder amount: :order_amount :currency\n\nSettled using the order amount; please verify both sides.",

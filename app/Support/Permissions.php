@@ -43,6 +43,8 @@ final class Permissions
 
     public const TELEGRAM_MANAGE = 'telegram.manage';
 
+    public const LOGISTICS_TRACKING_MANAGE = 'logistics_tracking.manage';
+
     public const USERS_MANAGE = 'users.manage';
 
     // 通用人工资金冻结（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
@@ -108,6 +110,7 @@ final class Permissions
             self::LOGISTICS_IMPORTS_MANAGE,
             self::ORDER_EVENTS_VIEW,
             self::TELEGRAM_MANAGE,
+            self::LOGISTICS_TRACKING_MANAGE,
             self::USERS_MANAGE,
             self::FUND_FREEZES_VIEW,
             self::FUND_FREEZES_CREATE,

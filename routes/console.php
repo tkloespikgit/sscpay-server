@@ -48,3 +48,9 @@ Schedule::command('checkout:sync-domains')->everyFifteenMinutes()->withoutOverla
 
 // 物流上传记录保留 90 天（业务确认）：明细表随行数线性增长，过期任务连明细一起清掉。
 Schedule::command('logistics-imports:prune --days=90')->dailyAt('03:10')->withoutOverlapping();
+
+// 17TRACK：用本地轨迹字段重算物流异常（Webhook 为主，本命令不调外部 API）。
+Schedule::command('logistics-tracking:reflag-anomalies')->dailyAt('06:00')->withoutOverlapping();
+
+// 支付超 10 天仍未发货：按商户汇总 Telegram 提醒。
+Schedule::command('orders:notify-unshipped-overdue')->dailyAt('10:00')->withoutOverlapping();

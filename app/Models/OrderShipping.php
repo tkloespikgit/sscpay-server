@@ -8,6 +8,13 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * 订单物流记录（每单一条有效记录）。
+ *
+ * 两组字段互不替代：
+ * - sync_*：同步到 WordPress 站点插件 / 渠道（SyncOrderTrackingJob，受支付方式 sync_logistics 控制）；
+ * - tracking_* / logistics_anomaly*：物流 Provider 轨迹与异常（LogisticsTrackingSyncService）。
+ */
 class OrderShipping extends Model
 {
     use BelongsToMerchant;
@@ -37,6 +44,20 @@ class OrderShipping extends Model
         'sync_status',
         'sync_message',
         'synced_at',
+        'tracking_provider',
+        'tracking_registered_at',
+        'tracking_carrier_code',
+        'tracking_status',
+        'tracking_sub_status',
+        'tracking_last_event_at',
+        'tracking_last_event_desc',
+        'tracking_delivered_at',
+        'tracking_checked_at',
+        'tracking_last_polled_at',
+        'tracking_error',
+        'logistics_anomaly',
+        'logistics_anomaly_reason',
+        'logistics_anomaly_at',
     ];
 
     protected function casts(): array
@@ -44,6 +65,13 @@ class OrderShipping extends Model
         return [
             'shipped_at' => 'datetime',
             'synced_at' => 'datetime',
+            'tracking_registered_at' => 'datetime',
+            'tracking_last_event_at' => 'datetime',
+            'tracking_delivered_at' => 'datetime',
+            'tracking_checked_at' => 'datetime',
+            'tracking_last_polled_at' => 'datetime',
+            'logistics_anomaly' => 'boolean',
+            'logistics_anomaly_at' => 'datetime',
         ];
     }
 

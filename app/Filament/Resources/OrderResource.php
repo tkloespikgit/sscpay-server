@@ -21,6 +21,8 @@ use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
+use Filament\Support\Enums\TextSize;
+use Filament\Support\Enums\Width;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\Filter;
@@ -116,22 +118,29 @@ class OrderResource extends Resource
                     ->color('primary')
                     ->action(static::viewCustomerInfoAction()),
 
+                // 发货状态与物流同步状态合并：已发货显示运单号，颜色表示同步态
+                // （pending 灰 / synced 绿 / failed 红）；未发货占位灰。详情弹窗仍含完整同步信息。
                 TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
                     ->placeholder(__('admin.order.placeholders.not_shipped'))
-                    ->color(fn ($record) => $record->shipping ? 'primary' : 'gray')
-                    ->action(static::viewShippingInfoAction()),
-
-                // 物流是否已同步给 WordPress 商城系统插件，没有物流记录的订单不展示（placeholder）。
-                TextColumn::make('shipping.sync_status')->label(__('admin.order.columns.sync_status'))
-                    ->badge()
-                    ->placeholder(__('admin.order.placeholders.not_shipped'))
-                    ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
-                    ->color(fn (?string $state) => match ($state) {
+                    ->size(TextSize::ExtraSmall)
+                    ->limit(24)
+                    ->tooltip(fn ($record) => $record->shipping?->tracking_number)
+                    ->color(fn ($record) => match ($record->shipping?->sync_status) {
                         OrderShipping::SYNC_STATUS_SYNCED => 'success',
                         OrderShipping::SYNC_STATUS_FAILED => 'danger',
                         default => 'gray',
                     })
-                    ->toggleable(),
+                    ->action(static::viewShippingInfoAction()),
+
+                // 供应商轨迹最新状态（与上方 WP sync 列独立）；异常红 / 有轨迹绿 / 无轨迹灰。
+                // 点击独立弹窗查看 tracking_* / 异常（不进详情）。
+                TextColumn::make('shipping.tracking_status')->label(__('admin.order.columns.tracking_trail'))
+                    ->placeholder(__('admin.order.placeholders.no_tracking_status'))
+                    ->size(TextSize::ExtraSmall)
+                    ->limit(16)
+                    ->tooltip(fn ($record) => $record->shipping?->tracking_status)
+                    ->color(fn ($record) => static::trackingStatusColumnColor($record))
+                    ->action(static::viewTrackingTrailAction()),
 
                 TextColumn::make('platform')->label(__('admin.order.columns.platform')),
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
@@ -330,6 +339,21 @@ class OrderResource extends Resource
                             : $query->whereHas('shipping', fn ($q) => $q->whereIn('sync_status', $values));
                     }),
 
+                SelectFilter::make('logistics_anomaly')
+                    ->label(__('admin.order.filters.logistics_anomaly'))
+                    ->options([
+                        '1' => __('admin.order.filters.logistics_anomaly_yes'),
+                        '0' => __('admin.order.filters.logistics_anomaly_no'),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        return $query
+                            ->when(($data['value'] ?? null) === '1', fn ($q) => $q->whereHas('shipping', fn ($s) => $s->where('logistics_anomaly', true)))
+                            ->when(($data['value'] ?? null) === '0', fn ($q) => $q->where(function ($inner) {
+                                $inner->doesntHave('shipping')
+                                    ->orWhereHas('shipping', fn ($s) => $s->where('logistics_anomaly', false));
+                            }));
+                    }),
+
                 // 创建时间拆成“开始时间 / 结束时间”两个独立筛选框，
                 // 各自占一格，避免两个日期控件堆叠在同一个单元格里造成换行。
                 Filter::make('created_from')
@@ -488,15 +512,15 @@ class OrderResource extends Resource
     }
 
     /**
-     * 列表页"发货状态"列点击弹窗：展示完整物流信息。未发货订单没有 shipping
-     * 关联，点击直接禁用（isDisabled 时 Livewire 会静默不挂载弹窗），
-     * 列文案已经通过 placeholder 显示"未发货"，无需再弹一个空弹窗。
+     * 列表「发货状态」列弹窗：仅录入信息 + WP sync。
+     * 未发货无 shipping 时禁用。
      */
     public static function viewShippingInfoAction(): Action
     {
         return Action::make('viewShippingInfo')
             ->label(__('admin.order.columns.shipping_status'))
             ->modalHeading(__('admin.order.modals.shipping_info_heading'))
+            ->modalWidth(Width::Medium)
             ->modalSubmitAction(false)
             ->modalCancelAction(fn (Action $action) => $action->label(__('admin.order.modals.close')))
             ->disabled(fn ($record) => ! $record->shipping)
@@ -533,6 +557,95 @@ class OrderResource extends Resource
                     ->placeholder(__('admin.order.placeholders.none'))
                     ->columnSpanFull(),
             ]);
+    }
+
+    /**
+     * 列表「物流轨迹」列独立弹窗：供应商 tracking_* 与异常字段（不含 WP sync）。
+     */
+    public static function viewTrackingTrailAction(): Action
+    {
+        return Action::make('viewTrackingTrail')
+            ->label(__('admin.order.columns.tracking_trail'))
+            ->modalHeading(__('admin.order.modals.tracking_trail_heading'))
+            ->modalWidth(Width::Medium)
+            ->modalSubmitAction(false)
+            ->modalCancelAction(fn (Action $action) => $action->label(__('admin.order.modals.close')))
+            ->disabled(fn ($record) => ! $record->shipping)
+            ->schema([
+                Grid::make(2)->schema([
+                    TextEntry::make('shipping.tracking_provider')->label(__('admin.order.fields.tracking_provider'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.tracking_number')->label(__('admin.order.fields.tracking_number'))
+                        ->copyable()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.tracking_status')->label(__('admin.order.fields.tracking_status'))
+                        ->placeholder(__('admin.order.placeholders.no_tracking_status')),
+                    TextEntry::make('shipping.tracking_sub_status')->label(__('admin.order.fields.tracking_sub_status'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.tracking_last_event_at')->label(__('admin.order.fields.tracking_last_event_at'))
+                        ->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.tracking_delivered_at')->label(__('admin.order.fields.tracking_delivered_at'))
+                        ->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.tracking_last_event_desc')->label(__('admin.order.fields.tracking_last_event_desc'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->columnSpanFull(),
+                    TextEntry::make('shipping.logistics_anomaly')->label(__('admin.order.fields.logistics_anomaly'))
+                        ->formatStateUsing(fn (?bool $state): ?string => match ($state) {
+                            true => __('admin.order.filters.logistics_anomaly_yes'),
+                            false => __('admin.order.filters.logistics_anomaly_no'),
+                            default => null,
+                        })
+                        ->badge()
+                        ->color(fn (?bool $state): string => $state ? 'danger' : 'success')
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.logistics_anomaly_at')->label(__('admin.order.fields.logistics_anomaly_at'))
+                        ->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('shipping.logistics_anomaly_reason')->label(__('admin.order.fields.logistics_anomaly_reason'))
+                        ->formatStateUsing(fn (?string $state): ?string => static::formatLogisticsAnomalyReason($state))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->columnSpanFull(),
+                    TextEntry::make('shipping.tracking_error')->label(__('admin.order.fields.tracking_error'))
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->columnSpanFull(),
+                ]),
+            ]);
+    }
+
+    /**
+     * 列表「物流轨迹」列颜色：异常红 / 有供应商轨迹绿 / 否则灰（与 WP sync 无关）。
+     */
+    public static function trackingStatusColumnColor(Order $record): string
+    {
+        $shipping = $record->shipping;
+
+        if (! $shipping) {
+            return 'gray';
+        }
+
+        if ($shipping->logistics_anomaly) {
+            return 'danger';
+        }
+
+        if (filled($shipping->tracking_status) || filled($shipping->tracking_last_event_desc)) {
+            return 'success';
+        }
+
+        return 'gray';
+    }
+
+    public static function formatLogisticsAnomalyReason(?string $reason): ?string
+    {
+        if ($reason === null || $reason === '') {
+            return null;
+        }
+
+        $key = 'admin.order.logistics_anomaly_reasons.'.$reason;
+        $translated = __($key);
+
+        return $translated === $key ? $reason : $translated;
     }
 
     /**

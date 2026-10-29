@@ -67,4 +67,10 @@ return [
         'secret_key' => env('TURNSTILE_SECRET_KEY'),
     ],
 
+    /*
+    | 物流轨迹跟踪：可选驱动枚举见 system_configs.logistics_tracking.available_drivers；
+    | 商户选用驱动 / base_url / API Token / Webhook Secret 见 merchant_logistics_tracking_settings。
+    | Webhook：POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}
+    */
+
 ];

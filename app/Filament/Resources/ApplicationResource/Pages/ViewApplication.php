@@ -41,11 +41,17 @@ class ViewApplication extends ViewRecord
                 TextEntry::make('sender_name')->label(__('admin.mail_credentials.fields.sender_name'))->placeholder('—'),
                 TextEntry::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—'),
                 TextEntry::make('created_at')->label(__('admin.application.fields.created_at'))->dateTime(),
+                IconEntry::make('is_auto_discount_enabled')
+                    ->label(__('admin.application.fields.is_auto_discount_enabled'))
+                    ->boolean(),
+                IconEntry::make('is_logistics_tracking_enabled')
+                    ->label(__('admin.application.fields.is_logistics_tracking_enabled'))
+                    ->boolean(),
                 IconEntry::make('status')
                     ->color(fn (int $state): string => match ($state) {
                         1 => 'success',
                         0 => 'danger',
-                    })
+                    }),
             ])->columns(2),
         ]);
     }

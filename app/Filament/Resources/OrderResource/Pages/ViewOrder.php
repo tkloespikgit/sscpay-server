@@ -20,6 +20,7 @@ use App\Models\Order;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderShipping;
 use App\Services\BalanceService;
+use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderDisputeService;
 use App\Services\OrderEventSyncService;
 use App\Services\OrderShippingService;
@@ -39,6 +40,8 @@ use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Filament\Support\Enums\Size;
+use Filament\Support\Enums\TextSize;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Support\Js;
 
@@ -61,6 +64,10 @@ class ViewOrder extends ViewRecord
                         ->color(fn (string $state): string => OrderStatusColor::get($state)),
                     TextEntry::make('source')->label(__('admin.order.fields.source')),
                     TextEntry::make('platform')->label(__('admin.order.fields.platform'))->placeholder(__('admin.order.placeholders.none')),
+                    IconEntry::make('logistics_tracking_enabled')
+                        ->label(__('admin.order.fields.logistics_tracking_snapshot'))
+                        ->boolean()
+                        ->tooltip(__('admin.order.help.logistics_tracking_snapshot')),
                     TextEntry::make('paymentMethod.method_name')->label(__('admin.order.fields.payment_method'))
                         ->formatStateUsing(fn (?string $state, $record) => $state ?? $record->payment_method),
                     TextEntry::make('transaction_id')->label(__('admin.order.fields.transaction_id'))
@@ -134,33 +141,81 @@ class ViewOrder extends ViewRecord
             ]),
 
             Section::make(__('admin.order.sections.shipping_info'))
+                ->compact()
                 ->schema([
-                    TextEntry::make('shipping.logistics_company')->label(__('admin.order.fields.logistics_company'))->placeholder(__('admin.order.placeholders.not_shipped')),
-                    TextEntry::make('shipping.tracking_number')->label(__('admin.order.fields.tracking_number'))->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))->dateTime()->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping.sync_status')->label(__('admin.order.fields.sync_status'))
-                        ->badge()
-                        ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
-                        ->color(fn (?string $state) => match ($state) {
-                            OrderShipping::SYNC_STATUS_SYNCED => 'success',
-                            OrderShipping::SYNC_STATUS_FAILED => 'danger',
-                            default => 'gray',
-                        })
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping.sync_message')->label(__('admin.order.fields.sync_message'))
-                        ->placeholder(__('admin.order.placeholders.none'))
-                        ->columnSpanFull(),
-                    TextEntry::make('shipping.operator.name')->label(__('admin.order.fields.operator'))
-                        ->state(fn ($record) => $record->shipping?->operator_id === OrderShippingService::API_OPERATOR_ID
-                            ? 'API'
-                            : $record->shipping?->operator?->name)
-                        ->placeholder(__('admin.order.placeholders.none')),
+                    // 四列紧凑排布，贴近改造前体量；长文案仍占满行。
+                    Grid::make(4)->schema([
+                        TextEntry::make('shipping.logistics_company')->label(__('admin.order.fields.logistics_company'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.not_shipped')),
+                        TextEntry::make('shipping.tracking_number')->label(__('admin.order.fields.tracking_number'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))
+                            ->size(TextSize::Small)
+                            ->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.tracking_status')->label(__('admin.order.fields.tracking_status'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.no_tracking_status')),
+                        TextEntry::make('shipping.tracking_sub_status')->label(__('admin.order.fields.tracking_sub_status'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.tracking_last_event_at')->label(__('admin.order.fields.tracking_last_event_at'))
+                            ->size(TextSize::Small)
+                            ->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.logistics_anomaly')->label(__('admin.order.fields.logistics_anomaly'))
+                            ->size(TextSize::Small)
+                            ->formatStateUsing(fn (?bool $state): ?string => match ($state) {
+                                true => __('admin.order.filters.logistics_anomaly_yes'),
+                                false => __('admin.order.filters.logistics_anomaly_no'),
+                                default => null,
+                            })
+                            ->badge()
+                            ->color(fn (?bool $state): string => $state ? 'danger' : 'success')
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.logistics_anomaly_at')->label(__('admin.order.fields.logistics_anomaly_at'))
+                            ->size(TextSize::Small)
+                            ->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.logistics_anomaly_reason')->label(__('admin.order.fields.logistics_anomaly_reason'))
+                            ->size(TextSize::Small)
+                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatLogisticsAnomalyReason($state))
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->columnSpan(2),
+                        TextEntry::make('shipping.sync_status')->label(__('admin.order.fields.sync_status'))
+                            ->size(TextSize::Small)
+                            ->badge()
+                            ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
+                            ->color(fn (?string $state) => match ($state) {
+                                OrderShipping::SYNC_STATUS_SYNCED => 'success',
+                                OrderShipping::SYNC_STATUS_FAILED => 'danger',
+                                default => 'gray',
+                            })
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.operator.name')->label(__('admin.order.fields.operator'))
+                            ->size(TextSize::Small)
+                            ->state(fn ($record) => $record->shipping?->operator_id === OrderShippingService::API_OPERATOR_ID
+                                ? 'API'
+                                : $record->shipping?->operator?->name)
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping.tracking_last_event_desc')->label(__('admin.order.fields.tracking_last_event_desc'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->columnSpanFull(),
+                        TextEntry::make('shipping.sync_message')->label(__('admin.order.fields.sync_message'))
+                            ->size(TextSize::Small)
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->columnSpanFull(),
+                    ]),
                 ])
                 ->headerActions([
                     Action::make('syncTrackingNow')
                         ->label(__('admin.order.actions_shipping.sync_now'))
                         ->icon('heroicon-o-arrow-path')
                         ->color('gray')
+                        ->size(Size::ExtraSmall)
                         // 只有待同步/同步失败的记录才需要手动重试；已同步的没有必要重复触发。
                         ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_SHIP)
                             && $record->shipping
@@ -179,9 +234,38 @@ class ViewOrder extends ViewRecord
                                 ->success()
                                 ->send();
                         }),
+                    Action::make('pollTrackingNow')
+                        ->label(__('admin.order.actions_shipping.poll_tracking'))
+                        ->icon('heroicon-o-magnifying-glass')
+                        ->color('gray')
+                        ->size(Size::ExtraSmall)
+                        ->visible(function (Order $record): bool {
+                            if (! auth()->user()?->can(Permissions::ORDERS_SHIP) || ! $record->shipping) {
+                                return false;
+                            }
+
+                            if (trim((string) $record->shipping->tracking_number) === '') {
+                                return false;
+                            }
+
+                            return app(LogisticsTrackingSyncService::class)->gatesAllow($record->shipping);
+                        })
+                        ->action(function (Order $record, LogisticsTrackingSyncService $sync): void {
+                            $ok = $sync->pollTrackInfo($record->shipping);
+                            $this->record->refresh();
+                            $this->record->load('shipping');
+
+                            Notification::make()
+                                ->title($ok
+                                    ? __('admin.order.actions_shipping.poll_tracking_success')
+                                    : __('admin.order.actions_shipping.poll_tracking_failed'))
+                                ->{$ok ? 'success' : 'warning'}()
+                                ->send();
+                        }),
                     Action::make('recordShipment')
                         ->label(fn ($record) => $record->shipping ? __('admin.order.actions_shipping.update') : __('admin.order.actions_shipping.record'))
                         ->icon('heroicon-o-truck')
+                        ->size(Size::ExtraSmall)
                         // 终态订单（已完成/已取消/已退款/已拒付）不允许录入物流，
                         // 直接隐藏按钮，避免用户填完表单提交时才被拒绝。
                         ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_SHIP)

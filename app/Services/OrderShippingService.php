@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\RegisterLogisticsTrackingJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Order;
 use App\Models\OrderShipping;
@@ -25,6 +26,7 @@ use Illuminate\Validation\ValidationException;
  *     （SyncOrderTrackingJob）尝试一次；同步状态（待同步/已同步/同步失败）
  *     记在 OrderShipping.sync_status 上，失败/待同步的记录可以在后台手动
  *     重新入队重试，见 OrderResource\Pages\ViewOrder 的"手动同步"按钮。
+ *   - 同时派发 RegisterLogisticsTrackingJob：订单快照开启时向物流 Provider 注册运单，后续轨迹靠 Webhook。
  */
 class OrderShippingService
 {
@@ -59,6 +61,7 @@ class OrderShippingService
         ]));
 
         SyncOrderTrackingJob::dispatch($shipping->id);
+        RegisterLogisticsTrackingJob::dispatch($shipping->id);
 
         return $shipping;
     }

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\LogisticsTrackingWebhookController;
 use App\Http\Controllers\PaymentGatewayWebhookController;
 use Illuminate\Support\Facades\Route;
 
@@ -28,3 +29,9 @@ Route::domain(config('app.api_domain'))->group(function () {
 // 仍通过插件自己的 X-PGA-Signature 对原始 body 验签，不套用商户 api.auth。
 Route::post('/webhooks/payment-gateway/status', [PaymentGatewayWebhookController::class, 'status'])
     ->name('webhooks.payment-gateway.status');
+
+// 物流轨迹推送：商户在后台复制带 webhook_token 的 URL 配到 Provider 控制台。
+// 例：…/logistics-tracking/seventeen_track/{webhookToken}
+// 17TRACK 验签头 sign = sha256(rawBody + "/" + 商户 webhook_secret)。
+Route::post('/webhooks/logistics-tracking/{driver}/{webhookToken}', LogisticsTrackingWebhookController::class)
+    ->name('webhooks.logistics-tracking');

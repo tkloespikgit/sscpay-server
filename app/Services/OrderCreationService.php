@@ -271,6 +271,7 @@ class OrderCreationService
                 'amount' => $data['amount'],
                 'original_amount' => $originalAmount,
                 'auto_discount' => $autoDiscount,
+                'logistics_tracking_enabled' => (bool) $application->is_logistics_tracking_enabled,
                 'converted_currency' => 'USD',
                 'converted_amount' => $convertedAmount,
                 'subtotal_converted' => $subtotalConverted,

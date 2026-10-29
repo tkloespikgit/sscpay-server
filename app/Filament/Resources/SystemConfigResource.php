@@ -145,6 +145,7 @@ class SystemConfigResource extends Resource
                     'payment' => __('admin.system_config.groups.payment'),
                     'security' => __('admin.system_config.groups.security'),
                     'notify' => __('admin.system_config.groups.notify'),
+                    'logistics' => __('admin.system_config.groups.logistics'),
                 ]),
             ])
             ->recordActions([
