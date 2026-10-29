@@ -34,10 +34,11 @@ erDiagram
 | `merchants` / `Merchant` | 商户主体；`owner_id` 为所属平台管理员；总余额、冻结额、待结算、待出款均为 USD；商户统一配置结算模式及周期 |
 | `users` / `User` | `is_super_admin`、`merchant_id` 区分超管、商户级管理员和商户用户；范围入口为 `manageableMerchantIds()` |
 | `roles`、权限相关表 | Spatie 权限；商户角色有商户归属，平台共享角色另有范围。定义见 `app/Support/Permissions.php` 与 `PermissionSeeder` |
-| `applications` / `Application` | 商户接入身份、`app_id`、加密 `api_key`、应用网站与邮件/广告配置 |
+| `applications` / `Application` | 商户接入身份、`app_id`、加密 `api_key`、应用网站与邮件/广告配置；含 `is_auto_discount_enabled`、`is_logistics_tracking_enabled`（均仅影响新单） |
 | `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者 |
 | `merchant_payment_methods` | 系统级渠道分配给商户的多对多表；不是所有订单的商户归属表 |
 | `merchant_payment_settings` | 商户与可使用渠道的独立财务配置，交易/退款/拒付手续费、保证金比例/锁定天数；NULL 继承渠道默认值，0 为显式零值 |
+| `merchant_logistics_tracking_settings` | 商户物流跟踪：选用 `driver`、可选 `base_url`、encrypted `api_token` / `webhook_secret`、公开 `webhook_token`；每商户至多一条有效记录 |
 | `payment_groups` / `PaymentGroup` | 商户的路由组，`group_key` 在该商户未删除记录内唯一 |
 | `payment_group_methods` | 组内渠道，`group_id`/`method_id`，`priority` 为分流权重 |
 | `payment_method_config_maps`、`payment_method_profiles` | 网关字段模板及渠道资料附表；profile 每渠道至多一条 |
@@ -105,6 +106,10 @@ erDiagram
 
 `applications.is_auto_discount_enabled` 默认关闭，仅影响新订单。按折扣前应付金额、订单原币种计算：不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50，以 0.01 为步长。极小金额缩小随机范围，至少保留 0.01 应付；金额不超过 0.01 时跳过。
 
+`applications.is_logistics_tracking_enabled` 默认关闭，仅影响新订单。建单时拷贝到 `orders.logistics_tracking_enabled` 快照；补单与开关变化不回写旧单。轨迹启用门闩：系统 `logistics_tracking.available_drivers` 非空 ∧ 订单快照 true ∧ 商户已选可用 `driver` 且凭证齐全。快照 false 时跳过 register / Webhook 写入 / 异常边沿主动查；**无历史运单回填**，仅上线后新发货 register。超期未发货 TG 不看此开关。无独立商户「启用」开关。
+
+系统配置 `logistics_tracking.available_drivers`（JSON 枚举，空=[]=平台关闭）由超管维护；商户在「物流跟踪」页选用驱动并配置 `base_url` / API Token / Webhook Secret / `webhook_token`。
+
 `orders.original_amount` 保存折扣前请求应付金额供幂等比较，历史订单为 NULL 时回退 `amount`；`auto_discount` 保存本次自动减免，默认 0，已包含在 `discount` 中。先验证请求公式和原始商品，再增加折扣、减少 `amount`，随后计算汇率、风控、手续费与结算快照。原始商品不变，商品匹配溢出折扣仍可叠加；补单与开关变化不重新抽取自动折扣。查询、通知与远端支付使用折扣后实际金额。
 
 ### 自动匹配商品的订单折扣（2026-09-30）
@@ -131,7 +136,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_refunds` | 退款单：原币种 `amount`、USD `amount_usd` 等；同一订单允许多次部分退款 |
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
-| `order_shippings` | 每订单最多一条未删除物流记录，另有向插件同步的状态/错误信息 |
+| `order_shippings` | 每订单最多一条未删除物流记录；含 WP 插件 `sync_*`，以及中性轨迹字段（`tracking_*`）与 `logistics_anomaly*`（Webhook / 异常边沿主动查 + 每日本地重算；与 WP sync 无关） |
 | `order_events` | 插件事件归档，按系统订单号与外部日志 ID 去重，不驱动订单状态 |
 | `order_notification_attempts` | 商户回调每次尝试的请求、响应、结果、下次重试时间 |
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
