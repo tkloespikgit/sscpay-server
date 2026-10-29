@@ -47,6 +47,11 @@ class LogisticsTrackingWebhookController extends Controller
             return response()->json(['code' => 404, 'message' => 'unknown webhook'], 404);
         }
 
+        // URL 中的 driver 必须与商户选用驱动一致，避免错配验签/解析器。
+        if ((string) $setting->driver !== $driver) {
+            return response()->json(['code' => 404, 'message' => 'driver mismatch'], 404);
+        }
+
         $raw = $request->getContent();
 
         if (! $trackingDriver->verifyWebhook($raw, $request->header('sign'), (string) $setting->webhook_secret)) {

@@ -21,6 +21,9 @@ class SeventeenTrackDriver implements LogisticsTrackingDriver
 
     public const DEFAULT_BASE_URL = 'https://api.17track.net/track/v2.4';
 
+    /** 物流单号已经注册过，不需重复注册（当作成功，避免 Job 空转与重复扣量误判）。 */
+    public const ERROR_ALREADY_REGISTERED = -18019901;
+
     public function __construct(
         private readonly SeventeenTrackWebhookVerifier $verifier,
     ) {}
@@ -49,7 +52,17 @@ class SeventeenTrackDriver implements LogisticsTrackingDriver
         $accepted = $result['accepted'][0] ?? null;
         $rejected = $result['rejected'][0] ?? null;
 
-        if ($rejected) {
+        if (is_array($rejected)) {
+            $errorCode = (int) data_get($rejected, 'error.code', data_get($rejected, 'code', 0));
+
+            if ($errorCode === self::ERROR_ALREADY_REGISTERED) {
+                $carrier = isset($rejected['carrier'])
+                    ? (string) (int) $rejected['carrier']
+                    : $number->carrierCode;
+
+                return new RegisterResult(accepted: true, carrierCode: $carrier ?: null);
+            }
+
             return new RegisterResult(
                 accepted: false,
                 error: mb_substr(json_encode($rejected, JSON_UNESCAPED_UNICODE) ?: 'register rejected', 0, 1000),

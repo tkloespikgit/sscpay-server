@@ -132,12 +132,11 @@ class OrderResource extends Resource
                     })
                     ->action(static::viewShippingInfoAction()),
 
-                // 供应商轨迹最新状态（与上方 WP sync 列独立）；异常红 / 有轨迹绿 / 无轨迹灰。
-                // 点击独立弹窗查看 tracking_* / 异常（不进详情）。
+                // 供应商轨迹最新状态（与上方 WP sync 列独立）；展示形态对齐「状态」列 badge。
+                // 异常红 / 有轨迹绿 / 无轨迹灰；点击独立弹窗查看 tracking_* / 异常。
                 TextColumn::make('shipping.tracking_status')->label(__('admin.order.columns.tracking_trail'))
+                    ->badge()
                     ->placeholder(__('admin.order.placeholders.no_tracking_status'))
-                    ->size(TextSize::ExtraSmall)
-                    ->limit(16)
                     ->formatStateUsing(fn (?string $state): ?string => static::formatTrackingStatus($state))
                     ->tooltip(fn ($record) => static::trackingStatusTooltip($record->shipping))
                     ->color(fn ($record) => static::trackingStatusColumnColor($record))

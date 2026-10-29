@@ -1445,7 +1445,7 @@ return [
             'webhook_url' => 'Webhook 回调地址',
         ],
         'help' => [
-            'driver' => '从平台开放的驱动枚举中选择；具体密钥与 Base URL 由商户自行配置。',
+            'driver' => '从平台 available_drivers 枚举中选择（可含尚未上线的预填名）；未实现驱动保存后运行时会跳过对接。密钥与 Base URL 由商户自行配置。',
             'base_url' => '所选物流驱动供应商的 API 根地址；具体填什么由该驱动决定，不一定是 17TRACK。留空则使用该驱动的默认地址（若有）。',
             'base_url_seventeen_track' => '当前为 17TRACK：填写其 Tracking API 地址；留空则使用默认 https://api.17track.net/track/v2.4。',
             'api_token' => '物流供应商的 API 密钥。',
@@ -1457,6 +1457,7 @@ return [
         ],
         'validation' => [
             'driver_unavailable' => '所选驱动不在平台开放枚举中，请重新选择或联系管理员。',
+            'merchant_forbidden' => '无权配置该商户的物流跟踪凭证。',
         ],
         'actions' => [
             'save' => '保存',

@@ -110,6 +110,21 @@ class OrderShipping extends Model
             unset($attributes['shipped_at']);
         }
 
+        $existing = static::query()->withoutGlobalScopes()->where('order_id', $orderId)->first();
+
+        // 运单号变更时清空 Provider 注册标记，便于后续重新 register；同号改其它字段保留已注册状态。
+        if (
+            $existing
+            && array_key_exists('tracking_number', $attributes)
+            && trim((string) $attributes['tracking_number']) !== trim((string) $existing->tracking_number)
+        ) {
+            $attributes = array_merge($attributes, [
+                'tracking_registered_at' => null,
+                'tracking_provider' => null,
+                'tracking_error' => null,
+            ]);
+        }
+
         return static::updateOrCreate(
             ['order_id' => $orderId],
             array_merge($attributes, [

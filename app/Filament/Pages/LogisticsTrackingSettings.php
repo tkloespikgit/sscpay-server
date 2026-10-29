@@ -142,16 +142,17 @@ class LogisticsTrackingSettings extends Page
     }
 
     /**
-     * 保存或创建商户设置；驱动须在 Manager 白名单内，否则校验失败。
+     * 保存或创建商户设置；驱动须在平台 available_drivers 配置中（可含未实现预填名）。
      * 新建时生成 webhook_token；不覆盖已有令牌除非点「重新生成」。
      */
     public function save(): void
     {
         $data = $this->form->getState();
         $merchantId = (int) $data['merchant_id'];
+        $this->assertMerchantAccessible($merchantId);
         $driver = (string) ($data['driver'] ?? '');
 
-        if (! app(LogisticsTrackingManager::class)->isDriverAvailable($driver)) {
+        if (! app(LogisticsTrackingManager::class)->isDriverConfigured($driver)) {
             throw ValidationException::withMessages([
                 'data.driver' => __('admin.logistics_tracking.validation.driver_unavailable'),
             ]);
@@ -187,6 +188,11 @@ class LogisticsTrackingSettings extends Page
     public function regenerateWebhookToken(): void
     {
         $merchantId = (int) ($this->form->getState()['merchant_id'] ?? 0);
+
+        if ($merchantId > 0) {
+            $this->assertMerchantAccessible($merchantId);
+        }
+
         $setting = $merchantId ? $this->settingForMerchant($merchantId) : null;
 
         if (! $setting) {
@@ -213,6 +219,24 @@ class LogisticsTrackingSettings extends Page
     private function settingForMerchant(int $merchantId): ?MerchantLogisticsTrackingSetting
     {
         return MerchantLogisticsTrackingSetting::query()->where('merchant_id', $merchantId)->first();
+    }
+
+    /**
+     * 服务端再校验商户归属：超管不限；商户经理限 ownedMerchants；商户用户限自身 merchant_id。
+     */
+    private function assertMerchantAccessible(int $merchantId): void
+    {
+        $allowed = auth()->user()?->manageableMerchantIds();
+
+        if ($allowed === null) {
+            return;
+        }
+
+        if (! in_array($merchantId, $allowed, true)) {
+            throw ValidationException::withMessages([
+                'data.merchant_id' => __('admin.logistics_tracking.validation.merchant_forbidden'),
+            ]);
+        }
     }
 
     /**

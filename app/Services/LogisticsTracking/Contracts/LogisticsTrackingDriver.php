@@ -11,7 +11,7 @@ use App\Services\LogisticsTracking\DTOs\TrackSnapshot;
  * 物流轨迹 Provider 契约：注册、主动查、Webhook 验签与解析。
  *
  * 出站凭证由调用方按商户注入（DriverCredentials），实现类不读系统级密钥。
- * 驱动名须在 LogisticsTrackingManager::driver() 中注册后，方可进入 available_drivers 白名单。
+ * available_drivers 可预填未实现名供商户选用；真正出站调用前须能经 Manager::driver() 解析。
  */
 interface LogisticsTrackingDriver
 {

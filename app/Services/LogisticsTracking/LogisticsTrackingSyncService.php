@@ -107,6 +107,7 @@ class LogisticsTrackingSyncService
 
     /**
      * 向当前商户选用的 Provider 注册运单；门闩未通过或运单号空则静默跳过。
+     * 已成功注册且运单号未变（见 OrderShipping::recordShipment 换号清注册标记）则幂等跳过。
      * 成功写入 tracking_provider / tracking_registered_at；失败写入 tracking_error。
      */
     public function registerShipping(OrderShipping $shipping, ?string $driverName = null): void
@@ -117,17 +118,21 @@ class LogisticsTrackingSyncService
             return;
         }
 
+        $number = trim((string) $shipping->tracking_number);
+
+        if ($number === '') {
+            return;
+        }
+
+        if ($shipping->tracking_registered_at !== null) {
+            return;
+        }
+
         $driverName ??= (string) $setting->driver;
 
         try {
             $driver = $this->driver($driverName);
         } catch (InvalidArgumentException) {
-            return;
-        }
-
-        $number = trim((string) $shipping->tracking_number);
-
-        if ($number === '') {
             return;
         }
 

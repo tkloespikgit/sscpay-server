@@ -1445,7 +1445,7 @@ return [
             'webhook_url' => 'Webhook callback URL',
         ],
         'help' => [
-            'driver' => 'Choose from drivers enabled by the platform; credentials and Base URL are configured per merchant.',
+            'driver' => 'Choose from the platform available_drivers list (may include not-yet-implemented names). Unimplemented drivers are skipped at runtime. Credentials and Base URL are configured per merchant.',
             'base_url' => 'API root URL for the selected logistics driver. What to enter depends on that provider — it is not necessarily 17TRACK. Leave blank to use the driver’s default (if any).',
             'base_url_seventeen_track' => 'Current provider is 17TRACK: enter its Tracking API URL; leave blank to use https://api.17track.net/track/v2.4.',
             'api_token' => 'API key from your logistics provider.',
@@ -1457,6 +1457,7 @@ return [
         ],
         'validation' => [
             'driver_unavailable' => 'The selected driver is not in the platform allow-list. Choose another or contact an admin.',
+            'merchant_forbidden' => 'You are not allowed to manage logistics tracking for this merchant.',
         ],
         'actions' => [
             'save' => 'Save',
