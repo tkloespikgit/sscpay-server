@@ -138,7 +138,8 @@ class OrderResource extends Resource
                     ->placeholder(__('admin.order.placeholders.no_tracking_status'))
                     ->size(TextSize::ExtraSmall)
                     ->limit(16)
-                    ->tooltip(fn ($record) => $record->shipping?->tracking_status)
+                    ->formatStateUsing(fn (?string $state): ?string => static::formatTrackingStatus($state))
+                    ->tooltip(fn ($record) => static::trackingStatusTooltip($record->shipping))
                     ->color(fn ($record) => static::trackingStatusColumnColor($record))
                     ->action(static::viewTrackingTrailAction()),
 
@@ -579,8 +580,10 @@ class OrderResource extends Resource
                         ->copyable()
                         ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('shipping.tracking_status')->label(__('admin.order.fields.tracking_status'))
+                        ->formatStateUsing(fn (?string $state): ?string => static::formatTrackingStatus($state))
                         ->placeholder(__('admin.order.placeholders.no_tracking_status')),
                     TextEntry::make('shipping.tracking_sub_status')->label(__('admin.order.fields.tracking_sub_status'))
+                        ->formatStateUsing(fn (?string $state): ?string => static::formatTrackingSubStatus($state))
                         ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('shipping.tracking_last_event_at')->label(__('admin.order.fields.tracking_last_event_at'))
                         ->dateTime()
@@ -646,6 +649,56 @@ class OrderResource extends Resource
         $translated = __($key);
 
         return $translated === $key ? $reason : $translated;
+    }
+
+    /**
+     * 物流 Provider 主状态展示：有翻译用译文，未知枚举回退原文（库内仍存英文码）。
+     */
+    public static function formatTrackingStatus(?string $status): ?string
+    {
+        return static::translateTrackingEnum($status, 'admin.order.tracking_statuses.');
+    }
+
+    /**
+     * 物流 Provider 子状态展示：有翻译用译文，未知枚举回退原文。
+     */
+    public static function formatTrackingSubStatus(?string $subStatus): ?string
+    {
+        return static::translateTrackingEnum($subStatus, 'admin.order.tracking_sub_statuses.');
+    }
+
+    /**
+     * 列表轨迹列 tooltip：译文 + 原文枚举，便于对照 Provider 文档。
+     */
+    public static function trackingStatusTooltip(?OrderShipping $shipping): ?string
+    {
+        if ($shipping === null || blank($shipping->tracking_status)) {
+            return null;
+        }
+
+        $raw = (string) $shipping->tracking_status;
+        $label = static::formatTrackingStatus($raw) ?? $raw;
+        $parts = [$label === $raw ? $raw : "{$label} ({$raw})"];
+
+        if (filled($shipping->tracking_sub_status)) {
+            $subRaw = (string) $shipping->tracking_sub_status;
+            $subLabel = static::formatTrackingSubStatus($subRaw) ?? $subRaw;
+            $parts[] = $subLabel === $subRaw ? $subRaw : "{$subLabel} ({$subRaw})";
+        }
+
+        return implode(' · ', $parts);
+    }
+
+    private static function translateTrackingEnum(?string $value, string $keyPrefix): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $key = $keyPrefix.$value;
+        $translated = __($key);
+
+        return $translated === $key ? $value : $translated;
     }
 
     /**

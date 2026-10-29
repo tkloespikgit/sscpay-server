@@ -157,9 +157,11 @@ class ViewOrder extends ViewRecord
                             ->placeholder(__('admin.order.placeholders.none')),
                         TextEntry::make('shipping.tracking_status')->label(__('admin.order.fields.tracking_status'))
                             ->size(TextSize::Small)
+                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatTrackingStatus($state))
                             ->placeholder(__('admin.order.placeholders.no_tracking_status')),
                         TextEntry::make('shipping.tracking_sub_status')->label(__('admin.order.fields.tracking_sub_status'))
                             ->size(TextSize::Small)
+                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatTrackingSubStatus($state))
                             ->placeholder(__('admin.order.placeholders.none')),
                         TextEntry::make('shipping.tracking_last_event_at')->label(__('admin.order.fields.tracking_last_event_at'))
                             ->size(TextSize::Small)

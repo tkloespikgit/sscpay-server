@@ -93,6 +93,31 @@ class OrderTrackingStatusListColumnTest extends TestCase
         $this->assertNull(OrderResource::formatLogisticsAnomalyReason(null));
     }
 
+    public function test_tracking_status_and_sub_status_are_localized(): void
+    {
+        $this->app->setLocale('zh_CN');
+
+        $this->assertSame('运输途中', OrderResource::formatTrackingStatus('InTransit'));
+        $this->assertSame('成功签收', OrderResource::formatTrackingStatus('Delivered'));
+        $this->assertSame('已揽收', OrderResource::formatTrackingSubStatus('InTransit_PickedUp'));
+        $this->assertSame('UnknownVendorCode', OrderResource::formatTrackingStatus('UnknownVendorCode'));
+        $this->assertNull(OrderResource::formatTrackingStatus(null));
+
+        $order = $this->shippedOrder('SSC-TIP', '1Z-TIP', [
+            'tracking_status' => 'InTransit',
+            'tracking_sub_status' => 'InTransit_Arrival',
+        ]);
+
+        $this->assertSame(
+            '运输途中 (InTransit) · 已到港 (InTransit_Arrival)',
+            OrderResource::trackingStatusTooltip($order->fresh(['shipping'])->shipping)
+        );
+
+        $this->app->setLocale('en');
+        $this->assertSame('In Transit', OrderResource::formatTrackingStatus('InTransit'));
+        $this->assertSame('Picked up', OrderResource::formatTrackingSubStatus('InTransit_PickedUp'));
+    }
+
     /**
      * @param  array<string, mixed>  $shippingAttrs
      */
