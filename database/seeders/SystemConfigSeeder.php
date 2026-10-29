@@ -141,6 +141,13 @@ class SystemConfigSeeder extends Seeder
                 'group' => 'notify',
                 'description' => '记录商户响应内容时的最大字符数（超出截断，避免异常大响应撑爆表）',
             ],
+            [
+                'config_key' => 'logistics_tracking.available_drivers',
+                'config_value' => json_encode(['seventeen_track'], JSON_UNESCAPED_UNICODE),
+                'value_type' => 'json',
+                'group' => 'logistics',
+                'description' => '物流跟踪可选驱动枚举（JSON 数组）。空=[] 表示平台关闭；商户在物流跟踪页从中选用具体驱动。当前支持 seventeen_track=17TRACK。',
+            ],
         ];
 
         $now = now();
