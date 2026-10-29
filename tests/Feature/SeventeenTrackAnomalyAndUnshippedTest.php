@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Console\Commands\ReflagLogisticsTrackingAnomaliesCommand;
 use App\Models\Carrier;
 use App\Models\MerchantLogisticsTrackingSetting;
 use App\Models\PaymentGroup;
@@ -10,6 +11,7 @@ use App\Models\TelegramBot;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderCreationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
@@ -46,9 +48,12 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
 
     public function test_reflag_marks_fifteen_day_undelivered_and_five_day_stale_shipments(): void
     {
+        // 无商户凭证：快照开启时仍可本地标异常，但不会边沿 poll。
+        SystemConfig::set('logistics_tracking.available_drivers', ['seventeen_track'], 'logistics');
+
         $noDelivery = $this->makeOrder('SSC-15', 'M-15', [
             'status' => 'shipped',
-            'logistics_tracking_enabled' => false,
+            'logistics_tracking_enabled' => true,
         ]);
         $noDelivery->shipping()->create([
             'merchant_id' => $this->merchant->id,
@@ -62,7 +67,7 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
 
         $stale = $this->makeOrder('SSC-5', 'M-5', [
             'status' => 'shipped',
-            'logistics_tracking_enabled' => false,
+            'logistics_tracking_enabled' => true,
         ]);
         $stale->shipping()->create([
             'merchant_id' => $this->merchant->id,
@@ -74,12 +79,27 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
             'tracking_last_event_at' => now()->subHours(LogisticsTrackingSyncService::STALE_EVENT_HOURS + 1),
         ]);
 
+        $disabledSnapshot = $this->makeOrder('SSC-OFF', 'M-OFF', [
+            'status' => 'shipped',
+            'logistics_tracking_enabled' => false,
+        ]);
+        $disabledSnapshot->shipping()->create([
+            'merchant_id' => $this->merchant->id,
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-OFF',
+            'shipped_at' => now()->subHours(LogisticsTrackingSyncService::NO_DELIVERY_HOURS + 1),
+            'operator_id' => 0,
+            'tracking_status' => 'InTransit',
+            'tracking_last_event_at' => now()->subDay(),
+        ]);
+
         $this->artisan('logistics-tracking:reflag-anomalies')->assertSuccessful();
 
         $this->assertTrue($noDelivery->fresh()->shipping->logistics_anomaly);
         $this->assertSame(LogisticsTrackingSyncService::ANOMALY_NO_DELIVERY, $noDelivery->fresh()->shipping->logistics_anomaly_reason);
         $this->assertTrue($stale->fresh()->shipping->logistics_anomaly);
         $this->assertSame(LogisticsTrackingSyncService::ANOMALY_STALE, $stale->fresh()->shipping->logistics_anomaly_reason);
+        $this->assertFalse($disabledSnapshot->fresh()->shipping->logistics_anomaly);
         $this->assertNull($noDelivery->fresh()->shipping->tracking_last_polled_at);
         $this->assertNull($stale->fresh()->shipping->tracking_last_polled_at);
     }
@@ -230,6 +250,51 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
         $this->assertTrue($order->fresh()->shipping->logistics_anomaly);
         $this->assertNull($order->fresh()->shipping->tracking_last_polled_at);
         Http::assertNothingSent();
+    }
+
+    public function test_reflag_cursor_advances_across_limited_batches(): void
+    {
+        SystemConfig::set('logistics_tracking.available_drivers', ['seventeen_track'], 'logistics');
+        Cache::forget(ReflagLogisticsTrackingAnomaliesCommand::CURSOR_CACHE_KEY);
+
+        $first = $this->makeOrder('SSC-C1', 'M-C1', [
+            'status' => 'shipped',
+            'logistics_tracking_enabled' => true,
+        ]);
+        $firstShipping = $first->shipping()->create([
+            'merchant_id' => $this->merchant->id,
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-C1',
+            'shipped_at' => now()->subHours(LogisticsTrackingSyncService::NO_DELIVERY_HOURS + 1),
+            'operator_id' => 0,
+            'tracking_status' => 'InTransit',
+            'tracking_last_event_at' => now()->subDay(),
+        ]);
+
+        $second = $this->makeOrder('SSC-C2', 'M-C2', [
+            'status' => 'shipped',
+            'logistics_tracking_enabled' => true,
+        ]);
+        $secondShipping = $second->shipping()->create([
+            'merchant_id' => $this->merchant->id,
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-C2',
+            'shipped_at' => now()->subHours(LogisticsTrackingSyncService::NO_DELIVERY_HOURS + 1),
+            'operator_id' => 0,
+            'tracking_status' => 'InTransit',
+            'tracking_last_event_at' => now()->subDay(),
+        ]);
+
+        $this->assertTrue($firstShipping->id < $secondShipping->id);
+
+        $this->artisan('logistics-tracking:reflag-anomalies', ['--limit' => 1])->assertSuccessful();
+        $this->assertTrue($first->fresh()->shipping->logistics_anomaly);
+        $this->assertFalse($second->fresh()->shipping->logistics_anomaly);
+        $this->assertSame($firstShipping->id, (int) Cache::get(ReflagLogisticsTrackingAnomaliesCommand::CURSOR_CACHE_KEY));
+
+        $this->artisan('logistics-tracking:reflag-anomalies', ['--limit' => 1])->assertSuccessful();
+        $this->assertTrue($second->fresh()->shipping->logistics_anomaly);
+        $this->assertSame(0, (int) Cache::get(ReflagLogisticsTrackingAnomaliesCommand::CURSOR_CACHE_KEY, 0));
     }
 
     public function test_unshipped_overdue_command_sends_merchant_telegram_digest(): void

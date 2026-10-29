@@ -178,6 +178,126 @@ class SeventeenTrackWebhookTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_register_job_skips_quietly_when_merchant_driver_is_unimplemented(): void
+    {
+        Http::fake();
+        SystemConfig::set(
+            'logistics_tracking.available_drivers',
+            ['seventeen_track', 'logistics_track'],
+            'logistics'
+        );
+        MerchantLogisticsTrackingSetting::query()
+            ->where('merchant_id', $this->merchant->id)
+            ->update(['driver' => 'logistics_track']);
+
+        $shipping = $this->createShipping('1Z-FUTURE', orderAttrs: ['logistics_tracking_enabled' => true]);
+        (new RegisterLogisticsTrackingJob($shipping->id))->handle(app(LogisticsTrackingSyncService::class));
+
+        $this->assertNull($shipping->fresh()->tracking_registered_at);
+        $this->assertNull($shipping->fresh()->tracking_error);
+        Http::assertNothingSent();
+    }
+
+    public function test_register_job_skips_http_when_already_registered_same_number(): void
+    {
+        Http::fake();
+
+        $shipping = $this->createShipping('1Z-ONCE', [
+            'tracking_registered_at' => now()->subHour(),
+            'tracking_provider' => 'seventeen_track',
+        ], orderAttrs: ['logistics_tracking_enabled' => true]);
+
+        (new RegisterLogisticsTrackingJob($shipping->id))->handle(app(LogisticsTrackingSyncService::class));
+
+        Http::assertNothingSent();
+        $this->assertNotNull($shipping->fresh()->tracking_registered_at);
+    }
+
+    public function test_register_treats_already_registered_error_as_success(): void
+    {
+        Http::fake([
+            'api.17track.test/*' => Http::response([
+                'code' => 0,
+                'data' => [
+                    'accepted' => [],
+                    'rejected' => [[
+                        'number' => '1Z-DUP',
+                        'error' => [
+                            'code' => -18019901,
+                            'message' => 'Already registered.',
+                        ],
+                    ]],
+                ],
+            ]),
+        ]);
+
+        $shipping = $this->createShipping('1Z-DUP', orderAttrs: ['logistics_tracking_enabled' => true]);
+        (new RegisterLogisticsTrackingJob($shipping->id))->handle(app(LogisticsTrackingSyncService::class));
+
+        $shipping->refresh();
+        $this->assertNotNull($shipping->tracking_registered_at);
+        $this->assertNull($shipping->tracking_error);
+        $this->assertSame('seventeen_track', $shipping->tracking_provider);
+    }
+
+    public function test_webhook_rejects_when_path_driver_mismatches_merchant_setting(): void
+    {
+        MerchantLogisticsTrackingSetting::query()
+            ->where('merchant_id', $this->merchant->id)
+            ->update(['driver' => 'other_track']);
+
+        $shipping = $this->createShipping('1Z-MIS', orderAttrs: ['logistics_tracking_enabled' => true]);
+        $body = $this->payloadJson('1Z-MIS', 'InTransit');
+
+        // path 仍为已实现驱动，但商户 setting.driver 已改 → 404 driver mismatch
+        $this->call('POST', $this->webhookPath(), [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_SIGN' => hash('sha256', $body.'/'.$this->secret),
+        ], $body)->assertNotFound();
+
+        $this->assertNull($shipping->fresh()->tracking_status);
+    }
+
+    public function test_same_tracking_number_update_does_not_clear_registration_marker(): void
+    {
+        Queue::fake();
+
+        $shipping = $this->createShipping('1Z-KEEP', [
+            'tracking_registered_at' => now()->subHour(),
+            'tracking_provider' => 'seventeen_track',
+        ], orderAttrs: ['logistics_tracking_enabled' => true, 'status' => 'shipped']);
+
+        app(OrderShippingService::class)->record($shipping->order->fresh(), 0, [
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-KEEP',
+            'remark' => 'same number',
+        ]);
+
+        $shipping->refresh();
+        $this->assertNotNull($shipping->tracking_registered_at);
+        $this->assertSame('seventeen_track', $shipping->tracking_provider);
+    }
+
+    public function test_tracking_number_change_clears_registration_marker(): void
+    {
+        Queue::fake();
+
+        $shipping = $this->createShipping('1Z-OLD', [
+            'tracking_registered_at' => now()->subHour(),
+            'tracking_provider' => 'seventeen_track',
+        ], orderAttrs: ['logistics_tracking_enabled' => true, 'status' => 'shipped']);
+
+        app(OrderShippingService::class)->record($shipping->order->fresh(), 0, [
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-NEW',
+        ]);
+
+        $shipping->refresh();
+        $this->assertSame('1Z-NEW', $shipping->tracking_number);
+        $this->assertNull($shipping->tracking_registered_at);
+        $this->assertNull($shipping->tracking_provider);
+    }
+
     /**
      * @param  array<string, mixed>  $extra
      * @param  array<string, mixed>  $orderAttrs
