@@ -2,6 +2,9 @@
 
 namespace App\Filament\Resources\PaymentGroupResource\RelationManagers;
 
+use App\Models\PaymentGroup;
+use App\Models\PaymentMethod;
+use App\Services\PaymentService;
 use Filament\Actions\AttachAction;
 use Filament\Actions\DetachAction;
 use Filament\Actions\EditAction;
@@ -15,13 +18,19 @@ use Illuminate\Database\Eloquent\Model;
 
 /**
  * 支付组内的支付方式 + 组内进单占比权重（priority，数值越大分配占比越高）。
- * 下单时按"当天已成交金额 / 权重"最小者进单，实现多通道均匀分散抗量。
+ * 列表同时展示当天负载快照（成交额 / 笔数 / 负载率 / 候选序），口径见
+ * PaymentService::routingLoadSnapshot()；下单时按负载排序后从前三等概率随机。
  * 用 AttachAction 的 form 承载 priority 这个 pivot 字段，
  * 编辑已挂载记录的 priority 也走单独的 EditAction（同样操作 pivot）。
  */
 class PaymentMethodsRelationManager extends RelationManager
 {
     protected static string $relationship = 'paymentMethods';
+
+    /**
+     * @var array<int, array{weight: int, amount: float, count: int, load_ratio: float, rank: int|null, in_top3: bool}>|null
+     */
+    private ?array $routingLoadSnapshotCache = null;
 
     /**
      * 标题用 getTitle() 方法覆盖而不是静态属性——PHP 静态属性的默认值
@@ -44,10 +53,42 @@ class PaymentMethodsRelationManager extends RelationManager
     {
         return $table
             ->recordTitleAttribute('method_name')
+            ->description(__('admin.payment_group.relation_manager.load_snapshot_help'))
             ->columns([
                 TextColumn::make('method_name')->label(__('admin.payment_method.model_label')),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
                 TextColumn::make('pivot.priority')->label(__('admin.payment_group.relation_manager.priority')),
+                TextColumn::make('today_paid_amount')
+                    ->label(__('admin.payment_group.relation_manager.today_paid_amount'))
+                    ->state(fn (PaymentMethod $record): float => $this->snapshotFor($record)['amount'])
+                    ->money('usd'),
+                TextColumn::make('today_paid_count')
+                    ->label(__('admin.payment_group.relation_manager.today_paid_count'))
+                    ->state(fn (PaymentMethod $record): int => $this->snapshotFor($record)['count']),
+                TextColumn::make('load_ratio')
+                    ->label(__('admin.payment_group.relation_manager.load_ratio'))
+                    ->state(fn (PaymentMethod $record): float => $this->snapshotFor($record)['load_ratio'])
+                    ->formatStateUsing(fn (float $state): string => number_format($state, 2))
+                    ->tooltip(__('admin.payment_group.relation_manager.load_ratio_tooltip')),
+                TextColumn::make('candidate_rank')
+                    ->label(__('admin.payment_group.relation_manager.candidate_rank'))
+                    ->badge()
+                    ->state(fn (PaymentMethod $record): ?int => $this->snapshotFor($record)['rank'])
+                    ->placeholder(__('admin.payment_group.relation_manager.candidate_rank_inactive'))
+                    ->formatStateUsing(function (?int $state, PaymentMethod $record): string {
+                        if ($state === null) {
+                            return __('admin.payment_group.relation_manager.candidate_rank_inactive');
+                        }
+
+                        return $this->snapshotFor($record)['in_top3']
+                            ? __('admin.payment_group.relation_manager.candidate_rank_top3', ['rank' => $state])
+                            : __('admin.payment_group.relation_manager.candidate_rank_value', ['rank' => $state]);
+                    })
+                    ->color(fn (?int $state, PaymentMethod $record): string => match (true) {
+                        $state === null => 'gray',
+                        $this->snapshotFor($record)['in_top3'] => 'success',
+                        default => 'gray',
+                    }),
             ])
             ->defaultSort('pivot_priority', 'desc')
             ->headerActions([
@@ -77,5 +118,37 @@ class PaymentMethodsRelationManager extends RelationManager
                 EditAction::make(),
                 DetachAction::make(),
             ]);
+    }
+
+    /**
+     * @return array{weight: int, amount: float, count: int, load_ratio: float, rank: int|null, in_top3: bool}
+     */
+    private function snapshotFor(PaymentMethod $record): array
+    {
+        $snapshot = $this->routingLoadSnapshot();
+
+        return $snapshot[$record->id] ?? [
+            'weight' => max(1, (int) $record->pivot?->priority),
+            'amount' => 0.0,
+            'count' => 0,
+            'load_ratio' => 0.0,
+            'rank' => null,
+            'in_top3' => false,
+        ];
+    }
+
+    /**
+     * @return array<int, array{weight: int, amount: float, count: int, load_ratio: float, rank: int|null, in_top3: bool}>
+     */
+    private function routingLoadSnapshot(): array
+    {
+        if ($this->routingLoadSnapshotCache !== null) {
+            return $this->routingLoadSnapshotCache;
+        }
+
+        /** @var PaymentGroup $group */
+        $group = $this->getOwnerRecord();
+
+        return $this->routingLoadSnapshotCache = app(PaymentService::class)->routingLoadSnapshot($group);
     }
 }

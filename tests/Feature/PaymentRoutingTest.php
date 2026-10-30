@@ -141,6 +141,52 @@ class PaymentRoutingTest extends TestCase
         app(PaymentService::class)->resolvePaymentMethod($group, 10);
     }
 
+    public function test_routing_load_snapshot_ranks_active_methods_by_load_ratio(): void
+    {
+        $this->freezeTime();
+        $group = $this->createGroup();
+        $first = $this->attachMethod($group, 'first', 100);
+        $second = $this->attachMethod($group, 'second', 200);
+        $inactive = $this->attachMethod($group, 'inactive', 1000);
+        $inactive->update(['is_active' => false]);
+        $this->makeOrder('PAID-FIRST', 'merchant-first', [
+            'payment_method_id' => $first->id,
+            'payment_method' => $first->method_code,
+            'converted_amount' => '100.00',
+            'status' => 'paid',
+            'paid_at' => now(),
+        ]);
+        $this->makeOrder('PAID-SECOND', 'merchant-second', [
+            'payment_method_id' => $second->id,
+            'payment_method' => $second->method_code,
+            'converted_amount' => '100.00',
+            'status' => 'paid',
+            'paid_at' => now(),
+        ]);
+        $this->makeOrder('PENDING-FIRST', 'pending-first', [
+            'payment_method_id' => $first->id,
+            'payment_method' => $first->method_code,
+            'converted_amount' => '500.00',
+            'status' => 'pending',
+        ]);
+
+        $snapshot = $this->routingService()->routingLoadSnapshot($group);
+
+        $this->assertSame(100.0, $snapshot[$first->id]['amount']);
+        $this->assertSame(1, $snapshot[$first->id]['count']);
+        $this->assertSame(1.0, $snapshot[$first->id]['load_ratio']);
+        $this->assertSame(2, $snapshot[$first->id]['rank']);
+        $this->assertTrue($snapshot[$first->id]['in_top3']);
+
+        $this->assertSame(100.0, $snapshot[$second->id]['amount']);
+        $this->assertSame(0.5, $snapshot[$second->id]['load_ratio']);
+        $this->assertSame(1, $snapshot[$second->id]['rank']);
+        $this->assertTrue($snapshot[$second->id]['in_top3']);
+
+        $this->assertNull($snapshot[$inactive->id]['rank']);
+        $this->assertFalse($snapshot[$inactive->id]['in_top3']);
+    }
+
     private function createGroup(): PaymentGroup
     {
         Http::preventStrayRequests();

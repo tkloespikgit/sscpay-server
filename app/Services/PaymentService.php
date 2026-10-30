@@ -29,6 +29,9 @@ use Random\Randomizer;
  * （2.4 节允许用 Redis 计数器加速，这里先给出 DB 查询版本作为权威实现；
  * 如果后续要接入 Redis 计数器，替换 dailyStatsForMethods()/monthlyAmountForMethod()
  * 内部实现即可，对外接口不变）。
+ *
+ * 后台支付组关联表通过 routingLoadSnapshot() 展示同口径的当天负载对照
+ * （成交额 / 笔数 / 负载率 / 候选序）；快照不做金额相关限额过滤。
  */
 class PaymentService
 {
@@ -75,6 +78,64 @@ class PaymentService
     }
 
     /**
+     * 组内支付方式当天负载快照，口径与 resolvePaymentMethod 一致：
+     * 成交按 payment_method_id 跨商户汇总、系统时区当日、曾支付成功；
+     * 负载率 = 成交额 / 组内权重。
+     *
+     * 候选序只对「启用且商户可用」的通道按负载排序；不套用依赖下单金额的
+     * 单笔/日/月限额拦截（那些要等真实金额才能判定），后台仅作分流对照。
+     *
+     * @return array<int, array{weight: int, amount: float, count: int, load_ratio: float, rank: int|null, in_top3: bool}>
+     */
+    public function routingLoadSnapshot(PaymentGroup $group): array
+    {
+        $methods = $group->paymentMethods()->get();
+
+        if ($methods->isEmpty()) {
+            return [];
+        }
+
+        [$dayStart, $dayEnd] = $this->dayRange();
+        $dailyStats = $this->dailyStatsForMethods($methods->pluck('id')->all(), $dayStart, $dayEnd);
+
+        $eligibleIds = $group->activePaymentMethods()
+            ->forMerchant((int) $group->merchant_id)
+            ->pluck('payment_methods.id')
+            ->all();
+
+        $ranked = $methods
+            ->filter(fn (PaymentMethod $method) => in_array($method->id, $eligibleIds, true))
+            ->values()
+            ->all();
+        $this->sortByLoadAscending($ranked, $dailyStats);
+
+        $rankById = [];
+        foreach ($ranked as $index => $method) {
+            $rankById[$method->id] = $index + 1;
+        }
+
+        $snapshot = [];
+
+        foreach ($methods as $method) {
+            $amount = (float) ($dailyStats[$method->id]['amount'] ?? 0.0);
+            $count = (int) ($dailyStats[$method->id]['count'] ?? 0);
+            $weight = $this->weightOf($method);
+            $rank = $rankById[$method->id] ?? null;
+
+            $snapshot[$method->id] = [
+                'weight' => $weight,
+                'amount' => $amount,
+                'count' => $count,
+                'load_ratio' => $amount / $weight,
+                'rank' => $rank,
+                'in_top3' => $rank !== null && $rank <= 3,
+            ];
+        }
+
+        return $snapshot;
+    }
+
+    /**
      * 订单进来但整个支付组下没有一个通道能用（组内压根没启用的支付方式，
      * 或者全部候选都被风控阈值挡住）——这笔订单会直接建单失败，商户很可能
      * 完全不知道自己在丢单，所以主动推一条 Telegram 提醒，而不是等商户自己
@@ -114,6 +175,17 @@ class PaymentService
      */
     private function pickAmongLeastLoaded(array $methods, array $dailyStats): PaymentMethod
     {
+        $this->sortByLoadAscending($methods, $dailyStats);
+
+        return $methods[$this->randomizer->getInt(0, min(3, count($methods)) - 1)];
+    }
+
+    /**
+     * @param  PaymentMethod[]  $methods
+     * @param  array<int, array{amount: float, count: int}>  $dailyStats
+     */
+    private function sortByLoadAscending(array &$methods, array $dailyStats): void
+    {
         usort($methods, function (PaymentMethod $a, PaymentMethod $b) use ($dailyStats) {
             return [
                 $this->loadRatio($a, $dailyStats),
@@ -125,8 +197,6 @@ class PaymentService
                 $b->id,
             ];
         });
-
-        return $methods[$this->randomizer->getInt(0, min(3, count($methods)) - 1)];
     }
 
     /**
