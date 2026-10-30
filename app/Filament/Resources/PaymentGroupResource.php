@@ -12,8 +12,8 @@ use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
@@ -27,6 +27,9 @@ use Filament\Tables\Table;
 /**
  * 支付组（3.6 节）。group_key 是商户下单接口里传的 group_key，
  * 修改要谨慎——商户端代码里硬编码了这个值，改了这里也要通知商户同步改。
+ *
+ * 表单：「基本信息」与「描述」分两块；描述区为 compact，字段自上而下为
+ * 组描述 → Logo → 统计时区。
  */
 class PaymentGroupResource extends Resource
 {
@@ -85,31 +88,6 @@ class PaymentGroupResource extends Resource
                     ->maxLength(50)
                     ->helperText(__('admin.payment_group.help.group_key')),
                 TextInput::make('group_name')->label(__('admin.payment_group.fields.group_name'))->required()->maxLength(100),
-                FileUpload::make('logo_path')
-                    ->label(__('admin.payment_group.fields.logo'))
-                    ->image()
-                    // 落地页访问者是未登录客户，必须走公开可读的盘（同收款链接 Logo）。
-                    ->disk(config('checkout.media_disk', 'public'))
-                    ->directory(config('checkout.payment_group_logo_directory', 'payment-groups/logos'))
-                    ->visibility('public')
-                    ->maxSize(2048)
-                    // 落地页按固定尺寸渲染组卡片，这里把上传图统一压到 320×120
-                    // （cover：先等比缩放再居中裁切），避免商户传不同比例的图把版面顶乱。
-                    // ⚠️ Filament v5 的缩放是**浏览器端** FilePond 插件做的（参数序列化后交给前端，
-                    //    见 FileUpload 的 automaticallyResizeImages*），不是服务端处理：
-                    //    SVG 不会被缩放，绕过前端直传也会跳过。落地页另有 CSS 兜底
-                    //    （h-12 / max-w-[160px] / object-contain），所以 320×120 是引导值而非常量约束。
-                    ->automaticallyResizeImagesMode('cover')
-                    ->automaticallyResizeImagesToWidth('320')
-                    ->automaticallyResizeImagesToHeight('120')
-                    ->helperText(__('admin.payment_group.help.logo'))
-                    ->columnSpanFull(),
-                Select::make('timezone')
-                    ->label(__('admin.payment_group.fields.timezone'))
-                    ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
-                    ->default(fn () => (string) config('app.timezone', 'UTC'))
-                    ->searchable()
-                    ->helperText(__('admin.payment_group.help.timezone')),
                 Toggle::make('is_active')->label(__('admin.payment_group.fields.status'))->default(true)->inline(false),
                 Select::make('paymentMethods')
                     ->label(__('admin.payment_group.fields.payment_methods'))
@@ -163,9 +141,41 @@ class PaymentGroupResource extends Resource
                     ->columnSpanFull(),
             ])->columns(2),
 
-            Section::make(__('admin.payment_group.sections.description'))->schema([
-                Textarea::make('description')->label(__('admin.payment_group.fields.description'))->rows(3),
-            ]),
+            // 独立描述区（compact + rows(2)），Logo / 统计时区叠在描述下方，减少卡片空白。
+            Section::make(__('admin.payment_group.sections.description'))
+                ->compact()
+                ->schema([
+                    Textarea::make('description')
+                        ->label(__('admin.payment_group.fields.description'))
+                        ->rows(2)
+                        ->columnSpanFull(),
+                    FileUpload::make('logo_path')
+                        ->label(__('admin.payment_group.fields.logo'))
+                        ->image()
+                        // 落地页访问者是未登录客户，必须走公开可读的盘（同收款链接 Logo）。
+                        ->disk(config('checkout.media_disk', 'public'))
+                        ->directory(config('checkout.payment_group_logo_directory', 'payment-groups/logos'))
+                        ->visibility('public')
+                        ->maxSize(2048)
+                        // 落地页按固定尺寸渲染组卡片，这里把上传图统一压到 320×120
+                        // （cover：先等比缩放再居中裁切），避免商户传不同比例的图把版面顶乱。
+                        // ⚠️ Filament v5 的缩放是**浏览器端** FilePond 插件做的（参数序列化后交给前端，
+                        //    见 FileUpload 的 automaticallyResizeImages*），不是服务端处理：
+                        //    SVG 不会被缩放，绕过前端直传也会跳过。落地页另有 CSS 兜底
+                        //    （h-12 / max-w-[160px] / object-contain），所以 320×120 是引导值而非常量约束。
+                        ->automaticallyResizeImagesMode('cover')
+                        ->automaticallyResizeImagesToWidth('320')
+                        ->automaticallyResizeImagesToHeight('120')
+                        ->helperText(__('admin.payment_group.help.logo'))
+                        ->columnSpanFull(),
+                    Select::make('timezone')
+                        ->label(__('admin.payment_group.fields.timezone'))
+                        ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
+                        ->default(fn () => (string) config('app.timezone', 'UTC'))
+                        ->searchable()
+                        ->helperText(__('admin.payment_group.help.timezone'))
+                        ->columnSpanFull(),
+                ]),
         ]);
     }
 

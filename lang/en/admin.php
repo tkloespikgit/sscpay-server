@@ -480,7 +480,7 @@ return [
         'help' => [
             'group_key' => 'The group_key merchants pass when creating orders. Avoid changing this after creation.',
             'logo' => 'Shown to customers on the checkout page when this group is offered as a choice. Sized to 320×120 (an 8:3 ratio) on upload; a transparent PNG works best. Max 2 MB.',
-            'timezone' => 'Timezone that defines the "current day" window for traffic distribution and daily limits. Falls back to the system timezone when empty.',
+            'timezone' => 'Preferred display/stats timezone for this payment group. Falls back to the system timezone when empty. Traffic routing and daily/monthly risk windows always use the system timezone, not this group setting.',
             'payment_methods' => 'Super admins must pick a merchant first, then choose from that merchant\'s payment methods; merchant admins select from their own existing methods. Group traffic weight defaults to 100 and can be adjusted on the detail page.',
         ],
         'columns' => [

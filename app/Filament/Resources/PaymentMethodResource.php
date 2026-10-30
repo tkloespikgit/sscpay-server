@@ -75,7 +75,8 @@ class PaymentMethodResource extends Resource
         $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
-            // 整体两栏布局：基本信息占左侧 2/3，网关配置、风控阈值、手续费三个面板堆叠在最右侧。
+            // 上半两栏布局：基本信息占左侧 2/3，网关配置 / 风控阈值 / 手续费堆叠在右侧 1/3。
+            // 付款链接邮件模版不在右栏，见下方通栏 Section（避免右栏过长时左侧留白）。
             Grid::make(1)->schema([
                 Section::make(__('admin.payment_method.sections.basic_info'))->schema([
                     // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
@@ -348,17 +349,19 @@ class PaymentMethodResource extends Resource
                                 return __('admin.payment_method.help.min_transaction_amount', ['amount' => $minAmount]);
                             }),
                     ])->columns(2),
-
-                Section::make(__('admin.payment_method.sections.mail_template'))
-                    ->description(__('admin.payment_method.help.payment_link_mail_template'))
-                    ->schema([
-                        RichEditor::make('payment_link_mail_template')
-                            ->hiddenLabel()
-                            ->extraInputAttributes(['style' => 'min-height: 20rem;'])
-                            ->placeholder(__('admin.payment_method.placeholders.payment_link_mail_template')),
-                    ]),
-
             ])->columnSpan(1),
+
+            // 邮件模版通栏：紧挨两栏下方，compact + 编辑区 min-height 8rem，控制纵向占用。
+            Section::make(__('admin.payment_method.sections.mail_template'))
+                ->description(__('admin.payment_method.help.payment_link_mail_template'))
+                ->compact()
+                ->columnSpanFull()
+                ->schema([
+                    RichEditor::make('payment_link_mail_template')
+                        ->hiddenLabel()
+                        ->extraInputAttributes(['style' => 'min-height: 8rem;'])
+                        ->placeholder(__('admin.payment_method.placeholders.payment_link_mail_template')),
+                ]),
         ]);
     }
 
