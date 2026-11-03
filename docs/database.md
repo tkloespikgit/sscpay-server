@@ -46,6 +46,12 @@ erDiagram
 
 `PaymentMethod::forMerchant()` 的含义是“商户可使用”，包含自有与已分配渠道；不能用普通商户外键过滤替代。`site_products.merchant_id` 也可为空，商品实际按支付渠道关联，避免假设所有业务模型均有非空商户 ID。
 
+商户不再要求填写联系方式。历史 `contact_person`、`contact_phone`、`contact_email` 列保留原结构与已有值；`Merchant` 模型为未提供的字段统一使用空字符串缺省值，普通创建和入驻向导共用这一行为。后台表单不再收集这些字段，编辑已有商户不会清空历史联系方式；管理员登录账号和订单客户邮箱仍独立使用。
+
+付款链接邮件仅使用 `applications.sender_email` / `sender_name` / `mail_driver` / 加密 `mail_credentials`，正文使用应用的 `payment_link_mail_template`，留空使用系统默认模板。`payment_methods` 中同名五列保留历史数据及凭证解密兼容，但已退出批量赋值、配置界面和邮件配置选择；复制渠道时也不复制这五列。此变更无需新增迁移，不自动把渠道邮件设置复制给应用。
+
+商户网站物流回传使用 `applications.is_shipment_sync_enabled`（默认 false）和可空 `shipment_sync_url`（最长 2048 字符）；开启时必须提供完整 HTTPS 接口地址，路径及 query 原样使用。每次发送读取当前应用配置及已有加密 `api_key`，不增加独立凭证。新增字段与回传表由迁移 `2026_11_03_153030_add_merchant_shipment_sync_configuration` 引入，不自动生成历史订单回传记录。
+
 ## 3. 订单及金额快照
 
 `orders` / [Order](../app/Models/Order.php) 是中心模型：
@@ -137,12 +143,16 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
 | `order_shippings` | 每订单最多一条未删除物流记录；含 WP 插件 `sync_*`，以及中性轨迹字段（`tracking_*`）与 `logistics_anomaly*`（Webhook / 异常边沿主动查 + 每日本地重算；与 WP sync 无关） |
+| `order_shipment_syncs` | 商户网站物流回传批次；关联商户、订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态 |
+| `order_shipment_sync_attempts` | 每批回传的逐次 HTTP 请求结果；保存地址、鉴权头、HTTP 状态、响应、错误及请求时间，不保存应用 API 密钥；签名在实际发送时现算 |
 | `order_events` | 插件事件归档，按系统订单号与外部日志 ID 去重，不驱动订单状态 |
 | `order_notification_attempts` | 商户回调每次尝试的请求、响应、结果、下次重试时间 |
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
 | `logistics_import_tasks`、`logistics_import_task_records` | 批量物流导入任务及逐行结果 |
 
 物流导入任务表的两个文件名语义不同：`original_file_name` 是商户上传时的本地文件名（2026-10-22 起记录，历史数据为 NULL，展示时回退 `file_name`），`file_name` 是 OSS 上的保存名（Filament 随机串）。`started_at`/`finished_at` 记录解析起止，仅用于识别 worker 中断与审计，不在界面展示耗时；`status=processing` 且 `started_at` 超过 30 分钟按中断处理。任务表只存汇总数，逐行结果一律查明细表。记录保留 90 天，由 `logistics-imports:prune` 每日分批物理删除任务及其明细（含已软删任务）。
+
+商户网站回传批次与本地物流分开：本地改单覆盖原记录，每次启用回传的保存或手动推送创建新的业务快照。状态为 `pending/processing/retrying/success/failed/superseded/paused`；出现新版本后旧待发、待重试或暂停批次停止投递。`next_attempt_at` 同时作为处理租约到期时间，`processing` 超过两分钟可由调度回收；含首次最多 5 次请求，尝试表按批次与尝试编号唯一。终败的 `alert_status` 从 `pending` 转为 `sent` 或机器人不可用时的 `unavailable`；Telegram 失败或限流保留 `pending`，`next_alert_at` 延后 5 分钟；到期时间参与提醒扫描索引，避免长期失败商户占住候选。两表保留审计记录，外键使用限制删除，和 WP 插件的 `order_shippings.sync_*` 无关。
 
 余额可为负；可提现 = `balance - frozen_balance - pending_settlement_balance - pending_withdrawal_balance`。商户显示的待出款由 `pendingWithdrawalBalance()` 将新待出款加旧待审核提现合计；`reserveBalance()` 将原冻结额减去这部分旧提现。两者按读时归类，不改历史余额或流水，且保持总额 = 待结算 + 保证金/冻结 + 可提现 + 待出款。列表使用 `legacyPendingWithdrawals` 的预聚合避免逐行查询。
 
@@ -192,6 +202,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `applications.app_id_uniq` | 有效应用 ID 全局唯一 |
 | `payment_groups(merchant_id, group_key_uniq)` | 商户内有效支付组键唯一 |
 | `order_shippings.order_id_uniq` | 每订单仅一条有效物流记录 |
+| `order_shipment_sync_attempts(order_shipment_sync_id, attempt_number)` | 同一物流回传批次的尝试序号唯一，不同物流快照各自计数 |
 | `order_dispute_events.order_id_active_uniq` | 仅 `processing` 状态参与，同一订单最多一个处理中审核事件 |
 | `merchant_balance_transactions.idempotency_key` | 自动资金动作幂等；允许人工动作无幂等键 |
 | `merchant_payment_methods(merchant_id, payment_method_id)` | 渠道分配不重复 |

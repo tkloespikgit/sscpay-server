@@ -19,8 +19,10 @@ use App\Models\Carrier;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderShipping;
+use App\Models\User;
 use App\Services\BalanceService;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
+use App\Services\MerchantShipmentSyncService;
 use App\Services\OrderDisputeService;
 use App\Services\OrderEventSyncService;
 use App\Services\OrderShippingService;
@@ -34,6 +36,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\IconEntry;
+use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
@@ -322,7 +325,79 @@ class ViewOrder extends ViewRecord
                             $this->redirect(static::getUrl(['record' => $this->record]));
                         }),
                 ]),
+            $this->merchantShipmentSyncSection(),
         ]);
+    }
+
+    private function merchantShipmentSyncSection(): Section
+    {
+        return Section::make(__('admin.merchant_shipment_sync.section'))
+            ->description(__('admin.merchant_shipment_sync.description'))
+            ->columnSpanFull()
+            ->schema([
+                Grid::make(3)->schema([
+                    TextEntry::make('latestShipmentSync.status')
+                        ->label(__('admin.merchant_shipment_sync.fields.status'))
+                        ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.merchant_shipment_sync.statuses.'.$state) : null)
+                        ->badge()
+                        ->color(fn (?string $state): string => match ($state) {
+                            'success' => 'success',
+                            'failed' => 'danger',
+                            'retrying', 'processing' => 'warning',
+                            default => 'gray',
+                        })
+                        ->placeholder(__('admin.merchant_shipment_sync.no_records')),
+                    TextEntry::make('latestShipmentSync.attempt_count')
+                        ->label(__('admin.merchant_shipment_sync.fields.attempt_count'))
+                        ->placeholder('—'),
+                    TextEntry::make('latestShipmentSync.synced_at')
+                        ->label(__('admin.merchant_shipment_sync.fields.synced_at'))
+                        ->dateTime()
+                        ->placeholder('—'),
+                    TextEntry::make('latestShipmentSync.next_attempt_at')
+                        ->label(__('admin.merchant_shipment_sync.fields.next_attempt_at'))
+                        ->dateTime()
+                        ->placeholder('—'),
+                    TextEntry::make('latestShipmentSync.alert_status')
+                        ->label(__('admin.merchant_shipment_sync.fields.alert_status'))
+                        ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.merchant_shipment_sync.alert_statuses.'.$state) : null)
+                        ->placeholder('—'),
+                    TextEntry::make('latestShipmentSync.last_error')
+                        ->label(__('admin.merchant_shipment_sync.fields.last_error'))
+                        ->placeholder('—')
+                        ->columnSpanFull(),
+                ])->columnSpanFull(),
+                RepeatableEntry::make('merchantShipmentSyncHistory')
+                    ->label(__('admin.merchant_shipment_sync.history'))
+                    ->state(fn (Order $record) => $record->shipmentSyncs()
+                        ->where('merchant_id', $record->merchant_id)
+                        ->with(['attempts' => fn ($query) => $query->orderBy('attempt_number')])
+                        ->latest('id')
+                        ->limit(10)
+                        ->get())
+                    ->schema([
+                        TextEntry::make('created_at')->label(__('admin.merchant_shipment_sync.fields.created_at'))->dateTime(),
+                        TextEntry::make('payload.tracking_number')->label(__('admin.order.fields.tracking_number')),
+                        TextEntry::make('status')
+                            ->label(__('admin.merchant_shipment_sync.fields.status'))
+                            ->formatStateUsing(fn (string $state): string => __('admin.merchant_shipment_sync.statuses.'.$state)),
+                        TextEntry::make('last_error')->label(__('admin.merchant_shipment_sync.fields.last_error'))->placeholder('—')->columnSpanFull(),
+                        RepeatableEntry::make('attempts')
+                            ->label(__('admin.merchant_shipment_sync.fields.attempts'))
+                            ->schema([
+                                TextEntry::make('attempt_number')->label(__('admin.merchant_shipment_sync.fields.attempt_number')),
+                                TextEntry::make('attempted_at')->label(__('admin.merchant_shipment_sync.fields.attempted_at'))->dateTime(),
+                                TextEntry::make('response_status')->label(__('admin.merchant_shipment_sync.fields.response_status'))->placeholder('—'),
+                                TextEntry::make('request_url')->label(__('admin.merchant_shipment_sync.fields.request_url'))->columnSpanFull(),
+                                TextEntry::make('response_body')->label(__('admin.merchant_shipment_sync.fields.response_body'))->placeholder('—')->limit(2000)->columnSpanFull(),
+                                TextEntry::make('error_message')->label(__('admin.merchant_shipment_sync.fields.last_error'))->placeholder('—')->columnSpanFull(),
+                            ])
+                            ->columns(3)
+                            ->columnSpanFull(),
+                    ])
+                    ->columns(3)
+                    ->columnSpanFull(),
+            ]);
     }
 
     protected function getHeaderActions(): array
@@ -330,6 +405,7 @@ class ViewOrder extends ViewRecord
         return [
             OrderResource::queryStatusAction(),
             $this->syncOrderEventsAction(),
+            $this->pushMerchantShipmentAction(),
             $this->resendPaymentLinkMailAction(),
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),
@@ -337,6 +413,43 @@ class ViewOrder extends ViewRecord
             $this->chargebackAction(),
             $this->manualStatusChangeAction(),
         ];
+    }
+
+    private function canPushMerchantShipment(Order $record): bool
+    {
+        $user = auth()->user();
+
+        if (! $user instanceof User || ! $user->status
+            || ! $user->can(Permissions::ORDERS_VIEW)
+            || ! $user->can(Permissions::ORDERS_SHIP)) {
+            return false;
+        }
+
+        $merchantIds = $user->manageableMerchantIds();
+
+        return ($merchantIds === null || in_array((int) $record->merchant_id, $merchantIds, true))
+            && app(MerchantShipmentSyncService::class)->canPush($record);
+    }
+
+    private function pushMerchantShipmentAction(): Action
+    {
+        return Action::make('pushMerchantShipment')
+            ->label(__('admin.merchant_shipment_sync.push'))
+            ->icon(Heroicon::ArrowPath)
+            ->color('gray')
+            ->visible(fn (Order $record): bool => $this->canPushMerchantShipment($record))
+            ->authorize(fn (Order $record): bool => $this->canPushMerchantShipment($record))
+            ->action(function (Order $record, MerchantShipmentSyncService $service): void {
+                abort_unless($this->canPushMerchantShipment($record), 403);
+
+                $service->pushManually($record);
+                $this->record->refresh();
+
+                Notification::make()
+                    ->title(__('admin.merchant_shipment_sync.queued'))
+                    ->success()
+                    ->send();
+            });
     }
 
     private function copyPaymentLinkAction(): Action

@@ -7,8 +7,9 @@ namespace App\Support;
  * （postmark 只要一个 token；ses 要 key/secret，region 可选默认 us-east-1；
  * smtp 要 host，port/username/password/encryption 均可选）。
  * 新增驱动只需要在 overridesFor() 里加一个 match 分支。
+ * SMTP 显式清除平台 MAIL_URL，避免 Laravel 解析 URL 后覆盖应用的主机与凭证。
  *
- * Order::resolveMailSender()（判断 PaymentMethod/Application 某一级配置是否
+ * Order::resolveMailSender()（判断 Application 的发信配置是否
  * 可用）和 SendPaymentLinkJob（构造要临时覆写进 mail.mailers.{driver} 的片段）
  * 共用同一份逻辑，避免两处各自判断"这算不算配置完整"而互相不一致。
  */
@@ -17,7 +18,7 @@ class MailerCredentials
     /**
      * @param  array<string, mixed>|null  $credentials
      * @return array<string, mixed>|null 完整则返回要合并进 mail.mailers.{driver}
-     *                                    的片段；driver 未识别或必填项缺失则返回 null。
+     *                                   的片段；driver 未识别或必填项缺失则返回 null。
      */
     public static function overridesFor(?string $driver, ?array $credentials): ?array
     {
@@ -33,6 +34,7 @@ class MailerCredentials
                 'region' => ($credentials['region'] ?? null) ?: 'us-east-1',
             ] : null,
             'smtp' => filled($credentials['host'] ?? null) ? [
+                'url' => null,
                 'host' => $credentials['host'],
                 'port' => ($credentials['port'] ?? null) ?: 587,
                 'username' => $credentials['username'] ?? null,

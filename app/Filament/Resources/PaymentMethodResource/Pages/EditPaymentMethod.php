@@ -4,12 +4,16 @@ namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Support\GeneratePurchaseOrderAction;
-use App\Filament\Support\MailCredentialsAction;
 use App\Filament\Support\PaymentMethodProfileAction;
+use App\Models\User;
+use App\Services\PaymentMethodOwnershipService;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
+use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Schema;
+use Illuminate\Validation\ValidationException;
 
 class EditPaymentMethod extends EditRecord
 {
@@ -37,12 +41,56 @@ class EditPaymentMethod extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            $this->getChangeOwnerAction(),
             GeneratePurchaseOrderAction::make(),
             PaymentMethodProfileAction::make(),
-            MailCredentialsAction::make(),
             $this->getDetachFromAllPaymentGroupsAction(),
             DeleteAction::make(),
         ];
+    }
+
+    protected function getChangeOwnerAction(): Action
+    {
+        $canChangeOwner = fn (): bool => auth()->user() instanceof User
+            && auth()->user()->is_super_admin
+            && auth()->user()->status
+            && $this->record->isSystemLevel();
+
+        return Action::make('changeOwner')
+            ->label(__('admin.payment_method.actions.change_owner'))
+            ->icon('heroicon-o-user-circle')
+            ->visible($canChangeOwner)
+            ->authorize($canChangeOwner)
+            ->modalDescription(__('admin.payment_method.actions.change_owner_desc'))
+            ->fillForm(fn (): array => ['owner_id' => $this->record->owner_id])
+            ->schema([
+                Select::make('owner_id')
+                    ->label(__('admin.payment_method.fields.owner'))
+                    ->options(fn () => User::query()
+                        ->whereNull('merchant_id')
+                        ->where('status', true)
+                        ->orderBy('name')
+                        ->orderBy('id')
+                        ->pluck('name', 'id'))
+                    ->searchable()
+                    ->required(),
+            ])
+            ->action(function (array $data, PaymentMethodOwnershipService $service, Schema $schema) use ($canChangeOwner): void {
+                abort_unless($canChangeOwner(), 403);
+
+                try {
+                    $service->changeOwner($this->record, auth()->user(), (int) $data['owner_id']);
+                } catch (ValidationException $exception) {
+                    GeneratePurchaseOrderAction::throwSchemaValidationException($exception, $schema);
+                }
+
+                $this->record->refresh();
+
+                Notification::make()
+                    ->success()
+                    ->title(__('admin.payment_method.actions.change_owner_success'))
+                    ->send();
+            });
     }
 
     /**

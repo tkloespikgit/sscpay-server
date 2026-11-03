@@ -161,6 +161,8 @@
 
 **状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** `OrderPaymentStatusService::queryAndApply()` 查询网关返回 `paid` 时，无论本地是过期、失败、退款、拒付、已完成或人工审核等状态，都纠正为 `paid`；本地已为 `paid` 时幂等跳过。此例外补充 D-08，webhook 与查询非 `paid` 结果继续使用原有状态守卫。
 
+2026-11-03 工作区修正：曾收款订单恢复 `paid` 时，有本商户未软删除的物流记录则恢复为 `shipped`，避免争议取消后误回到待发货。查询和允许落地的 webhook 共用此规则，按最终本地状态判重；已被旧逻辑改成 `paid` 且仍有有效物流的订单再次查询即可纠正。首次支付沿用原有入账、通知及预录物流推进流程。
+
 **原因与影响：** 主动核对确认付款后，本地终态不能阻止支付状态纠正。从未支付状态恢复 `paid` 复用 `BalanceService` 入账幂等与首次通知；曾收款订单仅纠正状态，不重复入账、商户通知、广告转化或指定渠道付款提醒。首次支付/失败时间、退款金额、资金台账和人工审核冻结均保留，不将状态纠正解释为撤销退款/拒付或关闭审核。已存在拒付本金流水时，无论当前状态如何，都禁止再次退款或拒付，防止纠正状态后重复扣款。
 
 商户 `/api/order/query` 仍只读取本地状态；定时补查仍只选择最近 48 小时未收款的 `pending` 订单，不因本规则扩大扫描范围。
@@ -200,3 +202,13 @@
 事件日志将网关尝试加入生成列唯一约束，保留旧渠道和新渠道相同外部日志 ID 的不同记录。首次部署须执行订单和事件日志两项迁移；历史订单引用保持 NULL，历史日志来源保持空字符串，不改写历史远端编号。已有尝试引用或来源日志时拒绝破坏性回滚。回归测试使用模拟 HTTP，不触发真实建单或账务。
 
 **依据：** [PaymentService](../app/Services/PaymentService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[Order](../app/Models/Order.php)、[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[网关配置](../config/payment_gateway.php)、[迁移](../database/migrations/2026_10_28_142012_add_gateway_order_no_to_orders_table.php)、[路由测试](../tests/Feature/PaymentRoutingTest.php)、[故障切换测试](../tests/Feature/OrderCreationFailoverTest.php)。
+
+## D-21 付款链接邮件统一使用应用发信配置
+
+**状态：当前工作区实现，未提交（2026-11-03，按用户要求，含后续移除支付方式正文的补充要求）。** `Order::resolveMailSender()` 只使用订单所属商户的应用发件人、发信驱动和完整凭证；取消支付方式优先选择。应用关闭邮件则跳过，缺配置则由 `SendPaymentLinkJob` 记录发送失败，不回退支付方式历史配置或平台账号。`resolveMailTemplate()` 只使用应用正文，留空则使用系统默认模板。
+
+**原因与影响：** API 通过应用鉴权，选择 `send_mail=Y` 后，客户邮件应使用该应用配置的发信账号和正文，避免路由到不同支付方式时改变邮件设置。后台发信账号配置集中在应用编辑页顶部“邮件发送”，正文在应用表单编辑；支付方式移除邮件配置入口、正文表单与相关列表列。手工建单及重发沿用同一 Job；API 发信意图、`payment-links` 队列、补单成功后派发与幂等规则保持。
+
+应用已有配置直接沿用。支付方式同名五列仅保留历史数据和密文解读兼容，移出批量赋值且复制渠道不携带，不修改已执行迁移或自动跨应用迁移邮件设置；原先仅在支付方式配置的账号与正文需在对应应用重新配置。
+
+**依据：** [Order](../app/Models/Order.php)、[SendPaymentLinkJob](../app/Jobs/SendPaymentLinkJob.php)、[MailCredentialsAction](../app/Filament/Support/MailCredentialsAction.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[邮件发送测试](../tests/Feature/SendPaymentLinkJobTest.php)、[API 重试邮件测试](../tests/Feature/OrderCreateRetryMailTest.php)。

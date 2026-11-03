@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use App\Events\OrderStatusChanged;
 use App\Jobs\NotifyAdConversionJob;
 use App\Jobs\SendOrderNotificationJob;
+use App\Models\Merchant;
 use App\Models\MerchantBalanceTransaction;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
+use App\Models\OrderShipping;
 use App\Models\User;
 use App\Services\BalanceService;
 use App\Services\OrderPaymentStatusService;
@@ -122,7 +124,157 @@ class OrderPaymentStatusQueryTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_queried_paid_preserves_the_processing_dispute_and_frozen_funds(): void
+    #[DataProvider('shipmentRecoveryStatuses')]
+    public function test_queried_paid_restores_existing_shipment_without_repeating_payment_side_effects(string $status, ?string $settlementMode): void
+    {
+        $this->freezeTime();
+        $order = $this->queryableOrder('disputing', [
+            'paid_at' => '2026-10-16 08:00:00',
+            'settlement_mode' => $settlementMode,
+            'settlement_days' => 2,
+            'reserve_percent' => '0',
+            'reserve_days' => 0,
+        ]);
+        $this->recordShipping($order);
+        app(BalanceService::class)->creditForPaidOrder($order);
+        $order->update(['status' => $status]);
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        $this->fakeQuery('paid');
+
+        $service = app(OrderPaymentStatusService::class);
+        $result = $service->queryAndApply($order);
+
+        $this->assertSame([
+            'queried_status' => 'paid',
+            'mapped_status' => 'paid',
+            'old_status' => $status,
+            'new_status' => 'shipped',
+            'changed' => true,
+        ], $result);
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'status' => 'shipped',
+            'paid_at' => '2026-10-16 08:00:00',
+        ]);
+        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->order->id === $order->id
+            && $event->oldStatus === $status && $event->newStatus === 'shipped');
+
+        $repeated = $service->queryAndApply($order);
+
+        $this->assertSame([
+            'queried_status' => 'paid',
+            'mapped_status' => 'paid',
+            'old_status' => 'shipped',
+            'new_status' => 'shipped',
+            'changed' => false,
+        ], $repeated);
+        $this->assertSame('shipped', $order->refresh()->status);
+        $this->assertSame('121.50', (string) $this->merchant->refresh()->balance);
+        $this->assertDatabaseCount('merchant_balance_transactions', 1);
+        $this->assertDatabaseHas('merchant_balance_transactions', [
+            'order_id' => $order->id,
+            'type' => MerchantBalanceTransaction::TYPE_ORDER_PAID,
+            'amount' => '96.50',
+            'idempotency_key' => 'order_paid:'.$order->id,
+        ]);
+        $this->assertDatabaseCount('order_notification_attempts', 0);
+        $this->assertDatabaseCount('ad_conversion_attempts', 0);
+        Bus::assertNotDispatched(SendOrderNotificationJob::class);
+        Bus::assertNotDispatched(NotifyAdConversionJob::class);
+        Event::assertDispatchedTimes(OrderStatusChanged::class, 1);
+        Http::assertSentCount(2);
+    }
+
+    public function test_paid_webhook_restores_existing_shipment_after_a_dispute(): void
+    {
+        $this->freezeTime();
+        $order = $this->queryableOrder('disputing', ['paid_at' => '2026-10-16 08:00:00']);
+        $this->recordShipping($order);
+        app(BalanceService::class)->creditForPaidOrder($order);
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        Http::preventStrayRequests();
+
+        $service = app(OrderPaymentStatusService::class);
+        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
+        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'status' => 'shipped',
+            'paid_at' => '2026-10-16 08:00:00',
+        ]);
+        $this->assertSame('121.50', (string) $this->merchant->refresh()->balance);
+        $this->assertDatabaseCount('merchant_balance_transactions', 1);
+        $this->assertDatabaseCount('order_notification_attempts', 0);
+        $this->assertDatabaseCount('ad_conversion_attempts', 0);
+        Bus::assertNotDispatched(SendOrderNotificationJob::class);
+        Bus::assertNotDispatched(NotifyAdConversionJob::class);
+        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->order->id === $order->id
+            && $event->oldStatus === 'disputing' && $event->newStatus === 'shipped');
+        Event::assertDispatchedTimes(OrderStatusChanged::class, 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_queried_paid_does_not_restore_a_deleted_shipment(): void
+    {
+        $this->freezeTime();
+        $order = $this->queryableOrder('disputing', ['paid_at' => now()->subDay()]);
+        $this->recordShipping($order)->delete();
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        $this->fakeQuery('paid');
+
+        $result = app(OrderPaymentStatusService::class)->queryAndApply($order);
+
+        $this->assertSame('paid', $result['new_status']);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'paid']);
+        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->oldStatus === 'disputing'
+            && $event->newStatus === 'paid');
+    }
+
+    #[DataProvider('settlementModes')]
+    public function test_queried_paid_does_not_use_another_merchants_shipment(?string $settlementMode): void
+    {
+        $this->freezeTime();
+        $order = $this->queryableOrder('disputing', [
+            'paid_at' => now()->subDay(),
+            'settlement_mode' => $settlementMode,
+            'settlement_days' => 2,
+            'reserve_percent' => '0',
+            'reserve_days' => 0,
+        ]);
+        $otherMerchant = Merchant::create([
+            'name' => 'Other Merchant',
+            'contact_person' => 'Other Tester',
+            'contact_phone' => '654321',
+            'contact_email' => 'other-merchant@example.com',
+        ]);
+        $this->recordShipping($order, ['merchant_id' => $otherMerchant->id]);
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        $this->fakeQuery('paid');
+
+        $service = app(OrderPaymentStatusService::class);
+        $result = $service->queryAndApply($order);
+
+        $this->assertSame('paid', $result['new_status']);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'paid']);
+        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->oldStatus === 'disputing'
+            && $event->newStatus === 'paid');
+
+        $repeated = $service->queryAndApply($order);
+
+        $this->assertSame('paid', $repeated['new_status']);
+        $this->assertFalse($repeated['changed']);
+        $this->assertSame('paid', $order->refresh()->status);
+        Event::assertDispatchedTimes(OrderStatusChanged::class, 1);
+        Http::assertSentCount(2);
+    }
+
+    #[DataProvider('disputeShipmentStatuses')]
+    public function test_queried_paid_preserves_the_processing_dispute_and_frozen_funds(bool $withShipping, string $expectedStatus): void
     {
         $this->freezeTime();
         $order = $this->queryableOrder('paid', ['paid_at' => now()->subDay()]);
@@ -136,14 +288,31 @@ class OrderPaymentStatusQueryTest extends TestCase
             'deadline_hours' => 24,
         ]);
         $order->refresh();
+
+        if ($withShipping) {
+            $this->recordShipping($order);
+        }
+
         Event::fake([OrderStatusChanged::class]);
         Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
         $this->fakeQuery('paid');
 
-        $result = app(OrderPaymentStatusService::class)->queryAndApply($order);
+        $service = app(OrderPaymentStatusService::class);
+        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
 
-        $this->assertSame('paid', $result['new_status']);
-        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'paid']);
+        $this->assertSame(Order::STATUS_DISPUTE_REVIEW, $order->refresh()->status);
+        $this->assertDatabaseHas('order_dispute_events', [
+            'id' => $dispute->id,
+            'status' => OrderDisputeEvent::STATUS_PROCESSING,
+            'closed_at' => null,
+        ]);
+        $this->assertSame('100.00', (string) $this->merchant->refresh()->frozen_balance);
+        Event::assertNotDispatched(OrderStatusChanged::class);
+
+        $result = $service->queryAndApply($order);
+
+        $this->assertSame($expectedStatus, $result['new_status']);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => $expectedStatus]);
         $this->assertDatabaseHas('order_dispute_events', [
             'id' => $dispute->id,
             'status' => OrderDisputeEvent::STATUS_PROCESSING,
@@ -266,6 +435,35 @@ class OrderPaymentStatusQueryTest extends TestCase
         ];
     }
 
+    /** @return array<string, array{string, string|null}> */
+    public static function shipmentRecoveryStatuses(): array
+    {
+        return [
+            'legacy_dispute_cancelled' => ['disputing', null],
+            'legacy_previously_reset_to_paid' => ['paid', null],
+            'shipment_settlement_dispute_cancelled' => ['disputing', 'shipped'],
+            'shipment_settlement_previously_reset_to_paid' => ['paid', 'shipped'],
+        ];
+    }
+
+    /** @return array<string, array{bool, string}> */
+    public static function disputeShipmentStatuses(): array
+    {
+        return [
+            'unshipped' => [false, 'paid'],
+            'shipped' => [true, 'shipped'],
+        ];
+    }
+
+    /** @return array<string, array{string|null}> */
+    public static function settlementModes(): array
+    {
+        return [
+            'legacy' => [null],
+            'shipment_settlement' => ['shipped'],
+        ];
+    }
+
     /** @return array<string, array{string, string}> */
     public static function protectedQueryStatuses(): array
     {
@@ -307,6 +505,19 @@ class OrderPaymentStatusQueryTest extends TestCase
             'settlement_amount' => '96.50',
             'notify_url' => 'https://merchant.example/callback',
             'ad_params' => ['meta' => ['fbc' => 'test-click']],
+        ], $overrides));
+    }
+
+    /** @param array<string, mixed> $overrides */
+    private function recordShipping(Order $order, array $overrides = []): OrderShipping
+    {
+        return OrderShipping::create(array_merge([
+            'order_id' => $order->id,
+            'merchant_id' => $order->merchant_id,
+            'logistics_company' => 'ups',
+            'tracking_number' => 'dispute-recovery-tracking',
+            'shipped_at' => now()->subDay(),
+            'operator_id' => 0,
         ], $overrides));
     }
 

@@ -288,6 +288,16 @@ class Order extends Model
         return $this->hasOne(OrderShipping::class);
     }
 
+    public function shipmentSyncs(): HasMany
+    {
+        return $this->hasMany(OrderShipmentSync::class);
+    }
+
+    public function latestShipmentSync(): HasOne
+    {
+        return $this->hasOne(OrderShipmentSync::class)->latestOfMany();
+    }
+
     /**
      * order_events 通过 order_no（而不是 id）关联，且不加数据库外键约束，
      * 因为这张表镜像的是外部系统数据，写入时机可能早于/独立于本地订单的生命周期。
@@ -327,7 +337,7 @@ class Order extends Model
     }
 
     /**
-     * 已锁定的支付方式配置，用于取退款/拒付手续费、发信身份、回调处理等。
+     * 已锁定的支付方式配置，用于取退款/拒付手续费、回调处理等。
      *
      * 优先按 payment_method_id 精确取（paymentMethod() 关联已带 withTrashed，
      * 支付方式软删后历史订单照样能取到配置）；老订单没有 payment_method_id 时
@@ -360,48 +370,37 @@ class Order extends Model
     }
 
     /**
-     * 解析这笔订单实际要用来发付款链接邮件的"发信身份"：发件人（sender_email/
-     * sender_name）+ 自有 ESP 驱动/凭证（mail_driver/mail_credentials），
-     * 优先级锁定的支付方式 > 所属 Application，两处配置互不混用、不做字段级
-     * 拼接——只要选中的那一级凑不满足"能发信"的最低要求（sender_email +
-     * 完整的 ESP 凭证），就换下一级；两级都不满足则返回 null，调用方
-     * （SendPaymentLinkJob）据此判定发送失败，不允许回退平台自己的发信账号。
+     * 付款链接邮件的发件人、驱动和凭证统一来自订单所属商户的 Application。
+     * 应用缺少发件人或完整凭证时返回 null，由 SendPaymentLinkJob 记录发送失败；
+     * 不使用支付方式的历史发信配置，也不回退平台账号。
      *
      * @return array{sender_email: string, sender_name: ?string, mail_driver: string, mail_credentials: array<string, mixed>}|null
      */
     public function resolveMailSender(): ?array
     {
-        foreach ([$this->paymentMethodConfig(), $this->application] as $source) {
-            if (! $source || blank($source->sender_email)) {
-                continue;
-            }
+        $application = $this->application;
 
-            if (! MailerCredentials::overridesFor($source->mail_driver, $source->mail_credentials)) {
-                continue;
-            }
-
-            return [
-                'sender_email' => $source->sender_email,
-                'sender_name' => $source->sender_name,
-                'mail_driver' => $source->mail_driver,
-                'mail_credentials' => $source->mail_credentials,
-            ];
+        if (! $application
+            || (int) $application->merchant_id !== (int) $this->merchant_id
+            || blank($application->sender_email)
+            || ! MailerCredentials::overridesFor($application->mail_driver, $application->mail_credentials)) {
+            return null;
         }
 
-        return null;
+        return [
+            'sender_email' => $application->sender_email,
+            'sender_name' => $application->sender_name,
+            'mail_driver' => $application->mail_driver,
+            'mail_credentials' => $application->mail_credentials,
+        ];
     }
 
     /**
-     * 解析付款链接邮件正文模板：优先级锁定的支付方式 > 所属 Application，
-     * 与 resolveMailSender() 的优先顺序一致，但两者互相独立判定——即便这一级
-     * 没有自己的 ESP 凭证（要靠另一级的账号发信），也可以单独有自己的文案，
-     * 内容和发信基础设施不绑定。两处都没配则返回 null，调用方回退系统默认模板。
+     * 付款链接邮件正文只读取所属 Application；未配置时由调用方使用系统默认模板。
      */
     public function resolveMailTemplate(): ?string
     {
-        return $this->paymentMethodConfig()?->payment_link_mail_template
-            ?: $this->application?->payment_link_mail_template
-            ?: null;
+        return $this->application?->payment_link_mail_template ?: null;
     }
 
     /**

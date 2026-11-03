@@ -2,13 +2,13 @@
 
 namespace Tests\Feature\Filament;
 
+use App\Filament\Resources\MerchantResource;
 use App\Filament\Resources\MerchantResource\Pages\EditMerchant;
 use App\Filament\Resources\MerchantResource\Pages\ListMerchants;
 use App\Models\MerchantWithdrawal;
 use App\Models\User;
 use App\Support\Permissions;
 use Filament\Facades\Filament;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\TestWith;
@@ -69,10 +69,84 @@ class MerchantSettlementSettingsTest extends TestCase
         $user = User::factory()->create(['merchant_id' => $this->merchant->id]);
         $user->givePermissionTo(Permissions::FINANCE_VIEW);
 
-        $this->expectException(ModelNotFoundException::class);
-
         Livewire::actingAs($user)
-            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()]);
+            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->assertNotFound();
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function test_form_opened_by_previous_owner_cannot_save_after_merchant_transfer(bool $transferToAnotherManager): void
+    {
+        $this->createMerchantAndApplication();
+        $manager = $this->manager();
+        $newOwner = $transferToAnotherManager ? User::factory()->create(['merchant_id' => null]) : null;
+        $originalValues = $this->merchant->fresh()->only(['name', 'status', 'remark', 'settlement_mode', 'settlement_days']);
+        $staleMerchant = $this->merchant->fresh();
+        $component = Livewire::actingAs($manager)
+            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->fillForm([
+                'name' => 'Changed after transfer',
+                'status' => false,
+                'remark' => 'Unsaved previous owner changes',
+                'settlement_mode' => 'shipped',
+                'settlement_days' => 365,
+            ]);
+        $this->merchant->update(['owner_id' => $newOwner?->id]);
+
+        $this->assertFalse(MerchantResource::canEdit($staleMerchant));
+        $component->call('save')->assertForbidden();
+
+        $this->assertSame($originalValues, $this->merchant->fresh()->only(array_keys($originalValues)));
+        $this->assertSame($newOwner?->id, $this->merchant->fresh()->owner_id);
+    }
+
+    public function test_new_owner_can_save_settlement_terms_after_merchant_transfer(): void
+    {
+        $this->createMerchantAndApplication();
+        $this->manager();
+        $newOwner = $this->manager();
+
+        Livewire::actingAs($newOwner)
+            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->fillForm(['settlement_mode' => 'shipped', 'settlement_days' => 7])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame('shipped', $this->merchant->fresh()->settlement_mode);
+        $this->assertSame(7, $this->merchant->fresh()->settlement_days);
+    }
+
+    public function test_super_administrator_can_save_another_managers_merchant_settlement_terms(): void
+    {
+        $this->createMerchantAndApplication();
+        $this->manager();
+        $administrator = User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]);
+
+        Livewire::actingAs($administrator)
+            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->fillForm(['settlement_mode' => 'shipped', 'settlement_days' => 7])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame('shipped', $this->merchant->fresh()->settlement_mode);
+        $this->assertSame(7, $this->merchant->fresh()->settlement_days);
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function test_disabled_administrator_cannot_open_merchant_editor(bool $isSuperAdmin): void
+    {
+        $this->createMerchantAndApplication();
+        $administrator = $this->manager();
+        $administrator->update(['is_super_admin' => $isSuperAdmin, 'status' => false]);
+
+        Livewire::actingAs($administrator)
+            ->test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->assertForbidden();
+
+        $this->assertSame('immediate', $this->merchant->fresh()->settlement_mode);
+        $this->assertSame(0, $this->merchant->fresh()->settlement_days);
     }
 
     public function test_balances_show_legacy_pending_withdrawals_separately_from_reserves(): void
@@ -103,7 +177,7 @@ class MerchantSettlementSettingsTest extends TestCase
 
     private function manager(): User
     {
-        $manager = User::factory()->create(['merchant_id' => null]);
+        $manager = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
         $manager->givePermissionTo(Permissions::MERCHANTS_MANAGE);
         $this->merchant->update(['owner_id' => $manager->id]);
 

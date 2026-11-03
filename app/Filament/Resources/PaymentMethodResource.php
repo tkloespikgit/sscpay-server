@@ -18,7 +18,6 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Placeholder;
-use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -30,6 +29,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
@@ -75,8 +75,7 @@ class PaymentMethodResource extends Resource
         $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
 
         return $schema->components([
-            // 上半两栏布局：基本信息占左侧 2/3，网关配置 / 风控阈值 / 手续费堆叠在右侧 1/3。
-            // 付款链接邮件模版不在右栏，见下方通栏 Section（避免右栏过长时左侧留白）。
+            // 两栏布局：基本信息占左侧 2/3，网关配置 / 风控阈值 / 手续费堆叠在右侧 1/3。
             Grid::make(1)->schema([
                 Section::make(__('admin.payment_method.sections.basic_info'))->schema([
                     // 商户用户锁定成自己所在商户；超级管理员的 merchant_id 本来就是 NULL，
@@ -351,17 +350,6 @@ class PaymentMethodResource extends Resource
                     ])->columns(2),
             ])->columnSpan(1),
 
-            // 邮件模版通栏：紧挨两栏下方，compact + 编辑区 min-height 8rem，控制纵向占用。
-            Section::make(__('admin.payment_method.sections.mail_template'))
-                ->description(__('admin.payment_method.help.payment_link_mail_template'))
-                ->compact()
-                ->columnSpanFull()
-                ->schema([
-                    RichEditor::make('payment_link_mail_template')
-                        ->hiddenLabel()
-                        ->extraInputAttributes(['style' => 'min-height: 8rem;'])
-                        ->placeholder(__('admin.payment_method.placeholders.payment_link_mail_template')),
-                ]),
         ]);
     }
 
@@ -375,8 +363,14 @@ class PaymentMethodResource extends Resource
         // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
         if ((bool) auth()->user()?->isPlatformStaff()) {
             $columns[] = TextColumn::make('merchant.name')
-                ->label(__('admin.payment_method.fields.merchant'))
+                ->label(__('admin.payment_method.fields.merchant_or_owner'))
+                ->state(fn (PaymentMethod $record): ?string => $record->isSystemLevel()
+                    ? $record->owner?->name
+                    : $record->merchant?->name)
                 ->placeholder(__('admin.payment_method.columns.system_level'))
+                ->badge(fn (PaymentMethod $record): bool => $record->isSystemLevel())
+                ->icon(fn (PaymentMethod $record): ?Heroicon => $record->isSystemLevel() ? Heroicon::OutlinedServerStack : null)
+                ->tooltip(fn (PaymentMethod $record): ?string => $record->isSystemLevel() ? __('admin.payment_method.columns.system_level') : null)
                 ->searchable()
                 ->sortable();
             $columns[] = TextColumn::make('assigned_merchants_count')
@@ -384,14 +378,14 @@ class PaymentMethodResource extends Resource
                 ->counts('assignedMerchants')
                 ->placeholder('—')
                 ->formatStateUsing(fn (?int $state) => $state ? (string) $state : '—')
-                ->toggleable(isToggledHiddenByDefault: true);
+                ->toggleable();
         }
 
         return $table
             ->description($merchantId ? __('payment_finance.effective_description') : null)
             ->modifyQueryUsing(fn (Builder $query) => $merchantId
                 ? $query->with(['merchantPaymentSettings' => fn (HasMany $settings) => $settings->forMerchant($merchantId)])
-                : $query)
+                : $query->with('owner'))
             ->columns(array_merge($columns, [
                 TextColumn::make('method_name')->label(__('admin.payment_method.fields.method_name'))->searchable(),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
@@ -435,8 +429,6 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))
                     ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'reserve_days', $merchantId))
                     ->suffix(__('payment_finance.days'))->toggleable(isToggledHiddenByDefault: $merchantId === null),
-                TextColumn::make('sender_email')->label(__('admin.mail_credentials.fields.sender_email'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('mail_driver')->label(__('admin.mail_credentials.fields.mail_driver'))->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),
@@ -643,10 +635,13 @@ class PaymentMethodResource extends Resource
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
             ->action(function (PaymentMethod $record) {
-                // method_code_uniq 是虚拟生成列，site_products_count / site_products_exists
+                // method_code_uniq 是虚拟生成列，assigned_merchants_count / site_products_count / site_products_exists
                 // 是列表页 withCount/withExists('siteProducts') 附加的聚合别名，都不是真实
                 // 表字段，不能出现在 INSERT 里，replicate 默认会把它们复制过来，必须显式排除。
-                $copy = $record->replicate(['method_code_uniq', 'site_products_count', 'site_products_exists']);
+                $copy = $record->replicate([
+                    'method_code_uniq', 'assigned_merchants_count', 'site_products_count', 'site_products_exists',
+                    'sender_email', 'sender_name', 'mail_driver', 'mail_credentials', 'payment_link_mail_template',
+                ]);
                 $copy->is_active = false;
                 // 商户级管理员复制：副本脱离原商户，变成挂在自己名下的系统级支付方式；
                 // 其它角色复制：副本继续归属原记录的商户（超管复制系统级记录时也是 NULL）。
@@ -753,7 +748,7 @@ class PaymentMethodResource extends Resource
 
     /**
      * 商户自有的支付方式：本商户/其商户级管理员/超管可管理。
-     * 系统级支付方式（merchant_id 为空）：只有创建人（owner_id）本人和超管可管理，
+     * 系统级支付方式（merchant_id 为空）：只有归属管理员（owner_id）本人和超管可管理，
      * 被分配使用的商户只能看、能在支付组里勾选，不能改配置、删除或触发同步
      * ——这些操作全部复用这个方法做统一判断（见下方 syncProductsAction）。
      * 「复制」不在此列，它有更宽的判断，见 canDuplicateRecord()。

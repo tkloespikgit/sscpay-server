@@ -47,11 +47,14 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
+| 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
 | 争议附件 | `DisputeAttachmentController` | 控制器内检查访问权限，不因公开路由而公开文件 |
 
 平台日志页仅由 `AdminPanelProvider` 注册并限制超级管理员访问。`RecentLogProvider` 复用日志插件解析器，在请求内缓存结果，绕过插件全量 Redis 缓存；按文件修改时间优先选择符合插件单文件上限且累计不超过 2 MiB 的日志，保留其中最新 1000 条。页面筛选和统计只覆盖这部分记录，完整历史仍在服务器日志中。`LogViewer` 关闭自动发现，避免被共享页面扫描加入商户后台。
+
+商户配置分组的“服务配置”由 `ServiceSettings` 统一提供物流跟踪与 Telegram 两个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。页面允许具备任一服务管理权限的用户访问，各区块只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载两个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
 
 租户过滤有三种场景：
 
@@ -59,7 +62,9 @@ flowchart TD
 - API、CLI、队列：没有后台用户，业务调用必须显式限定商户，或说明为何执行全平台任务。
 - 观察者：`MerchantScope` 不处理 `Observer`，Resource 根据 `observer_payment_methods` 过滤订单。不能依赖默认 guard 的用户一定是 `User`。
 
-`PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。
+`MerchantResource::canEdit()` 在每次编辑页请求和保存时重新查询数据库中的商户归属，并检查用户启用状态与商户管理权限；不能只依赖初次打开页面时的 `getEloquentQuery()`。商户转交其他管理员或平台后，原管理员已打开的编辑页也会失去保存权限。
+
+`PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。启用的超级管理员可在系统级支付方式编辑页通过“更改归属管理员”重新指派给启用的平台管理员（含超管），由 `PaymentMethodOwnershipService` 校验操作者、目标账号并锁定渠道后只更新归属；不改变商户分配、支付组或下单范围。商户自有渠道仍按 `merchant_id` 管理。
 
 支付方式详情页提供“生成进货单”，历史记录由 `PurchaseOrdersRelationManager` 展示，仅启用的超级管理员可生成、查看和编辑运费/优惠。`PurchaseOrderService` 从所选支付方式的 `siteProducts()` 随机选品并保存独立进货快照：商品不足 30 种全选，否则随机选 30 至总数种，每种 10–20 件；价格采用 `price_min`（视作 USD）× 7 × 0.3，四舍五入为人民币两位小数。默认运费按商品合计 3%–8%、优惠按 10%–20% 随机生成，也可手动输入金额。下单时间可设置，付款/发货/签收时间及交易号为模拟数据。此入口只写 `purchase_orders` 和 `purchase_order_items`，不创建收款订单、不调用网关或改变商户余额；运费/优惠编辑通过 Service 锁单重算总额。
 
@@ -68,6 +73,14 @@ flowchart TD
 采购页面的“订单详情”进入 `purchase-orders.details`（`/purchase-orders/{purchaseOrder}/details`），模板为 `resources/views/purchase-order-details.blade.php`，展示四步时间线、收货与卖家资料、采购明细、费用及打印区域；两个页面共享控制器的鉴权与数据构造。收货地址优先使用档案 `stock_addresses` 中首个非空字符串，再回退到 `company_address`；联系人、手机号、供应商信息读取当前档案。现有采购单不保存物流公司和运单号，详情以缺省文案展示，不发起物流、评价或支付请求。
 
 订单列表的物流模板导出沿用当前筛选与搜索条件，不要求平台账号选定单个商户；超管可跨商户导出，其他用户限定在 `manageableMerchantIds()` 范围。物流上传仍绑定登录用户所属商户。订单支付方式筛选及观察者账户的渠道分配包含软删除渠道，保留渠道的租户可见性过滤；观察者关联也包含软删除渠道，以便回显和保留已有分配。
+
+API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。文案存于 `lang/zh_CN/api_docs.php` 和 `lang/en/api_docs.php`，按执行代码与 [API 手册](../doc/api.md) 同步维护；目录锚点在两种语言中保持一致，语言切换保留当前章节，不改变后台会话语言。首页、应用列表及创建/编辑表单提供“API 文档”入口。正文提供币种、platform 和全部订单状态的附录跳转；`ApiDocumentationReferenceService` 只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
+
+商户网站物流回传由应用的 `is_shipment_sync_enabled` 开关与完整 HTTPS `shipment_sync_url` 配置，默认关闭；地址保留路径和 query，发送时读取该应用当前地址及 `app_id` / `api_key`，复用 `SignatureCanonicalizer`。`OrderShippingService::record()` 在物流保存后调用 `MerchantShipmentSyncService`，新增独立物流快照并提交后派发 `SyncMerchantShipmentJob`。本地改单仍覆盖 `order_shippings`；已有待发、待重试或暂停的旧版本标为 `superseded`，只尝试最新物流。历史物流不自动回填，具备订单查看、物流权限及租户访问权限的用户可在订单详情手动推送当前物流。
+
+应用表单的回传地址提供“检测地址”按钮，使用当前输入的完整 URL 发起不带应用凭证和业务数据的 HEAD 请求，复用公网 DNS 校验及固定 IP 连接，禁止跟随重定向。检测不保存应用、不创建物流记录，只展示连通性和 HTTP 状态；401/403/405 等不能证明带签名 POST 可用，实际回传仍在订单详情手动验证。
+
+回传成功要求 HTTP 200 且 JSON `code = 0`。网络异常、429、5xx 含首次最多尝试 5 次，间隔 30 秒、5 分钟、30 分钟、1 小时；其他响应直接终止。`order_shipment_syncs` 与 `order_shipment_sync_attempts` 保留物流快照、请求及响应结果，开关关闭时暂停待发任务，调度回收超过两分钟的 `processing` 任务。终败 Telegram 按商户每组最多 5 笔合并，发送失败或限流保留提醒待办并冷却 5 分钟，按提醒到期时间扫描；商户没有可用机器人时标记 `unavailable`，保留回传失败记录。该链路不改变支付插件的 `sync_*` 或物流 Provider 轨迹字段；外部接收协议见 [API 手册](../doc/api.md#外部物流回传协议附件-v11)。
 
 物流模板与观察者订单导出使用 XLSX，共用 `XlsxExport` 按行写出。除订单金额外，所有单元格均显式保存为文本并设置文本格式，保留纯数字编号、前导零、长物流号和公式样式文本的原值；金额为数值单元格并显示两位小数。物流模板的空物流号等填写格同样设为文本，商户保留 XLSX 和单元格格式填写后可直接上传；旧 CSV/XLS 导入仍兼容。物流模板受单表容量限制，超过 1,048,574 笔订单时不生成下载文件，并提示缩小筛选范围，以免上传仅读首表时遗漏记录。查询继续分批读取，导出格式不改变商户/观察者范围或金额口径。
 
@@ -91,7 +104,9 @@ flowchart TD
 6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`。普通组内路由遇到网关失败或明确的商品准备失败（`OrderItemPreparationException`）时，在当前请求内排除已尝试渠道、重新筛选候选并随机选择；默认最多尝试三个不同渠道（含首选，见 `payment_gateway.failover_max_attempts`）。首次及切换选择都跳过手续费超过订单金额的候选。没有剩余候选或达到上限时保留本地订单并返回最后的网关错误，仍可幂等补建。
 7. 是否派发付款链接邮件由调用方决定，Service 仅保存意图。API 重试补单后的发信行为由 `OrderCreateRetryMailTest` 覆盖。
 
-切换只改变同一本地订单的渠道及相关快照：按新渠道和商户配置重算交易手续费、净入账、保证金及退款/拒付手续费，清除旧渠道匹配商品后重新准备；原始金额、汇率和首次自动折扣保持不变。`order_no`、商户订单号及付款 token 不变，`gateway_order_no` 为每次渠道切换生成新的插件 `s_order_id`；未切换及历史订单该字段为 NULL，`Order::gatewayOrderReference()` 回退本地 `order_no`。支付创建、主动查询、日志和物流回传统一使用当前远端引用，webhook 和查询结果落地前核对当前引用，忽略旧渠道尝试的迟到结果。相关决策见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
+付款链接邮件的发件人、驱动和凭证统一读取订单所属商户的 `Application`，由应用编辑页顶部“邮件发送”配置，受应用 `is_order_email_enabled` 开关控制。应用未配置完整时记录发送失败，不使用支付方式历史账号或平台默认账号。邮件正文在应用表单配置，留空使用系统默认模板；支付方式不再提供发信账号或正文配置，也不读取其历史邮件模板。已有仅配置在支付方式上的邮件设置需在对应应用重新配置，不自动跨应用复制，详见 [D-21](decisions.md#d-21-付款链接邮件统一使用应用发信配置)。
+
+切换只改变同一本地订单的渠道及相关快照：按新渠道和商户配置重算交易手续费、净入账、保证金及退款/拒付手续费，清除旧渠道匹配商品后重新准备；原始金额、汇率和首次自动折扣保持不变。`order_no`、商户订单号及付款 token 不变，`gateway_order_no` 为每次渠道切换生成新的插件 `s_order_id`；未切换及历史订单该字段为 NULL，`Order::gatewayOrderReference()` 回退本地 `order_no`。支付创建、主动查询、日志和支付插件物流同步统一使用当前远端引用；商户网站物流回传使用原 `merchant_order_no`。webhook 和查询结果落地前核对当前引用，忽略旧渠道尝试的迟到结果。相关决策见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
 
 `PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息发送给订单商户的已启用机器人。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号或渠道商户推断接收人。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
 
@@ -110,7 +125,7 @@ flowchart TD
 | 行为 | 当前实现 |
 |---|---|
 | 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算（经 `BalanceService::creditForPaidOrder()`）；首次正常 `paid` 派发商户通知与广告转化；曾收款状态恢复 `paid` 不重复触发首次支付副作用。旧单仍沿用原即时入账 |
-| 重复/乱序状态 | 相同状态跳过；已收款订单不被未收款状态回退；终态有保护；主动查询返回 `paid` 时允许覆盖任意本地状态，保留原支付时间和资金审计记录 |
+| 重复/乱序状态 | 按最终本地状态判重；已收款订单不被未收款状态回退；终态有保护；主动查询返回 `paid` 时允许纠正任意本地状态。曾收款订单恢复时，有本商户未软删除的物流记录则保存为 `shipped`，否则为 `paid`；保留原支付时间和资金审计记录 |
 | 网关 `refunded` / `confused` | 后者映射 `chargeback`；尝试自动退款/拒付记账。业务性失败保留状态并告警，支持人工补录 |
 | 网关 `disputing` | 网关争议中，更新状态并拉日志；不等同人工冻结审核 |
 | 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间 webhook 不覆盖人工审核状态，主动查询为 `paid` 可纠正订单状态，但不关闭审核事件或释放冻结 |
@@ -139,7 +154,7 @@ flowchart TD
 | `notifications` | `SendOrderNotificationJob` | Job `tries=1`，重试由尝试记录与到期扫描驱动；行锁领取并清空旧重试时间，提交后入队 |
 | `payment-links` | `SendPaymentLinkJob` | Job `tries=3`、backoff |
 | `default` | `SendTelegramNotification` 队列监听器（含支付链接创建失败提醒） | Worker 配置 |
-| `low` | 商品同步、物流导入、物流回传、17TRACK 注册、广告转化 | 按 Job 定义；广告转化也由尝试表驱动重试 |
+| `low` | 商品同步、物流导入、支付插件物流同步、商户网站物流回传、17TRACK 注册、广告转化 | 按 Job 定义；商户网站物流回传的 Job `tries=1`，由持久化快照与调度驱动重试；广告转化也由尝试表驱动重试 |
 
 `config/queue.php` 的 Redis `retry_after` 必须大于长任务 Worker timeout。现有 `composer dev` 的默认 `queue:listen` 不能代替订阅全部业务队列的 Worker；启动方式参考部署文档。队列配置的 `after_commit` 当前为 false，新增事务内派发时要明确提交时机。
 
@@ -152,6 +167,7 @@ flowchart TD
 | `order-events:sync` | 每分钟，防重叠 |
 | `orders:sync-pending-status` | 每分钟扫描，防重叠；最近 48 小时待支付订单在创建满 30/90 分钟各补查一次，最多两次 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
+| `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |
 | `fund-freezes:release-due` | 每 10 秒，后台执行、防重叠；默认每次最多 500 条 |
@@ -178,7 +194,8 @@ flowchart TD
 | 统计 | `app/Services/OrderStatsAggregator.php`、`OrderStatsQueryService.php`、`DashboardService.php` | `tests/Feature/OrderStatsAggregatorTest.php`、`DashboardOrderStatsAlignmentTest.php`、`tests/Feature/Filament/OrderStatsPageTest.php` |
 | 收款链接和域名 | `app/Services/Checkout/`、`app/Http/Controllers/CheckoutLinkController.php`、`app/Models/CheckoutLink.php` | `tests/Feature/CheckoutLinkTest.php`、`tests/Feature/Filament/CheckoutLinkFormTest.php`、`MerchantDomainResourceTest.php` |
 | 物流与争议附件 | `app/Services/OrderShippingService.php`、`OrderDisputeService.php`、`app/Observers/OrderShippingObserver.php` | `tests/Feature/OrderShippingRecordTest.php`、`LogisticsTemplateTest.php`、`DisputeAttachmentTest.php` |
-| 物流轨迹跟踪 / 异常 / 未发货 TG | `app/Services/LogisticsTracking/`、`LogisticsTrackingWebhookController`、`RegisterLogisticsTrackingJob`、`MerchantLogisticsTrackingSetting`、`LogisticsTrackingSettings`、`logistics-tracking:reflag-anomalies` / `orders:notify-unshipped-overdue`；系统 `available_drivers` 枚举；商户自选驱动+base_url+密钥；Webhook `POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}`；无历史回填 | `tests/Feature/SeventeenTrackWebhookTest.php`、`SeventeenTrackAnomalyAndUnshippedTest.php` |
+| 商户网站物流回传 | `app/Services/MerchantShipmentSyncService.php`、`app/Jobs/SyncMerchantShipmentJob.php`、`app/Models/OrderShipmentSync.php`、`OrderShipmentSyncAttempt.php`、`app/Console/Commands/ProcessMerchantShipmentSyncs.php`；应用配置和订单详情 | `tests/Feature/MerchantShipmentSyncTest.php`、`tests/Feature/Filament/MerchantShipmentSyncSettingsTest.php` |
+| 物流轨迹跟踪 / 异常 / 未发货 TG | `app/Services/LogisticsTracking/`、`LogisticsTrackingWebhookController`、`RegisterLogisticsTrackingJob`、`MerchantLogisticsTrackingSetting`、`ServiceSettings`、`logistics-tracking:reflag-anomalies` / `orders:notify-unshipped-overdue`；系统 `available_drivers` 枚举；商户自选驱动+base_url+密钥；Webhook `POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}`；无历史回填 | `tests/Feature/SeventeenTrackWebhookTest.php`、`SeventeenTrackAnomalyAndUnshippedTest.php`、`tests/Feature/Filament/ServiceSettingsTest.php`、`LogisticsTrackingSettingsAccessTest.php` |
 | 权限、面板和用户 | `app/Models/User.php`、`app/Models/Observer.php`、`app/Models/Scopes/MerchantScope.php`、`app/Support/Permissions.php`、相关 Resource | 按功能选择 `tests/Feature/Filament/`，补充真实越权边界的断言 |
 | 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 

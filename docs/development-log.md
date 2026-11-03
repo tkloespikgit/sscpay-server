@@ -2,6 +2,77 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-03：商户编辑实时归属校验与联系方式缺省值（当前工作区，未提交）
+
+- 修复商户转移后原管理员已打开的编辑页仍可保存的问题：`MerchantResource::canEdit()` 检查用户类型、启用状态、商户管理权限，并复用 `MerchantPaymentSettingsService::canManage()` 查询数据库当前归属；不依赖页面持有的旧模型。转移到平台或其他管理员后，原页面保存返回 403，商户资料和结算条款均不写入。
+- 按用户要求不再收集商户联系方式。`Merchant` 模型为未提供的 `contact_person`、`contact_phone`、`contact_email` 设置空字符串缺省值，普通创建和入驻向导统一使用；向导不再生成伪联系方式。保留数据库字段和历史内容，编辑旧商户不清空既有值，无需迁移；当前工作区已移除的联系方式输入和列表列继续保留该调整。
+- 影响 `MerchantResource`、`Merchant`、`OnboardMerchant`、结算权限测试和新增创建入口测试，同步架构与数据库语义说明。用户明确暂不修改重复渠道“创建”会覆盖既有财务配置的行为。
+- 验证：SQLite 内存库 `MerchantSettlementSettingsTest`、`MerchantPaymentSettingsTest`、`MerchantCreationDefaultsTest` 合计 **33 项通过（221 断言）**，覆盖转移后旧页拒绝、当前归属管理员/超管保存、禁用账号拒绝、普通创建与向导缺省值及历史联系方式保留；原权限测试由异常预期改为真实 404 断言。Pint、PHP 语法检查及 `git diff --check` 通过；未执行业务库迁移或真实外部请求。
+
+## 2026-11-03：合并商户物流跟踪与 Telegram 服务配置（当前工作区，未提交）
+
+- 新增 `ServiceSettings` 及视图，将商户配置分组的物流跟踪、Telegram 菜单合并为“服务配置”，共用商户选择器，两个区块独立校验、保存，保留另一侧未提交内容。切换商户同步重载；旧页面隐藏导航并跳转新页。
+- 各区块按原管理权限展示、加载凭证并执行动作；商户选项与保存、测试消息、回调令牌轮换均限定可管理商户。补齐原 Telegram 保存缺少的显式商户校验，令牌轮换改用确认弹窗动作；保留 Telegram 测试先保存该区块的行为。
+- 影响新旧设置页、Blade 视图、中英文文案与设置页测试，同步架构与入驻向导注释；无数据库或业务通知协议变更。
+- 验证：SQLite 内存库设置页测试 **21 项通过（146 断言）**，覆盖独立提交、权限与租户范围、商户切换、测试发送、令牌确认及旧地址跳转；Pint、`npm run build`、`git diff --check` 通过。构建提示当前 Node 20.1.0 低于 Vite 要求，但实际构建成功。Telegram 请求已模拟，未执行业务库迁移或真实测试消息发送。
+
+## 2026-11-03：API 文档增加动态参考附录（当前工作区，未提交）
+
+- 文档末尾集中展示附录 A 币种、附录 B platform、附录 C 全部 12 种订单状态；保留已有 `order-statuses` 锚点，新增 `reference-currencies` / `reference-platforms`。总览、建单、查询、物流上传和支付通知正文加入对应跳转，中英文结构一致。
+- `ApiDocumentationReferenceService` 只读取公开配置 `exchange.supported_currencies` 和 `Order::supportedPlatforms()`，复用现有缓存清理机制，更新配置后附录同步变化。缺失配置沿用后台默认值，明确空列表展示空配置提示；未知代码保持原文并使用本地化通用名称，输出安全转义。币种为当前部署配置参考，不改变下单字段或汇率/渠道校验。
+- 影响文档控制器、新增参考服务、中英文文案、Blade 链接块及文档测试；同步架构和 API 手册。公开页仍不查询商户/应用/订单，不暴露其他系统配置，无业务接口或数据结构变化。
+- 验证：文档、附录与应用入口合计 **33 项通过（502 断言）**，包含配置刷新、空配置/默认值、全部状态、正文锚点、输出转义与配置查询边界；Pint、`npm run build`（环境已有 Node 24）、`git diff --check` 通过。Chrome 确认实际配置的 5 个币种、5 个 platform 与 12 状态均展示，正文链接可跳转币种附录；未改写业务数据、执行迁移或真实支付/物流请求。
+
+## 2026-11-03：系统内中英文 API 文档页（当前工作区，未提交）
+
+- 新增只读通用文档入口 `/docs/api/{locale?}`（`api.documentation`），支持 `zh_CN` / `en`；不查询应用记录或嵌入真实商户凭证。覆盖创建订单、查询订单、上传物流、商户网站物流回传，补齐签名、支付结果通知、状态与错误码，依据当前 Controller / FormRequest / Service 与 API 手册整理。
+- `lang/zh_CN/api_docs.php` 与 `lang/en/api_docs.php` 保存双语内容，`ApiDocumentationController` 选择文案但不改变会话/后台语言；固定 9 个章节锚点。Blade 页面提供桌面固定目录、移动折叠目录、语言切换保留章节、示例代码复制、暗色模式和表格/代码横向滚动。应用列表、创建及编辑表单增加“API 文档”链接，新标签打开。
+- 影响新控制器、`routes/web.php`、文档视图、双语文案、`ApplicationResource` 和文档测试；同步架构与 [API 手册](../doc/api.md)。未改动业务 API、依赖或数据库结构。
+- 验证：网页/入口测试及应用配置、邮件设置、地址检测回归合计 **47 项通过（614 断言）**；28 个 JSON 示例可解析，双语章节/表格结构及 PHP 签名示例与 `SignatureCanonicalizer` 核对通过。`vendor/bin/pint --dirty --format agent`、`npm run build`、`git diff --check` 通过，构建使用环境现有 Node 24（默认 Node 20.1 低于 Vite 声明要求，未更改依赖）。Chrome 实机确认中文排版、物流章节锚点、切换英文保留锚点及代码复制成功；未执行真实支付、物流回传、邮件或数据库迁移，未部署。
+
+## 2026-11-03：物流回传地址增加手动连通性检测（当前工作区，未提交）
+
+- 应用创建/编辑表单在回传地址旁增加“检测地址”，直接检测当前尚未保存的完整 HTTPS URL，保留路径与 query。`ShipmentSyncProbeService` 复用 `ShipmentSyncEndpoint` 的公网 DNS 校验及固定 IP 连接，发送无应用凭证、无业务 body 的 HEAD，请求超时 10 秒、连接超时 3 秒，不自动重试或跟随跳转。
+- 显示 HTTP 状态并区分可访问、鉴权/方法限制、404、重定向、服务端错误和连接失败；明确连通性检测不能验证带签名 POST 或实际发货处理。操作校验启用用户、应用管理权限及租户范围，不保存表单、不创建订单/物流/回传记录、不发送 Telegram。
+- 影响 `ApplicationResource`、新增检测服务、中英文文案与两份测试；同步架构及 API 手册说明，无新增迁移。
+- 验证：检测及相关应用配置、邮件设置、公网地址测试 **55 项通过（349 断言）**；`vendor/bin/pint --dirty --format agent`、`git diff --check` 通过。HTTP 与 DNS 均已模拟，未探测真实网站、发送物流或执行业务库迁移。
+
+## 2026-11-03：按应用配置向商户网站回传物流（当前工作区，未提交）
+
+- 按用户确认的附件 v1.1 接入商户网站物流回传。应用新增默认关闭的 `is_shipment_sync_enabled` 与完整 HTTPS `shipment_sync_url`，保留路径及 query；使用订单所属应用当前地址和 `app_id` / `api_key`，复用 `SignatureCanonicalizer`。首版发送商户单号、承运商、运单、已有查件链接及带时区发货时间，省略可选 `items`。
+- 新增迁移 `2026_11_03_153030_add_merchant_shipment_sync_configuration`、`OrderShipmentSync` / `OrderShipmentSyncAttempt`、`MerchantShipmentSyncService`、`SyncMerchantShipmentJob` 和 `merchant-shipments:process-due`。物流统一入口在保存后创建独立快照并提交后进入 `low` 队列；本地改单继续覆盖，新版本停止旧待发、待重试或暂停批次。历史物流不自动补传，订单详情增加授权手推当前物流及回传状态、最近 10 批请求结果。
+- 成功同时检查 HTTP 200 与 JSON `code = 0`；仅网络异常、429、5xx 自动重试，含首次最多 5 次，间隔 30/300/1800/3600 秒。每分钟扫描到期任务并回收两分钟 `processing` 超时；应用关闭时暂停待发。终败 Telegram 按商户每组最多 5 笔合并，每轮每商户最多处理 25 笔；发送失败或限流保留提醒待办并冷却 5 分钟，按提醒到期时间扫描避免其他商户被长期失败记录阻塞；无可用机器人时记录 `unavailable`，回传失败记录仍保留。现有 WP 插件同步和 Provider 轨迹字段继续独立使用。
+- 出站仅允许完整 HTTPS 地址，校验全部 DNS A/AAAA 结果为公开地址并固定 cURL 连接 IP，保留原 Host/TLS 校验、禁止重定向及代理；失败响应中脱敏签名与应用密钥。物流写入和回传领取沿用商户优先的锁顺序，物流状态在锁内重验。
+- 影响应用配置、物流服务、订单详情、中英文文案、队列调度、新增迁移与测试；同步本架构/数据库说明及 [API 手册](../doc/api.md#外部物流回传协议附件-v11)。
+- 验证：新增回传、UI、公网地址测试及原物流录入、批量导入、模板、轨迹 Webhook、发货结算、应用邮件设置回归合计 **137 项通过（1030 断言）**；其中回传测试 34 项（229 断言）、UI 10 项（77 断言）、地址安全 13 项（27 断言）。`vendor/bin/pint --dirty --format agent`、`git diff --check` 与每分钟调度核对通过。MySQL 新迁移 `--pretend` SQL 生成核对通过，未执行真实 DDL；实际 MySQL 建表/回滚仍待独立测试库验证。测试均使用 SQLite 内存库及模拟 HTTP/DNS/队列，未发送真实商户或 Telegram 请求、未执行业务库迁移或部署。
+
+## 2026-11-03：支付方式一并移除邮件正文配置（当前工作区，未提交）
+
+- 按用户补充要求，`PaymentMethodResource` 移除邮件正文区块及专用中英文文案，`PaymentMethod` 不再批量赋值 `payment_link_mail_template`，复制渠道也不携带旧正文；历史列和值保留，无数据库迁移或批量清理。
+- `Order::resolveMailTemplate()` 只采用应用正文，留空使用系统默认模板，支付方式旧正文不再参与选择；应用正文仍可编辑，客户姓名和付款链接变量继续替换。同步 `PaymentLinkMail` 注释、架构/数据库说明及 D-21。
+- 验证：`SendPaymentLinkJobTest`、`OrderCreateRetryMailTest`、`Filament/ApplicationMailSettingsTest` 共 21 项通过（193 断言），覆盖实际正文渲染、系统默认、忽略渠道旧正文、应用保存正文和复制不携带旧正文；`vendor/bin/pint --dirty --format agent`、`git diff --check` 通过。测试使用 SQLite 内存库及模拟传输，未发送真实邮件或部署。
+
+## 2026-11-03：付款链接邮件的发信账号统一放到应用（当前工作区，未提交）
+
+- 按用户要求，`Order::resolveMailSender()` 仅采用订单所属商户的应用发件人、驱动与完整凭证，不再优先使用支付方式。应用缺配置或已删除时记录发送失败，不回退渠道历史账号或平台默认账号；应用邮件开关、API `send_mail` 意图、补单及重试队列行为沿用原规则。
+- 应用编辑页顶部“邮件发送”继续配置账号；支付方式移除该动作和发件人/驱动列。支付方式旧四发信字段退出模型批量赋值，历史数据及解密 cast 保留，无数据库迁移；仅在渠道配置的账号需在对应应用重新配置，不自动跨应用复制。该轮曾保留支付方式正文覆盖，后续已按上条补充要求移除。
+- 复制支付方式时排除旧四发信字段，并修复本次回归发现的 `assigned_merchants_count` 列表聚合值被误写入数据库问题。SMTP 应用账号临时覆盖时显式清除平台 `MAIL_URL`，避免 URL 解析反向覆盖应用主机和凭证，发送后仍恢复完整原配置。同步中英文提示、邮件相关代码注释、架构/数据说明、API 手册及 D-21。
+- 验证：`SendPaymentLinkJobTest`、`OrderCreateRetryMailTest`、`Filament/ApplicationMailSettingsTest` 共 19 项通过（173 断言）；`MerchantPaymentSettingsTest`、`Filament/PaymentMethodOwnershipTest`、`Filament/PaymentMethodPurchaseOrdersTest` 共 46 项通过（298 断言），合计 65 项（471 断言）。`vendor/bin/pint --dirty --format agent`、`git diff --check` 通过。使用 SQLite 内存库与模拟邮件/HTTP，未发送真实邮件、执行生产迁移、迁移旧凭证或部署。
+
+## 2026-11-03：争议恢复已支付时保留既有发货状态（当前工作区，未提交）
+
+- 修复 `OrderPaymentStatusService` 将网关 `paid` 直接保存为待发货的问题：曾收款订单存在本商户未软删除的物流记录时，在订单行锁内恢复为 `shipped`，查询和允许落地的 webhook 共用；无有效物流仍为 `paid`。
+- 按最终本地状态判重并派发状态事件，重复查询/回调不反复切换发货状态；已被旧逻辑改成待发货的订单可在更新代码后再次查询纠正。保留首次支付入账、通知、广告转化及预录物流流程，不因本次状态恢复额外启动结算或关闭人工审核、释放冻结。
+- `OrderPaymentStatusQueryTest` 增补争议恢复、旧错误状态纠正、旧账务/发货结算、重复查询/回调、软删除/其他商户物流及人工审核冻结保留；同步架构说明与 D-18 补充说明。
+- 验证：状态查询测试 32 项通过（370 断言）；`GatewayRefundChargebackTest`、`OrderAccountingRecoveryTest`、`DesignatedOrderTelegramNotificationTest`、`OrderShippingRecordTest` 共 46 项通过（171 断言），合计 78 项（541 断言）；`vendor/bin/pint --dirty --format agent`、`git diff --check` 通过。测试使用 SQLite 内存库，无表结构变更，未执行生产迁移、部署、真实外部请求或批量修改现有订单。
+
+## 2026-11-03：超级管理员手动调整系统级支付方式归属（当前工作区，未提交）
+
+- `PaymentMethodResource` 平台列表的“所属商户 / 管理员”列：系统级渠道展示管理员姓名，商户自有渠道展示商户名，系统级未指定管理员时回退“系统级”；预加载归属管理员，避免逐行查询。`EditPaymentMethod` 增加独立的“更改归属管理员”操作；目标限启用且未软删除的平台账号（含超管），不依赖保存配置，不触发网关同步。
+- 新增 `PaymentMethodOwnershipService`：重新校验操作者为启用且未删除的超管，事务内锁定并核对渠道仍为系统级，仅更新 `owner_id`。保留商户分配、支付组及下单范围；新管理员仍需具备支付方式管理权限，旧管理员若有商户分配则继续只读可见。商户自有渠道仍按 `merchant_id` 管理。
+- 同步中英文后台文案、模型归属注释及架构说明。新增 `PaymentMethodOwnershipTest` 覆盖转移、分配保留、权限变化、非法目标、操作者降权/停用/软删及渠道状态过期。
+- 验证：新增测试 18 项通过（98 断言，含超管/系统管理员列表展示与预加载）；`MerchantPaymentSettingsTest`、`PaymentRoutingTest`、`PaymentMethodPurchaseOrdersTest` 共 36 项通过（227 断言），列表调整后再次运行 `MerchantPaymentSettingsTest` 15 项通过（95 断言）；`vendor/bin/pint --dirty --format agent`、`git diff --check` 通过。测试使用 SQLite 内存库，未执行生产迁移或真实外部请求；本次未修改表结构及下单服务。
+
 ## 2026-10-30：支付组关联表展示当天负载快照
 
 - `PaymentService::routingLoadSnapshot()`：与组内路由同口径汇总当天成交额、笔数、负载率与候选序；启用且商户可用的通道参与排序，不做金额相关限额过滤，供后台对照。

@@ -15,6 +15,17 @@ class Merchant extends Model
     use HasFactory;
     use SoftDeletes;
 
+    /**
+     * 兼容历史非空列；商户创建不再要求提供联系方式。
+     *
+     * @var array<string, string>
+     */
+    protected $attributes = [
+        'contact_person' => '',
+        'contact_phone' => '',
+        'contact_email' => '',
+    ];
+
     protected $fillable = [
         'owner_id',
         'name',

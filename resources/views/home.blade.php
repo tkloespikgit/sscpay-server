@@ -92,6 +92,16 @@
             border-color: #2563eb;
             color: #2563eb;
         }
+        .docs-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+        .docs-link:focus-visible {
+            outline: 3px solid #2563eb;
+            outline-offset: 3px;
+        }
         .btn-primary {
             padding: 10px 28px;
             border: none;
@@ -451,10 +461,12 @@
 {{--            <li><a href="#">Pricing</a></li>--}}
 {{--            <li><a href="#">Docs</a></li>--}}
 {{--        </ul>--}}
-{{--        <div class="nav-actions">--}}
-{{--            <button class="btn-outline">Sign in</button>--}}
-{{--            <button class="btn-primary"><i class="fas fa-rocket"></i> Start free</button>--}}
-{{--        </div>--}}
+        <div class="nav-actions">
+            <a href="{{ route('api.documentation') }}" class="btn-outline docs-link">
+                <i class="fas fa-book-open" aria-hidden="true"></i>
+                {{ __('admin.application.actions.api_documentation') }}
+            </a>
+        </div>
     </nav>
 
     <!-- ====== HERO ====== -->

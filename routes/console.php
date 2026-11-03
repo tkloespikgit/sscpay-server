@@ -18,6 +18,9 @@ Schedule::command('orders:sync-pending-status')
 
 Schedule::command('order-notifications:process-due')->everyMinute()->withoutOverlapping();
 
+Schedule::command('merchant-shipments:process-due')->everyMinute()->runInBackground()->withoutOverlapping(10)
+    ->onFailure(fn () => Log::error('商户物流回传任务或失败提醒处理失败，未完成记录将在后续调度重试。'));
+
 Schedule::command('order-disputes:close-due')->everyFiveMinutes()->withoutOverlapping();
 
 Schedule::command('order-disputes:send-reminders')->everyFiveMinutes()->withoutOverlapping();

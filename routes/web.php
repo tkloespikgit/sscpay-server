@@ -1,10 +1,15 @@
 <?php
 
+use App\Http\Controllers\ApiDocumentationController;
 use App\Http\Controllers\DisputeAttachmentController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PaymentPageController;
 use App\Http\Controllers\PurchaseOrderController;
 use Illuminate\Support\Facades\Route;
+
+Route::get('/docs/api/{locale?}', [ApiDocumentationController::class, 'show'])
+    ->whereIn('locale', ['zh_CN', 'en'])
+    ->name('api.documentation');
 
 // 争议审核事件的图片凭证（后台详情页灯箱用）。放在 web.php 而不是某个面板里，
 // 是因为管理端和商户端两个面板都要用同一个地址。

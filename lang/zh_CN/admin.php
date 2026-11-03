@@ -110,6 +110,7 @@ return [
         'sections' => [
             'basic_info' => '基本信息',
             'mail_settings' => '邮件配置',
+            'shipment_sync' => '商户网站物流回传',
             'remark' => '备注',
             'api_credentials' => 'API 凭证',
         ],
@@ -120,6 +121,8 @@ return [
             'status' => '状态',
             'is_auto_discount_enabled' => '自动折扣',
             'is_logistics_tracking_enabled' => '物流状态跟踪查询',
+            'is_shipment_sync_enabled' => '物流回传',
+            'shipment_sync_url' => '物流回传地址',
             'is_order_email_enabled' => '邮件通知',
             'payment_link_mail_template' => '付款链接邮件正文',
             'remark' => '备注',
@@ -129,14 +132,46 @@ return [
         ],
         'help' => [
             'auto_discount' => '按订单原币种随机减免：原始应付金额不超过 200 时减 0.01～0.10，超过 200 时减 0.01～0.50。至少保留 0.01 应付金额，不足减免时跳过；仅对新订单生效。',
+            'mail_settings' => '发信账号在应用编辑页顶部的“邮件发送”中配置。API 下单请求发送付款链接邮件时，使用本应用的发件人、发信驱动与凭证；未配置完整时无法发送。',
             'logistics_tracking' => '开启后，仅对之后新创建的订单启用物流轨迹注册与异常跟踪；已有订单不受影响。',
+            'shipment_sync' => '开启后，物流录入和改单会回传到商户网站，使用本应用的 API 凭证签名。历史物流不自动补传，可在订单详情手动推送。',
+            'shipment_sync_url' => '填写完整 HTTPS 接口地址，包含路径及所需 query 参数。系统直接请求此地址。',
             'api_key' => '商户端签名请求时需要用到这个值，请妥善保管，不要泄露给无关人员。',
             'payment_link_mail_template' => '留空则使用系统默认模板。支持变量 {customer_name}（客户姓名）、{payment_link}（付款链接），发送时会自动替换为实际内容；纯文本，换行会保留。同一商户下不同应用可以各自配置不同的正文。',
         ],
         'placeholders' => [
             'payment_link_mail_template' => "示例：\n{customer_name} 您好，\n请点击以下链接完成付款：\n{payment_link}",
         ],
+        'shipment_probe' => [
+            'label' => '检测地址',
+            'titles' => [
+                'reachable' => '回传地址可访问',
+                'requires_post' => '地址有响应，尚未验证回传',
+                'not_found' => '地址返回 404',
+                'redirect' => '回传地址发生重定向',
+                'server_error' => '商户网站返回错误',
+                'rejected' => '检测请求未被接受',
+                'invalid_address' => '回传地址无效',
+                'connection_error' => '无法连接回传地址',
+                'probe_error' => '地址检测失败',
+            ],
+            'messages' => [
+                'reachable' => 'HTTP :status。地址可以访问；本次仅检测连通性，未验证签名或发货处理。可在订单详情手动推送以验证实际回传。',
+                'requires_post' => 'HTTP :status。已收到站点响应，接口可能要求带签名的 POST 请求。请在订单详情手动推送以验证实际回传。',
+                'not_found' => 'HTTP :status。请检查完整接口路径及 query 参数；如果接口只支持 POST，仍需在订单详情手动推送验证。',
+                'redirect' => 'HTTP :status。检测未跟随跳转，请填写最终的 HTTPS 接口地址。',
+                'server_error' => 'HTTP :status。请联系商户检查网站或接口服务。',
+                'rejected' => 'HTTP :status。站点已响应但未接受 HEAD 检测；实际回传是否可用仍需通过订单手动推送验证。',
+                'invalid_address' => '请填写有效的公网 HTTPS 地址；地址不能指向内网，也不能包含用户名、密码或片段标识。',
+                'connection_error' => '连接失败，请检查域名解析、HTTPS 证书或网络，稍后重试。',
+                'probe_error' => '暂时无法完成检测，请稍后重试或检查服务器配置。',
+            ],
+        ],
+        'validation' => [
+            'shipment_sync_url' => '请填写有效的公网 HTTPS 接口地址，不能包含用户名、密码或片段标识。',
+        ],
         'actions' => [
+            'api_documentation' => 'API 文档',
             'regenerate_api_key' => '重新生成 API 密钥',
             'regenerate_api_key_confirm' => '旧的 API 密钥会立即失效，商户端所有用旧密钥签名的请求都会开始验签失败，请确认商户已知情并准备好更新配置。',
             'regenerate_api_key_success' => 'API 凭证已重新生成',
@@ -145,6 +180,47 @@ return [
             'merchant' => '所属商户',
             'app_id' => 'App ID',
             'website' => '官网域名',
+        ],
+    ],
+
+    'merchant_shipment_sync' => [
+        'section' => '商户网站物流回传',
+        'description' => '推送当前物流到订单所属应用配置的商户网站。修改物流后旧版本停止重试；客户通知由商户网站处理。',
+        'push' => '推送物流到商户网站',
+        'queued' => '物流回传已加入队列',
+        'no_records' => '尚未回传',
+        'history' => '最近 10 次回传记录',
+        'validation_unavailable' => '应用未开启物流回传或没有有效的物流记录。',
+        'telegram_heading' => '物流回传失败，共 :count 笔',
+        'telegram_line' => "应用：:application\n系统单号：:order_no\n商户单号：:merchant_order_no\n运单号：:tracking_number\n原因：:error",
+        'fields' => [
+            'status' => '回传状态',
+            'attempt_count' => '已尝试次数',
+            'synced_at' => '回传成功时间',
+            'next_attempt_at' => '下次尝试时间',
+            'alert_status' => 'Telegram 提醒',
+            'last_error' => '失败原因',
+            'created_at' => '创建时间',
+            'attempts' => '请求记录',
+            'attempt_number' => '尝试序号',
+            'attempted_at' => '请求时间',
+            'request_url' => '请求地址',
+            'response_status' => 'HTTP 状态码',
+            'response_body' => '响应内容',
+        ],
+        'statuses' => [
+            'pending' => '待回传',
+            'processing' => '回传中',
+            'retrying' => '等待重试',
+            'success' => '回传成功',
+            'failed' => '回传失败',
+            'superseded' => '已被新物流替代',
+            'paused' => '已暂停',
+        ],
+        'alert_statuses' => [
+            'pending' => '待提醒',
+            'sent' => '已提醒',
+            'unavailable' => '未配置可用机器人，保留失败记录',
         ],
     ],
 
@@ -166,15 +242,15 @@ return [
         ],
     ],
 
-    // Application / PaymentMethod 共用的"邮件发送配置"弹框（App\Filament\Support\MailCredentialsAction）：
-    // 发件人 + 自有 ESP 凭证四个字段打包一起编辑，两边的编辑页各自在 header action 里复用同一份。
+    // Application 的"邮件发送配置"弹框（App\Filament\Support\MailCredentialsAction）：
+    // 发件人和自有 ESP 凭证一起配置，订单邮件统一使用所属应用的发信账号。
     'mail_credentials' => [
         'summary' => '邮件发送 - 发信邮箱：:email',
         'not_configured' => '邮件发送 - 没有配置',
         'modal_heading' => '邮件发送配置',
-        'modal_description' => '配置这个渠道自己的发件人和 ESP 凭证，付款链接邮件会用这里的账号发送；不配置就无法发送，不会回退平台自己的账号。',
+        'modal_description' => '配置本应用的发件人、发信驱动与凭证。所属订单的付款链接邮件统一使用这里的账号发送。',
         'saved' => '邮件发送配置已保存',
-        'send_failed_no_sender' => '未配置邮件发送账号（下单锁定的支付方式与所属应用均未配置），已跳过发送',
+        'send_failed_no_sender' => '所属应用未配置完整的发件人、发信驱动与凭证，已跳过发送',
         'fields' => [
             'sender_email' => '发件人邮箱',
             'sender_name' => '发件人名称',
@@ -190,7 +266,7 @@ return [
             'smtp_encryption' => '加密方式',
         ],
         'help' => [
-            'mail_driver' => '不选表示未配置，这个渠道会用不了邮件发送（不会回退平台账号）。选了就必须填对应的 API 凭证——发件域名在这个账号里已经验证过，送达率比平台账号统一帮所有商户发任意域名更高，也不占平台的发信配额。',
+            'mail_driver' => '选择本应用发送付款链接邮件使用的服务商，并填写对应凭证。未配置完整时无法发送邮件；发件邮箱的域名须在所选服务商验证。',
             'mail_credentials_postmark' => 'Postmark 后台「API Tokens」里的 Server Token，加密存储。',
             'mail_credentials_ses' => '留空默认 us-east-1。Access Key ID / Secret Access Key 建议用只有 ses:SendEmail 权限的 IAM 子账号，不要用主账号密钥；均加密存储。',
             'mail_credentials_smtp' => '留空按端口自动判断（465 走隐式 SSL，其余走 TLS/STARTTLS）；账号密码加密存储。',
@@ -277,11 +353,12 @@ return [
             'product_matching' => '商品匹配配置',
             'risk_control' => '风控阈值（USD）',
             'fees' => '手续费（USD）',
-            'mail_template' => '付款链接邮件模版',
         ],
         'fields' => [
             'merchant' => '所属商户',
             'assigned_merchants' => '分配给以下商户使用',
+            'merchant_or_owner' => '所属商户 / 管理员',
+            'owner' => '归属管理员',
             'method_code' => '支付方式代码',
             'method_name' => '展示名称',
             'is_active' => '启用',
@@ -339,14 +416,11 @@ return [
             'min_transaction_amount' => '当前费率组合下，最小交易金额约为 $:amount（USD），低于此金额的订单会被拒绝',
             'min_transaction_amount_none' => '固定手续费为 0，无最小交易金额限制',
             'min_transaction_amount_undefined' => '百分比手续费 ≥ 100%，任何金额都无法覆盖手续费，请调整费率',
-            'payment_link_mail_template' => '留空则回退使用所属 Application 的模板，两处都留空则使用系统默认模板。支持变量 {customer_name}（客户姓名）、{payment_link}（付款链接），发送时会自动替换为实际内容；纯文本，换行会保留。',
-        ],
-        'placeholders' => [
-            'payment_link_mail_template' => "示例：\n{customer_name} 您好，\n请点击以下链接完成付款：\n{payment_link}",
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
             'method_code_duplicate' => '该支付方式代码已被占用：代码全局唯一，不区分商户级与系统级，请换一个',
+            'owner_invalid' => '请选择启用且未删除的平台管理员账号',
         ],
         'match_modes' => [
             'match' => '匹配',
@@ -380,6 +454,9 @@ return [
             'close' => '关闭',
         ],
         'actions' => [
+            'change_owner' => '更改归属管理员',
+            'change_owner_desc' => '选择接管此系统级支付方式的平台管理员（包括超级管理员）。保存后该管理员可维护此支付方式，已分配商户及支付组保持不变。',
+            'change_owner_success' => '归属管理员已更新',
             'duplicate' => '复制',
             'duplicate_heading' => '复制支付方式',
             'duplicate_desc' => '将以当前配置创建副本：代码与名称追加 _copy，副本为禁用状态；风控阈值、手续费与所属商户保持不变。',
@@ -1418,6 +1495,16 @@ return [
             'order_count' => '订单数',
             'amount_usd' => '交易金额(USD)',
             'sales_usd' => '销售额（USD）',
+        ],
+    ],
+
+    'service_settings' => [
+        'nav_label' => '服务配置',
+        'fields' => [
+            'merchant' => '商户',
+        ],
+        'validation' => [
+            'merchant_forbidden' => '无权配置该商户的服务。',
         ],
     ],
 

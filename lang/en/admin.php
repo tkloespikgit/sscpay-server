@@ -111,6 +111,7 @@ return [
         'sections' => [
             'basic_info' => 'Basic Information',
             'mail_settings' => 'Mail Settings',
+            'shipment_sync' => 'Merchant Website Shipment Sync',
             'remark' => 'Remark',
             'api_credentials' => 'API Credentials',
         ],
@@ -121,6 +122,8 @@ return [
             'status' => 'Enabled (API calls are rejected while disabled)',
             'is_auto_discount_enabled' => 'Automatic Discount',
             'is_logistics_tracking_enabled' => 'Logistics Tracking Lookup',
+            'is_shipment_sync_enabled' => 'Shipment Sync',
+            'shipment_sync_url' => 'Shipment Sync URL',
             'is_order_email_enabled' => 'Enable Order Emails',
             'payment_link_mail_template' => 'Payment Link Email Body',
             'remark' => 'Remark',
@@ -130,14 +133,46 @@ return [
         ],
         'help' => [
             'auto_discount' => 'Random discount in the order currency: 0.01–0.10 for original payable amounts up to 200, or 0.01–0.50 above 200. Keeps at least 0.01 payable; skips amounts too small to discount. Applies to new orders only.',
+            'mail_settings' => 'Configure the sending account using the Mail Sending action at the top of the application edit page. API orders that request a payment link email use this application\'s sender, mail driver, and credentials. All required settings must be configured to send email.',
             'logistics_tracking' => 'When enabled, only newly created orders register for logistics tracking and anomaly checks. Existing orders are unchanged.',
+            'shipment_sync' => 'When enabled, shipment entries and edits are sent to the merchant website using this application\'s API credentials. Existing shipments are not sent automatically; push them from the order details page.',
+            'shipment_sync_url' => 'Enter the full HTTPS endpoint, including its path and any required query parameters. Requests use this URL directly.',
             'api_key' => 'Merchants use this to sign requests. Keep it secret — do not share it with anyone who does not need it.',
             'payment_link_mail_template' => 'Leave blank to use the system default template. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved. Different applications under the same merchant can each have their own body.',
         ],
         'placeholders' => [
             'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
+        'shipment_probe' => [
+            'label' => 'Check Address',
+            'titles' => [
+                'reachable' => 'Shipment address is reachable',
+                'requires_post' => 'Address responded; shipment sync is unverified',
+                'not_found' => 'Address returned 404',
+                'redirect' => 'Shipment address redirects',
+                'server_error' => 'Merchant website returned an error',
+                'rejected' => 'Address check was not accepted',
+                'invalid_address' => 'Invalid shipment address',
+                'connection_error' => 'Could not connect to shipment address',
+                'probe_error' => 'Address check failed',
+            ],
+            'messages' => [
+                'reachable' => 'HTTP :status. The address is reachable. This checks connectivity only, not signatures or shipment processing. Push a shipment from the order details to verify actual sync.',
+                'requires_post' => 'HTTP :status. The website responded and may require a signed POST request. Push a shipment from the order details to verify actual sync.',
+                'not_found' => 'HTTP :status. Check the complete endpoint path and query parameters. If the endpoint only accepts POST, push a shipment from the order details to verify it.',
+                'redirect' => 'HTTP :status. Redirects were not followed. Enter the final HTTPS endpoint address.',
+                'server_error' => 'HTTP :status. Ask the merchant to check their website or endpoint service.',
+                'rejected' => 'HTTP :status. The website responded but did not accept the HEAD check. Push a shipment from the order details to verify actual sync.',
+                'invalid_address' => 'Enter a valid public HTTPS address. Private addresses, usernames, passwords, and fragments are not allowed.',
+                'connection_error' => 'Connection failed. Check DNS, the HTTPS certificate, or network connectivity, then try again.',
+                'probe_error' => 'The check could not be completed. Try again later or check the server configuration.',
+            ],
+        ],
+        'validation' => [
+            'shipment_sync_url' => 'Enter a valid public HTTPS endpoint without a username, password, or fragment.',
+        ],
         'actions' => [
+            'api_documentation' => 'API Documentation',
             'regenerate_api_key' => 'Regenerate API Key',
             'regenerate_api_key_confirm' => 'The old API key will stop working immediately, and any request the merchant signs with it will start failing signature verification. Make sure the merchant is aware and ready to update their configuration before continuing.',
             'regenerate_api_key_success' => 'API credentials regenerated',
@@ -146,6 +181,47 @@ return [
             'merchant' => 'Merchant',
             'app_id' => 'App ID',
             'website' => 'Website Domain',
+        ],
+    ],
+
+    'merchant_shipment_sync' => [
+        'section' => 'Merchant Website Shipment Sync',
+        'description' => 'Send the current shipment to the merchant website configured for this order\'s application. Shipment edits stop retries for older versions; the merchant website handles customer notifications.',
+        'push' => 'Push Shipment to Merchant Website',
+        'queued' => 'Shipment sync queued',
+        'no_records' => 'Not sent yet',
+        'history' => 'Last 10 Shipment Syncs',
+        'validation_unavailable' => 'Shipment sync is disabled for this application, or no valid shipment exists.',
+        'telegram_heading' => 'Shipment sync failed for :count order(s)',
+        'telegram_line' => "Application: :application\nOrder: :order_no\nMerchant Order: :merchant_order_no\nTracking: :tracking_number\nReason: :error",
+        'fields' => [
+            'status' => 'Sync Status',
+            'attempt_count' => 'Attempts',
+            'synced_at' => 'Synced At',
+            'next_attempt_at' => 'Next Attempt',
+            'alert_status' => 'Telegram Alert',
+            'last_error' => 'Failure Reason',
+            'created_at' => 'Created At',
+            'attempts' => 'Requests',
+            'attempt_number' => 'Attempt Number',
+            'attempted_at' => 'Requested At',
+            'request_url' => 'Request URL',
+            'response_status' => 'HTTP Status',
+            'response_body' => 'Response',
+        ],
+        'statuses' => [
+            'pending' => 'Pending',
+            'processing' => 'Sending',
+            'retrying' => 'Awaiting Retry',
+            'success' => 'Synced',
+            'failed' => 'Failed',
+            'superseded' => 'Replaced by Newer Shipment',
+            'paused' => 'Paused',
+        ],
+        'alert_statuses' => [
+            'pending' => 'Pending Alert',
+            'sent' => 'Alert Sent',
+            'unavailable' => 'No active bot configured; failure retained',
         ],
     ],
 
@@ -167,17 +243,16 @@ return [
         ],
     ],
 
-    // Shared "mail sending configuration" modal for Application / PaymentMethod
-    // (App\Filament\Support\MailCredentialsAction): sender identity + own ESP
-    // credentials bundled into one edit flow, reused by both Edit pages'
-    // header actions.
+    // Application "mail sending configuration" modal
+    // (App\Filament\Support\MailCredentialsAction): sender identity and ESP
+    // credentials used for the application's order emails.
     'mail_credentials' => [
         'summary' => 'Mail Sending - Sender Email: :email',
         'not_configured' => 'Mail Sending - Not Configured',
         'modal_heading' => 'Mail Sending Configuration',
-        'modal_description' => 'Configure this channel\'s own sender identity and ESP credentials — payment link emails will be sent through this account. Leaving it unconfigured means sending fails; it will not fall back to the platform\'s own account.',
+        'modal_description' => 'Configure this application\'s sender, mail driver, and credentials. Payment link emails for its orders use this sending account.',
         'saved' => 'Mail sending configuration saved',
-        'send_failed_no_sender' => 'No mail sending account configured (neither the locked payment method nor the owning application), send skipped',
+        'send_failed_no_sender' => 'The application\'s sender, mail driver, or credentials are missing or incomplete; sending skipped',
         'fields' => [
             'sender_email' => 'Sender Email',
             'sender_name' => 'Sender Name',
@@ -193,7 +268,7 @@ return [
             'smtp_encryption' => 'Encryption',
         ],
         'help' => [
-            'mail_driver' => 'Leave unselected to mean "not configured" — this channel will not be able to send email (it will not fall back to the platform account). If selected, the matching API credentials are required — the sending domain is already verified on this account, which improves deliverability over the platform account sending on behalf of arbitrary merchant domains, and does not consume the platform\'s sending quota.',
+            'mail_driver' => 'Select the provider this application uses for payment link emails and enter its credentials. Complete settings are required to send email. Verify the sender email domain with the selected provider.',
             'mail_credentials_postmark' => 'The Server Token from the Postmark dashboard under "API Tokens", stored encrypted.',
             'mail_credentials_ses' => 'Leave blank to default to us-east-1. Use an IAM sub-account with only ses:SendEmail permission for the Access Key ID / Secret Access Key, not your root account keys; both are stored encrypted.',
             'mail_credentials_smtp' => 'Leave blank to auto-detect from the port (465 = implicit SSL, otherwise TLS/STARTTLS); username/password are stored encrypted.',
@@ -282,11 +357,12 @@ return [
             'product_matching' => 'Product Matching',
             'risk_control' => 'Risk Control Thresholds (USD)',
             'fees' => 'Fees (USD)',
-            'mail_template' => 'Payment Link Email Template',
         ],
         'fields' => [
             'merchant' => 'Merchant',
             'assigned_merchants' => 'Assigned to Merchants',
+            'merchant_or_owner' => 'Merchant / Administrator',
+            'owner' => 'Managing Administrator',
             'method_code' => 'Method Code',
             'method_name' => 'Display Name',
             'is_active' => 'Enabled',
@@ -344,14 +420,11 @@ return [
             'min_transaction_amount' => 'With the current fee settings, the minimum transaction amount is about $:amount (USD); orders below this are rejected',
             'min_transaction_amount_none' => 'Fixed fee is 0, so there is no minimum transaction amount',
             'min_transaction_amount_undefined' => 'Percent fee is 100% or more — no amount can cover the fee, please adjust the rate',
-            'payment_link_mail_template' => 'Leave blank to fall back to the owning Application\'s template; if both are blank, the system default template is used. Supports {customer_name} and {payment_link} placeholders, substituted automatically when sending; plain text, line breaks are preserved.',
-        ],
-        'placeholders' => [
-            'payment_link_mail_template' => "Example:\nHi {customer_name},\nPlease click the link below to complete your payment:\n{payment_link}",
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
             'method_code_duplicate' => 'This method code is already in use: method codes are globally unique across all merchant-level and system-level payment methods.',
+            'owner_invalid' => 'Choose an active platform administrator account that has not been deleted.',
         ],
         'match_modes' => [
             'match' => 'Match',
@@ -385,6 +458,9 @@ return [
             'close' => 'Close',
         ],
         'actions' => [
+            'change_owner' => 'Change Managing Administrator',
+            'change_owner_desc' => 'Choose a platform administrator (including super administrators) to manage this system-level payment method. Existing merchant assignments and payment groups will be preserved.',
+            'change_owner_success' => 'Managing administrator updated',
             'duplicate' => 'Duplicate',
             'duplicate_heading' => 'Duplicate Payment Method',
             'duplicate_desc' => 'Creates a copy of the current configuration: _copy is appended to the code and name, and the copy is disabled; risk thresholds, fees and merchant stay unchanged.',
@@ -1418,6 +1494,16 @@ return [
             'order_count' => 'Order Count',
             'amount_usd' => 'Amount (USD)',
             'sales_usd' => 'Sales (USD)',
+        ],
+    ],
+
+    'service_settings' => [
+        'nav_label' => 'Service Settings',
+        'fields' => [
+            'merchant' => 'Merchant',
+        ],
+        'validation' => [
+            'merchant_forbidden' => 'You are not allowed to configure services for this merchant.',
         ],
     ],
 

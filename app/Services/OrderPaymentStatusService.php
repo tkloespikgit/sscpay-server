@@ -39,6 +39,7 @@ use Illuminate\Support\Facades\Log;
  * 重复投递的 payload 到达时订单早已是目标状态，直接跳过，不重复触发
  * 入账/通知/Telegram。主动查询场景同理复用这个判断。
  *
+ * 曾收款订单恢复 paid 时，有本商户有效物流记录则恢复为 shipped。
  * 主动查询返回 paid 时以网关结果为准，允许覆盖任意本地状态；其他场景继续
  * 使用回退保护：已经终态的订单（failed/cancelled/expired/refunded/chargeback/
  * completed）不再接受状态覆盖；已经收过款的订单族（paid 及其后续流转
@@ -294,8 +295,9 @@ class OrderPaymentStatusService
         $ignoredDuringDisputeReview = false;
         $staleGatewayReference = false;
         $disabledMethod = null;
+        $appliedStatus = $targetStatus;
 
-        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $gatewayReference, $allowPaidOverride, $checkForbiddenAccount, &$ignoredDuringDisputeReview, &$staleGatewayReference, &$disabledMethod) {
+        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $gatewayReference, $allowPaidOverride, $checkForbiddenAccount, &$ignoredDuringDisputeReview, &$staleGatewayReference, &$disabledMethod, &$appliedStatus) {
             $disabledMethod = null;
             $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
             if ($locked->gatewayOrderReference() !== $gatewayReference
@@ -315,14 +317,19 @@ class OrderPaymentStatusService
             }
 
             $old = $locked->status;
+            $appliedStatus = $targetStatus === 'paid'
+                && ! in_array($old, Order::NEVER_PAID_STATUSES, true)
+                && $locked->shipping()->forMerchant($locked->merchant_id)->exists()
+                    ? 'shipped'
+                    : $targetStatus;
 
-            if (! $this->shouldApply($old, $targetStatus, $allowPaidOverride)) {
+            if ($old === $appliedStatus || ! $this->shouldApply($old, $targetStatus, $allowPaidOverride)) {
                 $ignoredDuringDisputeReview = $old === Order::STATUS_DISPUTE_REVIEW;
 
                 return null;
             }
 
-            $locked->status = $targetStatus;
+            $locked->status = $appliedStatus;
 
             // 支付成功时间：首次进入"已收款状态族"时落一次快照，之后永不覆盖。
             // 用所有已收款状态而不是只判断 targetStatus === 'paid'，因为网关可能直接
@@ -433,7 +440,7 @@ class OrderPaymentStatusService
             $this->eventSync->syncOrderNow($order);
         }
 
-        event(new OrderStatusChanged($order, $oldStatus, $targetStatus));
+        event(new OrderStatusChanged($order, $oldStatus, $appliedStatus));
 
         return $oldStatus;
     }
@@ -466,7 +473,7 @@ class OrderPaymentStatusService
     /** 支付前预录入物流的订单，支付落地后通过相同的条件更新推进状态。 */
     private function advancePreRecordedShipment(Order $order): void
     {
-        if ($order->status !== 'paid' || ! $order->shipping()->exists()) {
+        if ($order->status !== 'paid' || ! $order->shipping()->forMerchant($order->merchant_id)->exists()) {
             return;
         }
 
@@ -602,10 +609,6 @@ class OrderPaymentStatusService
 
     private function shouldApply(string $oldStatus, string $targetStatus, bool $allowPaidOverride): bool
     {
-        if ($oldStatus === $targetStatus) {
-            return false;
-        }
-
         if ($allowPaidOverride && $targetStatus === 'paid') {
             return true;
         }

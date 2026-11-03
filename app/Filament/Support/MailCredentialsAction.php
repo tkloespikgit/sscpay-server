@@ -2,37 +2,36 @@
 
 namespace App\Filament\Support;
 
+use App\Models\Application;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
-use Illuminate\Database\Eloquent\Model;
 
 /**
- * Application / PaymentMethod 共用的"邮件发送配置"弹框：发件人（sender_email/
+ * Application 的"邮件发送配置"弹框：发件人（sender_email/
  * sender_name）+ 自有 ESP 凭证（mail_driver/mail_credentials）四个字段打包一起
- * 编辑，不出现在创建/编辑主表单里——必须先建好 Application/PaymentMethod 记录，
+ * 编辑，不出现在创建/编辑主表单里——必须先建好 Application 记录，
  * 再单独用这个弹框配置，避免建记录的时候顺手填错凭证。
  *
- * 两边的 EditXxx 页面（EditApplication/EditPaymentMethod）各自在
- * getHeaderActions() 里塞一个 MailCredentialsAction::make()，字段/校验/落库
- * 逻辑完全复用这一份，不用各自维护一套。
+ * EditApplication 在 getHeaderActions() 中注册该动作，订单邮件统一使用
+ * 所属应用的发件人和驱动凭证。
  */
 class MailCredentialsAction
 {
     public static function make(): Action
     {
         return Action::make('mailCredentials')
-            ->label(fn (Model $record) => filled($record->sender_email)
+            ->label(fn (Application $record): string => filled($record->sender_email)
                 ? __('admin.mail_credentials.summary', ['email' => $record->sender_email])
                 : __('admin.mail_credentials.not_configured'))
             ->icon('heroicon-o-envelope')
             ->color('gray')
             ->modalHeading(__('admin.mail_credentials.modal_heading'))
             ->modalDescription(__('admin.mail_credentials.modal_description'))
-            ->fillForm(fn (Model $record) => [
+            ->fillForm(fn (Application $record): array => [
                 'sender_email' => $record->sender_email,
                 'sender_name' => $record->sender_name,
                 'mail_driver' => $record->mail_driver,
@@ -122,7 +121,7 @@ class MailCredentialsAction
                     ->visible(fn (Get $get) => $get('mail_driver') === 'smtp')
                     ->columnSpanFull(),
             ])
-            ->action(function (array $data, Model $record) {
+            ->action(function (array $data, Application $record): void {
                 $record->update([
                     'sender_email' => $data['sender_email'] ?: null,
                     'sender_name' => $data['sender_name'] ?: null,

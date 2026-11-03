@@ -46,8 +46,8 @@ class SendPaymentLinkJob implements ShouldQueue
             return;
         }
 
-        // 锁定的支付方式与所属 Application 都没有配置可用的发信身份（sender_email +
-        // 完整 ESP 凭证）时，直接标记失败、不发送、不回退平台自己的发信账号——
+        // 所属 Application 没有配置可用的发信身份（sender_email + 完整 ESP 凭证）
+        // 时，直接标记失败、不发送、不回退支付方式或平台自己的发信账号——
         // 平台没有自己的发信身份可用，这是业务铁律。不重试：这是静态配置问题，
         // 重试 3 次结果都一样，只会浪费队列时间，等管理员配好后点"立即重发"即可。
         $sender = $order->resolveMailSender();
@@ -69,8 +69,8 @@ class SendPaymentLinkJob implements ShouldQueue
     }
 
     /**
-     * 用解析出来的发信身份（锁定支付方式 or 所属 Application 二选一，见
-     * Order::resolveMailSender()）临时把 ESP 凭证覆写进 mail.mailers.{driver}
+     * 用所属 Application 的发信身份（见 Order::resolveMailSender()）临时把
+     * ESP 凭证覆写进 mail.mailers.{driver}
      * 后发送。config() 覆写的是进程级全局状态，队列 worker 是长驻进程、会连续
      * 处理不同商户的任务，所以无论发送成功与否都要在 finally 里把
      * mail.mailers.{driver} 这个 key 整体复原成覆写前的原始数组、再 purge 掉

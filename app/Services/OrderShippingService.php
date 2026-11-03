@@ -4,8 +4,10 @@ namespace App\Services;
 
 use App\Jobs\RegisterLogisticsTrackingJob;
 use App\Jobs\SyncOrderTrackingJob;
+use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderShipping;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -30,6 +32,8 @@ use Illuminate\Validation\ValidationException;
  */
 class OrderShippingService
 {
+    public function __construct(private readonly MerchantShipmentSyncService $merchantShipmentSync) {}
+
     /**
      * 允许录入物流信息的订单状态。后台录入入口与详情页"录入物流"按钮的
      * 可见性都以这个列表为准。
@@ -49,20 +53,24 @@ class OrderShippingService
      */
     public function record(Order $order, int $operatorId, array $attributes): OrderShipping
     {
-        if (! in_array($order->status, self::RECORDABLE_STATUSES, true)) {
-            throw ValidationException::withMessages([
-                'order' => "订单当前状态为「{$order->status}」，只有已支付、已发货（补发改单）或部分退款状态的订单才能录入物流信息。",
-            ]);
-        }
+        return DB::transaction(function () use ($order, $operatorId, $attributes): OrderShipping {
+            Merchant::query()->whereKey($order->merchant_id)->lockForUpdate()->firstOrFail();
+            $order = Order::query()->forMerchant($order->merchant_id)->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            if (! in_array($order->status, self::RECORDABLE_STATUSES, true)) {
+                throw ValidationException::withMessages([
+                    'order' => "订单当前状态为「{$order->status}」，只有已支付、已发货（补发改单）或部分退款状态的订单才能录入物流信息。",
+                ]);
+            }
+            $shipping = OrderShipping::recordShipment($order->id, array_merge($attributes, [
+                'merchant_id' => $order->merchant_id,
+                'operator_id' => $operatorId,
+            ]));
 
-        $shipping = OrderShipping::recordShipment($order->id, array_merge($attributes, [
-            'merchant_id' => $order->merchant_id,
-            'operator_id' => $operatorId,
-        ]));
+            $this->merchantShipmentSync->record($order, $shipping);
+            SyncOrderTrackingJob::dispatch($shipping->id)->afterCommit();
+            RegisterLogisticsTrackingJob::dispatch($shipping->id)->afterCommit();
 
-        SyncOrderTrackingJob::dispatch($shipping->id);
-        RegisterLogisticsTrackingJob::dispatch($shipping->id);
-
-        return $shipping;
+            return $shipping;
+        });
     }
 }

@@ -11,8 +11,8 @@ use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -31,7 +31,7 @@ use Illuminate\Support\HtmlString;
  * 第二步不提供角色选择框——角色是 MerchantObserver::created() 在商户建好之后
  * 才 provisionDefaultRoles() 生成的，一次性提交时商户在最终提交前根本不存在，
  * 没法在第二步现选角色；直接固定赋予"商户管理员"角色（新商户的第一个用户就是它的管理员，
- * 符合常见预期）。Telegram 绑定不在这个向导里，仍走独立的 TelegramSettings 页面。
+ * 符合常见预期）。Telegram 绑定不在这个向导里，走 ServiceSettings 页面的独立配置区块。
  */
 class OnboardMerchant extends Page
 {
@@ -105,7 +105,7 @@ class OnboardMerchant extends Page
                                 ->required()
                                 ->maxLength(190)
                                 ->regex('/^\S+$/')
-                                ->rule(new UniqueAccountEmail()),
+                                ->rule(new UniqueAccountEmail),
                             TextInput::make('admin_password')
                                 ->label(__('admin.user.fields.password'))
                                 ->password()
@@ -156,9 +156,6 @@ class OnboardMerchant extends Page
             $merchant = Merchant::create([
                 'owner_id' => $user->isMerchantManager() ? $user->id : ($data['merchant_owner_id'] ?? null),
                 'name' => $merchantName,
-                'contact_person' => $merchantName,
-                'contact_phone' => $merchantName,
-                'contact_email' => "{$merchantName}@test.example.com",
                 'status' => true,
                 'timezone' => $data['merchant_timezone'],
                 'remark' => $data['merchant_remark'],

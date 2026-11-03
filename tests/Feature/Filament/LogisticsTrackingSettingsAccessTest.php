@@ -2,7 +2,7 @@
 
 namespace Tests\Feature\Filament;
 
-use App\Filament\Pages\LogisticsTrackingSettings;
+use App\Filament\Pages\ServiceSettings;
 use App\Models\Merchant;
 use App\Models\MerchantLogisticsTrackingSetting;
 use App\Models\SystemConfig;
@@ -50,15 +50,19 @@ class LogisticsTrackingSettingsAccessTest extends TestCase
         $user->givePermissionTo(Permissions::LOGISTICS_TRACKING_MANAGE);
         $this->actingAs($user);
 
-        Livewire::test(LogisticsTrackingSettings::class)
+        Livewire::test(ServiceSettings::class)
+            ->set('merchantData', ['merchant_id' => $other->id])
             ->fillForm([
-                'merchant_id' => $other->id,
                 'driver' => SeventeenTrackDriver::NAME,
                 'api_token' => 'token-a',
                 'webhook_secret' => 'secret-a',
-            ])
-            ->call('save')
-            ->assertHasFormErrors(['merchant_id']);
+            ], 'logisticsForm')
+            ->call('saveLogisticsTracking')
+            ->assertHasFormErrors(['merchant_id'], 'merchantForm');
+
+        $this->assertDatabaseMissing('merchant_logistics_tracking_settings', [
+            'merchant_id' => $other->id,
+        ]);
     }
 
     public function test_merchant_user_can_save_own_merchant_settings(): void
@@ -71,15 +75,14 @@ class LogisticsTrackingSettingsAccessTest extends TestCase
         $user->givePermissionTo(Permissions::LOGISTICS_TRACKING_MANAGE);
         $this->actingAs($user);
 
-        Livewire::test(LogisticsTrackingSettings::class)
+        Livewire::test(ServiceSettings::class)
             ->fillForm([
-                'merchant_id' => $this->merchant->id,
                 'driver' => SeventeenTrackDriver::NAME,
                 'api_token' => 'token-own',
                 'webhook_secret' => 'secret-own',
-            ])
-            ->call('save')
-            ->assertHasNoFormErrors()
+            ], 'logisticsForm')
+            ->call('saveLogisticsTracking')
+            ->assertHasNoFormErrors([], 'logisticsForm')
             ->assertNotified();
 
         $this->assertDatabaseHas('merchant_logistics_tracking_settings', [
@@ -126,15 +129,14 @@ class LogisticsTrackingSettingsAccessTest extends TestCase
         $user->givePermissionTo(Permissions::LOGISTICS_TRACKING_MANAGE);
         $this->actingAs($user);
 
-        Livewire::test(LogisticsTrackingSettings::class)
+        Livewire::test(ServiceSettings::class)
             ->fillForm([
-                'merchant_id' => $this->merchant->id,
                 'driver' => 'logistics_track',
                 'api_token' => 'token-future',
                 'webhook_secret' => 'secret-future',
-            ])
-            ->call('save')
-            ->assertHasNoFormErrors()
+            ], 'logisticsForm')
+            ->call('saveLogisticsTracking')
+            ->assertHasNoFormErrors([], 'logisticsForm')
             ->assertNotified();
 
         $this->assertDatabaseHas('merchant_logistics_tracking_settings', [

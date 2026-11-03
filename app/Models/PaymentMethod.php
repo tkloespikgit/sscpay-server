@@ -158,11 +158,6 @@ class PaymentMethod extends Model
         'fee_fixed',
         'reserve_percent',
         'reserve_days',
-        'sender_email',
-        'sender_name',
-        'mail_driver',
-        'mail_credentials',
-        'payment_link_mail_template',
     ];
 
     protected function casts(): array
@@ -183,8 +178,7 @@ class PaymentMethod extends Model
             'fee_fixed' => 'decimal:2',
             'reserve_percent' => 'decimal:4',
             'reserve_days' => 'integer',
-            // 支付方式自有 ESP 凭证，与 Application::mail_credentials 是各自独立的
-            // 两份配置（见 Order::resolveMailSender()），同样用 encrypted:array 存储。
+            // 仅保留历史凭证的解密兼容；发信已统一使用 Application 配置，旧字段不再批量赋值。
             'mail_credentials' => 'encrypted:array',
         ];
     }
@@ -220,7 +214,7 @@ class PaymentMethod extends Model
     }
 
     /**
-     * 系统级支付方式的创建人（超管/商户级管理员），见 booted() 里的自动回填。
+     * 系统级支付方式的归属管理员，默认是创建人，超级管理员可重新指派。
      */
     public function owner(): BelongsTo
     {

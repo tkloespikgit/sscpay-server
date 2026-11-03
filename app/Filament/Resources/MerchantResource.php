@@ -9,6 +9,7 @@ use App\Filament\Support\FinanceSecurity;
 use App\Models\Merchant;
 use App\Models\User;
 use App\Services\BalanceService;
+use App\Services\MerchantPaymentSettingsService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -68,13 +69,6 @@ class MerchantResource extends Resource
 
         return $schema->components([
             Section::make(__('admin.merchant.sections.basic_info'))->schema([
-                TextInput::make('name')->label(__('admin.merchant.fields.name'))->required()->maxLength(100),
-                TextInput::make('contact_person')->label(__('admin.merchant.fields.contact_person'))->required()->maxLength(100),
-                TextInput::make('contact_phone')->label(__('admin.merchant.fields.contact_phone'))->required()->maxLength(30),
-                TextInput::make('contact_email')->label(__('admin.merchant.fields.contact_email'))->email()->required()->maxLength(255),
-                Toggle::make('status')->label(__('admin.merchant.fields.status'))->default(true)->inline(false),
-                // 商户归属哪个商户级管理员，只有真超管能看/能改（用来重新指派归属）；
-                // 商户级管理员自己建的商户，归属在 CreateMerchant 页面里自动落成自己，不需要也不允许在这里选。
                 Select::make('owner_id')
                     ->label(__('admin.merchant.fields.owner'))
                     ->helperText(__('admin.merchant.help.owner'))
@@ -82,16 +76,19 @@ class MerchantResource extends Resource
                     ->options(fn () => User::query()->whereNull('merchant_id')->where('is_super_admin', false)->pluck('name', 'id'))
                     ->searchable()
                     ->placeholder(__('admin.merchant.placeholders.owner_platform')),
-            ])->columns(2),
-
-            Section::make(__('admin.merchant.sections.preferences'))->schema([
+                TextInput::make('name')->label(__('admin.merchant.fields.name'))->required()->maxLength(100),
                 Select::make('timezone')
                     ->label(__('admin.merchant.fields.timezone'))
                     ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
                     ->searchable()
                     ->default(fn () => (string) config('app.timezone', 'UTC'))
                     ->helperText(__('admin.merchant.help.timezone')),
-            ]),
+                Toggle::make('status')->label(__('admin.merchant.fields.status'))->default(true)->inline(false),
+                // 商户归属哪个商户级管理员，只有真超管能看/能改（用来重新指派归属）；
+                // 商户级管理员自己建的商户，归属在 CreateMerchant 页面里自动落成自己，不需要也不允许在这里选。
+                Textarea::make('remark')->label(__('admin.merchant.fields.remark'))->rows(3)->columnSpanFull(),
+
+            ])->columns(2),
 
             Section::make(__('settlement.settings.title'))->schema([
                 Select::make('settlement_mode')
@@ -114,10 +111,6 @@ class MerchantResource extends Resource
                     ->suffix(__('settlement.days'))
                     ->helperText(__('settlement.settings.cycle_help')),
             ])->columns(2),
-
-            Section::make(__('admin.merchant.sections.remark'))->schema([
-                Textarea::make('remark')->label(__('admin.merchant.fields.remark'))->rows(3),
-            ]),
         ]);
     }
 
@@ -126,8 +119,6 @@ class MerchantResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('name')->label(__('admin.merchant.fields.name'))->searchable(),
-                TextColumn::make('contact_person')->label(__('admin.merchant.fields.contact_person')),
-                TextColumn::make('contact_email')->label(__('admin.merchant.fields.contact_email')),
                 IconColumn::make('status')->label(__('admin.merchant.fields.status'))->boolean(),
                 // 归属的商户级管理员，只有真超管需要看这一列（商户级管理员自己看到的
                 // 列表本来就已经被 getEloquentQuery() 限定成自己名下的商户）。
@@ -330,13 +321,15 @@ class MerchantResource extends Resource
     }
 
     /**
-     * 商户级管理员只能编辑自己名下的商户；getEloquentQuery() 已经把别人的商户
-     * 排除在查询之外，$record 能传进来这里就说明本来就属于自己（或调用方是超管），
-     * 这里不用再重复判 owner_id，直接复用 canViewAny() 即可。
+     * 每次编辑授权都核对数据库中的当前归属，防止商户转移后旧页面继续写入。
      */
     public static function canEdit($record): bool
     {
-        return static::canViewAny();
+        $actor = auth()->user();
+
+        return $record instanceof Merchant && $actor instanceof User && $actor->status
+            && static::canViewAny()
+            && MerchantPaymentSettingsService::canManage($actor, $record);
     }
 
     /**
