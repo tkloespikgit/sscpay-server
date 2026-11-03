@@ -143,7 +143,7 @@ POST {BASE_URL}/api/order/create
 
 `notify_url`、`return_url`、`cancel_url` 在两种建单模式下都必填。当前普通路由已关闭与应用 `website` 的域名一致性校验；指定 `payment_method_key` 时，三个 URL 的域名仍必须与渠道绑定站点一致，比较时忽略大小写、`www.` 前缀和端口。
 
-未传 `payment_method_key` 时，系统从该支付组内通过可用性与限额检查的渠道中，按“当天已成交金额 ÷ 组内权重”升序、权重降序、ID 升序排列，并从前三个候选随机选择一个；不足三个时全部参与。若网关建单失败，系统会在当前请求内排除已尝试渠道并重新选择，默认最多尝试三个不同渠道（含首选）。成功响应返回最终成功创建支付链接的渠道；全部尝试失败时保留本地订单并返回网关错误。指定 `payment_method_key` 时只使用指定渠道，失败不自动切换。
+未传 `payment_method_key` 时，系统从该支付组内通过可用性与限额检查的渠道中，按“当天已成交金额 ÷ 组内权重”升序、权重降序、ID 升序排列，并从前三个候选随机选择一个；不足三个时全部参与。若网关建单或商品准备失败，本次请求立即结束，返回 `502 GATEWAY_ERROR`，提示“建单失败，请重试”。重试应复用原商户订单号，重新校验并沿用原渠道补建；普通及指定渠道订单都不会在本次请求或后续重试中切换到其他通道。同渠道 HTTP 连接失败的重试仍按服务端配置执行。
 
 ### 请求体
 
@@ -259,14 +259,21 @@ POST {BASE_URL}/api/order/create
 | `pay_url` | 支付网关插件返回的收银台地址。新单正常建单成功后返回；幂等请求若命中已离开待支付流程且缺少链接的订单，可能为空，应结合 `status` 处理 |
 | `converted_currency` / `converted_amount` | 折算为 USD 后的金额（含汇损） |
 | `exchange_rate` | 下单时刻锁定的结算汇率（含汇损） |
-| `payment_method` | **最终成功创建支付链接的唯一支付方式**，可能是本次自动切换后的渠道；若指定了 `payment_method_key`，这里返回的就是该渠道 |
+| `payment_method` | **订单锁定的唯一支付方式**，后续重试沿用原渠道，不重新选择；若原订单指定了 `payment_method_key`，这里返回该指定渠道 |
 | `status` | 新单通常为 `pending`；幂等返回的是订单当前状态，不能假设始终待支付 |
 
 应用可在后台开启自动折扣（默认关闭）：按请求 `amount` 的原币种金额，不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50；极小金额至少保留 0.01，不足减免时跳过。请求仍提交原始金额与原始折扣，服务端首次建单时增加折扣并减少实际应付金额。响应中的折算金额、订单查询及支付通知中的金额反映折扣后的实际付款金额。重试仍提交原始请求金额，服务端复用首次折扣，不重新随机。
 
 ### 幂等性
 
-`merchant_order_no` 是商户内的幂等键。同一 `merchant_order_no` 重复提交：币种和原始请求应付金额一致且已有支付链接时返回原订单与链接，不重新分配渠道；若远端支付单尚未建成，会沿用当前渠道补建，普通组内路由失败时仍可在本次请求内自动切换。切换不会创建新的本地订单，`order_no`、付款 token、订单保存的原始金额、汇率和首次自动折扣保持不变。币种或原始请求应付金额不一致时返回 `409 ORDER_DETAILS_CONFLICT`，不修改原订单，也不请求远端。**超时重试时应复用同一个 `merchant_order_no`**（但要重新生成 `Timestamp`/`X-Nonce`/`sign`）。
+`merchant_order_no` 是商户内的幂等键。同一 `merchant_order_no` 重复提交时先核对币种和原始请求应付金额；不一致返回 `409 ORDER_DETAILS_CONFLICT`，不修改原订单或请求远端。已有支付链接、已收款或已离开 `pending/failed` 时返回订单当前结果。只有无支付链接、未收款的 `pending/failed` 订单会补建：
+
+- 普通订单重新检查原渠道启用、未删除、商户授权、原支付组有效、组内成员关系及当前风控；不合格返回 `409 NO_AVAILABLE_PAYMENT_METHOD`。即使组内有其他可用渠道，也不另选通道。
+- 原订单指定了渠道时，按保存的原渠道 ID、商户授权、启用/删除状态及三个回跳 URL 重新校验；失效返回 `422 PAYMENT_METHOD_NOT_AVAILABLE`，域名不符返回 `422 PAYMENT_METHOD_DOMAIN_MISMATCH`。新请求的 `group_key` / `payment_method_key` 或 URL 不能改变原订单的支付组、指定渠道模式及回跳地址。
+
+补建复用同一本地订单及原渠道，`order_no`、付款 token、远端引用、全部财务快照、原始商品、应付金额、汇率和首次自动折扣不变，复用此前已创建的商品。历史渠道 ID 为空时仅补齐同一渠道关联，不改引用或财务快照。建单失败即返回，不继续尝试其他通道。**超时或建单失败后重试应复用同一个 `merchant_order_no`**，并重新生成 `Timestamp`/`X-Nonce`/`sign`。
+
+历史订单若已保存独立远端引用，重试继续沿用；系统保留历史旧尝试的回调校验，避免迟到结果覆盖当前状态。同渠道补建依赖支付插件对相同远端引用的幂等处理。
 
 ---
 
@@ -575,11 +582,11 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | 422 | `ITEMS_SUBTOTAL_MISMATCH` | `/order/create` | `subtotal` 与明细之和对不上 |
 | 422 | `MINIMUM_AMOUNT_NOT_MET` | `/order/create` | 折算 USD 金额不足以承担渠道手续费 |
 | 422 | `CALLBACK_DOMAIN_NOT_ALLOWED` | `/order/create` | 保留的错误码；普通路由与应用网站的域名一致性检查当前已关闭 |
-| 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | `/order/create` | 指定的 `payment_method_key` 不存在、不在商户可用范围或已停用 |
+| 422 | `PAYMENT_METHOD_NOT_AVAILABLE` | `/order/create` | 指定渠道首次建单或重提校验失败：渠道不存在、已删除、不在商户可用范围或已停用 |
 | 422 | `PAYMENT_METHOD_DOMAIN_MISMATCH` | `/order/create` | 指定渠道时回跳域名不匹配；URL 缺失由字段校验拦截 |
-| 409 | `NO_AVAILABLE_PAYMENT_METHOD` | `/order/create` | 支付组内没有通过可用性与限额检查的候选渠道 |
+| 409 | `NO_AVAILABLE_PAYMENT_METHOD` | `/order/create` | 首次建单没有合格候选，或普通订单重试时原渠道不再符合可用性/组内成员/风控要求；重试不改用其他渠道 |
 | 409 | `ORDER_DETAILS_CONFLICT` | `/order/create` | 相同商户订单号的币种或应付金额与旧订单不一致 |
-| 502 | `GATEWAY_ERROR` | `/order/create` | 网关创建支付链接失败；普通路由在自动切换候选耗尽或达到尝试上限后返回，指定渠道失败直接返回。本地订单保留，可复用原商户订单号重试 |
+| 502 | `GATEWAY_ERROR` | `/order/create` | 网关建单或商品准备失败，提示“建单失败，请重试”；立即结束本次请求。本地订单保留，复用原商户订单号并校验原渠道后可补建，不切换其他通道 |
 | 404 | — | `/order/create` | 支付组不存在、不属于商户或未启用，返回 `{code:404,msg:"Resource not found."}` |
 | 404 | `ORDER_NOT_FOUND` | `/order/query`、`/order/ship` | 当前商户下找不到匹配订单；查询同时传两个编号时须同时匹配 |
 | 422 | `INVALID_ORDER_STATUS` | `/order/ship` | 订单当前状态不允许录入物流 |
@@ -605,7 +612,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 2. **签名规范化算法必须和服务端逐字节一致**：出站请求（调用 create/query/ship）和系统推给你的 webhook 验签是**同一套算法**（递归排序 + 三段 StringToSign），你只需要实现一次就能两边复用，但规范化规则（关联数组递归 ksort、列表保持原序、`JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES`）本身仍然是最容易出错的地方。
 3. **服务器时钟需要与标准时间同步**：调用我们接口时 `Timestamp` 误差超过 5 分钟会被直接拒绝（401）。Webhook 每次投递都会刷新时间戳、nonce 和签名，接收方可据此校验每次投递的时间窗口并防重放。
 4. **`notify_url`/`return_url`/`cancel_url` 三个都必填**：普通路由的应用网站域名检查当前已关闭；指定渠道时须与渠道绑定站点域名一致（`PAYMENT_METHOD_DOMAIN_MISMATCH`）。
-5. **`/order/create` 和 `/order/ship` 的幂等语义不同**：前者币种和原始金额一致时复用本地订单，已有支付链接直接返回，缺少链接时可补建及自动切换渠道；后者"重复提交=直接覆盖旧物流记录"。
+5. **`/order/create` 和 `/order/ship` 的幂等语义不同**：前者币种和原始金额一致时复用本地订单，已有支付链接直接返回，无链接、未收款且为 `pending/failed` 时重新校验并沿用原渠道补建，失败即返回，不切换其他通道。后者"重复提交=直接覆盖旧物流记录"。
 6. **只有首次支付成功会创建交易结果 webhook**，`shipped`/`refunded`/`cancelled` 等状态变化以及已收款订单恢复为 `paid` 都不会创建新的首次支付通知；可轮询 `/order/query` 读取已保存状态，查询本身不会向网关补查。
 7. Webhook 接收端在 10 秒内返回 HTTP 2xx，耗时逻辑放异步队列，并按 `order_no` + `status` 幂等。默认最多投递 5 次（含首次），每次重试的签名 Header 都会刷新。
 

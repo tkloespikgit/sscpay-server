@@ -31,13 +31,13 @@ erDiagram
 
 | 表 / 模型 | 关键语义 |
 |---|---|
-| `merchants` / `Merchant` | 商户主体；`owner_id` 为所属平台管理员；总余额、冻结额、待结算、待出款均为 USD；商户统一配置结算模式及周期 |
+| `merchants` / `Merchant` | 商户主体；`owner_id` 为所属平台管理员；余额均为 USD；`default_*` 保存默认手续费/保证金，`settlement_mode/days` 保存默认结算模式/周期 |
 | `users` / `User` | `is_super_admin`、`merchant_id` 区分超管、商户级管理员和商户用户；范围入口为 `manageableMerchantIds()` |
 | `roles`、权限相关表 | Spatie 权限；商户角色有商户归属，平台共享角色另有范围。定义见 `app/Support/Permissions.php` 与 `PermissionSeeder` |
 | `applications` / `Application` | 商户接入身份、`app_id`、加密 `api_key`、应用网站与邮件/广告配置；含 `is_auto_discount_enabled`、`is_logistics_tracking_enabled`（均仅影响新单） |
-| `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者 |
+| `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式及连续建单失败保护。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者 |
 | `merchant_payment_methods` | 系统级渠道分配给商户的多对多表；不是所有订单的商户归属表 |
-| `merchant_payment_settings` | 商户与可使用渠道的独立财务配置，交易/退款/拒付手续费、保证金比例/锁定天数；NULL 继承渠道默认值，0 为显式零值 |
+| `merchant_payment_settings` | 商户与可使用渠道的独立财务配置，交易/退款/拒付手续费、保证金比例/锁定天数、结算模式/周期；金融 NULL 继承渠道默认值，结算 NULL 继承商户默认值，0 为显式零值 |
 | `merchant_logistics_tracking_settings` | 商户物流跟踪：选用 `driver`、可选 `base_url`、encrypted `api_token` / `webhook_secret`、公开 `webhook_token`；每商户至多一条有效记录 |
 | `payment_groups` / `PaymentGroup` | 商户的路由组，`group_key` 在该商户未删除记录内唯一 |
 | `payment_group_methods` | 组内渠道，`group_id`/`method_id`，`priority` 为分流权重 |
@@ -45,6 +45,30 @@ erDiagram
 | `observers`、`observer_payment_methods` | 独立观察者账户与允许查看的渠道；展示缩放不修改账务金额 |
 
 `PaymentMethod::forMerchant()` 的含义是“商户可使用”，包含自有与已分配渠道；不能用普通商户外键过滤替代。`site_products.merchant_id` 也可为空，商品实际按支付渠道关联，避免假设所有业务模型均有非空商户 ID。
+
+迁移 [2026_11_03_223806_add_failure_limits_to_payment_methods_table](../database/migrations/2026_11_03_223806_add_failure_limits_to_payment_methods_table.php) 新增 `payment_methods.max_failed_times`（可空 unsigned integer，默认 NULL）和 `consecutive_failed_times`（unsigned integer，默认 0）。前者大于等于 1 时覆盖系统阈值，NULL 由 `PaymentMethod::maxFailedTimes()` 动态继承 `system_configs` 的 `payment.max_failed_times`（默认 5）；后者记录该渠道跨商户的连续建单失败次数，不按商户、支付组或订单单独分桶，也不统计客户后续支付失败状态。
+
+`OrderCreationService` 调用 `PaymentMethodFailureService`，在同一事务先锁原订单、再锁渠道，确认商户、渠道和远端引用仍匹配后记录最终建单或商品准备失败；有链接、已收款或已离开 `pending/failed` 的结果不增加次数。每次创建调用最多增加一次，不按内部 HTTP 重试次数增加。有效 `pay_url` 成功落库时清零；幂等直接返回、校验或风控拒绝不修改计数。达到有效阈值即停用 `is_active`，不自动换渠道，成功清零也不恢复启用。新列从 0 开始，不从历史订单或日志回推旧失败次数，不影响已有余额、金融快照或资金流水；复制渠道不复制累计次数。
+
+人工核验后通过 `PaymentMethod` 模型将 `is_active` 从 false 改为 true 时，`updating` 事件在同次保存中将 `consecutive_failed_times` 设为 0，开始新的连续失败计数；普通编辑、启用状态未变及新建不触发这次重置。编辑页仅提交主动修改的启用状态，保存时先锁定并重新读取渠道，避免旧页面误启用或重复清掉新失败。运行计数使用 `saveQuietly()` 保留其自身计数/清零规则。人工重新启用的补充无需新增数据库字段或迁移，不需要批量清空存量渠道计数。
+
+迁移和 [PaymentFailureSettingsSeeder](../database/seeders/PaymentFailureSettingsSeeder.php) 都只补齐缺失的 `payment.max_failed_times`，不覆盖已保存配置；[SystemConfigSeeder](../database/seeders/SystemConfigSeeder.php) 调用该专用 Seeder。配置默认值采用数字类型、`payment` 分组。部署必须执行新增迁移；回滚移除新增渠道列但保留系统配置，避免删除管理员后续调整的值。规则见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用)。
+
+本功能首次上线时，执行原有失败保护迁移即可同时新增两个渠道字段并补缺默认配置：
+
+```bash
+php artisan migrate --force --no-interaction --path=database/migrations/2026_11_03_223806_add_failure_limits_to_payment_methods_table.php
+```
+
+若该迁移已经执行，人工重新启用清零只需部署更新后的代码，无需再次变更表结构。专用 Seeder 可按需安全重跑以补缺配置，但正常执行上述迁移后并非必需，也不需要重跑完整 `SystemConfigSeeder`：
+
+```bash
+php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interaction
+```
+
+以上为上线操作说明，不代表已在正式数据库执行。
+
+迁移 `2026_11_03_173100` 为商户新增 `default_fee_percent`、`default_fee_fixed`、`default_refund_fee`、`default_chargeback_fee`、`default_reserve_percent`、`default_reserve_days`（均默认 0），为独立配置新增可空 `settlement_mode`、`settlement_days`。比例保留 4 位小数，USD 费用保留 2 位。新分配系统级渠道时，分配与复制商户默认值在同一事务完成；`merchant_payment_settings(merchant_id,payment_method_id)` 的唯一配置存在时保留，不因重新分配或商户默认值变化而覆盖。保存商户时会为该商户既有有效分配中缺失的配置补齐默认值；已有记录（含空值或 0）和历史订单不改写，也不自动扫描全平台。自有渠道仍沿用原有覆盖/渠道默认规则。
 
 商户不再要求填写联系方式。历史 `contact_person`、`contact_phone`、`contact_email` 列保留原结构与已有值；`Merchant` 模型为未提供的字段统一使用空字符串缺省值，普通创建和入驻向导共用这一行为。后台表单不再收集这些字段，编辑已有商户不会清空历史联系方式；管理员登录账号和订单客户邮箱仍独立使用。
 
@@ -59,18 +83,18 @@ erDiagram
 | 字段组 | 语义与限制 |
 |---|---|
 | `order_no` | 稳定的本地系统订单号，商户 API、通知及后台继续使用；通过生成器与唯一约束处理碰撞 |
-| `gateway_order_no` | 可空、唯一的当前网关尝试引用。切换渠道时重新生成并作为插件 `s_order_id`；NULL 时由 `gatewayOrderReference()` 回退 `order_no`，兼容未切换和历史订单 |
+| `gateway_order_no` | 可空、唯一的当前网关引用，保留历史切换生成的值；重试始终沿用，NULL 时由 `gatewayOrderReference()` 回退 `order_no` |
 | `merchant_id` + `merchant_order_no` | 未软删订单的幂等键。重复请求比较 `currency` 和原始请求金额 `original_amount`（历史订单为空时回退 `amount`），并非校验所有明细字段一致 |
 | `application_id`、`payment_group_id` | 建单应用与支付组 |
-| `payment_method_id`、`payment_method` | 当前渠道 ID 与代码快照。未获得支付链接的普通路由订单可在同请求故障切换时更新；当前渠道代码在未删除渠道中全局唯一，历史解析复用 `paymentMethodConfig()` |
+| `payment_method_id`、`payment_method` | 锁定的渠道 ID 与代码快照；后续重试不换渠道，历史空 ID 只补齐同一渠道关联；当前渠道代码在未删除渠道中全局唯一，历史解析复用 `paymentMethodConfig()` |
 | `designated_payment_method_key` | 记录本次是否显式指定渠道，区别于普通组内路由 |
 | `source`、`platform`、`checkout_link_id` | 入口来源（`api`/`manual`/`checkout_link`）、平台类型、可选的收款链接关联 |
 | `currency`、`subtotal`、`shipping_fee`、`discount`、`tax`、`amount` | 订单原币种金额；公式容差当前为 0.01，商品小计按两位小数核对 |
 | `converted_currency`、`converted_amount`、各 `*_converted` | 下单时折算金额，结算基准 USD；成交额统计使用 `converted_amount` |
 | `original_exchange_rate`、`exchange_rate`、`surcharge_*` | 市场汇率、实际汇率与汇损快照；不能用当前汇率回算历史单 |
-| `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 下单时交易手续费与净入账快照；支付入账使用 `settlement_amount` |
-| `settlement_mode`、`settlement_days` | 新单按商户保存的起算方式与周期；NULL 标记历史单，不补建结算记录 |
-| `reserve_percent`、`reserve_days`、`refund_fee_snapshot`、`chargeback_fee_snapshot` | 新单保证金及反向手续费快照；历史反向手续费快照为 NULL 时沿用原渠道规则 |
+| `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 首次建单保存的交易手续费与净入账快照；重试不重算，支付入账使用 `settlement_amount` |
+| `settlement_mode`、`settlement_days` | 首次建单优先保存该商户/渠道的独立起算方式与周期，空值回退商户默认；重试不重算，NULL 标记历史单，不补建结算记录 |
+| `reserve_percent`、`reserve_days`、`refund_fee_snapshot`、`chargeback_fee_snapshot` | 首次建单保存的保证金及反向手续费快照；重试不重算，历史反向手续费快照为 NULL 时沿用原渠道规则 |
 | `refunded_amount` | 累计退款原币种金额，不是 USD |
 | `accept_language` | 浏览器语言偏好列表，nullable VARCHAR(255)；统一建单入口最多保留 255 字符，避免请求头导致建单失败 |
 | `shipping_state`、`shipping_city` | 收款链接按 PayPal `admin_area_1` / `admin_area_2` 语义保存：省州按国家转换为官方代码或名称，城市保存城镇名称；服务端与 Google 回填共用映射。其他入口协议保持原有语义，详见[收款链接地址规则](../doc/checkout-link.md#地址字段与-paypal-rest) |
@@ -81,7 +105,9 @@ erDiagram
 
 金额计算应保持十进制字符串/bcmath；数据库金额多为 `decimal`，模型用相应 decimal cast。远端 JSON 或现存风控部分代码有 float 转换，不应据此将账务计算改为浮点运算。
 
-普通组内路由切换渠道时保留本地订单、原始商品、应付金额、汇率和自动折扣，按新渠道的商户财务配置重算交易手续费、`settlement_amount`、保证金比例/天数及退款/拒付手续费快照，并清除旧渠道匹配商品后重建。`gateway_order_no` 随切换更新，支付创建、查询、日志和物流均使用当前引用；旧尝试的回调或查询结果不能更新已切换订单。新增迁移 `2026_10_28_142012` 仅增加可空字段及唯一约束，不回填历史数据；首次部署须执行迁移。详见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
+网关建单或明确的商品准备失败后立即返回；后续同商户订单号重试仅对无链接、未收款的 `pending/failed` 订单沿用原渠道补建。每次重新检查原渠道启用、未软删及商户授权，普通路由还检查原支付组有效、组内成员关系和当前风控；不合格返回 `NO_AVAILABLE_PAYMENT_METHOD`，即使存在其他可用渠道也不另选。指定渠道按保存 ID 及三个 URL 重新检查，不合格返回 `PAYMENT_METHOD_NOT_AVAILABLE` 或域名错误；不采纳新请求改变原模式、支付组、key 或 URL。
+
+重试保留同一本地订单、付款 token、原始商品、应付金额、汇率、首次自动折扣、财务快照和远端引用，并复用 CREATE/COPY 此前已创建的商品。历史空 `payment_method_id` 仅补齐同一渠道关联，不产生新网关引用或财务快照。写入付款链接仍在订单行锁内核对当前引用/渠道；建单前及失败后重新检查收款、链接和状态，保留已得到的结果。支付创建、查询、日志和物流继续使用当前引用；兼容历史切换数据的旧回调/查询隔离、迁移 `2026_10_28_142012` 的可空引用/唯一约束及来源日志均保留。本次不新增迁移或批量改写历史数据。详见 [D-24](decisions.md#d-24-网关建单失败立即返回与原渠道重试)。
 
 历史漏配汇损的专用纠错入口 `orders:recalculate-surcharge` 是修改汇率快照的显式例外：保留 `original_exchange_rate` 和手续费金额，更新实际汇率、汇损、订单折算字段及净入账；原币金额、原台账均不改。仅处理已入账无退款/争议订单，必须保留命令生成的新旧快照审计报告；余额由人工另记调整流水，历史统计按受影响日期补算。详见[汇损补算](../doc/order-surcharge-recalculation.md)。
 
@@ -176,17 +202,21 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 - `exchange_rates`：当前汇率，`base_currency + target_currency` 唯一；下单汇率数据源。
 - `exchange_rate_histories`：追加式历史展示数据，不参与下单金额计算。
-- `order_daily_stats`：按 `stat_date + merchant_id + application_id + payment_method_id` 唯一；渠道 ID `0` 表示未知维度，刻意不设渠道外键，避免删除渠道改写汇总维度。
-- `order_stats_runs`：每个统计日的执行完成记录；`rows_written=0` 表示已算但无交易，与未运行区分。
+- `order_daily_stats`：按 `stat_date + merchant_id + application_id + payment_method_id` 唯一；渠道 ID `0` 表示未知维度，刻意不设渠道外键，避免删除渠道改写汇总维度。仪表盘全部交易指标由此表读取，余额另读商户当前值。
+- `order_stats_runs`：每个统计日的执行完成记录；`rows_written=0` 表示已算但无交易，与未运行区分。`metrics_version` 默认 1 保留旧执行事实，新聚合版本为 2；旧版本日期需重算才具备新计数字段，不清空旧记录。
 
 | 指标 | 归日时间 | 金额口径 |
 |---|---|---|
+| 创建订单数 `created_orders` | `orders.created_at`，排除软删除 | 仅计数，含待支付、失败、取消与过期 |
+| 未支付终态 `unpaid_terminal_orders` | failed 按 `failed_at`，缺省创建日；取消/过期按创建日 | 仅计数，排除 pending；与 `paid_orders` 相加作为成功率分母 |
 | 支付成功 | `orders.paid_at`，旧数据为空时回退 `created_at` | `converted_amount`，含曾支付成功的后续状态 |
 | 支付失败 | `orders.failed_at`，旧数据为空时回退 `created_at` | `converted_amount`，只数 `failed` |
 | 退款 | `order_refunds.created_at` | 实退 `amount_usd`，当日订单数去重 |
 | 拒付 | 拒付本金流水 `created_at` | 本金流水金额绝对值，不含拒付手续费 |
 
-按系统时区分日；商户展示时区不改变分桶。汇总可重算，每日事务内删除旧桶再插入新桶，随后记录执行结果；超出滚动窗口的历史修正需按受影响日期补算。
+按系统时区分日；商户展示时区不改变分桶。汇总可重算，每日事务内删除旧桶再插入新桶，并一并记录执行结果；超出滚动窗口的历史修正需按受影响日期补算。
+
+迁移 `2026_11_03_214235` 只增加两项计数列和执行版本列，不自动重算历史或修改订单/资金。新版聚合把每日数据与执行版本 2 在同一事务提交。仪表盘订单数按创建日、成交额按支付日，跨日付款时两张趋势图不要求同一天单量与金额对应；退款/拒付不重复增加支付成功率的分母。所选窗口的交易商户数为 `paid_orders > 0` 的商户去重数。
 
 ## 7. 唯一约束与迁移
 

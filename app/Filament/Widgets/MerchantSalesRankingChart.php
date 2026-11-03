@@ -2,8 +2,10 @@
 
 namespace App\Filament\Widgets;
 
+use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\ChartWidget;
+use Filament\Widgets\Concerns\InteractsWithPageFilters;
 
 /**
  * 各商户销售额排行榜（4.7 节）。只在超管视角有意义——排行榜天然是跨商户的
@@ -11,6 +13,13 @@ use Filament\Widgets\ChartWidget;
  */
 class MerchantSalesRankingChart extends ChartWidget
 {
+    use InteractsWithPageFilters;
+
+    public function boot(): void
+    {
+        abort_unless(static::canView(), 403);
+    }
+
     public function getHeading(): ?string
     {
         return __('admin.dashboard.charts.merchant_ranking');
@@ -18,7 +27,9 @@ class MerchantSalesRankingChart extends ChartWidget
 
     protected function getData(): array
     {
-        $ranking = app(DashboardService::class)->getAdminStats()['merchant_ranking'];
+        abort_unless(static::canView(), 403);
+
+        $ranking = app(DashboardService::class)->merchantSalesRanking(DashboardService::viewerMerchantIds(), $this->pageFilters ?? []);
 
         return [
             'datasets' => [
@@ -39,6 +50,6 @@ class MerchantSalesRankingChart extends ChartWidget
 
     public static function canView(): bool
     {
-        return (bool) auth()->user()?->is_super_admin;
+        return AdminDashboard::canAccess() && (bool) auth()->user()?->is_super_admin;
     }
 }

@@ -89,6 +89,12 @@ class PaymentMethod extends Model
                 $model->owner_id = auth()->id();
             }
         });
+
+        static::updating(function (self $model): void {
+            if ($model->isDirty('is_active') && $model->is_active && $model->getOriginal('is_active') === false) {
+                $model->consecutive_failed_times = 0;
+            }
+        });
     }
 
     /**
@@ -125,6 +131,10 @@ class PaymentMethod extends Model
 
     public const MODE_COPY = 'COPY';
 
+    public const DEFAULT_MAX_FAILED_TIMES = 5;
+
+    public const MAX_FAILED_TIMES_CONFIG_KEY = 'payment.max_failed_times';
+
     protected $fillable = [
         'merchant_id',
         'method_code',
@@ -152,6 +162,7 @@ class PaymentMethod extends Model
         'max_amount_per_day',
         'max_count_per_day',
         'max_amount_per_month',
+        'max_failed_times',
         'refund_fee',
         'chargeback_fee',
         'fee_percent',
@@ -172,6 +183,8 @@ class PaymentMethod extends Model
             'max_count_per_day' => 'integer',
             'order_no_length' => 'integer',
             'max_amount_per_month' => 'decimal:2',
+            'max_failed_times' => 'integer',
+            'consecutive_failed_times' => 'integer',
             'refund_fee' => 'decimal:2',
             'chargeback_fee' => 'decimal:2',
             'fee_percent' => 'decimal:4',
@@ -181,6 +194,22 @@ class PaymentMethod extends Model
             // 仅保留历史凭证的解密兼容；发信已统一使用 Application 配置，旧字段不再批量赋值。
             'mail_credentials' => 'encrypted:array',
         ];
+    }
+
+    public function maxFailedTimes(): int
+    {
+        return $this->max_failed_times > 0
+            ? $this->max_failed_times
+            : static::defaultMaxFailedTimes();
+    }
+
+    public static function defaultMaxFailedTimes(): int
+    {
+        $value = filter_var(SystemConfig::get(static::MAX_FAILED_TIMES_CONFIG_KEY), FILTER_VALIDATE_INT, [
+            'options' => ['min_range' => 1, 'max_range' => 4294967295],
+        ]);
+
+        return $value === false ? static::DEFAULT_MAX_FAILED_TIMES : $value;
     }
 
     public function merchant(): BelongsTo
@@ -226,7 +255,9 @@ class PaymentMethod extends Model
      */
     public function assignedMerchants(): BelongsToMany
     {
-        return $this->belongsToMany(Merchant::class, 'merchant_payment_methods')->withTimestamps();
+        return $this->belongsToMany(Merchant::class, 'merchant_payment_methods')
+            ->using(MerchantPaymentMethod::class)
+            ->withTimestamps();
     }
 
     public function merchantPaymentSettings(): HasMany
@@ -241,6 +272,28 @@ class PaymentMethod extends Model
     {
         $override = $this->merchantPaymentSettings()->forMerchant($merchantId)->first();
 
+        return $this->financialSettingsWithOverride($override);
+    }
+
+    /**
+     * @return array{fee_percent: string, fee_fixed: string, refund_fee: string, chargeback_fee: string, reserve_percent: string, reserve_days: int, settlement_mode: string, settlement_days: int}
+     */
+    public function configurationForMerchant(Merchant $merchant): array
+    {
+        $override = $this->merchantPaymentSettings()->forMerchant($merchant->id)->first();
+
+        return [
+            ...$this->financialSettingsWithOverride($override),
+            'settlement_mode' => $override?->settlement_mode ?? $merchant->settlement_mode ?? 'immediate',
+            'settlement_days' => (int) ($override?->settlement_days ?? $merchant->settlement_days ?? 0),
+        ];
+    }
+
+    /**
+     * @return array{fee_percent: string, fee_fixed: string, refund_fee: string, chargeback_fee: string, reserve_percent: string, reserve_days: int}
+     */
+    private function financialSettingsWithOverride(?MerchantPaymentSetting $override): array
+    {
         return [
             'fee_percent' => (string) ($override?->fee_percent ?? $this->fee_percent ?? '0.0000'),
             'fee_fixed' => (string) ($override?->fee_fixed ?? $this->fee_fixed ?? '0.00'),

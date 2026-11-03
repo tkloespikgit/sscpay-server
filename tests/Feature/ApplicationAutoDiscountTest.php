@@ -9,7 +9,6 @@ use App\Models\PaymentMethod;
 use App\Models\SiteProduct;
 use App\Services\OrderCreationService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
-use App\Services\PaymentService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\Concerns\CreatesTestOrders;
@@ -73,9 +72,8 @@ class ApplicationAutoDiscountTest extends TestCase
             'currency' => 'USD', 'price_min' => '16.00', 'price_max' => '16.00',
         ]);
         $product->variations()->create(['woo_variation_id' => 123, 'sku' => 'SKU', 'price' => '16.00', 'currency' => 'USD']);
-        $this->mock(PaymentService::class)->shouldReceive('resolvePaymentMethod')->once()
-            ->withArgs(fn ($group, $amount) => $group->merchant_id === $this->merchant->id && $amount >= 14.50 && $amount <= 14.59)
-            ->andReturn($method);
+        PaymentGroup::where('group_key', 'default')->firstOrFail()
+            ->paymentMethods()->attach($method->id, ['priority' => 100]);
         Http::fake(['*' => Http::response(['code' => 0, 'data' => ['pay_url' => 'https://pay.example/test', 'wp_order_id' => 1]])]);
         $data = $this->data('14.60');
         unset($data['payment_method_key']);

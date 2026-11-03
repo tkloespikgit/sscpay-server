@@ -69,6 +69,8 @@ class OrderStatsAggregatorTest extends TestCase
         $row = OrderDailyStat::query()->sole();
         $this->assertSame(8, $row->paid_orders);
         $this->assertSame('800.00', (string) $row->paid_amount);
+        $this->assertSame(12, $row->created_orders);
+        $this->assertSame(3, $row->unpaid_terminal_orders);
     }
 
     /** 发货后 status 变成 shipped，成交额不能因此从统计里消失。 */
@@ -102,6 +104,10 @@ class OrderStatsAggregatorTest extends TestCase
 
         $this->assertSame(0, $this->statFor(now()->subDays(3))?->failed_orders ?? 0);
         $this->assertSame(1, $this->statFor(now())->failed_orders);
+        $this->assertSame(1, $this->statFor(now()->subDays(3))->created_orders);
+        $this->assertSame(0, $this->statFor(now())->created_orders);
+        $this->assertSame(0, $this->statFor(now()->subDays(3))->unpaid_terminal_orders);
+        $this->assertSame(1, $this->statFor(now())->unpaid_terminal_orders);
     }
 
     /** 只数 status='failed'，不含 cancelled/expired（业务方指定口径）。 */
@@ -110,11 +116,14 @@ class OrderStatsAggregatorTest extends TestCase
         $this->statOrder('F', ['status' => 'failed', 'failed_at' => now()]);
         $this->statOrder('C', ['status' => 'cancelled']);
         $this->statOrder('E', ['status' => 'expired']);
+        $this->statOrder('P', ['status' => 'pending']);
 
         $this->aggregator->aggregateDate(now());
 
         $this->assertSame(1, $this->statFor(now())->failed_orders);
         $this->assertSame('100.00', (string) $this->statFor(now())->failed_amount);
+        $this->assertSame(3, $this->statFor(now())->unpaid_terminal_orders);
+        $this->assertSame(4, $this->statFor(now())->created_orders);
     }
 
     /** 历史订单没有 paid_at，要回退按 created_at 归日（口径同 PaymentService）。 */
@@ -253,6 +262,7 @@ class OrderStatsAggregatorTest extends TestCase
         $run = OrderStatsRun::query()->sole();
         $this->assertSame(0, $run->rows_written);
         $this->assertSame(now()->toDateString(), $run->stat_date);
+        $this->assertSame(OrderStatsRun::CURRENT_METRICS_VERSION, $run->metrics_version);
 
         $this->assertSame([], app(OrderStatsQueryService::class)->missingDates('today'));
     }
@@ -265,6 +275,33 @@ class OrderStatsAggregatorTest extends TestCase
         $missing = app(OrderStatsQueryService::class)->missingDates('yesterday');
 
         $this->assertSame([now()->subDay()->toDateString()], $missing);
+    }
+
+    public function test_an_old_zero_activity_run_is_incomplete_until_reaggregated_with_current_metrics(): void
+    {
+        $run = OrderStatsRun::create([
+            'stat_date' => now()->toDateString(), 'completed_at' => now(),
+            'rows_written' => 0, 'duration_ms' => 1, 'metrics_version' => 1,
+        ]);
+
+        $this->assertSame([now()->toDateString()], app(OrderStatsQueryService::class)->missingDates('today'));
+        $this->aggregator->aggregateDate(now());
+
+        $this->assertSame([], app(OrderStatsQueryService::class)->missingDates('today'));
+        $this->assertSame(OrderStatsRun::CURRENT_METRICS_VERSION, $run->fresh()->metrics_version);
+        $this->assertSame(0, $run->fresh()->rows_written);
+    }
+
+    public function test_cancelled_and_expired_orders_use_creation_day_even_if_failed_at_is_present(): void
+    {
+        $this->statOrder('C', ['status' => 'cancelled', 'created_at' => now()->subDay(), 'failed_at' => now()]);
+        $this->statOrder('E', ['status' => 'expired', 'created_at' => now()->subDay(), 'failed_at' => now()]);
+
+        $this->aggregator->aggregateDate(now()->subDay());
+        $this->aggregator->aggregateDate(now());
+
+        $this->assertSame(2, $this->statFor(now()->subDay())->unpaid_terminal_orders);
+        $this->assertSame(0, $this->statFor(now())?->unpaid_terminal_orders ?? 0);
     }
 
     // ------------------------------------------------------------------

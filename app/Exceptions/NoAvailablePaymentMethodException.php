@@ -5,9 +5,8 @@ namespace App\Exceptions;
 use Exception;
 
 /**
- * 风控遍历完 group_key 下所有支付方式后，没有任何一个通过全部阈值检查。
- * 按最新业务决定（风控在下单时直接锁死单一支付方式，不返回候选列表），
- * 这种情况下整笔订单创建失败，不会产生 order 记录。
+ * 支付组不可用，或没有商户可用且通过风控的支付方式。
+ * 首次下单不会创建本地订单；已有订单的重试保留原记录，不请求不可用渠道。
  */
 class NoAvailablePaymentMethodException extends Exception
 {

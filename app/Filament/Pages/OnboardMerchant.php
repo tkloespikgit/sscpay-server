@@ -3,8 +3,10 @@
 namespace App\Filament\Pages;
 
 use App\Filament\Resources\MerchantResource;
+use App\Filament\Support\MerchantPaymentSettingsForm;
 use App\Models\Application;
 use App\Models\Merchant;
+use App\Models\MerchantPaymentSetting;
 use App\Models\User;
 use App\Rules\UniqueAccountEmail;
 use App\Services\MerchantRoleProvisioningService;
@@ -19,6 +21,7 @@ use Filament\Pages\Page;
 use Filament\Schemas\Components\Wizard;
 use Filament\Schemas\Components\Wizard\Step;
 use Filament\Schemas\Schema;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
@@ -62,10 +65,7 @@ class OnboardMerchant extends Page
 
     public function mount(): void
     {
-        $this->form->fill([
-            'merchant_timezone' => (string) config('app.timezone', 'UTC'),
-            'app_is_order_email_enabled' => true,
-        ]);
+        $this->form->fill();
     }
 
     public function form(Schema $schema): Schema
@@ -89,9 +89,11 @@ class OnboardMerchant extends Page
                             Select::make('merchant_timezone')
                                 ->label(__('admin.merchant.fields.timezone'))
                                 ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
+                                ->default(fn () => (string) config('app.timezone', 'UTC'))
                                 ->searchable()
                                 ->helperText(__('admin.merchant.help.timezone')),
                             Textarea::make('merchant_remark')->label(__('admin.merchant.fields.remark'))->rows(3)->columnSpanFull(),
+                            MerchantPaymentSettingsForm::defaultsSection(),
                         ])->columns(2),
 
                     Step::make('admin_account')
@@ -159,6 +161,11 @@ class OnboardMerchant extends Page
                 'status' => true,
                 'timezone' => $data['merchant_timezone'],
                 'remark' => $data['merchant_remark'],
+                ...Arr::only($data, [
+                    ...array_map(fn (string $field): string => 'default_'.$field, MerchantPaymentSetting::FINANCIAL_FIELDS),
+                    'settlement_mode',
+                    'settlement_days',
+                ]),
             ]);
 
             $roleService = app(MerchantRoleProvisioningService::class);

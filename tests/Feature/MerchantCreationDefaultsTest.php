@@ -10,6 +10,7 @@ use App\Models\Application;
 use App\Models\Merchant;
 use App\Models\MerchantPaymentSetting;
 use App\Models\User;
+use App\Services\MerchantPaymentSettingsService;
 use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Database\Seeders\PermissionSeeder;
@@ -18,7 +19,9 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
+use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\TestWith;
+use RuntimeException;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -251,6 +254,87 @@ class MerchantCreationDefaultsTest extends TestCase
         $this->assertSame($individualTerms, $setting->fresh()->only(array_keys($individualTerms)));
         $this->assertDatabaseCount('merchant_payment_settings', 1);
         Http::assertNothingSent();
+    }
+
+    public function test_saving_merchant_defaults_initializes_missing_assigned_method_settings_and_preserves_existing_settings(): void
+    {
+        $this->createMerchantAndApplication();
+        $manager = $this->administrator();
+        $this->merchant->update(['owner_id' => $manager->id]);
+        $this->actingAs($manager);
+        $missingMethod = $this->makePaymentMethod('missing_assigned_terms');
+        $missingMethod->update(['merchant_id' => null]);
+        $missingMethod->assignedMerchants()->attach($this->merchant->id);
+        MerchantPaymentSetting::query()->forMerchant($this->merchant->id)
+            ->where('payment_method_id', $missingMethod->id)->delete();
+        $configuredMethod = $this->makePaymentMethod('existing_assigned_terms');
+        $configuredMethod->update(['merchant_id' => null]);
+        $configuredMethod->assignedMerchants()->attach($this->merchant->id);
+        $individualTerms = [
+            'fee_percent' => '4.2500',
+            'fee_fixed' => '0.50',
+            'refund_fee' => '3.00',
+            'chargeback_fee' => '20.00',
+            'reserve_percent' => '15.0000',
+            'reserve_days' => 120,
+            'settlement_mode' => 'immediate',
+            'settlement_days' => 2,
+        ];
+        $existingSetting = MerchantPaymentSetting::query()->forMerchant($this->merchant->id)
+            ->where('payment_method_id', $configuredMethod->id)->sole();
+        $existingSetting->update($individualTerms);
+        $defaults = [...$this->financialDefaults(), 'default_fee_percent' => '14.0000'];
+        Http::preventStrayRequests();
+
+        Livewire::test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+            ->fillForm($defaults)
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $initialized = MerchantPaymentSetting::query()->forMerchant($this->merchant->id)
+            ->where('payment_method_id', $missingMethod->id)->sole();
+        $this->assertSame([
+            'fee_percent' => '14.0000',
+            'fee_fixed' => '0.30',
+            'refund_fee' => '5.00',
+            'chargeback_fee' => '15.00',
+            'reserve_percent' => '10.0000',
+            'reserve_days' => 90,
+            'settlement_mode' => 'shipped',
+            'settlement_days' => 7,
+        ], $initialized->only(array_keys($individualTerms)));
+        $this->assertSame($individualTerms, $existingSetting->fresh()->only(array_keys($individualTerms)));
+        $this->assertSame($defaults, $this->merchant->fresh()->only(array_keys($defaults)));
+        $this->assertDatabaseCount('merchant_payment_settings', 2);
+        Http::assertNothingSent();
+    }
+
+    public function test_saving_merchant_defaults_rolls_back_when_initializing_assigned_settings_fails(): void
+    {
+        $this->createMerchantAndApplication();
+        $manager = $this->administrator();
+        $this->merchant->update(['owner_id' => $manager->id]);
+        $this->actingAs($manager);
+        $defaults = $this->financialDefaults();
+        $originalDefaults = $this->merchant->fresh()->only(array_keys($defaults));
+        $this->mock(MerchantPaymentSettingsService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('initializeMissingForMerchant')
+                ->once()
+                ->with($this->merchant->id)
+                ->andThrow(new RuntimeException('Initializing assigned financial settings failed.'));
+        });
+        Http::preventStrayRequests();
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Initializing assigned financial settings failed.');
+
+        try {
+            Livewire::test(EditMerchant::class, ['record' => $this->merchant->getRouteKey()])
+                ->fillForm($defaults)
+                ->call('save');
+        } finally {
+            $this->assertSame($originalDefaults, $this->merchant->fresh()->only(array_keys($defaults)));
+            Http::assertNothingSent();
+        }
     }
 
     /** @return array<string, int|string> */

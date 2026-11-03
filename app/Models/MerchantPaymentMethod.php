@@ -21,8 +21,15 @@ class MerchantPaymentMethod extends Pivot
         });
     }
 
+    /**
+     * 先锁商户再写分配，避免外键共享锁与默认配置行锁在并发分配时相互升级。
+     */
     public function save(array $options = []): bool
     {
-        return $this->getConnection()->transaction(fn (): bool => parent::save($options));
+        return $this->getConnection()->transaction(function () use ($options): bool {
+            Merchant::query()->whereKey((int) $this->merchant_id)->lockForUpdate()->first();
+
+            return parent::save($options);
+        });
     }
 }

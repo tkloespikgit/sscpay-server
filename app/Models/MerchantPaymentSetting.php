@@ -12,7 +12,11 @@ class MerchantPaymentSetting extends Model
 
     public const FINANCIAL_FIELDS = ['fee_percent', 'fee_fixed', 'refund_fee', 'chargeback_fee', 'reserve_percent', 'reserve_days'];
 
-    protected $fillable = ['merchant_id', 'payment_method_id', ...self::FINANCIAL_FIELDS];
+    public const SETTLEMENT_FIELDS = ['settlement_mode', 'settlement_days'];
+
+    public const CONFIGURATION_FIELDS = [...self::FINANCIAL_FIELDS, ...self::SETTLEMENT_FIELDS];
+
+    protected $fillable = ['merchant_id', 'payment_method_id', ...self::CONFIGURATION_FIELDS];
 
     protected function casts(): array
     {
@@ -23,6 +27,7 @@ class MerchantPaymentSetting extends Model
             'chargeback_fee' => 'decimal:2',
             'reserve_percent' => 'decimal:4',
             'reserve_days' => 'integer',
+            'settlement_days' => 'integer',
         ];
     }
 

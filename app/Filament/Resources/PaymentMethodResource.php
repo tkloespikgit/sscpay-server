@@ -32,6 +32,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -293,6 +294,13 @@ class PaymentMethodResource extends Resource
                         TextInput::make('max_amount_per_transaction')->label(__('admin.payment_method.fields.max_amount_per_transaction'))->numeric()->default(0)->prefix('$'),
                         TextInput::make('max_amount_per_day')->label(__('admin.payment_method.fields.max_amount_per_day'))->numeric()->default(0)->prefix('$'),
                         TextInput::make('max_count_per_day')->label(__('admin.payment_method.fields.max_count_per_day'))->numeric()->default(0),
+                        TextInput::make('max_failed_times')
+                            ->label(__('admin.payment_method.fields.max_failed_times'))
+                            ->integer()
+                            ->minValue(1)
+                            ->maxValue(4294967295)
+                            ->placeholder(fn (): string => __('admin.payment_method.help.max_failed_times_inherited', ['count' => PaymentMethod::defaultMaxFailedTimes()]))
+                            ->helperText(__('admin.payment_method.help.max_failed_times')),
                     ])->columns(2),
 
                 Section::make(__('admin.payment_method.sections.fees'))
@@ -356,8 +364,6 @@ class PaymentMethodResource extends Resource
     public static function table(Table $table): Table
     {
         $columns = [];
-        $viewer = auth()->user();
-        $merchantId = $viewer instanceof User && ! $viewer->isPlatformStaff() ? (int) $viewer->merchant_id : null;
 
         // 商户用户在全局 Scope 下只能看到自己的支付方式，商户列没有意义；
         // 平台侧账号（超管、商户级管理员）看到的是多个商户的数据，才需要展示归属商户。
@@ -382,10 +388,22 @@ class PaymentMethodResource extends Resource
         }
 
         return $table
-            ->description($merchantId ? __('payment_finance.effective_description') : null)
-            ->modifyQueryUsing(fn (Builder $query) => $merchantId
-                ? $query->with(['merchantPaymentSettings' => fn (HasMany $settings) => $settings->forMerchant($merchantId)])
-                : $query->with('owner'))
+            ->description(fn (Pages\ListPaymentMethods $livewire): string => $livewire->financialMerchant
+                ? __('payment_finance.selected_merchant_description', ['merchant' => $livewire->financialMerchant->name])
+                : __('payment_finance.platform_default_description'))
+            ->modifyQueryUsing(function (Builder $query, Pages\ListPaymentMethods $livewire): Builder {
+                $query->with('owner');
+
+                if ($livewire->hasInvalidFinancialMerchantFilter()) {
+                    return $query->whereRaw('1 = 0');
+                }
+
+                if ($merchant = $livewire->financialMerchant) {
+                    $query->with(['merchantPaymentSettings' => fn (HasMany $settings) => $settings->forMerchant($merchant->id)]);
+                }
+
+                return $query;
+            })
             ->columns(array_merge($columns, [
                 TextColumn::make('method_name')->label(__('admin.payment_method.fields.method_name'))->searchable(),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
@@ -411,28 +429,72 @@ class PaymentMethodResource extends Resource
                 TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_day')->label(__('admin.payment_method.columns.daily_limit'))->money('usd'),
                 TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
+                TextColumn::make('consecutive_failed_times')
+                    ->label(__('admin.payment_method.fields.consecutive_failed_times'))
+                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'refund_fee', $merchantId))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'refund_fee', $livewire->financialMerchant))
                     ->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'chargeback_fee', $merchantId))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'chargeback_fee', $livewire->financialMerchant))
                     ->money('usd')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'fee_percent', $merchantId))
-                    ->suffix('%')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_percent', $livewire->financialMerchant))
+                    ->suffix('%')->toggleable(),
                 TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'fee_fixed', $merchantId))
-                    ->money('usd')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_fixed', $livewire->financialMerchant))
+                    ->money('usd')->toggleable(),
                 TextColumn::make('reserve_percent')->label(__('payment_finance.reserve_percent'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'reserve_percent', $merchantId))
-                    ->suffix('%')->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_percent', $livewire->financialMerchant))
+                    ->suffix('%')->toggleable(),
                 TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))
-                    ->state(fn (PaymentMethod $record) => static::displayFinancialSetting($record, 'reserve_days', $merchantId))
-                    ->suffix(__('payment_finance.days'))->toggleable(isToggledHiddenByDefault: $merchantId === null),
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_days', $livewire->financialMerchant))
+                    ->suffix(__('payment_finance.days'))->toggleable(),
+                TextColumn::make('settlement_mode')->label(__('settlement.fields.mode'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_mode', $livewire->financialMerchant))
+                    ->formatStateUsing(fn (?string $state): ?string => $state === null ? null : __('settlement.modes.'.$state))
+                    ->visible(fn (Pages\ListPaymentMethods $livewire): bool => $livewire->financialMerchant !== null)
+                    ->toggleable(),
+                TextColumn::make('settlement_days')->label(__('settlement.fields.cycle_days'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_days', $livewire->financialMerchant))
+                    ->suffix(__('settlement.days'))
+                    ->visible(fn (Pages\ListPaymentMethods $livewire): bool => $livewire->financialMerchant !== null)
+                    ->toggleable(),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),
             ]))
+            ->filters([
+                SelectFilter::make('merchant_id')
+                    ->label(__('payment_finance.merchant_filter'))
+                    ->visible(fn (): bool => auth()->user() instanceof User && auth()->user()->isPlatformStaff())
+                    ->options(function (): array {
+                        $actor = auth()->user();
+
+                        if (! $actor instanceof User) {
+                            return [];
+                        }
+
+                        $query = Merchant::query()->where('status', true);
+                        $merchantIds = $actor->manageableMerchantIds();
+
+                        if ($merchantIds !== null) {
+                            $query->whereIn('id', $merchantIds);
+                        }
+
+                        return $query->orderBy('name')->pluck('name', 'id')->all();
+                    })
+                    ->searchable()
+                    ->query(function (Builder $query, Pages\ListPaymentMethods $livewire): Builder {
+                        if ($livewire->hasInvalidFinancialMerchantFilter()) {
+                            return $query->whereRaw('1 = 0');
+                        }
+
+                        return ($merchant = $livewire->financialMerchant)
+                            ? $query->forMerchant($merchant->id)
+                            : $query;
+                    }),
+            ])
             ->recordActions([
                 static::syncProductsAction(),
                 static::duplicateAction(),
@@ -442,9 +504,13 @@ class PaymentMethodResource extends Resource
             ->defaultSort('sort_order');
     }
 
-    protected static function displayFinancialSetting(PaymentMethod $record, string $field, ?int $merchantId): string|int|null
+    protected static function displayFinancialSetting(PaymentMethod $record, string $field, ?Merchant $merchant): string|int|null
     {
-        $override = $merchantId === null ? null : $record->merchantPaymentSettings->firstWhere('merchant_id', $merchantId);
+        $override = $merchant === null ? null : $record->merchantPaymentSettings->firstWhere('merchant_id', $merchant->id);
+
+        if (in_array($field, ['settlement_mode', 'settlement_days'], true)) {
+            return $merchant === null ? null : ($override?->{$field} ?? $merchant->{$field});
+        }
 
         return $override?->{$field} ?? $record->{$field};
     }
@@ -641,6 +707,7 @@ class PaymentMethodResource extends Resource
                 $copy = $record->replicate([
                     'method_code_uniq', 'assigned_merchants_count', 'site_products_count', 'site_products_exists',
                     'sender_email', 'sender_name', 'mail_driver', 'mail_credentials', 'payment_link_mail_template',
+                    'consecutive_failed_times',
                 ]);
                 $copy->is_active = false;
                 // 商户级管理员复制：副本脱离原商户，变成挂在自己名下的系统级支付方式；

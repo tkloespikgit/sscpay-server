@@ -388,6 +388,8 @@ return [
             'max_amount_per_day' => 'Max Daily Total Amount',
             'max_count_per_day' => 'Max Daily Transaction Count',
             'max_amount_per_month' => 'Max Monthly Total Amount',
+            'max_failed_times' => 'Consecutive Order Creation Failure Limit',
+            'consecutive_failed_times' => 'Consecutive Order Creation Failures',
             'refund_fee' => 'Refund Fee',
             'chargeback_fee' => 'Chargeback Fee',
             'fee_percent' => 'Transaction Fee (Percent)',
@@ -401,7 +403,9 @@ return [
         'help' => [
             'merchant_blank_for_system_level' => 'Leave blank to create a system-level payment method (owned by you); it can then be assigned to multiple merchants below. Assigned merchants can use it but cannot change its configuration.',
             'assigned_merchants' => 'Assigned merchants can pick this payment method in their own payment groups, but cannot edit its configuration, delete it, duplicate it, or trigger a sync. Removing a merchant here also detaches this payment method from that merchant\'s payment groups automatically.',
-            'risk_control' => 'Enter 0 for no limit',
+            'risk_control' => 'Enter 0 for no amount or count limit. Leave the consecutive order creation failure limit blank to inherit the system default.',
+            'max_failed_times' => 'Enter an integer of at least 1, or leave blank to inherit the system default. The channel is automatically disabled when consecutive order creation failures reach this limit. Successful creation resets the count.',
+            'max_failed_times_inherited' => 'System default (:count failures)',
             'config_map' => 'Pick the payment type template for this method — the matching config fields will appear below automatically',
             'gateway_credentials' => 'Gateway API credentials. Password fields are stored and displayed in plain text.',
             'site_config' => 'Configure the WordPress site and its WooCommerce plugin REST API credentials. All three fields are required.',
@@ -1305,12 +1309,25 @@ return [
 
     'system_config' => [
         'nav_label' => 'System Settings',
+        'list_description' => 'Browse configurations by group. Click a row or Edit to update a value in a modal.',
+        'all_groups' => 'All configurations',
+        'ungrouped' => 'Ungrouped',
+        'not_set' => 'Not set',
+        'search_placeholder' => 'Search configuration keys or descriptions',
+        'sections' => [
+            'details' => 'Configuration details',
+        ],
+        'boolean_values' => [
+            'true' => 'Enabled',
+            'false' => 'Disabled',
+        ],
         'fields' => [
             'config_key' => 'Config Key',
             'description' => 'Description',
             'config_value' => 'Value',
             'group' => 'Group',
             'value_type' => 'Value Type',
+            'updated_at' => 'Updated at',
         ],
         'groups' => [
             'exchange' => 'Exchange Rate',
@@ -1330,12 +1347,16 @@ return [
         ],
         'actions' => [
             'add_item' => 'Add Item',
+            'edit' => 'Edit configuration',
         ],
         'order_status_colors' => [
             'helper' => 'Enter a JSON object mapping order statuses to colors: gray, primary (theme), success (green), info (blue), warning (amber), or danger (red). You may override individual statuses; omitted statuses use their default colors. Example: {"paid":"info","refunded":"danger"}.',
             'invalid_object' => 'Enter a valid JSON object such as {"paid":"info"}. Arrays, strings, numbers, and null are not allowed.',
             'unknown_status' => 'Unknown order status: :status. Use an existing order status key.',
             'invalid_color' => 'The color for order status :status must be one of these strings: :colors.',
+        ],
+        'max_failed_times' => [
+            'helper' => 'Enter an integer of at least 1 (default: 5). Payment methods without an override dynamically inherit this value. Channels are automatically disabled when consecutive order creation failures reach the limit.',
         ],
     ],
 
@@ -1464,31 +1485,45 @@ return [
 
     'dashboard' => [
         'filters' => [
-            'time_window' => 'Time Window',
-            'payment_method' => 'Payment Method',
-            'all_payment_methods' => 'All Payment Methods',
-            'days' => [
-                '7' => 'Last 7 Days',
-                '30' => 'Last 30 Days',
-                '90' => 'Last 90 Days',
-            ],
+            'period' => 'Transaction date range',
+            'custom_heading' => 'Custom date range',
+            'date_from' => 'Start date',
+            'date_to' => 'End date',
+            'apply' => 'Apply range',
+        ],
+        'periods' => [
+            'today' => 'Today',
+            'yesterday' => 'Yesterday',
+            'last_7_days' => 'Last 7 Days',
+            'last_30_days' => 'Last 30 Days',
+            'this_month' => 'This Month',
+            'last_month' => 'Last Month',
+            'custom' => 'Custom',
         ],
         'success_rate' => [
             'heading' => 'Payment Success Rate',
             'description' => 'Denominator: orders that reached a terminal state within the window (excluding pending). Numerator: those paid successfully.',
             'rate' => 'Success Rate',
             'paid_orders' => 'Paid Orders',
+            'failed_orders' => 'Failed Orders',
             'terminal_orders' => 'Terminal Orders',
         ],
         'stats' => [
             'total_orders' => 'Total Orders',
             'paid_orders' => 'Paid Orders',
             'total_amount_usd' => 'Total Amount (USD)',
-            'total_merchants' => 'Total Merchants',
+            'total_merchants' => 'Transacting Merchants',
             'today_new_orders' => 'New Orders Today',
+            'incomplete' => 'Some statistics in this range are not up to date; totals may be incomplete.',
+            'data_note' => 'Order statistics update periodically and may be delayed.',
+        ],
+        'balance' => [
+            'heading' => 'Account balances',
+            'description' => 'Current account balances, independent of the transaction date range.',
         ],
         'charts' => [
-            'order_trend' => 'Order Trend (Last 30 Days)',
+            'order_trend' => 'Order Count Trend',
+            'transaction_amount_trend' => 'Transaction Amount Trend',
             'merchant_ranking' => 'Merchant Sales Ranking (Top 10)',
             'payment_method_breakdown' => 'Payment Method Breakdown',
             'order_count' => 'Order Count',
@@ -1593,6 +1628,7 @@ return [
         'gateway_reversal_settle_failed' => "⚠️ Gateway refund/chargeback auto-settlement failed\n\nOrder: :order_no\nGateway status: :status\nError: :error\n\nThe order status was updated but the amount has **not** been deducted from the merchant balance. Please settle it manually from the order detail page.",
         'gateway_reversal_amount_mismatch' => "⚠️ Gateway amount differs from the order amount\n\nOrder: :order_no\nGateway amount: :gateway_amount :currency\nOrder amount: :order_amount :currency\n\nSettled using the order amount; please verify both sides.",
         'payment_method_forbidden' => "🚫 Payment channel disabled\n\nChannel: :method_name (:method_code)\nTriggered by order: :order_no\nThe gateway account can no longer accept payments, so this channel has been automatically disabled. Please check the account status and switch to another channel if needed.",
+        'payment_method_creation_failed_disabled' => "🚫 Payment channel disabled after consecutive order creation failures\n\nChannel: :method_name (:method_code)\nTriggered by order: :order_no\nConsecutive failures: :failed_times\nFailure limit: :max_failed_times\n\nThis channel has been automatically disabled. Please check its configuration and gateway errors, then enable it manually once it has recovered.",
         'no_available_payment_method' => "⚠️ Order failed: no available payment channel\n\nPayment group: :group_name (:group_key)\nOrder amount: approx. $:amount\nReason: :reason\nThis order was not created. Please check the payment group configuration soon (are any payment methods enabled? are the risk-control thresholds set too low?).",
         'no_available_payment_method_reasons' => [
             'no_active_method' => 'This payment group has no enabled payment methods',

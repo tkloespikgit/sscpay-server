@@ -11,6 +11,8 @@ use Illuminate\Support\Carbon;
  */
 class OrderStatsRun extends Model
 {
+    public const CURRENT_METRICS_VERSION = 2;
+
     protected $primaryKey = 'stat_date';
 
     protected $keyType = 'string';
@@ -22,6 +24,7 @@ class OrderStatsRun extends Model
         'completed_at',
         'rows_written',
         'duration_ms',
+        'metrics_version',
     ];
 
     /**
@@ -36,6 +39,7 @@ class OrderStatsRun extends Model
             'completed_at' => 'datetime',
             'rows_written' => 'integer',
             'duration_ms' => 'integer',
+            'metrics_version' => 'integer',
         ];
     }
 
@@ -49,6 +53,7 @@ class OrderStatsRun extends Model
     public static function missingDatesBetween(\DateTimeInterface $from, \DateTimeInterface $to): array
     {
         $ran = static::query()
+            ->where('metrics_version', self::CURRENT_METRICS_VERSION)
             ->whereBetween('stat_date', [
                 $from->format('Y-m-d'),
                 $to->format('Y-m-d'),

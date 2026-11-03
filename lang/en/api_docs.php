@@ -241,7 +241,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'Create an order and obtain hosted payment links. A new order is usually pending; successful creation does not mean the customer has paid. Normal group routing may try other eligible channels after a gateway failure. A designated payment_method_key uses only that channel without failover.',
+                    'text' => 'Create an order and obtain hosted payment links. A new order is usually pending; successful creation does not mean the customer has paid. Each request attempts one channel and immediately returns GATEWAY_ERROR on a gateway creation failure. A new request with the original merchant reference reuses the original channel and gateway reference without switching channels. The channel must remain enabled and authorized; normal routing also rechecks the original group and current risk limits. An unavailable original channel returns an error even if other channels are available. Orders with an existing payment link or recorded payment return the existing result.',
                 ],
                 [
                     'type' => 'table',

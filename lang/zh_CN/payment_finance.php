@@ -2,8 +2,13 @@
 
 return [
     'title' => '商户支付方式财务配置',
-    'description' => '仅对该商户生效；空值继承支付方式默认配置，填写 0 表示明确设为零。修改仅适用于新订单。',
+    'description' => '分配系统级支付方式时复制商户默认配置，各支付方式可独立修改。手续费和保证金留空继承支付方式默认值，结算设置留空继承商户默认值；0 表示明确设为零。修改仅适用于新订单。',
+    'defaults_title' => '商户默认财务配置',
+    'defaults_description' => '新分配系统级支付方式时复制这些默认值；保存商户时，也会为既有分配中尚无独立配置的支付方式补齐配置。已有独立配置不会被覆盖，包括空值和 0。',
     'effective_description' => '手续费和保证金显示当前商户的生效配置；空值继承渠道默认值，由平台管理员维护。',
+    'merchant_filter' => '查看商户生效配置',
+    'platform_default_description' => '当前显示支付方式的渠道默认费率和保证金。选择商户后，可查看该商户可用支付方式的生效财务配置。',
+    'selected_merchant_description' => '当前显示「:merchant」的生效费率、保证金与结算配置。手续费和保证金空值继承渠道默认值，结算空值继承商户默认值。',
     'fee_percent' => '交易手续费比例',
     'fee_fixed' => '交易固定手续费',
     'refund_fee' => '退款手续费',
@@ -12,8 +17,11 @@ return [
     'reserve_days' => '保证金锁定天数',
     'reserve_help' => '按净结算金额划分循环保证金，锁定期从该订单结算时起算。',
     'inherit_default' => '留空继承支付方式默认值',
+    'inherit_merchant_settlement' => '留空继承商户默认结算设置',
+    'merchant_default_value' => '继承商户默认',
     'default_value' => '继承默认',
     'days' => '天',
     'reset' => '恢复默认配置',
+    'reset_description' => '删除此独立配置后，手续费和保证金恢复为支付方式默认值，结算模式和周期恢复为商户默认值。仅影响新订单。',
     'unavailable_method' => '该支付方式不属于此商户，也未以系统级渠道分配给此商户。',
 ];

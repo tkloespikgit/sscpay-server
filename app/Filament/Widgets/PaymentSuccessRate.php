@@ -8,18 +8,14 @@ use Filament\Widgets\Concerns\InteractsWithPageFilters;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 
-/**
- * 支付成功率（口径 1，订单维度）：分母 = 所选时间窗内已到达终态的订单
- *（排除 pending），分子 = 其中支付成功过的订单。
- *
- * 受仪表盘筛选器联动：支付方式（$filters['payment_method']）与
- * 时间窗口（$filters['time_window']，单位天）。通过 InteractsWithPageFilters
- * 接收页面筛选状态（v5 中 $this->filters 是 $this->pageFilters 的兼容别名）。
- * 首次进入时筛选器可能尚未初始化，所以读取时都做了兜底。
- */
 class PaymentSuccessRate extends StatsOverviewWidget
 {
     use InteractsWithPageFilters;
+
+    public function boot(): void
+    {
+        abort_unless(static::canView(), 403);
+    }
 
     public static function canView(): bool
     {
@@ -43,13 +39,11 @@ class PaymentSuccessRate extends StatsOverviewWidget
 
     protected function getStats(): array
     {
-        $days = (int) ($this->filters['time_window'] ?? 30);
-        $paymentMethod = $this->filters['payment_method'] ?? null;
+        abort_unless(static::canView(), 403);
 
         $result = app(DashboardService::class)->getPaymentSuccessRate(
             DashboardService::viewerMerchantIds(),
-            $paymentMethod,
-            $days,
+            $this->pageFilters ?? [],
         );
 
         $rate = $result['success_rate'];

@@ -3,6 +3,8 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\SystemConfigResource\Pages;
+use App\Filament\Support\SystemConfigForm;
+use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
 use App\Services\MerchantRoleProvisioningService;
 use App\Support\OrderStatusColor;
@@ -17,11 +19,13 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
+use Filament\Support\Enums\Width;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Lang;
 
 /**
  * 系统配置管理（超管专属）：汇率汇损、订单事件同步、付款链接有效期、
@@ -60,20 +64,31 @@ class SystemConfigResource extends Resource
      * 一样后台不允许改——改了类型但没同步改代码里读它的方式（get()/getArray()/
      * getBool()），会直接读出脏数据。这里只用它来决定 config_value 该用哪个
      * 控件编辑，参见下面按 value_type 分流出来的这一组 value_* 字段：
-     * 编辑页在 EditSystemConfig::mutateFormDataBeforeFill/BeforeSave 里
-     * 把它们跟真正的 config_value 互相转换，表单本身不直接编辑 config_value。
+     * 编辑页与列表弹框共用 SystemConfigForm 转换 config_value。
      */
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make()->schema([
-                TextInput::make('config_key')->label(__('admin.system_config.fields.config_key'))->disabled(),
-                TextInput::make('description')->label(__('admin.system_config.fields.description'))->disabled(),
+            Section::make(__('admin.system_config.sections.details'))->schema([
+                TextInput::make('config_key')
+                    ->label(__('admin.system_config.fields.config_key'))
+                    ->disabled()
+                    ->columnSpanFull(),
+                TextInput::make('group')
+                    ->label(__('admin.system_config.fields.group'))
+                    ->formatStateUsing(fn (?string $state): string => static::groupLabel($state))
+                    ->disabled(),
                 Select::make('value_type')
                     ->label(__('admin.system_config.fields.value_type'))
                     ->options(static::valueTypeOptions())
                     ->disabled(),
-
+                Textarea::make('description')
+                    ->label(__('admin.system_config.fields.description'))
+                    ->rows(3)
+                    ->disabled()
+                    ->columnSpanFull(),
+            ])->columns(2)->columnSpanFull(),
+            Section::make(__('admin.system_config.fields.config_value'))->schema([
                 TextInput::make('value_string')
                     ->label(__('admin.system_config.fields.config_value'))
                     ->required()
@@ -83,6 +98,12 @@ class SystemConfigResource extends Resource
                     ->label(__('admin.system_config.fields.config_value'))
                     ->numeric()
                     ->required()
+                    ->rules(fn (?SystemConfig $record): array => $record?->config_key === PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY
+                        ? ['integer', 'min:1', 'max:4294967295']
+                        : [])
+                    ->helperText(fn (?SystemConfig $record): ?string => $record?->config_key === PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY
+                        ? __('admin.system_config.max_failed_times.helper')
+                        : null)
                     ->visible(fn (Get $get) => $get('value_type') === SystemConfig::TYPE_NUMBER),
 
                 Repeater::make('value_json')
@@ -110,7 +131,7 @@ class SystemConfigResource extends Resource
                     ->directory('system-configs')
                     ->required()
                     ->visible(fn (Get $get) => $get('value_type') === SystemConfig::TYPE_IMAGE),
-            ]),
+            ])->columnSpanFull(),
         ]);
     }
 
@@ -124,34 +145,77 @@ class SystemConfigResource extends Resource
             ->all();
     }
 
+    public static function groupLabel(?string $group): string
+    {
+        if (blank($group)) {
+            return __('admin.system_config.ungrouped');
+        }
+
+        $key = 'admin.system_config.groups.'.$group;
+
+        return Lang::has($key) ? __($key) : $group;
+    }
+
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
-                TextColumn::make('group')->label(__('admin.system_config.fields.group'))->badge(),
-                TextColumn::make('config_key')->label(__('admin.system_config.fields.config_key'))->searchable(),
+                TextColumn::make('config_key')
+                    ->label(__('admin.system_config.fields.config_key'))
+                    ->searchable()
+                    ->sortable()
+                    ->wrap(),
+                TextColumn::make('group')
+                    ->label(__('admin.system_config.fields.group'))
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => static::groupLabel($state))
+                    ->placeholder(__('admin.system_config.ungrouped'))
+                    ->sortable(),
+                TextColumn::make('config_value')
+                    ->label(__('admin.system_config.fields.config_value'))
+                    ->formatStateUsing(fn (?string $state, SystemConfig $record): ?string => $record->value_type === SystemConfig::TYPE_BOOLEAN
+                        ? __('admin.system_config.boolean_values.'.(filter_var($state, FILTER_VALIDATE_BOOLEAN) ? 'true' : 'false'))
+                        : $state)
+                    ->badge(fn (SystemConfig $record): bool => $record->value_type === SystemConfig::TYPE_BOOLEAN)
+                    ->color(fn (SystemConfig $record): string => $record->value_type === SystemConfig::TYPE_BOOLEAN
+                        && filter_var($record->config_value, FILTER_VALIDATE_BOOLEAN) ? 'success' : 'gray')
+                    ->limit(100)
+                    ->wrap()
+                    ->placeholder(__('admin.system_config.not_set')),
+                TextColumn::make('description')
+                    ->label(__('admin.system_config.fields.description'))
+                    ->searchable()
+                    ->wrap(),
                 TextColumn::make('value_type')
                     ->label(__('admin.system_config.fields.value_type'))
                     ->badge()
-                    ->formatStateUsing(fn (string $state) => __('admin.system_config.value_types.'.$state)),
-                TextColumn::make('config_value')->label(__('admin.system_config.fields.config_value'))->limit(50),
-                TextColumn::make('description')->label(__('admin.system_config.fields.description'))->wrap(),
-            ])
-            ->filters([
-                SelectFilter::make('group')->label(__('admin.system_config.fields.group'))->options([
-                    'exchange' => __('admin.system_config.groups.exchange'),
-                    'order' => __('admin.system_config.groups.order'),
-                    'order_event' => __('admin.system_config.groups.order_event'),
-                    'payment' => __('admin.system_config.groups.payment'),
-                    'security' => __('admin.system_config.groups.security'),
-                    'notify' => __('admin.system_config.groups.notify'),
-                    'logistics' => __('admin.system_config.groups.logistics'),
-                ]),
+                    ->formatStateUsing(fn (string $state) => __('admin.system_config.value_types.'.$state))
+                    ->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('updated_at')
+                    ->label(__('admin.system_config.fields.updated_at'))
+                    ->dateTime('Y-m-d H:i:s')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->recordActions([
-                EditAction::make(),
+                EditAction::make()
+                    ->modal()
+                    ->modalHeading(__('admin.system_config.actions.edit'))
+                    ->modalWidth(Width::ThreeExtraLarge)
+                    ->stickyModalHeader()
+                    ->stickyModalFooter()
+                    ->mutateRecordDataUsing(fn (array $data, SystemConfig $record): array => SystemConfigForm::fill($data, $record))
+                    ->mutateDataUsing(fn (array $data, SystemConfig $record, EditAction $action): array => SystemConfigForm::save(
+                        $data,
+                        $record,
+                        'mountedActions.'.$action->getNestingIndex().'.data',
+                    ))
+                    ->after(fn (SystemConfig $record) => Cache::forget('system_config:'.$record->config_key)),
             ])
-            ->defaultSort('group');
+            ->recordUrl(null)
+            ->recordAction('edit')
+            ->searchPlaceholder(__('admin.system_config.search_placeholder'))
+            ->defaultSort(fn (Builder $query): Builder => $query->orderBy('group')->orderBy('config_key'));
     }
 
     public static function getPages(): array

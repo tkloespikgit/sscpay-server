@@ -2,8 +2,13 @@
 
 return [
     'title' => 'Merchant payment financial settings',
-    'description' => 'Applies to this merchant only. Blank values inherit payment method defaults; 0 explicitly sets zero. Changes apply to new orders only.',
+    'description' => 'Assigning a system payment method copies the merchant defaults into independent settings. Each payment method can then be edited separately. Blank fees and reserves inherit payment method defaults; blank settlement terms inherit merchant defaults. Zero explicitly sets zero. Changes apply to new orders only.',
+    'defaults_title' => 'Merchant default financial settings',
+    'defaults_description' => 'These defaults are copied when a system payment method is newly assigned. Saving the merchant also fills missing settings for existing assignments. Existing independent settings are preserved, including blanks and zero.',
     'effective_description' => 'Fees and reserves show the effective settings for your merchant. Blank overrides inherit channel defaults. Platform administrators maintain these settings.',
+    'merchant_filter' => 'View effective merchant settings',
+    'platform_default_description' => 'Showing channel defaults for fees and reserves. Select a merchant to view effective financial settings for the payment methods available to that merchant.',
+    'selected_merchant_description' => 'Showing effective fees, reserves, and settlement terms for :merchant. Blank fees and reserves inherit channel defaults; blank settlement terms inherit merchant defaults.',
     'fee_percent' => 'Transaction fee percentage',
     'fee_fixed' => 'Fixed transaction fee',
     'refund_fee' => 'Refund fee',
@@ -12,8 +17,11 @@ return [
     'reserve_days' => 'Reserve lock days',
     'reserve_help' => 'The reserve is deducted from net settlement proceeds. The lock period starts when the order settles.',
     'inherit_default' => 'Leave blank to inherit payment method defaults',
+    'inherit_merchant_settlement' => 'Leave blank to inherit merchant settlement defaults',
+    'merchant_default_value' => 'Merchant default',
     'default_value' => 'Default',
     'days' => 'days',
     'reset' => 'Restore default settings',
+    'reset_description' => 'Deleting these independent settings restores payment method defaults for fees and reserves, and merchant defaults for settlement mode and cycle. Only new orders are affected.',
     'unavailable_method' => 'This payment method is neither owned by this merchant nor assigned as a system payment method.',
 ];

@@ -7,6 +7,7 @@ use App\Models\MerchantPaymentSetting;
 use App\Models\PaymentMethod;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -14,6 +15,32 @@ use Illuminate\Validation\ValidationException;
 
 class MerchantPaymentSettingsService
 {
+    public function initializeMissingForMerchant(int $merchantId): int
+    {
+        return DB::transaction(function () use ($merchantId): int {
+            if (Merchant::query()->whereKey($merchantId)->lockForUpdate()->first() === null) {
+                return 0;
+            }
+
+            $methodIds = PaymentMethod::query()->forMerchant($merchantId)
+                ->whereNull('payment_methods.merchant_id')
+                ->whereDoesntHave('merchantPaymentSettings', fn (Builder $query): Builder => $query->forMerchant($merchantId))
+                ->orderBy('payment_methods.id')
+                ->pluck('payment_methods.id');
+            $initialized = 0;
+
+            foreach ($methodIds as $methodId) {
+                $setting = $this->initializeForAssignment($merchantId, (int) $methodId);
+
+                if ($setting?->wasRecentlyCreated) {
+                    $initialized++;
+                }
+            }
+
+            return $initialized;
+        });
+    }
+
     public function initializeForAssignment(int $merchantId, int $paymentMethodId): ?MerchantPaymentSetting
     {
         return DB::transaction(function () use ($merchantId, $paymentMethodId): ?MerchantPaymentSetting {

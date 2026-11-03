@@ -384,6 +384,8 @@ return [
             'max_amount_per_day' => '单日交易总金额上限',
             'max_count_per_day' => '单日交易笔数上限',
             'max_amount_per_month' => '单月交易总金额上限',
+            'max_failed_times' => '连续建单失败停用阈值',
+            'consecutive_failed_times' => '连续建单失败次数',
             'refund_fee' => '退款手续费',
             'chargeback_fee' => '拒付手续费',
             'fee_percent' => '交易百分比手续费',
@@ -397,7 +399,9 @@ return [
         'help' => [
             'merchant_blank_for_system_level' => '留空表示创建系统级支付方式（挂在自己名下），可在下方分配给多个商户使用；商户只能使用，不能修改配置',
             'assigned_merchants' => '被分配的商户可在自己的支付组里勾选使用这条支付方式，但不能修改配置、删除、复制或触发同步；取消分配会自动把该商户支付组里对这条支付方式的引用一并摘除',
-            'risk_control' => '填 0 表示该项不限制',
+            'risk_control' => '金额和笔数限制填 0 表示不限制；连续建单失败阈值留空则沿用系统默认',
+            'max_failed_times' => '填写大于或等于 1 的整数，留空沿用系统默认。连续建单失败达到阈值时自动禁用通道，成功建单后重置计数。',
+            'max_failed_times_inherited' => '沿用系统默认（:count 次）',
             'config_map' => '选择该支付方式对应的支付类型模板，下方会自动出现对应的配置项',
             'gateway_credentials' => '网关对接账号凭证，密码类字段均为明文保存与展示',
             'site_config' => '配置对应的 WordPress 站点及 WooCommerce 插件 REST API 密钥，三项均为必填',
@@ -1306,12 +1310,25 @@ return [
 
     'system_config' => [
         'nav_label' => '系统配置',
+        'list_description' => '按分组查看配置，点击配置行或编辑按钮在弹框中修改。',
+        'all_groups' => '全部配置',
+        'ungrouped' => '未分组',
+        'not_set' => '未设置',
+        'search_placeholder' => '搜索配置键或说明',
+        'sections' => [
+            'details' => '配置信息',
+        ],
+        'boolean_values' => [
+            'true' => '已开启',
+            'false' => '已关闭',
+        ],
         'fields' => [
             'config_key' => '配置键',
             'description' => '说明',
             'config_value' => '配置值',
             'group' => '分组',
             'value_type' => '值类型',
+            'updated_at' => '更新时间',
         ],
         'groups' => [
             'exchange' => '汇率',
@@ -1331,12 +1348,16 @@ return [
         ],
         'actions' => [
             'add_item' => '添加一项',
+            'edit' => '编辑配置',
         ],
         'order_status_colors' => [
             'helper' => '填写 JSON 对象，将订单状态映射到颜色：gray（灰色）、primary（主题色）、success（绿色）、info（蓝色）、warning（琥珀色）、danger（红色）。可只配置部分状态，遗漏状态使用默认颜色。示例：{"paid":"info","refunded":"danger"}。',
             'invalid_object' => '请填写有效的 JSON 对象，例如 {"paid":"info"}，不能使用数组、字符串、数字或 null。',
             'unknown_status' => '未知的订单状态：:status。请使用已有的订单状态键。',
             'invalid_color' => '订单状态 :status 的颜色必须是以下字符串之一：:colors。',
+        ],
+        'max_failed_times' => [
+            'helper' => '填写大于或等于 1 的整数，默认 5 次。支付方式未单独设置时动态沿用此值；连续建单失败达到阈值后自动禁用通道。',
         ],
     ],
 
@@ -1465,14 +1486,20 @@ return [
 
     'dashboard' => [
         'filters' => [
-            'time_window' => '统计时间窗',
-            'payment_method' => '支付方式',
-            'all_payment_methods' => '全部支付方式',
-            'days' => [
-                '7' => '近 7 天',
-                '30' => '近 30 天',
-                '90' => '近 90 天',
-            ],
+            'period' => '交易统计区间',
+            'custom_heading' => '自定义统计区间',
+            'date_from' => '开始日期',
+            'date_to' => '结束日期',
+            'apply' => '应用区间',
+        ],
+        'periods' => [
+            'today' => '今天',
+            'yesterday' => '昨天',
+            'last_7_days' => '近 7 天',
+            'last_30_days' => '近 30 天',
+            'this_month' => '本月',
+            'last_month' => '上月',
+            'custom' => '自定义',
         ],
         'success_rate' => [
             'heading' => '支付成功率',
@@ -1484,12 +1511,20 @@ return [
         'stats' => [
             'total_orders' => '总订单数',
             'paid_orders' => '支付成功订单数',
+            'failed_orders' => '失败订单数',
             'total_amount_usd' => '总交易金额（USD）',
-            'total_merchants' => '总商户数',
+            'total_merchants' => '交易商户数',
             'today_new_orders' => '今日新增订单',
+            'incomplete' => '所选区间部分统计尚未更新，数据可能不完整。',
+            'data_note' => '订单统计定时更新，数据可能存在延迟。',
+        ],
+        'balance' => [
+            'heading' => '账户余额',
+            'description' => '当前账户余额，不受交易时间筛选影响。',
         ],
         'charts' => [
-            'order_trend' => '近30天订单趋势',
+            'order_trend' => '订单数量趋势',
+            'transaction_amount_trend' => '交易金额趋势',
             'merchant_ranking' => '各商户销售额排行榜（Top 10）',
             'payment_method_breakdown' => '支付方式使用占比',
             'order_count' => '订单数',
@@ -1594,6 +1629,7 @@ return [
         'gateway_reversal_settle_failed' => "⚠️ 网关退款/拒付自动入账失败\n\n订单号：:order_no\n网关状态：:status\n失败原因：:error\n\n订单状态已更新，但款项**尚未**从商户余额扣除。请在后台订单详情页手动执行退款/拒付补录。",
         'gateway_reversal_amount_mismatch' => "⚠️ 网关回传金额与订单金额不一致\n\n订单号：:order_no\n网关金额：:gateway_amount :currency\n订单金额：:order_amount :currency\n\n已按订单金额入账，请核实两边数据。",
         'payment_method_forbidden' => "🚫 支付通道已自动禁用\n\n通道：:method_name（:method_code）\n触发订单：:order_no\n该通道对应的三方账号已无法下单支付，系统已自动禁用此通道，请核实账号状态，如有需要请切换其他通道。",
+        'payment_method_creation_failed_disabled' => "🚫 连续建单失败，支付通道已自动禁用\n\n通道：:method_name（:method_code）\n触发订单：:order_no\n连续失败次数：:failed_times\n停用阈值：:max_failed_times\n\n系统已自动禁用此通道，请核查通道配置与网关错误，确认恢复后再手动启用。",
         'no_available_payment_method' => "⚠️ 下单失败：没有可用的支付通道\n\n支付组：:group_name（:group_key）\n订单金额：约 \$:amount\n原因：:reason\n这笔订单没有建单成功，请尽快核实支付组配置（是否启用了支付方式、风控阈值是否设置过低）。",
         'no_available_payment_method_reasons' => [
             'no_active_method' => '该支付组下没有任何启用的支付方式',

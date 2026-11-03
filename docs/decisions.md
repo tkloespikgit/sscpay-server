@@ -20,9 +20,9 @@
 
 ## D-03 本地订单先提交，远端失败可补单
 
-**状态：已实现；固定渠道及远端引用规则由 [D-20](#d-20-前三候选随机路由与同请求网关故障切换) 部分替代。** 商户订单号级缓存锁串行化重复请求；本地订单与商品在事务内写入，HTTP 建品/建支付单在事务外执行。重复请求金额/币种相符且缺少 `pay_url` 时补建远端，同一渠道尝试沿用已有 `s_order_id`；普通路由失败切换渠道时使用新的远端引用。
+**状态：已实现；失败及重试处理现遵循 [D-24](#d-24-网关建单失败立即返回与原渠道重试)，替代 [D-20](#d-20-前三候选随机路由与同请求网关故障切换) 的渠道切换。** 商户订单号级缓存锁串行化重复请求；本地订单与商品在事务内写入，HTTP 建品/建支付单在事务外执行。重复请求金额/币种相符且缺少 `pay_url`、尚未收款、状态为 `pending/failed` 时，重新校验原渠道后沿用已有 `s_order_id` 补建，不重选渠道。
 
-**原因与影响：** 外部 HTTP 不应长期占有数据库事务。远端失败保留本地订单、原始金额和汇率；渠道切换不创建新的本地订单，但须按 D-20 更新渠道财务快照。插件侧同一 `s_order_id` 幂等是恢复链路的依赖；缓存锁租期是有限的，不能据此保证任意长的远端调用绝无并发。
+**原因与影响：** 外部 HTTP 不应长期占有数据库事务。远端失败保留本地订单、原始金额、汇率、渠道、远端引用和财务快照，返回失败后由调用方重试。插件侧同一 `s_order_id` 幂等是恢复链路的依赖；缓存锁租期是有限的，不能据此保证任意长的远端调用绝无并发。
 
 **依据：** [OrderCreationService](../app/Services/OrderCreationService.php)、[OrderCreateRetryMailTest](../tests/Feature/OrderCreateRetryMailTest.php)。
 
@@ -147,6 +147,8 @@
 
 ## D-17 商户独立财务配置、订单结算与保证金
 
+默认配置复制及逐渠道结算的后续扩展见 [D-22](#d-22-商户默认财务配置按分配复制)。
+
 **状态：用户已确认；当前工作区实现，未提交（2026-10-16）。** 商户有权使用的每个渠道可独立覆盖财务条件，空值继承默认；财务参数由超管/所属管理员维护，商户只读。新单保存手续费、结算、保证金快照，后续改配置不追溯；历史订单、余额和流水不重算。
 
 支付成功按净额计入总额及待结算。商户选择支付成功或首次有效发货起算，按 N×24 小时到期；结算时按净额分入循环保证金与可提现，锁定期从实际结算开始，0 天不冻结。人工固定保证金只允许冻结可提现。争议期间暂停本单结算/循环保证金释放，恢复后保留原到期时间。
@@ -189,7 +191,7 @@
 
 ## D-20 前三候选随机路由与同请求网关故障切换
 
-**状态：当前工作区实现，未提交（2026-10-28，按用户要求）；整体验证结果见开发记录。** 部分替代 D-03 的渠道固定和远端引用规则、D-04 的单一最小负载选择；商户幂等、原金额/汇率快照、渠道授权及统计口径保持。
+**状态：历史实现（2026-10-28）；其中故障切换规则于 2026-11-03 按用户要求由 [D-24](#d-24-网关建单失败立即返回与原渠道重试) 替代，首次前三候选随机及历史远端引用兼容仍保留。** 以下记录当时对 D-03 的渠道固定和远端引用规则、D-04 的单一最小负载选择所作的调整；当前请求失败后即返回，后续重试也沿用原渠道，不再切换。商户幂等、原金额/汇率快照、渠道授权及统计口径保持。
 
 普通组内路由先筛选启用、商户可使用且通过限额风控的渠道，再沿用“当天已成交金额 / 组内权重”升序、权重降序、ID 升序，从前三个候选中等概率随机选择；不足三个时全部参与。待支付订单仍不计成交负载，随机结果可能连续相同，不承诺逐单轮转或严格的成交占比。
 
@@ -212,3 +214,57 @@
 应用已有配置直接沿用。支付方式同名五列仅保留历史数据和密文解读兼容，移出批量赋值且复制渠道不携带，不修改已执行迁移或自动跨应用迁移邮件设置；原先仅在支付方式配置的账号与正文需在对应应用重新配置。
 
 **依据：** [Order](../app/Models/Order.php)、[SendPaymentLinkJob](../app/Jobs/SendPaymentLinkJob.php)、[MailCredentialsAction](../app/Filament/Support/MailCredentialsAction.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[邮件发送测试](../tests/Feature/SendPaymentLinkJobTest.php)、[API 重试邮件测试](../tests/Feature/OrderCreateRetryMailTest.php)。
+
+## D-22 商户默认财务配置按分配复制
+
+**状态：当前工作区实现，未提交（2026-11-03，按用户要求）。** 创建/编辑商户与入驻向导提供默认手续费、结算模式/周期及保证金比例/锁定天数。新分配系统级支付方式时，将商户当时的默认值复制到 `merchant_payment_settings`，之后可在商户编辑页按支付方式独立修改。交易、退款及拒付手续费均使用同一默认配置入口。
+
+**原因与影响：** 商户默认值是首次分配的模板，分配后的独立值不随默认值变化；已有配置及取消后重新分配保留，不批量覆盖历史。分配关系与配置初始化共用事务，先锁商户再写分配；配置唯一约束和 `firstOrCreate` 防止覆盖。商户自有渠道保留既有覆盖入口与回退规则。2026-11-03 后续按用户反馈补充：保存商户时为该商户已有有效分配中缺失的配置补齐默认值，避免存量分配一直回退渠道费率；已有记录（含空值或 0）不改写，不后台扫描全平台。
+
+本项扩展 [D-17](#d-17-商户独立财务配置订单结算与保证金)：结算模式和周期也允许逐渠道设置。新订单从选中渠道的独立配置生成全部财务快照；手续费/保证金空值回退渠道默认，结算空值回退商户默认。[D-24](#d-24-网关建单失败立即返回与原渠道重试) 的原渠道重试不重算已保存快照，已有支付链接、已收款及历史订单亦不重算。新迁移只添加商户默认列和独立配置结算列，不改既有余额或账务记录。
+
+**依据：** [MerchantPaymentSettingsForm](../app/Filament/Support/MerchantPaymentSettingsForm.php)、[MerchantPaymentMethod](../app/Models/MerchantPaymentMethod.php)、[MerchantPaymentSettingsService](../app/Services/MerchantPaymentSettingsService.php)、[PaymentMethod](../app/Models/PaymentMethod.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[分配回归测试](../tests/Feature/MerchantPaymentDefaultsAssignmentTest.php)、[独立结算表单测试](../tests/Feature/MerchantPaymentSettlementOverridesTest.php)。
+
+## D-23 仪表盘统一读取每日统计与时间快捷切换
+
+**状态：当前工作区实现，未提交（2026-11-03，按用户要求）。** 仪表盘移除支付方式筛选和时间下拉，使用当天、昨天、近 7/30 天、本月、上月及自定义快捷按钮；自定义区间通过弹窗确认。全部交易卡片、排名与图表共用所选窗口，订单数与 USD 成交额分成独立趋势图。
+
+**原因与影响：** 仪表盘交易数据统一从 `order_daily_stats` 读取，沿用 [D-10](#d-10-统计按事件时间归日整日重建汇总) 的事件归日规则。新增 `created_orders` 按创建日统计全部未删除订单，`unpaid_terminal_orders` 统计失败、取消、过期，排除待支付；支付成功率分母为支付成功数加未支付终态数，退款和拒付不重复加入。失败按失败日、取消/过期按创建日；创建单量与支付金额在跨日付款时可以出现在不同日期。
+
+按系统时区，日期区间包含首尾；近 7/30 天含当天，本月截至当天。新聚合在同一事务提交数据及执行版本 2，旧执行记录保留为版本 1 并提示需重算；不在仪表盘请求中回查订单或自动聚合，调度频率保持不变。交易商户数按所选窗口发生支付成功的商户去重，交易指标与实时余额分别取数。
+
+商户用户具备 `finance.view` 才展示当前商户的余额分类，独立于日期筛选；组件每次取数检查权限、用户和商户启用状态，按登录账号确定商户，复用现有旧提现占用分类。平台账号不显示单商户余额卡，不能通过隐藏组件的直接请求绕过权限。
+
+**依据：** [AdminDashboard](../app/Filament/Pages/AdminDashboard.php)、[DashboardService](../app/Services/DashboardService.php)、[OrderStatsAggregator](../app/Services/OrderStatsAggregator.php)、[OrderStatsRun](../app/Models/OrderStatsRun.php)、[MerchantBalanceOverview](../app/Filament/Widgets/MerchantBalanceOverview.php)、[页面测试](../tests/Feature/AdminDashboardTest.php)、[组件测试](../tests/Feature/DashboardWidgetsTest.php)、[统计口径测试](../tests/Feature/DashboardOrderStatsAlignmentTest.php)。
+
+## D-24 网关建单失败立即返回与原渠道重试
+
+**状态：当前工作区实现，未提交（2026-11-03，按用户最终澄清）。** 替代 [D-20](#d-20-前三候选随机路由与同请求网关故障切换) 的故障切换规则。普通路由首次仍从通过可用性与风控检查、按负载排序的前三个候选中随机选一个；网关建单或明确的商品准备失败后，本次请求立即停止，返回“建单失败，请重试”，不再尝试其他渠道。后续同商户单号重试保留，只沿用原渠道，不切换到其他通道。
+
+**原因与影响：** 用户要求只移除“重试切换其他通道”，保留原渠道补建。币种及原始金额一致、无付款链接、未收款且为 `pending/failed` 的订单重试时，必须重新校验原渠道仍启用、未软删且商户有权使用。普通路由还要求原支付组有效、原渠道仍在组内并通过当前风控；不合格返回 `NO_AVAILABLE_PAYMENT_METHOD`，即使其他渠道可用也不另选。已有付款链接、已收款或已离开可建单状态时返回现有订单，不继续远端创建。
+
+重试模式以订单已保存的支付组、`designated_payment_method_key`、渠道 ID 及回跳 URL 为准，不采纳新请求的 `group_key` / `payment_method_key` 或 URL 改变原订单。指定渠道重试重新校验原渠道 ID 的商户授权、启用、软删状态及保存的三个 URL，失效返回 `PAYMENT_METHOD_NOT_AVAILABLE`，域名不符返回 `PAYMENT_METHOD_DOMAIN_MISMATCH`；仍保留跳过普通组内风控的语义。
+
+重试保留同一本地订单、`order_no`、付款 token、原渠道、远端引用、全部财务快照、原始商品、应付金额、汇率及首次自动折扣；CREATE/COPY 复用此前已创建的商品。历史 `payment_method_id` 为空时仅补齐同一渠道关联，不改引用或金融快照。写链接前继续在行锁内核对当前引用与渠道，建单前和失败后仍检查支付时间、付款链接及状态，保留并发收款/链接结果。
+
+删除 `payment_gateway.failover_max_attempts` 配置，订单号缓存锁按单渠道 HTTP 重试和同步商品准备预算计算；同渠道连接失败的 HTTP 重试仍沿用现有 `retry_times` / `retry_sleep_ms`。历史切换产生的网关引用、日志来源及迟到回调的引用核对继续保留，不删除金融审计数据、不增加迁移或批量改写历史订单；当前重试不再产生新渠道引用。同渠道恢复依赖插件的引用幂等，本地锁和历史引用隔离不构成全链路绝无重复支付的保证。
+
+**依据：** [OrderCreationService](../app/Services/OrderCreationService.php)、[网关配置](../config/payment_gateway.php)、[API 控制器](../app/Http/Controllers/Api/OrderController.php)、[建单失败与幂等补建测试](../tests/Feature/OrderCreationFailoverTest.php)、[API 重试邮件测试](../tests/Feature/OrderCreateRetryMailTest.php)。
+
+## D-25 渠道连续建单失败达到阈值自动停用
+
+**状态：当前工作区实现，未提交（2026-11-03，按用户要求）。** 新增系统配置 `payment.max_failed_times`，默认 5；渠道 `max_failed_times` 可填写大于等于 1 的整数单独覆盖，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。`consecutive_failed_times` 按渠道 ID 持久化、跨商户累计，共享渠道不按商户、组或订单分桶。此处失败指建单或明确的商品准备失败，不是客户后续支付失败。
+
+**原因与影响：** 在 [D-24](#d-24-网关建单失败立即返回与原渠道重试) 的失败立即返回和原渠道重试基础上，连续失败达到阈值时自动将渠道 `is_active` 置为 false，防止异常渠道继续接收新单；不自动切换渠道或重新启用。`OrderCreationService::createPayment()` 通过 `PaymentMethodFailureService::recordFailure()` 记录一次最终失败，内部 HTTP 连接重试无论执行几次只计一次，直接调用底层网关客户端的工具操作不在统计入口内。
+
+有效 `pay_url` 成功落库后调用 `recordSuccess()` 清零；已有链接的幂等命中、金额/授权校验或风控拒绝既不计数也不清零。记录结果时在同一事务先锁原订单、再锁渠道，显式限定订单商户并核对当前 `payment_method_id` 与远端引用；失败结果还须确认无链接、未收款且仍为 `pending/failed`，避免迟到结果计入其他尝试。成功只清零，不自动恢复被停用渠道；渠道复制不复制累计次数。
+
+2026-11-03 按用户后续要求补充：人工核验恢复后，通过 `PaymentMethod` 模型将渠道从停用改为启用时，同次保存自动清零连续失败次数，开始新一轮计数。模型 `updating` 事件仅在 `is_active` 变更为 true 时重置，普通编辑保持启用状态及新建不误清；运行计数继续 `saveQuietly()`，不受此事件影响。编辑页仅写入主动修改的启用状态，事务中锁定并读取最新渠道后保存，避免旧页面误启用自动停用渠道或重复清零新失败。该补充无需新增迁移，不批量清空其他渠道计数，也不改变自动停用后须人工核验恢复的规则。
+
+仅在启用渠道达到阈值并转为停用时发送一次停用提醒，收件人为原订单商户与 `PaymentMethod::notifiableMerchantIds()` 返回的全部关联商户，合并去重；共享渠道包括所有分配商户。计数事务提交后复用 `TelegramNotificationService::send()`，未配置或未启用机器人、触发限流等情况沿用原服务的跳过规则，通知异常不覆盖建单异常。原有每次网关建单最终失败的 `PaymentLinkCreationFailed` / 队列提醒继续保留；商品准备失败新增计数，但不改变原事件范围。
+
+新增迁移为渠道添加可空 unsigned integer `max_failed_times`（默认 NULL）及 unsigned integer `consecutive_failed_times`（默认 0），不回推历史失败、不更改订单快照或资金。迁移和专用 `PaymentFailureSettingsSeeder` 均以 `insertOrIgnore` 补缺系统配置，不覆盖管理员保存的值；`SystemConfigSeeder` 调用该专用 Seeder。部署需先执行新迁移，回滚只删除渠道新列并保留系统配置。后台风控区支持阈值覆盖及动态默认值提示，列表提供默认隐藏的只读连续失败次数列。
+
+首次上线执行 `2026_11_03_223806_add_failure_limits_to_payment_methods_table` 即可同时补缺默认配置；若已执行，人工重新启用清零只部署代码。专用 Seeder 可以安全重跑，但不是迁移完成后的必需步骤；具体命令见 [数据库上线操作](database.md#2-租户身份和渠道)。
+
+**依据：** [PaymentMethod](../app/Models/PaymentMethod.php)、[PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[新增迁移](../database/migrations/2026_11_03_223806_add_failure_limits_to_payment_methods_table.php)、[PaymentFailureSettingsSeeder](../database/seeders/PaymentFailureSettingsSeeder.php)、[SystemConfigSeeder](../database/seeders/SystemConfigSeeder.php)、[建单失败保护测试](../tests/Feature/PaymentMethodCreationFailureTest.php)、[阈值配置测试](../tests/Feature/PaymentFailureSettingsTest.php)。

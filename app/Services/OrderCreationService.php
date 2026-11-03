@@ -23,10 +23,9 @@ use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use Brick\Math\BigDecimal;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）、商户后台手工建单、收款链接落地页下单
@@ -55,9 +54,8 @@ use Illuminate\Support\Str;
  *
  * 注意：第 1~7 步都在数据库事务之外完成，只有第 8 步才开事务——这样风控检查、
  * 汇率读取这些"只读"操作不会持有不必要的事务/锁时间，失败时也不需要回滚任何东西。
- * 第 9 步同样在事务外（HTTP 调用不占事务）：普通路由网关失败后，在本次请求内
- * 换渠道并刷新渠道快照，最多尝试配置的渠道数。每次切换生成独立 s_order_id；
- * 同一渠道尝试的重试沿用其标识。本地订单保留，后续幂等请求可以继续补建。
+ * 第 9 步同样在事务外（HTTP 调用不占事务）：网关失败后立即返回失败，不切换渠道。
+ * 本地订单保留，后续幂等请求沿用原渠道及远端引用补建，不切换其他渠道。
  */
 class OrderCreationService
 {
@@ -65,6 +63,7 @@ class OrderCreationService
         private readonly PaymentService $paymentService,
         private readonly PaymentGatewayService $paymentGateway,
         private readonly OrderItemService $orderItemService,
+        private readonly PaymentMethodFailureService $paymentMethodFailureService,
     ) {}
 
     /**
@@ -105,7 +104,7 @@ class OrderCreationService
             + (int) ceil(max(0, (int) config('payment_gateway.retry_sleep_ms', 300)) * $httpAttempts / 1000);
         $lockSeconds = max(
             (int) config('payment_gateway.creation_lock_seconds', 600),
-            60 + $this->maxPaymentAttempts() * ($gatewaySeconds + OrderItemService::maximumRemotePreparationSeconds($itemCount)),
+            60 + $gatewaySeconds + OrderItemService::maximumRemotePreparationSeconds($itemCount),
         );
 
         return Cache::lock($lockKey, $lockSeconds)->block(10, fn () => $this->createOrderLocked(
@@ -134,10 +133,8 @@ class OrderCreationService
                 throw new OrderDetailsConflictException;
             }
 
-            // 幂等命中：上次下单若在远程创建支付订单这一步失败过（订单已落库但没有
-            // pay_url），这里自动补一次——插件 /pay 对同一 s_order_id 幂等，不会重复创建。
             if (blank($existing->pay_url)) {
-                $this->createPaymentWithFailover($existing, $existing->paymentMethodConfig(), $merchant);
+                $this->retryPayment($existing, $merchant);
             }
 
             return $existing;
@@ -221,10 +218,9 @@ class OrderCreationService
         // 7. 按渠道和商户费率保存财务快照；普通路由跳过手续费超过金额的候选。
         if (filled($data['payment_method_key'] ?? null)) {
             $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data);
-            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant->id, $convertedAmount);
+            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
         } else {
-            $excludedMethodIds = [];
-            [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant->id, $convertedAmount, $excludedMethodIds);
+            [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant, $convertedAmount);
         }
 
         // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
@@ -285,8 +281,6 @@ class OrderCreationService
                 'surcharge_amount' => $rate['surcharge_amount'],
                 'surcharge_fee' => $surchargeFee,
                 ...$financialSnapshot,
-                'settlement_mode' => $merchant->settlement_mode ?? 'immediate',
-                'settlement_days' => (int) $merchant->settlement_days,
                 'customer_first_name' => $data['customer_first_name'],
                 'customer_last_name' => $data['customer_last_name'],
                 'customer_email' => $data['customer_email'],
@@ -338,22 +332,22 @@ class OrderCreationService
         }
 
         // 9. 调支付网关插件 /pay 远程创建支付订单，获取收银台支付链接。
-        $this->createPaymentWithFailover($order, $paymentMethod, $merchant);
+        $this->createPayment($order, $paymentMethod);
 
         return $order;
     }
 
     /**
-     * @return array{fee_percent_amount: string, fee_fixed_amount: string, settlement_amount: string, reserve_percent: string, reserve_days: int, refund_fee_snapshot: string, chargeback_fee_snapshot: string}
+     * @return array{fee_percent_amount: string, fee_fixed_amount: string, settlement_amount: string, reserve_percent: string, reserve_days: int, refund_fee_snapshot: string, chargeback_fee_snapshot: string, settlement_mode: string, settlement_days: int}
      */
-    private function financialSnapshot(PaymentMethod $method, int $merchantId, string $amountUsd): array
+    private function financialSnapshot(PaymentMethod $method, Merchant $merchant, string $amountUsd): array
     {
-        $settings = $method->financialSettingsForMerchant($merchantId);
+        $settings = $method->configurationForMerchant($merchant);
         $percentFee = bcmul($amountUsd, bcdiv($settings['fee_percent'], '100', 8), 2);
         $totalFee = bcadd($percentFee, $settings['fee_fixed'], 2);
 
         if (bccomp($totalFee, $amountUsd, 2) > 0) {
-            throw new MinimumAmountNotMetException($method->minTransactionAmount($merchantId), $amountUsd);
+            throw new MinimumAmountNotMetException($method->minTransactionAmount($merchant->id), $amountUsd);
         }
 
         return [
@@ -364,21 +358,18 @@ class OrderCreationService
             'reserve_days' => $settings['reserve_days'],
             'refund_fee_snapshot' => $settings['refund_fee'],
             'chargeback_fee_snapshot' => $settings['chargeback_fee'],
+            'settlement_mode' => $settings['settlement_mode'],
+            'settlement_days' => $settings['settlement_days'],
         ];
     }
 
-    private function maxPaymentAttempts(): int
-    {
-        return max(1, (int) config('payment_gateway.failover_max_attempts', 3));
-    }
-
     /**
-     * @param  list<int>  $excludedMethodIds
      * @return array{0: PaymentMethod, 1: array<string, int|string>}
      */
-    private function resolveGroupPaymentMethod(PaymentGroup $group, int $merchantId, string $amountUsd, array &$excludedMethodIds): array
+    private function resolveGroupPaymentMethod(PaymentGroup $group, Merchant $merchant, string $amountUsd): array
     {
         $amountError = null;
+        $excludedMethodIds = [];
 
         while (true) {
             try {
@@ -388,7 +379,7 @@ class OrderCreationService
             }
 
             try {
-                return [$method, $this->financialSnapshot($method, $merchantId, $amountUsd)];
+                return [$method, $this->financialSnapshot($method, $merchant, $amountUsd)];
             } catch (MinimumAmountNotMetException $error) {
                 $amountError = $error;
                 $excludedMethodIds[] = (int) $method->id;
@@ -396,117 +387,122 @@ class OrderCreationService
         }
     }
 
-    /** 普通组内路由失败时立即换渠道；指定渠道和已收款订单不参与切换。 */
-    private function createPaymentWithFailover(Order $order, ?PaymentMethod $method, Merchant $merchant): void
+    /** 后续提交重新校验原渠道，补建始终沿用原渠道及远端引用。 */
+    private function retryPayment(Order $order, Merchant $merchant): void
     {
-        $excludedMethodIds = [];
+        if (filled($order->pay_url) || $order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
+            return;
+        }
 
-        for ($attempt = 1; $attempt <= $this->maxPaymentAttempts(); $attempt++) {
-            if ($order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
-                return;
+        $originalReference = $order->gatewayOrderReference();
+
+        if (filled($order->designated_payment_method_key)) {
+            $method = $this->resolveDesignatedPaymentMethod(
+                $merchant,
+                $order->designated_payment_method_key,
+                $order->only(['notify_url', 'return_url', 'cancel_url']),
+                $order->payment_method_id,
+            );
+        } else {
+            $group = PaymentGroup::query()->forMerchant($merchant->id)->withTrashed()->find($order->payment_group_id);
+
+            if (! $group || ! $group->is_active || $group->trashed()) {
+                throw new NoAvailablePaymentMethodException($group?->group_key ?? (string) $order->payment_group_id);
             }
 
-            if ($method) {
-                $excludedMethodIds[] = (int) $method->id;
+            $previousMethodId = $order->payment_method_id ?? $order->paymentMethodConfig()?->id;
+
+            if ($previousMethodId === null) {
+                throw new NoAvailablePaymentMethodException($group->group_key);
             }
-            $attemptReference = $order->gatewayOrderReference();
-            $attemptMethodId = $order->payment_method_id;
 
-            try {
-                $this->createRemotePayment($order, $method);
+            $otherMethodIds = $group->paymentMethods()
+                ->where('payment_methods.id', '!=', $previousMethodId)
+                ->pluck('payment_methods.id')->map(fn ($id): int => (int) $id)->all();
+            $method = $this->paymentService->resolvePaymentMethod($group, (float) $order->converted_amount, $otherMethodIds);
 
-                return;
-            } catch (PaymentGatewayException|OrderItemPreparationException $error) {
-                if ($error instanceof OrderItemPreparationException) {
-                    $error = new PaymentGatewayException('支付渠道商品准备失败，无法生成支付链接', previous: $error);
-                }
-                $order->refresh();
-
-                if (filled($order->pay_url) || $order->paid_at !== null
-                    || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
-                    return;
-                }
-
-                if (filled($order->designated_payment_method_key) || $attempt >= $this->maxPaymentAttempts()
-                    || ! in_array($order->status, ['pending', 'failed'], true)
-                    || $order->gatewayOrderReference() !== $attemptReference || $order->payment_method_id !== $attemptMethodId) {
-                    throw $error;
-                }
-
-                $group = PaymentGroup::query()->forMerchant($merchant->id)
-                    ->where('is_active', true)->find($order->payment_group_id);
-
-                if (! $group) {
-                    throw $error;
-                }
-
-                try {
-                    [$nextMethod, $snapshot] = $this->resolveGroupPaymentMethod($group, $merchant->id, (string) $order->converted_amount, $excludedMethodIds);
-                } catch (NoAvailablePaymentMethodException|MinimumAmountNotMetException) {
-                    throw $error;
-                }
-
-                if (! $this->switchPaymentMethod($order, $nextMethod, $snapshot)) {
-                    $order->refresh();
-
-                    if (filled($order->pay_url) || $order->paid_at !== null
-                        || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
-                        return;
-                    }
-
-                    throw $error;
-                }
-
-                $method = $nextMethod;
+            if ($method->id !== (int) $previousMethodId) {
+                throw new NoAvailablePaymentMethodException($group->group_key);
             }
         }
+
+        if ($order->payment_method_id === null && ! $this->restorePaymentMethodAssociation($order, $method)) {
+            if (filled($order->pay_url) || $order->paid_at !== null
+                || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
+                return;
+            }
+
+            throw new PaymentGatewayException('建单失败，请重试');
+        }
+
+        $order->refresh();
+
+        if (filled($order->pay_url) || $order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
+            return;
+        }
+
+        if ($order->gatewayOrderReference() !== $originalReference || $order->payment_method_id !== $method->id) {
+            throw new PaymentGatewayException('建单失败，请重试');
+        }
+
+        $this->createPayment($order, $method);
     }
 
-    /** @param array<string, int|string> $financialSnapshot */
-    private function switchPaymentMethod(Order $order, PaymentMethod $method, array $financialSnapshot): bool
+    /** 仅补齐历史订单缺少的原渠道关联，不改变编号、财务快照或匹配商品。 */
+    private function restorePaymentMethodAssociation(Order $order, PaymentMethod $method): bool
     {
         $oldReference = $order->gatewayOrderReference();
-        $oldMethodId = $order->payment_method_id;
-        $switched = DB::transaction(function () use ($order, $method, $financialSnapshot, $oldReference, $oldMethodId): bool {
+        $restored = DB::transaction(function () use ($order, $method, $oldReference): bool {
             $locked = Order::query()->forMerchant($order->merchant_id)->lockForUpdate()->findOrFail($order->id);
 
-            if ($locked->gatewayOrderReference() !== $oldReference || $locked->payment_method_id !== $oldMethodId
+            if ($locked->gatewayOrderReference() !== $oldReference || $locked->payment_method_id !== null
                 || $locked->paid_at !== null || filled($locked->pay_url)
                 || ! in_array($locked->status, ['pending', 'failed'], true)) {
                 return false;
             }
 
             $locked->update([
-                ...$financialSnapshot,
                 'payment_method_id' => $method->id,
                 'payment_method' => $method->method_code,
-                'gateway_order_no' => 'GW'.Str::ulid(),
-                'status' => 'pending',
-                'pay_url' => null,
-                'wp_order_id' => null,
-                'transaction_id' => null,
-                'invoice_number' => null,
-                'subject' => null,
             ]);
-            $locked->matchedItems()->delete();
 
             return true;
         }, 3);
 
         $order->refresh();
 
-        if ($switched) {
-            Log::warning('支付链接创建失败，切换组内渠道继续下单', [
-                'order_no' => $order->order_no,
-                'merchant_id' => $order->merchant_id,
-                'previous_payment_method_id' => $oldMethodId,
-                'payment_method_id' => $method->id,
-                'previous_gateway_order_no' => $oldReference,
-                'gateway_order_no' => $order->gatewayOrderReference(),
-            ]);
+        return $restored;
+    }
+
+    /** 网关建单失败后立即停止，不在同一请求内切换渠道。 */
+    private function createPayment(Order $order, ?PaymentMethod $method): void
+    {
+        if (filled($order->pay_url) || $order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
+            return;
         }
 
-        return $switched;
+        $reference = $order->gatewayOrderReference();
+
+        try {
+            $this->createRemotePayment($order, $method);
+        } catch (PaymentGatewayException|OrderItemPreparationException $error) {
+            $order->refresh();
+
+            if (filled($order->pay_url) || $order->paid_at !== null
+                || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true)) {
+                return;
+            }
+
+            if ($method !== null) {
+                $this->paymentMethodFailureService->recordFailure($order, $method, $reference);
+            }
+
+            throw new PaymentGatewayException('建单失败，请重试', previous: $error);
+        }
+
+        if ($method !== null) {
+            $this->paymentMethodFailureService->recordSuccess($order, $method, $reference);
+        }
     }
 
     /**
@@ -529,7 +525,7 @@ class OrderCreationService
      * @throws PaymentMethodNotAvailableException
      * @throws PaymentMethodDomainMismatchException
      */
-    private function resolveDesignatedPaymentMethod(Merchant $merchant, string $methodKey, array $data): PaymentMethod
+    private function resolveDesignatedPaymentMethod(Merchant $merchant, string $methodKey, array $data, ?int $methodId = null): PaymentMethod
     {
         // method_code 虽然已是全局唯一、单独就能定位记录，这里依然必须叠加商户过滤：
         // 这是一道授权边界，不能让 A 商户传别家的 payment_method_key 就用上别家的渠道收款。
@@ -537,7 +533,11 @@ class OrderCreationService
         // 注释），二来它会连"分配给本商户的系统级支付方式"一并算进可用范围。
         $method = PaymentMethod::query()
             ->forMerchant($merchant->id)
-            ->where('method_code', $methodKey)
+            ->when(
+                $methodId !== null,
+                fn (Builder $query): Builder => $query->whereKey($methodId),
+                fn (Builder $query): Builder => $query->where('method_code', $methodKey),
+            )
             ->where('is_active', true)
             ->first();
 

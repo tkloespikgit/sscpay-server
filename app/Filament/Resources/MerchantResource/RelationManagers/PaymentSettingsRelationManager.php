@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\MerchantResource\RelationManagers;
 
+use App\Filament\Support\MerchantPaymentSettingsForm;
 use App\Models\Merchant;
 use App\Models\MerchantPaymentSetting;
 use App\Models\PaymentMethod;
@@ -12,7 +13,6 @@ use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -55,25 +55,7 @@ class PaymentSettingsRelationManager extends RelationManager
             ->dehydrated()
             ->columnSpanFull()];
 
-        foreach (MerchantPaymentSetting::FINANCIAL_FIELDS as $field) {
-            $input = TextInput::make($field)
-                ->label(__('payment_finance.'.$field))
-                ->helperText(__('payment_finance.inherit_default'))
-                ->placeholder(__('payment_finance.inherit_default'))
-                ->numeric()->minValue(0)->nullable();
-
-            if (in_array($field, ['fee_percent', 'reserve_percent'], true)) {
-                $input->maxValue($field === 'fee_percent' ? 99.9999 : 100)->suffix('%')->rules(['decimal:0,4']);
-            } elseif ($field === 'reserve_days') {
-                $input->integer()->maxValue(36500)->suffix(__('payment_finance.days'));
-            } else {
-                $input->prefix('$')->maxValue('9999999999999.99')->rules(['decimal:0,2']);
-            }
-
-            $fields[] = $input;
-        }
-
-        return $schema->components($fields)->columns(2);
+        return $schema->components([...$fields, ...MerchantPaymentSettingsForm::overrideFields()])->columns(2);
     }
 
     public function table(Table $table): Table
@@ -91,6 +73,11 @@ class PaymentSettingsRelationManager extends RelationManager
                 TextColumn::make('chargeback_fee')->label(__('payment_finance.chargeback_fee'))->money('USD')->placeholder(__('payment_finance.default_value')),
                 TextColumn::make('reserve_percent')->label(__('payment_finance.reserve_percent'))->suffix('%')->placeholder(__('payment_finance.default_value')),
                 TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))->placeholder(__('payment_finance.default_value')),
+                TextColumn::make('settlement_mode')->label(__('settlement.fields.mode'))
+                    ->formatStateUsing(fn (?string $state): ?string => filled($state) ? __('settlement.modes.'.$state) : null)
+                    ->placeholder(__('payment_finance.merchant_default_value')),
+                TextColumn::make('settlement_days')->label(__('settlement.fields.cycle_days'))
+                    ->suffix(__('settlement.days'))->placeholder(__('payment_finance.merchant_default_value')),
             ])
             ->headerActions([
                 CreateAction::make()->authorize(fn (): bool => $this->mayManage())
@@ -104,6 +91,7 @@ class PaymentSettingsRelationManager extends RelationManager
                         auth()->user(), $this->getOwnerRecord(), (int) $record->payment_method_id, $data,
                     )),
                 DeleteAction::make()->label(__('payment_finance.reset'))
+                    ->modalDescription(__('payment_finance.reset_description'))
                     ->authorize(fn (): bool => $this->mayManage())
                     ->using(fn (MerchantPaymentSetting $record, MerchantPaymentSettingsService $service): bool => $service->delete(
                         auth()->user(), $this->getOwnerRecord(), $record,

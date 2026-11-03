@@ -2,182 +2,111 @@
 
 namespace App\Services;
 
-use App\Models\Merchant;
-use App\Models\Order;
-use App\Models\OrderEvent;
-use App\Models\Scopes\MerchantScope;
+use App\Models\OrderDailyStat;
+use App\Models\OrderStatsRun;
 use App\Models\User;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Validator;
 
 /**
- * 仪表盘统计服务（4.7 节）。
- *
- * 统计范围统一用 $merchantIds 表达，语义与 User::manageableMerchantIds() 完全一致：
- * null = 不限（仅超级管理员），数组 = 只统计这些商户。
- *
- * 原来这里收的是单个 $merchantId，调用方一律传 auth()->user()->merchant_id。
- * 这对超管（NULL → 全平台）和普通商户用户（自己那一个）都对，唯独漏了商户级管理员：
- * 这个角色按定义 merchant_id 恒为 NULL（User::isMerchantManager()），于是和超管
- * 一样走进"不过滤"分支，在首页看到的是全平台的订单数、成交额、趋势和支付方式占比。
- * 改成商户集合后三种角色都落在同一套口径上。
- *
- * 注意：这里的查询都用 withoutGlobalScopes([MerchantScope::class]) + 显式
- * whereIn('merchant_id', ...)，而不是依赖 MerchantScope 自动生效，以保证统计范围
- * 不受 Global Scope 行为影响。只摘这一个作用域、不摘软删除——见 scopedOrders()。
- *
- * "收到过钱"的口径统一走 Order::scopePaidEver()（NEVER_PAID_STATUSES 的补集），
- * 不要在这里写 where('status', 'paid')：订单一发货状态就流转成 shipped，
- * 那样已发货/已完成的成交额会从统计里消失。
+ * 仪表盘只读取每日汇总；统计范围沿用 manageableMerchantIds 的 null / 数组语义。
  */
 class DashboardService
 {
-    /**
-     * 当前登录后台账号的统计范围。所有仪表盘部件统一走这里，避免各自再写一遍。
-     *
-     * 返回 null 表示不限（超级管理员）。没有登录用户、或登录的不是后台 User
-     * （观察者面板用的是 observer guard，auth()->user() 会解析成 Observer，
-     * 它没有 manageableMerchantIds()）时返回空数组——什么都看不到，而不是什么都看得到。
-     *
-     * @return array<int>|null
-     */
+    public const PERIODS = ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_month', 'last_month', 'custom'];
+
+    /** @return array<int>|null */
     public static function viewerMerchantIds(): ?array
     {
         $viewer = auth()->user();
 
-        if (! $viewer instanceof User) {
-            return [];
-        }
-
-        return $viewer->manageableMerchantIds();
+        return $viewer instanceof User ? $viewer->manageableMerchantIds() : [];
     }
 
     /**
-     * @param  array<int>|null  $merchantIds  null 表示不限（仅超级管理员视角可用）
+     * 非法日期回退当天，不能因筛选输入无效而扩大统计范围。
+     *
+     * @param  array<string, mixed>  $filters
+     * @return array{0: Carbon, 1: Carbon}
      */
-    public function getAdminStats(?array $merchantIds = null): array
+    public function dateRange(array $filters = []): array
     {
-        $orderQuery = fn () => $this->scopedOrders($merchantIds);
+        $today = Carbon::now(config('app.timezone'))->startOfDay();
+
+        if (($filters['period'] ?? 'today') === 'custom'
+            && is_string($filters['date_from'] ?? null)
+            && is_string($filters['date_to'] ?? null)) {
+            $validator = Validator::make($filters, [
+                'date_from' => ['required', 'date_format:Y-m-d'],
+                'date_to' => ['required', 'date_format:Y-m-d', 'after_or_equal:date_from', 'before_or_equal:'.$today->toDateString()],
+            ]);
+
+            if ($validator->passes()) {
+                $dates = $validator->validated();
+
+                return [
+                    Carbon::createFromFormat('!Y-m-d', $dates['date_from'], config('app.timezone'))->startOfDay(),
+                    Carbon::createFromFormat('!Y-m-d', $dates['date_to'], config('app.timezone'))->endOfDay(),
+                ];
+            }
+        }
+
+        return match ($filters['period'] ?? 'today') {
+            'yesterday' => [$today->copy()->subDay(), $today->copy()->subDay()->endOfDay()],
+            'last_7_days' => [$today->copy()->subDays(6), $today->copy()->endOfDay()],
+            'last_30_days' => [$today->copy()->subDays(29), $today->copy()->endOfDay()],
+            'this_month' => [$today->copy()->startOfMonth(), $today->copy()->endOfDay()],
+            'last_month' => [$today->copy()->subMonthNoOverflow()->startOfMonth(), $today->copy()->subMonthNoOverflow()->endOfMonth()],
+            default => [$today, $today->copy()->endOfDay()],
+        };
+    }
+
+    /**
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return array{total_orders: int, paid_orders: int, failed_orders: int, total_amount_usd: float, total_merchants: int, unpaid_terminal_orders: int, missing_dates: list<string>, is_complete: bool}
+     */
+    public function summary(?array $merchantIds, array $filters = []): array
+    {
+        $row = $this->scopedStats($merchantIds, $filters)
+            ->selectRaw('COALESCE(SUM(created_orders), 0) as total_orders, COALESCE(SUM(paid_orders), 0) as paid_orders, COALESCE(SUM(failed_orders), 0) as failed_orders, COALESCE(SUM(paid_amount), 0) as total_amount_usd, COALESCE(SUM(unpaid_terminal_orders), 0) as unpaid_terminal_orders')
+            ->first();
+        [$from, $to] = $this->dateRange($filters);
+        $missing = $merchantIds === [] ? [] : OrderStatsRun::missingDatesBetween($from, $to);
 
         return [
-            'total_orders' => $orderQuery()->count(),
-            // paidEver()：凡支付成功过的都算，不能用 where('status','paid')
-            // ——订单一发货状态就变了，那样会把已发货/已完成的成交额漏掉。
-            'paid_orders' => $orderQuery()->paidEver()->count(),
-            'total_amount_usd' => (float) $orderQuery()->paidEver()->sum('converted_amount'),
-            'total_merchants' => $merchantIds === null ? Merchant::query()->count() : count($merchantIds),
-            'today_new_orders' => $orderQuery()->whereDate('created_at', now()->toDateString())->count(),
-            'trend_7d' => $this->orderTrend($merchantIds, 7),
-            'trend_30d' => $this->orderTrend($merchantIds, 30),
-            'merchant_ranking' => $this->merchantSalesRanking($merchantIds),
-            'payment_method_breakdown' => $this->paymentMethodBreakdown($merchantIds),
-            'event_exception_stats' => $this->eventExceptionStats($merchantIds),
+            'total_orders' => (int) $row->total_orders,
+            'paid_orders' => (int) $row->paid_orders,
+            'failed_orders' => (int) $row->failed_orders,
+            'total_amount_usd' => (float) $row->total_amount_usd,
+            'total_merchants' => $this->scopedStats($merchantIds, $filters)->where('paid_orders', '>', 0)->distinct()->count('order_daily_stats.merchant_id'),
+            'unpaid_terminal_orders' => (int) $row->unpaid_terminal_orders,
+            'missing_dates' => $missing,
+            'is_complete' => $missing === [],
         ];
     }
 
-    public function getMerchantStats(int $merchantId): array
-    {
-        return $this->getAdminStats([$merchantId]);
-    }
-
     /**
-     * 支付成功率（口径 1，订单维度）：
-     * 分母 = 时间窗内已到达终态的订单（除 pending 外全部状态），
-     * 分子 = 其中支付成功过的订单（paid 及其流转状态，退款/拒付也算成功过）。
-     * 排除 pending 是因为它们还没出结果，算进分母会拉低成功率。
-     *
-     * @param  array<int>|null  $merchantIds  null 表示不限（仅超级管理员视角）
-     * @param  string|null  $paymentMethod  为空表示不限支付方式
-     * @return array{success_rate: float, paid_count: int, terminal_count: int}
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return list<array{date: string, order_count: int, amount_usd: float}>
      */
-    public function getPaymentSuccessRate(?array $merchantIds, ?string $paymentMethod = null, int $days = 30): array
+    public function trend(?array $merchantIds, array $filters = []): array
     {
-        $query = $this->scopedOrders($merchantIds)
-            ->where('created_at', '>=', now()->subDays($days));
-
-        if ($paymentMethod) {
-            $query->where('payment_method', $paymentMethod);
-        }
-
-        // 支付成功过的状态统一走 Order::scopePaidEver()，不在这里另抄一份清单——
-        // 原先这里硬编码的 8 个状态和卡片用的 where('status','paid') 各算各的，
-        // 同一块面板上"成功率说 7 笔成功、成交额只算 1 笔"。
-        $terminalCount = (clone $query)->where('status', '!=', 'pending')->count();
-        $paidCount = (clone $query)->paidEver()->count();
-
-        return [
-            'success_rate' => $terminalCount > 0 ? round($paidCount / $terminalCount * 100, 1) : 0.0,
-            'paid_count' => $paidCount,
-            'terminal_count' => $terminalCount,
-        ];
-    }
-
-    /**
-     * 实际出现过的支付方式列表（去重），供仪表盘支付方式筛选器使用。
-     * 从订单表取而不是 payment_methods 表，避免列出从未被使用的支付方式。
-     *
-     * @return array<int, string>
-     */
-    public function getPaymentMethodOptions(?array $merchantIds): array
-    {
-        return $this->scopedOrders($merchantIds)
-            ->whereNotNull('payment_method')
-            ->where('payment_method', '!=', '')
-            ->distinct()
-            ->orderBy('payment_method')
-            ->pluck('payment_method')
-            ->values()
-            ->all();
-    }
-
-    /**
-     * @param  array<int>|null  $merchantIds  null = 不限；空数组 = 什么都不统计
-     */
-    private function scopedOrders(?array $merchantIds)
-    {
-        // 只摘 MerchantScope（统计范围改由 $merchantIds 显式表达），
-        // 保留 SoftDeletingScope——不带参的 withoutGlobalScopes() 会把软删除
-        // 一起摘掉，导致卡片算已删订单、而商户排行（显式 whereNull deleted_at）
-        // 不算，同一块面板上两个数字对不上。
-        $query = Order::query()->withoutGlobalScopes([MerchantScope::class]);
-
-        if ($merchantIds !== null) {
-            $query->whereIn('merchant_id', $merchantIds);
-        }
-
-        return $query;
-    }
-
-    /**
-     * @return array<int, array{date: string, order_count: int, amount_usd: float}>
-     */
-    private function orderTrend(?array $merchantIds, int $days): array
-    {
-        // 金额线的口径要和卡片一致（凡支付成功过的都算）。这里没法直接用
-        // scopePaidEver()——那会把整行过滤掉，而趋势图的订单数要算全部订单，
-        // 只有金额这一列按状态条件求和，所以把同一份状态清单绑进 CASE WHEN。
-        $neverPaid = Order::NEVER_PAID_STATUSES;
-        $placeholders = implode(',', array_fill(0, count($neverPaid), '?'));
-
-        $rows = $this->scopedOrders($merchantIds)
-            ->where('created_at', '>=', now()->subDays($days - 1)->startOfDay())
-            ->selectRaw(
-                "DATE(created_at) as d, COUNT(*) as order_count, COALESCE(SUM(CASE WHEN status NOT IN ({$placeholders}) THEN converted_amount ELSE 0 END), 0) as amount_usd",
-                $neverPaid,
-            )
-            ->groupBy('d')
-            ->orderBy('d')
-            ->get()
-            ->keyBy('d');
-
+        [$from, $to] = $this->dateRange($filters);
+        $rows = $this->scopedStats($merchantIds, $filters)
+            ->selectRaw('stat_date, SUM(created_orders) as order_count, COALESCE(SUM(paid_amount), 0) as amount_usd')
+            ->groupBy('stat_date')->orderBy('stat_date')->get()
+            ->keyBy(fn (OrderDailyStat $row): string => $row->stat_date->toDateString());
         $result = [];
-        for ($i = $days - 1; $i >= 0; $i--) {
-            $date = now()->subDays($i)->toDateString();
-            $row = $rows->get($date);
 
+        for ($date = $from->copy(); $date->lessThanOrEqualTo($to); $date->addDay()) {
+            $row = $rows->get($date->toDateString());
             $result[] = [
-                'date' => $date,
-                'order_count' => (int) ($row->order_count ?? 0),
-                'amount_usd' => (float) ($row->amount_usd ?? 0),
+                'date' => $date->toDateString(),
+                'order_count' => (int) ($row?->order_count ?? 0),
+                'amount_usd' => (float) ($row?->amount_usd ?? 0),
             ];
         }
 
@@ -185,74 +114,95 @@ class DashboardService
     }
 
     /**
-     * @return array<int, array{merchant_id: int, merchant_name: string, amount_usd: float}>
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return list<array{merchant_id: int, merchant_name: string, amount_usd: float}>
      */
-    private function merchantSalesRanking(?array $merchantIds = null, int $limit = 10): array
+    public function merchantSalesRanking(?array $merchantIds, array $filters = [], int $limit = 10): array
     {
-        return DB::table('orders')
-            ->join('merchants', 'merchants.id', '=', 'orders.merchant_id')
-            ->where('orders.status', 'paid')
-            ->whereNull('orders.deleted_at')
-            ->when($merchantIds !== null, fn ($q) => $q->whereIn('orders.merchant_id', $merchantIds))
-            ->selectRaw('orders.merchant_id, merchants.name as merchant_name, SUM(orders.converted_amount) as amount_usd')
-            ->groupBy('orders.merchant_id', 'merchants.name')
-            ->orderByDesc('amount_usd')
-            ->limit($limit)
-            ->get()
-            ->map(fn ($row) => [
+        return $this->scopedStats($merchantIds, $filters)
+            ->join('merchants', 'merchants.id', '=', 'order_daily_stats.merchant_id')
+            ->selectRaw('order_daily_stats.merchant_id, merchants.name as merchant_name, SUM(paid_amount) as amount_usd')
+            ->groupBy('order_daily_stats.merchant_id', 'merchants.name')
+            ->havingRaw('SUM(paid_orders) > 0')
+            ->orderByDesc('amount_usd')->orderBy('order_daily_stats.merchant_id')->limit(max(1, $limit))->get()
+            ->map(fn (OrderDailyStat $row): array => [
                 'merchant_id' => (int) $row->merchant_id,
-                'merchant_name' => $row->merchant_name,
+                'merchant_name' => (string) $row->merchant_name,
                 'amount_usd' => (float) $row->amount_usd,
-            ])
-            ->all();
+            ])->all();
     }
 
     /**
-     * @return array<int, array{payment_method: string, order_count: int, percentage: float}>
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return list<array{payment_method: string, order_count: int, percentage: float}>
      */
-    private function paymentMethodBreakdown(?array $merchantIds): array
+    public function paymentMethodBreakdown(?array $merchantIds, array $filters = []): array
     {
-        $query = $this->scopedOrders($merchantIds)->paidEver();
-        $total = (clone $query)->count();
+        $rows = $this->scopedStats($merchantIds, $filters)
+            ->leftJoin('payment_methods', 'payment_methods.id', '=', 'order_daily_stats.payment_method_id')
+            ->selectRaw('payment_methods.method_code as payment_method, SUM(paid_orders) as order_count')
+            ->groupBy('payment_methods.method_code')->havingRaw('SUM(paid_orders) > 0')
+            ->orderByDesc('order_count')->orderBy('payment_methods.method_code')->get();
+        $total = (int) $rows->sum('order_count');
 
-        if ($total === 0) {
-            return [];
-        }
-
-        return $query
-            ->selectRaw('payment_method, COUNT(*) as order_count')
-            ->groupBy('payment_method')
-            ->orderByDesc('order_count')
-            ->get()
-            ->map(fn ($row) => [
-                'payment_method' => $row->payment_method,
-                'order_count' => (int) $row->order_count,
-                'percentage' => round($row->order_count / $total * 100, 1),
-            ])
-            ->all();
+        return $rows->map(fn (OrderDailyStat $row): array => [
+            'payment_method' => (string) ($row->payment_method ?? __('admin.order_stats.unknown_dimension')),
+            'order_count' => (int) $row->order_count,
+            'percentage' => $total > 0 ? round($row->order_count / $total * 100, 1) : 0.0,
+        ])->all();
     }
 
     /**
-     * 订单日志异常统计：ERROR 级别日志（争议/拒付等，见
-     * doc/s-system-payment-status-notify.md 第八节）占比。
+     * 已支付事件加未支付终态事件作分母，退款/拒付事件不重复增加分母。
+     *
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return array{success_rate: float, paid_count: int, terminal_count: int}
      */
-    private function eventExceptionStats(?array $merchantIds): array
+    public function getPaymentSuccessRate(?array $merchantIds, array $filters = []): array
     {
-        $query = OrderEvent::query()->withoutGlobalScopes();
+        $row = $this->scopedStats($merchantIds, $filters)
+            ->selectRaw('COALESCE(SUM(paid_orders), 0) as paid_orders, COALESCE(SUM(unpaid_terminal_orders), 0) as unpaid_terminal_orders')->first();
+        $paid = (int) $row->paid_orders;
+        $terminal = $paid + (int) $row->unpaid_terminal_orders;
 
-        if ($merchantIds !== null) {
-            $query->whereIn('merchant_id', $merchantIds);
-        }
+        return ['success_rate' => $terminal > 0 ? round($paid / $terminal * 100, 1) : 0.0, 'paid_count' => $paid, 'terminal_count' => $terminal];
+    }
 
-        $query->where('occurred_at', '>=', now()->subDays(30));
-
-        $total = (clone $query)->count();
-        $failedCount = (clone $query)->where('level', 'ERROR')->count();
-
+    /**
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     * @return array<string, mixed>
+     */
+    public function getAdminStats(?array $merchantIds = null, array $filters = []): array
+    {
         return [
-            'total_events_30d' => $total,
-            'failed_events_30d' => $failedCount,
-            'failure_rate_percentage' => $total > 0 ? round($failedCount / $total * 100, 1) : 0.0,
+            ...$this->summary($merchantIds, $filters),
+            'today_new_orders' => $this->summary($merchantIds)['total_orders'],
+            'trend_7d' => $this->trend($merchantIds, ['period' => 'last_7_days']),
+            'trend_30d' => $this->trend($merchantIds, ['period' => 'last_30_days']),
+            'merchant_ranking' => $this->merchantSalesRanking($merchantIds, $filters),
+            'payment_method_breakdown' => $this->paymentMethodBreakdown($merchantIds, $filters),
         ];
+    }
+
+    /** @return array<string, mixed> */
+    public function getMerchantStats(int $merchantId, array $filters = []): array
+    {
+        return $this->getAdminStats([$merchantId], $filters);
+    }
+
+    /**
+     * @param  array<int>|null  $merchantIds
+     * @param  array<string, mixed>  $filters
+     */
+    private function scopedStats(?array $merchantIds, array $filters): Builder
+    {
+        [$from, $to] = $this->dateRange($filters);
+
+        return OrderDailyStat::query()->forViewer($merchantIds)
+            ->whereBetween('order_daily_stats.stat_date', [$from->toDateString(), $to->toDateString()]);
     }
 }

@@ -54,9 +54,9 @@ class MerchantPaymentSettingsTest extends TestCase
             'fee_percent' => '2.0000', 'fee_fixed' => '0.00', 'refund_fee' => '5.00',
             'chargeback_fee' => '12.00', 'reserve_percent' => '0.0000', 'reserve_days' => 90,
         ], $method->financialSettingsForMerchant($this->merchant->id));
-        $this->assertSame('3.5000', $method->financialSettingsForMerchant($other->id)['fee_percent']);
+        $this->assertSame('0.0000', $method->financialSettingsForMerchant($other->id)['fee_percent']);
         $this->assertDatabaseHas('merchant_payment_settings', ['merchant_id' => $this->merchant->id, 'payment_method_id' => $method->id]);
-        $this->assertDatabaseMissing('merchant_payment_settings', ['merchant_id' => $other->id]);
+        $this->assertDatabaseHas('merchant_payment_settings', ['merchant_id' => $other->id, 'payment_method_id' => $method->id, 'fee_percent' => 0]);
     }
 
     public function test_unassigned_system_method_cannot_be_configured(): void
@@ -153,6 +153,7 @@ class MerchantPaymentSettingsTest extends TestCase
         app(MerchantPaymentSettingsService::class)->save($actor, $this->merchant, $method->id, [
             'fee_percent' => '2.5123', 'fee_fixed' => '0.30', 'refund_fee' => '5.00',
             'chargeback_fee' => '15.00', 'reserve_percent' => '10.0000', 'reserve_days' => 90,
+            'settlement_mode' => 'immediate', 'settlement_days' => 2,
         ]);
         Http::preventStrayRequests();
         Http::fake(['*/wp-json/payment-plugin/v1/pay*' => Http::response(['code' => 0, 'data' => ['pay_url' => 'https://pay.example.com/order', 'wp_order_id' => 1]])]);
@@ -160,6 +161,7 @@ class MerchantPaymentSettingsTest extends TestCase
         $this->createOrderRequest('snapshot', '10000.00')->assertOk();
         app(MerchantPaymentSettingsService::class)->save($actor, $this->merchant, $method->id, [
             'fee_percent' => 99, 'reserve_percent' => 80, 'reserve_days' => 180,
+            'settlement_mode' => 'shipped', 'settlement_days' => 30,
         ]);
         $this->createOrderRequest('snapshot', '10000.00')->assertOk();
 
@@ -167,6 +169,42 @@ class MerchantPaymentSettingsTest extends TestCase
         $this->assertSame('251.23', $order->fee_percent_amount);
         $this->assertSame('0.30', $order->fee_fixed_amount);
         $this->assertSame('9748.47', $order->settlement_amount);
+        $this->assertSame('10.0000', $order->reserve_percent);
+        $this->assertSame(90, $order->reserve_days);
+        $this->assertSame('5.00', $order->refund_fee_snapshot);
+        $this->assertSame('15.00', $order->chargeback_fee_snapshot);
+        $this->assertSame('immediate', $order->settlement_mode);
+        $this->assertSame(2, $order->settlement_days);
+        Http::assertSentCount(1);
+    }
+
+    public function test_assigned_channel_orders_use_copied_defaults_after_merchant_and_channel_defaults_change(): void
+    {
+        $this->createMerchantAndApplication();
+        $this->merchant->update([
+            'default_fee_percent' => '2.5000', 'default_fee_fixed' => '0.30',
+            'default_refund_fee' => '5.00', 'default_chargeback_fee' => '15.00',
+            'default_reserve_percent' => '10.0000', 'default_reserve_days' => 90,
+            'settlement_mode' => 'shipped', 'settlement_days' => 7,
+        ]);
+        $method = $this->makePaymentMethod('copied_snapshot');
+        $method->update(['merchant_id' => null]);
+        $method->assignedMerchants()->attach($this->merchant->id);
+        $this->merchant->update([
+            'default_fee_percent' => 50, 'default_reserve_percent' => 80,
+            'settlement_mode' => 'immediate', 'settlement_days' => 30,
+        ]);
+        $method->update(['fee_percent' => 90, 'reserve_percent' => 90]);
+        PaymentGroup::create(['merchant_id' => $this->merchant->id, 'group_key' => 'default', 'group_name' => 'Default']);
+        Http::preventStrayRequests();
+        Http::fake(['*/wp-json/payment-plugin/v1/pay*' => Http::response(['code' => 0, 'data' => ['pay_url' => 'https://pay.example.com/order']])]);
+
+        $this->createOrderRequest('copied_snapshot')->assertOk();
+
+        $order = Order::query()->sole();
+        $this->assertSame('2.50', $order->fee_percent_amount);
+        $this->assertSame('0.30', $order->fee_fixed_amount);
+        $this->assertSame('97.20', $order->settlement_amount);
         $this->assertSame('10.0000', $order->reserve_percent);
         $this->assertSame(90, $order->reserve_days);
         $this->assertSame('5.00', $order->refund_fee_snapshot);

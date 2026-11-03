@@ -40,6 +40,12 @@ class Merchant extends Model
         'pending_withdrawal_balance',
         'settlement_mode',
         'settlement_days',
+        'default_fee_percent',
+        'default_fee_fixed',
+        'default_refund_fee',
+        'default_chargeback_fee',
+        'default_reserve_percent',
+        'default_reserve_days',
         'remark',
     ];
 
@@ -52,6 +58,12 @@ class Merchant extends Model
             'pending_settlement_balance' => 'decimal:2',
             'pending_withdrawal_balance' => 'decimal:2',
             'settlement_days' => 'integer',
+            'default_fee_percent' => 'decimal:4',
+            'default_fee_fixed' => 'decimal:2',
+            'default_refund_fee' => 'decimal:2',
+            'default_chargeback_fee' => 'decimal:2',
+            'default_reserve_percent' => 'decimal:4',
+            'default_reserve_days' => 'integer',
         ];
     }
 
@@ -145,7 +157,9 @@ class Merchant extends Model
      */
     public function assignedPaymentMethods(): BelongsToMany
     {
-        return $this->belongsToMany(PaymentMethod::class, 'merchant_payment_methods')->withTimestamps();
+        return $this->belongsToMany(PaymentMethod::class, 'merchant_payment_methods')
+            ->using(MerchantPaymentMethod::class)
+            ->withTimestamps();
     }
 
     public function paymentGroups(): HasMany

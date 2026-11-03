@@ -4,12 +4,21 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\OrderResource;
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
+use App\Models\Application;
+use App\Models\Merchant;
 use App\Models\Order;
+use App\Models\OrderDailyStat;
+use App\Models\OrderStatsRun;
 use App\Models\User;
 use App\Services\DashboardService;
+use App\Services\OrderStatsAggregator;
 use Filament\Facades\Filament;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -56,10 +65,12 @@ class DashboardOrderStatsAlignmentTest extends TestCase
     public function test_shipping_an_order_does_not_shrink_the_total(): void
     {
         $order = $this->makeOrder('SSC-1', 'M-1', ['status' => 'paid', 'converted_amount' => '100.00']);
+        app(OrderStatsAggregator::class)->aggregateDate(now());
 
         $before = $this->dashboard->getAdminStats(null)['total_amount_usd'];
 
         $order->update(['status' => 'shipped']);
+        app(OrderStatsAggregator::class)->aggregateDate(now());
 
         $this->assertSame($before, $this->dashboard->getAdminStats(null)['total_amount_usd']);
     }
@@ -96,6 +107,7 @@ class DashboardOrderStatsAlignmentTest extends TestCase
         $trash = $this->makeOrder('SSC-2', 'M-2', ['status' => 'paid', 'converted_amount' => '50.00']);
 
         $trash->delete();
+        app(OrderStatsAggregator::class)->aggregateDate(now());
 
         $stats = $this->dashboard->getAdminStats(null);
 
@@ -138,18 +150,159 @@ class DashboardOrderStatsAlignmentTest extends TestCase
         );
     }
 
+    #[TestWith([[], '2026-11-03', '2026-11-03'])]
+    #[TestWith([['period' => 'yesterday'], '2026-11-02', '2026-11-02'])]
+    #[TestWith([['period' => 'last_7_days'], '2026-10-28', '2026-11-03'])]
+    #[TestWith([['period' => 'last_30_days'], '2026-10-05', '2026-11-03'])]
+    #[TestWith([['period' => 'this_month'], '2026-11-01', '2026-11-03'])]
+    #[TestWith([['period' => 'last_month'], '2026-10-01', '2026-10-31'])]
+    #[TestWith([['period' => 'custom', 'date_from' => '2026-10-30', 'date_to' => '2026-11-02'], '2026-10-30', '2026-11-02'])]
+    public function test_date_ranges_follow_the_system_calendar(array $filters, string $expectedFrom, string $expectedTo): void
+    {
+        config(['app.timezone' => 'Asia/Shanghai']);
+        $this->travelTo(Carbon::parse('2026-11-03 14:15:00', 'Asia/Shanghai'));
+
+        [$from, $to] = $this->dashboard->dateRange($filters);
+
+        $this->assertSame($expectedFrom.' 00:00:00', $from->format('Y-m-d H:i:s'));
+        $this->assertSame($expectedTo.' 23:59:59', $to->format('Y-m-d H:i:s'));
+        $this->assertSame('Asia/Shanghai', $from->getTimezone()->getName());
+    }
+
+    #[TestWith([['period' => 'invalid']])]
+    #[TestWith([['period' => ['last_30_days']]])]
+    #[TestWith([['period' => 'custom']])]
+    #[TestWith([['period' => 'custom', 'date_from' => '2026-11-02', 'date_to' => '2026-11-01']])]
+    #[TestWith([['period' => 'custom', 'date_from' => '2026-02-30', 'date_to' => '2026-11-01']])]
+    #[TestWith([['period' => 'custom', 'date_from' => ['2026-11-01'], 'date_to' => '2026-11-03']])]
+    #[TestWith([['period' => 'custom', 'date_from' => '2026-11-01', 'date_to' => '2026-11-04']])]
+    public function test_invalid_date_filters_fall_back_to_today(array $filters): void
+    {
+        config(['app.timezone' => 'Asia/Shanghai']);
+        $this->travelTo(Carbon::parse('2026-11-03 14:15:00', 'Asia/Shanghai'));
+
+        [$from, $to] = $this->dashboard->dateRange($filters);
+
+        $this->assertSame('2026-11-03 00:00:00', $from->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-11-03 23:59:59', $to->format('Y-m-d H:i:s'));
+    }
+
+    public function test_dashboard_queries_only_daily_statistics_and_preserves_tenant_scope(): void
+    {
+        $method = $this->makePaymentMethod('stripe');
+        $other = Merchant::create(['name' => 'Other Merchant']);
+        $otherApp = Application::createWithCredentials(['merchant_id' => $other->id, 'name' => 'Other App', 'website' => 'https://other.example.com']);
+        $this->dailyStat(now()->toDateString(), [
+            'payment_method_id' => $method->id, 'created_orders' => 12, 'paid_orders' => 8,
+            'paid_amount' => '800.00', 'failed_orders' => 2, 'unpaid_terminal_orders' => 3,
+            'refunded_orders' => 4, 'chargeback_orders' => 5,
+        ]);
+        $this->dailyStat(now()->toDateString(), [
+            'merchant_id' => $other->id, 'application_id' => $otherApp->id,
+            'created_orders' => 100, 'paid_orders' => 90, 'paid_amount' => '9000.00',
+        ]);
+        $this->dailyStat(now()->subDay()->toDateString(), ['created_orders' => 3, 'paid_orders' => 1, 'paid_amount' => '50.00']);
+        $this->makeOrder('UNAGGREGATED', 'UNAGGREGATED', ['status' => 'paid', 'converted_amount' => '999.00']);
+        $sourceQueries = [];
+        DB::listen(static function (QueryExecuted $query) use (&$sourceQueries): void {
+            if (preg_match('/\b(?:from|join)\s+["`]?orders["`]?\b|\b(?:from|join)\s+["`]?order_events["`]?\b/i', $query->sql)) {
+                $sourceQueries[] = $query->sql;
+            }
+        });
+
+        $summary = $this->dashboard->summary([$this->merchant->id]);
+        $rate = $this->dashboard->getPaymentSuccessRate([$this->merchant->id]);
+        $ranking = $this->dashboard->merchantSalesRanking([$this->merchant->id]);
+        $breakdown = $this->dashboard->paymentMethodBreakdown([$this->merchant->id]);
+        $trend = $this->dashboard->trend([$this->merchant->id], [
+            'period' => 'custom', 'date_from' => now()->subDay()->toDateString(), 'date_to' => now()->toDateString(),
+        ]);
+        $empty = $this->dashboard->summary([]);
+
+        $this->assertSame(12, $summary['total_orders']);
+        $this->assertSame(8, $summary['paid_orders']);
+        $this->assertSame(2, $summary['failed_orders']);
+        $this->assertSame(800.0, $summary['total_amount_usd']);
+        $this->assertSame(1, $summary['total_merchants']);
+        $this->assertSame(['success_rate' => 72.7, 'paid_count' => 8, 'terminal_count' => 11], $rate);
+        $this->assertSame([['merchant_id' => $this->merchant->id, 'merchant_name' => $this->merchant->name, 'amount_usd' => 800.0]], $ranking);
+        $this->assertSame([['payment_method' => 'stripe', 'order_count' => 8, 'percentage' => 100.0]], $breakdown);
+        $this->assertSame([
+            ['date' => now()->subDay()->toDateString(), 'order_count' => 3, 'amount_usd' => 50.0],
+            ['date' => now()->toDateString(), 'order_count' => 12, 'amount_usd' => 800.0],
+        ], $trend);
+        $this->assertSame(0, $empty['total_orders']);
+        $this->assertSame(0, $empty['total_merchants']);
+        $this->assertSame([], $sourceQueries);
+    }
+
+    public function test_created_order_count_and_paid_amount_use_their_own_event_dates(): void
+    {
+        $order = $this->makeOrder('LATE-PAID', 'LATE-PAID', ['status' => 'refunded', 'paid_at' => now()]);
+        $order->forceFill(['created_at' => now()->subDay()])->save();
+        app(OrderStatsAggregator::class)->aggregateDate(now()->subDay());
+        app(OrderStatsAggregator::class)->aggregateDate(now());
+
+        $today = $this->dashboard->summary([$this->merchant->id]);
+        $yesterday = $this->dashboard->summary([$this->merchant->id], ['period' => 'yesterday']);
+
+        $this->assertSame(0, $today['total_orders']);
+        $this->assertSame(1, $today['paid_orders']);
+        $this->assertSame(100.0, $today['total_amount_usd']);
+        $this->assertSame(1, $yesterday['total_orders']);
+        $this->assertSame(0, $yesterday['paid_orders']);
+        $this->assertSame(0.0, $yesterday['total_amount_usd']);
+    }
+
+    public function test_missing_statistics_and_old_metrics_versions_are_reported_without_reaggregation(): void
+    {
+        OrderStatsRun::create(['stat_date' => now()->toDateString(), 'completed_at' => now(), 'metrics_version' => 1]);
+
+        $summary = $this->dashboard->summary([$this->merchant->id]);
+        $trend = $this->dashboard->trend([$this->merchant->id], ['period' => 'last_7_days']);
+
+        $this->assertFalse($summary['is_complete']);
+        $this->assertSame([now()->toDateString()], $summary['missing_dates']);
+        $this->assertCount(7, $trend);
+        $this->assertSame(0, array_sum(array_column($trend, 'order_count')));
+        $this->assertSame(1, OrderStatsRun::query()->sole()->metrics_version);
+    }
+
+    public function test_transaction_merchant_count_excludes_pending_only_and_out_of_window_merchants(): void
+    {
+        $this->dailyStat(now()->toDateString(), ['created_orders' => 1]);
+        $this->dailyStat(now()->subDay()->toDateString(), ['created_orders' => 1, 'paid_orders' => 1, 'paid_amount' => '100.00']);
+
+        $this->assertSame(0, $this->dashboard->summary(null)['total_merchants']);
+        $this->assertSame(1, $this->dashboard->summary(null, ['period' => 'yesterday'])['total_merchants']);
+    }
+
+    /** @param array<string, int|string> $metrics */
+    private function dailyStat(string $date, array $metrics): void
+    {
+        OrderDailyStat::query()->insert(array_merge(array_fill_keys(OrderDailyStat::METRIC_COLUMNS, 0), [
+            'stat_date' => $date, 'merchant_id' => $this->merchant->id,
+            'application_id' => $this->application->id, 'payment_method_id' => 0,
+            'created_at' => now(), 'updated_at' => now(),
+        ], $metrics));
+    }
+
     /** 12 种状态各一张订单，金额一律 100 USD，方便直接心算。 */
     private function seedOneOrderPerStatus(): void
     {
         $statuses = [...self::PAID_EVER, ...Order::NEVER_PAID_STATUSES];
+        $method = $this->makePaymentMethod('alipay');
 
         foreach ($statuses as $i => $status) {
             $this->makeOrder("SSC-{$i}", "M-{$i}", [
                 'status' => $status,
                 'payment_method' => 'alipay',
+                'payment_method_id' => $method->id,
                 'amount' => '100.00',
                 'converted_amount' => '100.00',
             ]);
         }
+
+        app(OrderStatsAggregator::class)->aggregateDate(now());
     }
 }

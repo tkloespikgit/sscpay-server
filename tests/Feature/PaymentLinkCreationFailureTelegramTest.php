@@ -350,7 +350,8 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
 
         $error = $this->failure(fn () => app(OrderCreationService::class)->createOrder($data, $this->merchant, $this->application, 'api'));
 
-        $this->assertSame('Link creation rejected', $error->getMessage());
+        $this->assertSame('建单失败，请重试', $error->getMessage());
+        $this->assertSame('Link creation rejected', $error->getPrevious()?->getMessage());
         $order = Order::query()->forMerchant($this->merchant->id)->where('merchant_order_no', 'ENTRY-FAILURE')->sole();
         $this->assertNull($order->pay_url);
         $this->assertSame('pending', $order->status);

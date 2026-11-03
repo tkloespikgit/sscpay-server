@@ -63,29 +63,31 @@ class OrderStatsAggregator
 
         $buckets = [];
 
+        $this->collectCreated($buckets, $from, $to);
         $this->collectPaid($buckets, $from, $to);
         $this->collectFailed($buckets, $from, $to);
+        $this->collectUnpaidTerminal($buckets, $from, $to);
         $this->collectRefunded($buckets, $from, $to);
         $this->collectChargeback($buckets, $from, $to);
 
         $rows = $this->toRows($buckets, $day);
 
-        DB::transaction(function () use ($day, $rows) {
+        DB::transaction(function () use ($day, $rows, $startedAt) {
             OrderDailyStat::query()->where('stat_date', $day->toDateString())->delete();
 
             foreach (array_chunk($rows, 500) as $chunk) {
                 OrderDailyStat::query()->insert($chunk);
             }
+            OrderStatsRun::query()->updateOrCreate(
+                ['stat_date' => $day->toDateString()],
+                [
+                    'completed_at' => now(),
+                    'rows_written' => count($rows),
+                    'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                    'metrics_version' => OrderStatsRun::CURRENT_METRICS_VERSION,
+                ],
+            );
         });
-
-        OrderStatsRun::query()->updateOrCreate(
-            ['stat_date' => $day->toDateString()],
-            [
-                'completed_at' => now(),
-                'rows_written' => count($rows),
-                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
-            ],
-        );
 
         return count($rows);
     }
@@ -144,8 +146,34 @@ class OrderStatsAggregator
     }
 
     // ------------------------------------------------------------------
-    // 四个指标的取数
+    // 每日指标的取数
     // ------------------------------------------------------------------
+
+    /** 全部未软删除订单按创建日计数，包含仍在等待支付的订单。 */
+    private function collectCreated(array &$buckets, Carbon $from, Carbon $to): void
+    {
+        $rows = $this->orders()->whereBetween('created_at', [$from, $to])
+            ->selectRaw(implode(',', self::DIMENSIONS).', COUNT(*) as c')
+            ->groupBy(self::DIMENSIONS)->get();
+
+        $this->merge($buckets, $rows, 'created_orders');
+    }
+
+    /** 失败按 failed_at（缺省创建日），取消和过期按创建日；pending 不参与终态。 */
+    private function collectUnpaidTerminal(array &$buckets, Carbon $from, Carbon $to): void
+    {
+        $rows = $this->orders()->where(function (Builder $query) use ($from, $to): void {
+            $query->where(fn (Builder $failed): Builder => $failed
+                ->where('status', 'failed')
+                ->where(fn (Builder $event): Builder => $this->whereEventBetween($event, 'failed_at', $from, $to)))
+                ->orWhere(fn (Builder $other): Builder => $other
+                    ->whereIn('status', array_values(array_diff(Order::NEVER_PAID_STATUSES, ['pending', 'failed'])))
+                    ->whereBetween('created_at', [$from, $to]));
+        })->selectRaw(implode(',', self::DIMENSIONS).', COUNT(*) as c')
+            ->groupBy(self::DIMENSIONS)->get();
+
+        $this->merge($buckets, $rows, 'unpaid_terminal_orders');
+    }
 
     /**
      * 支付成功：口径是 Order::scopePaidEver()（NEVER_PAID_STATUSES 的补集），
@@ -275,7 +303,7 @@ class OrderStatsAggregator
      *
      * @param  iterable<object>  $rows
      */
-    private function merge(array &$buckets, iterable $rows, string $countColumn, string $amountColumn): void
+    private function merge(array &$buckets, iterable $rows, string $countColumn, ?string $amountColumn = null): void
     {
         foreach ($rows as $row) {
             $merchantId = (int) $row->merchant_id;
@@ -291,7 +319,10 @@ class OrderStatsAggregator
             ] + array_fill_keys(OrderDailyStat::METRIC_COLUMNS, 0);
 
             $buckets[$key][$countColumn] = (int) $row->c;
-            $buckets[$key][$amountColumn] = (string) $row->a;
+
+            if ($amountColumn !== null) {
+                $buckets[$key][$amountColumn] = (string) $row->a;
+            }
         }
     }
 

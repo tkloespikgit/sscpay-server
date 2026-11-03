@@ -64,7 +64,11 @@ flowchart TD
 
 `MerchantResource::canEdit()` 在每次编辑页请求和保存时重新查询数据库中的商户归属，并检查用户启用状态与商户管理权限；不能只依赖初次打开页面时的 `getEloquentQuery()`。商户转交其他管理员或平台后，原管理员已打开的编辑页也会失去保存权限。
 
+创建、编辑商户与入驻向导通过 `MerchantPaymentSettingsForm` 共用默认财务表单：商户保存交易/退款/拒付手续费、保证金比例及锁定天数，并沿用商户的结算模式/周期作为默认值。新分配系统级支付方式时，双向分配关系使用 `MerchantPaymentMethod`，在事务内先锁商户，再写分配并由 `MerchantPaymentSettingsService::initializeForAssignment()` 复制最新默认值到 `merchant_payment_settings`。已有独立配置不覆盖，取消后重新分配也保留；修改商户默认值仅影响后续首次配置的新分配。保存商户时还会通过 `initializeMissingForMerchant()` 为该商户已有分配中缺失的独立配置补齐默认值，与商户保存共用事务；已有记录（含空值或 0）保留。商户自有渠道保留原有独立配置入口和渠道默认回退规则，不后台扫描全平台历史分配。
+
 `PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。启用的超级管理员可在系统级支付方式编辑页通过“更改归属管理员”重新指派给启用的平台管理员（含超管），由 `PaymentMethodOwnershipService` 校验操作者、目标账号并锁定渠道后只更新归属；不改变商户分配、支付组或下单范围。商户自有渠道仍按 `merchant_id` 管理。
+
+支付方式列表在商户端固定使用当前商户的生效手续费、保证金及结算配置；平台端未选商户时显示渠道默认值，使用“查看商户生效配置”筛选后，通过 `forMerchant()` 展示该商户自有和已分配渠道，并加载仅限该商户的独立配置。筛选值须属于当前平台用户可管理的启用商户，非法或越权选择返回空表；商户账号伪造此筛选不会切换财务上下文。列表显示与下单保持相同空值回退规则，未初始化的存量分配仍回退渠道费率，不能仅改变显示值伪装配置已生效。
 
 支付方式详情页提供“生成进货单”，历史记录由 `PurchaseOrdersRelationManager` 展示，仅启用的超级管理员可生成、查看和编辑运费/优惠。`PurchaseOrderService` 从所选支付方式的 `siteProducts()` 随机选品并保存独立进货快照：商品不足 30 种全选，否则随机选 30 至总数种，每种 10–20 件；价格采用 `price_min`（视作 USD）× 7 × 0.3，四舍五入为人民币两位小数。默认运费按商品合计 3%–8%、优惠按 10%–20% 随机生成，也可手动输入金额。下单时间可设置，付款/发货/签收时间及交易号为模拟数据。此入口只写 `purchase_orders` 和 `purchase_order_items`，不创建收款订单、不调用网关或改变商户余额；运费/优惠编辑通过 Service 锁单重算总额。
 
@@ -96,23 +100,33 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 主要入口：[OrderCreationService.php](../app/Services/OrderCreationService.php)。
 
-1. 对 `merchant_id + merchant_order_no` 加缓存锁。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用本地订单和金额快照。已有 `pay_url` 时直接返回；缺少链接时沿用当前渠道补建，普通组内路由仍可按下面的故障切换规则继续尝试。
+1. 对 `merchant_id + merchant_order_no` 加缓存锁。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用本地订单。已有 `pay_url`、已收款或不处于 `pending/failed` 时直接返回；只有无链接且未收款的 `pending/failed` 订单可沿用原渠道补建。普通及指定渠道重提均重新检查原渠道，不另选通道，详见下文。
 2. 校验 `amount = subtotal + shipping_fee - discount + tax`，公式容差由 `Order::AMOUNT_TOLERANCE` 定义（当前 0.01）；商品明细按两位小数核对小计。
 3. 应用开启自动折扣时，首次建单随机减免原币种应付金额，保存原始金额及折扣快照；然后读取汇率及汇损，换算 USD。回跳域名校验的当前策略见 [D-05](decisions.md#d-05-下单域名策略)。
 4. 校验支付组归属且启用。普通路径经 `PaymentService` 筛选风控后，按当天成交额/权重升序、权重降序、ID 升序排列，从前三个候选中等概率随机选择；不足三个时全部参与。指定 `payment_method_key` 的路径跳过组内路由与限额检查，但仍检查渠道可用范围、启用状态和三个回跳 URL 的渠道域名，并且不自动切换渠道。
-5. 优先使用商户与渠道的独立财务配置，空值继承渠道默认值，固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细，以及结算模式/周期、保证金比例/天数、退款与拒付手续费快照。旧订单的 `settlement_mode` 为 NULL，沿用原规则，不追溯重算。
-6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`。普通组内路由遇到网关失败或明确的商品准备失败（`OrderItemPreparationException`）时，在当前请求内排除已尝试渠道、重新筛选候选并随机选择；默认最多尝试三个不同渠道（含首选，见 `payment_gateway.failover_max_attempts`）。首次及切换选择都跳过手续费超过订单金额的候选。没有剩余候选或达到上限时保留本地订单并返回最后的网关错误，仍可幂等补建。
+5. 通过 `PaymentMethod::configurationForMerchant()` 优先使用商户与渠道的独立财务配置；手续费和保证金空值继承渠道默认值，结算模式/周期空值继承商户默认值。固定交易手续费及 `settlement_amount`；手续费超过 USD 金额拒单。在数据库事务内写订单、原始商品明细，以及结算模式/周期、保证金比例/天数、退款与拒付手续费快照。旧订单的 `settlement_mode` 为 NULL，沿用原规则，不追溯重算。
+6. 指定渠道新单在本地落库后触发 `DesignatedOrderCreated`。随后准备匹配商品并调用插件 `/pay`，回填 `pay_url`、`wp_order_id`。网关建单或明确的商品准备失败（`OrderItemPreparationException`）后，当前请求立即停止，返回“建单失败，请重试”，不再尝试其他渠道；本地订单和已锁定的渠道、财务快照保留。同渠道的 HTTP 连接重试沿用原配置；若失败期间已取得付款链接或已收款，则返回最新订单，不覆盖已有结果。首次选渠道仍跳过手续费超过订单金额的候选。
 7. 是否派发付款链接邮件由调用方决定，Service 仅保存意图。API 重试补单后的发信行为由 `OrderCreateRetryMailTest` 覆盖。
 
 付款链接邮件的发件人、驱动和凭证统一读取订单所属商户的 `Application`，由应用编辑页顶部“邮件发送”配置，受应用 `is_order_email_enabled` 开关控制。应用未配置完整时记录发送失败，不使用支付方式历史账号或平台默认账号。邮件正文在应用表单配置，留空使用系统默认模板；支付方式不再提供发信账号或正文配置，也不读取其历史邮件模板。已有仅配置在支付方式上的邮件设置需在对应应用重新配置，不自动跨应用复制，详见 [D-21](decisions.md#d-21-付款链接邮件统一使用应用发信配置)。
 
-切换只改变同一本地订单的渠道及相关快照：按新渠道和商户配置重算交易手续费、净入账、保证金及退款/拒付手续费，清除旧渠道匹配商品后重新准备；原始金额、汇率和首次自动折扣保持不变。`order_no`、商户订单号及付款 token 不变，`gateway_order_no` 为每次渠道切换生成新的插件 `s_order_id`；未切换及历史订单该字段为 NULL，`Order::gatewayOrderReference()` 回退本地 `order_no`。支付创建、主动查询、日志和支付插件物流同步统一使用当前远端引用；商户网站物流回传使用原 `merchant_order_no`。webhook 和查询结果落地前核对当前引用，忽略旧渠道尝试的迟到结果。相关决策见 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)。
+失败后再次提交同商户订单号时，按订单已保存的支付组、指定渠道标记和回跳 URL 决定校验方式，不采用新请求的 `group_key` / `payment_method_key` 改变原模式。原渠道必须仍启用、未软删除且商户有权使用；普通路由还要求原支付组有效、渠道仍在组内且通过当前风控，失效返回 `NO_AVAILABLE_PAYMENT_METHOD`，即使其他渠道可用也不切换。指定渠道按保存的原 ID 重新校验授权、启用/软删除状态及三个回跳 URL，失效返回 `PAYMENT_METHOD_NOT_AVAILABLE`，域名不符返回 `PAYMENT_METHOD_DOMAIN_MISMATCH`，仍保留其跳过普通组内风控的语义。
+
+重试保留同一本地订单、`order_no`、商户单号、付款 token、原渠道、原远端引用、财务快照、原始商品、应付金额、汇率和首次自动折扣；CREATE/COPY 继续复用此前已创建的商品，不因重提切换站点或重新计算金融快照。历史 `payment_method_id` 为空时只补齐同一渠道的关联，不改写引用或快照。`Order::gatewayOrderReference()` 对 NULL 回退本地 `order_no`；支付创建、主动查询、日志及支付插件物流同步使用该引用，商户网站物流回传仍使用原 `merchant_order_no`。首次前三候选路由沿用 [D-20](decisions.md#d-20-前三候选随机路由与同请求网关故障切换)，失败和重试规则见 [D-24](decisions.md#d-24-网关建单失败立即返回与原渠道重试)。
+
+保留历史渠道切换产生的网关引用、来源日志和迟到结果校验，旧尝试回调/查询不能改变当前尝试的状态及账务；本次及后续同单号重试不生成新的渠道尝试引用。同渠道恢复依赖插件对同一 `s_order_id` 的幂等处理，不把本地锁或引用校验描述成全链路绝无重复支付的保证。
 
 `PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息发送给订单商户的已启用机器人。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号或渠道商户推断接收人。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
 
+连续建单失败保护由 `OrderCreationService::createPayment()` 调用 [PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php) 的 `recordFailure()` / `recordSuccess()` 统一记录：网关建单或明确的商品准备最终失败时，针对当前渠道累计一次 `consecutive_failed_times`；一次创建内部的多次 HTTP 连接重试只计一次。成功保存有效 `pay_url` 才清零；已有链接的幂等命中、金额/授权校验或风控拒绝既不计数也不清零。计数按支付方式 ID 跨商户持久化，事务中先锁原订单、再锁渠道，核对原商户、当前渠道/引用及收款/链接状态，过期结果不计入其他尝试。直接调用底层网关客户端的工具操作不在该统计入口内。
+
+系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后通过原有 `TelegramNotificationService` 发提醒给原订单商户及该渠道关联的全部商户（共享渠道包括所有分配商户，去重），未配置/未启用机器人或触发限流时沿用原服务的跳过规则；通知异常不覆盖建单失败，原来逐次网关建单失败的提醒继续保留。部署新增字段及配置补缺的规则见 [数据库说明](database.md#2-租户身份和渠道)，决策见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用)。
+
+人工核验渠道恢复后，通过 `PaymentMethod` 模型将停用渠道重新启用（`is_active: false → true`）时，同次保存自动将 `consecutive_failed_times` 清零，开始新一轮计数。普通编辑但启用状态未变时不清零；运行中的成功/失败计数使用 `saveQuietly()`，不触发该模型事件。编辑页只提交主动修改的启用状态，在事务内重新锁定并读取渠道后保存，避免旧页面恢复自动停用状态或重复清掉新计数；保存后同步页面的启用状态。此补充无需新增字段或迁移。
+
 两类明细不可混用：`order_items` 保存商户原始商品，`order_matched_items` 保存发给支付站点的商品。`OrderItemService` 支持 `MATCH`、`VIRTUAL`、`CREATE`、`COPY`；同站点直连优先于模式选择。`CREATE`/`COPY` 需要远端真实商品 ID，因此下单过程同步建品。
 
-锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；租期至少为 `payment_gateway.creation_lock_seconds`（默认 600 秒），并按最大渠道尝试数、HTTP 重试及原始商品条数的同步建品超时预算向上调整。切换和写入链接时另以订单行锁核对当前尝试，已收款或已有链接时不切换。风控当前统计已成交数据，待支付订单不计负载。前三候选随机允许连续碰巧选中同一渠道，不保证逐单轮转、固定进单比例或严格串行化所有渠道订单。
+锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；租期至少为 `payment_gateway.creation_lock_seconds`（默认 600 秒），并按单渠道 HTTP 重试及原始商品条数的同步建品超时预算向上调整；不再读取 `failover_max_attempts`。写入链接时仍以订单行锁核对当前远端引用和渠道。风控当前统计已成交数据，待支付订单不计负载。首次前三候选随机允许连续碰巧选中同一渠道，不保证逐单轮转、固定进单比例或严格串行化所有渠道订单。
 
 ## 4. 支付状态与账务
 
@@ -182,12 +196,19 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 ## 6. 按任务定位
 
+仪表盘 `AdminDashboard` 使用当天、昨天、近 7 天、近 30 天、本月、上月快捷页签；自定义区间通过弹窗确认后应用，取消保留原区间。所有交易组件共享同一日期条件，按系统时区、包含首尾日期；近 7/30 天含当天，本月截至当天。页面不再提供支付方式筛选，订单数量与交易金额使用独立图表。`DashboardService` 从 `order_daily_stats` 读取创建订单数、支付成功数/成交额、失败数、商户排名与渠道占比，不在页面请求中扫描订单、日志或触发聚合。
+
+新统计列和执行记录版本见 [数据库口径](database.md#6-汇率与统计派生数据)。`OrderStatsRun::CURRENT_METRICS_VERSION` 区分新版完整统计与旧版执行记录；缺失或旧版日期在仪表盘和订单统计页提示需重算，零交易但已按新版统计的日期不误报。定时聚合频率保持不变，显示可能存在延迟；历史范围通过现有 `order-stats:aggregate --date=...` / `--days=...` 或订单统计页刷新动作重算，页面切换不写统计表。
+
+商户登录且具有 `finance.view` 时，`MerchantBalanceOverview` 展示当前商户总余额、可提现、待结算、待出款、保证金/冻结；余额不受交易时间条件影响。组件每次请求重新鉴权并按登录账号的商户查询，不能由 `pageFilters` 指定其他商户；复用 `Merchant` 的余额分类方法，保留旧提现占用的读时分类。平台账号不展示此单商户余额组件，无权限的直接 Livewire 请求也会拒绝。
+
 以下完整路径以仓库根目录为基准；同一表格单元内的后续文件省略相同目录前缀。
 
 | 任务 | 首先阅读 | 现有测试入口 |
 |---|---|---|
-| 下单、幂等、网关切换、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreationFailoverTest.php`、`OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
+| 下单、幂等、原渠道重试、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreationFailoverTest.php`、`OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
 | 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRoutingTest.php`、`PaymentRiskPaidAtTest.php` |
+| 连续建单失败与自动停用 | `app/Services/PaymentMethodFailureService.php`、`OrderCreationService.php`、`app/Models/PaymentMethod.php`、`database/seeders/PaymentFailureSettingsSeeder.php` | `tests/Feature/PaymentMethodCreationFailureTest.php`、`PaymentFailureSettingsTest.php` |
 | 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`tests/Feature/Filament/MerchantWithdrawalRequestTest.php` |
 | 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
 | 历史订单漏配汇损补算 | `app/Console/Commands/RecalculateOrderSurcharge.php`、`app/Services/OrderSurchargeRecalculationService.php`、[操作手册](../doc/order-surcharge-recalculation.md) | `tests/Feature/RecalculateOrderSurchargeTest.php` |

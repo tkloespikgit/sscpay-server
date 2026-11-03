@@ -5,9 +5,17 @@ namespace App\Filament\Widgets;
 use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\ChartWidget;
+use Filament\Widgets\Concerns\InteractsWithPageFilters;
 
 class OrderTrendChart extends ChartWidget
 {
+    use InteractsWithPageFilters;
+
+    public function boot(): void
+    {
+        abort_unless(static::canView(), 403);
+    }
+
     public static function canView(): bool
     {
         return AdminDashboard::canAccess();
@@ -20,7 +28,9 @@ class OrderTrendChart extends ChartWidget
 
     protected function getData(): array
     {
-        $trend = app(DashboardService::class)->getAdminStats($this->resolveMerchantIds())['trend_30d'];
+        abort_unless(static::canView(), 403);
+
+        $trend = app(DashboardService::class)->trend(DashboardService::viewerMerchantIds(), $this->pageFilters ?? []);
 
         return [
             'datasets' => [
@@ -28,11 +38,6 @@ class OrderTrendChart extends ChartWidget
                     'label' => __('admin.dashboard.charts.order_count'),
                     'data' => array_column($trend, 'order_count'),
                     'borderColor' => '#6366f1',
-                ],
-                [
-                    'label' => __('admin.dashboard.charts.amount_usd'),
-                    'data' => array_column($trend, 'amount_usd'),
-                    'borderColor' => '#22c55e',
                 ],
             ],
             'labels' => array_column($trend, 'date'),
@@ -42,14 +47,5 @@ class OrderTrendChart extends ChartWidget
     protected function getType(): string
     {
         return 'line';
-    }
-
-    /**
-     * 统计范围：超级管理员不限，商户级管理员是名下全部商户，普通商户用户是自己那一个。
-     * 统一走 DashboardService::viewerMerchantIds()，见该方法注释。
-     */
-    private function resolveMerchantIds(): ?array
-    {
-        return DashboardService::viewerMerchantIds();
     }
 }

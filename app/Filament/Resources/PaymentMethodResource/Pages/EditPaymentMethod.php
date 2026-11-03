@@ -13,11 +13,17 @@ use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Schemas\Schema;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Livewire\Attributes\Locked;
 
 class EditPaymentMethod extends EditRecord
 {
     protected static string $resource = PaymentMethodResource::class;
+
+    #[Locked]
+    public bool $initialIsActive = false;
 
     /**
      * 保存前先记下当前分配的商户 ID，保存后跟最新分配名单比对，把"被移除的商户"
@@ -28,9 +34,27 @@ class EditPaymentMethod extends EditRecord
      */
     protected array $previousAssignedMerchantIds = [];
 
+    protected function afterFill(): void
+    {
+        $this->initialIsActive = (bool) $this->record->is_active;
+    }
+
     protected function mutateFormDataBeforeSave(array $data): array
     {
+        if (array_key_exists('is_active', $data) && (bool) $data['is_active'] === $this->initialIsActive) {
+            unset($data['is_active']);
+        }
+
         return PaymentMethodResource::authorizedFinancialData($data, $this->record);
+    }
+
+    protected function handleRecordUpdate(Model $record, array $data): Model
+    {
+        return DB::transaction(function () use ($record, $data): Model {
+            $this->record = $record->newQuery()->lockForUpdate()->findOrFail($record->getKey());
+
+            return parent::handleRecordUpdate($this->record, $data);
+        }, 3);
     }
 
     protected function beforeSave(): void
@@ -132,6 +156,9 @@ class EditPaymentMethod extends EditRecord
      */
     protected function afterSave(): void
     {
+        $this->initialIsActive = (bool) $this->record->is_active;
+        $this->data['is_active'] = $this->initialIsActive;
+
         PaymentMethodResource::syncGatewayConfigAndNotify($this->record);
 
         // 系统级改成商户自有：表单里的"分配商户"字段这时不会提交（visible/dehydrated 都关了），

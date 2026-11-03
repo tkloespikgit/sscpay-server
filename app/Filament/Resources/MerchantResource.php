@@ -6,6 +6,7 @@ use App\Exceptions\BalanceOperationException;
 use App\Filament\Resources\MerchantResource\Pages;
 use App\Filament\Resources\MerchantResource\RelationManagers\PaymentSettingsRelationManager;
 use App\Filament\Support\FinanceSecurity;
+use App\Filament\Support\MerchantPaymentSettingsForm;
 use App\Models\Merchant;
 use App\Models\User;
 use App\Services\BalanceService;
@@ -90,27 +91,7 @@ class MerchantResource extends Resource
 
             ])->columns(2),
 
-            Section::make(__('settlement.settings.title'))->schema([
-                Select::make('settlement_mode')
-                    ->label(__('settlement.fields.mode'))
-                    ->options([
-                        'immediate' => __('settlement.modes.immediate'),
-                        'shipped' => __('settlement.modes.shipped'),
-                    ])
-                    ->default('immediate')
-                    ->required()
-                    ->in(['immediate', 'shipped'])
-                    ->helperText(__('settlement.settings.mode_help')),
-                TextInput::make('settlement_days')
-                    ->label(__('settlement.fields.cycle_days'))
-                    ->integer()
-                    ->required()
-                    ->minValue(0)
-                    ->maxValue(36500)
-                    ->default(0)
-                    ->suffix(__('settlement.days'))
-                    ->helperText(__('settlement.settings.cycle_help')),
-            ])->columns(2),
+            MerchantPaymentSettingsForm::defaultsSection(),
         ]);
     }
 

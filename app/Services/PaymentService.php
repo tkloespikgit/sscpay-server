@@ -15,7 +15,7 @@ use Random\Randomizer;
  *
  * 组内启用且商户可用的支付方式先通过风控，再按"当天已成交金额 / 权重"
  * 升序排列，从前三个通道中等概率随机选择一个；不足三个时全部参与。
- * 网关失败后可排除本次已尝试的通道，按相同规则重新选择，避免重复尝试。
+ * 首次选择时可排除手续费不满足金额要求的通道；补建只检查原渠道，不自动切换。
  * 全部候选都不通过风控则抛 NoAvailablePaymentMethodException。
  *
  * "当天/当月"窗口按系统默认时区（config('app.timezone')）确定，不跟随支付组时区——
@@ -41,7 +41,7 @@ class PaymentService
     ) {}
 
     /**
-     * @param  list<int>  $excludedMethodIds  本次下单已尝试或已排除的支付方式。
+     * @param  list<int>  $excludedMethodIds  本次选择已排除的支付方式。
      *
      * @throws NoAvailablePaymentMethodException
      */

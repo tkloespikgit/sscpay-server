@@ -5,9 +5,17 @@ namespace App\Filament\Widgets;
 use App\Filament\Pages\AdminDashboard;
 use App\Services\DashboardService;
 use Filament\Widgets\ChartWidget;
+use Filament\Widgets\Concerns\InteractsWithPageFilters;
 
 class PaymentMethodBreakdownChart extends ChartWidget
 {
+    use InteractsWithPageFilters;
+
+    public function boot(): void
+    {
+        abort_unless(static::canView(), 403);
+    }
+
     public static function canView(): bool
     {
         return AdminDashboard::canAccess();
@@ -20,7 +28,9 @@ class PaymentMethodBreakdownChart extends ChartWidget
 
     protected function getData(): array
     {
-        $breakdown = app(DashboardService::class)->getAdminStats($this->resolveMerchantIds())['payment_method_breakdown'];
+        abort_unless(static::canView(), 403);
+
+        $breakdown = app(DashboardService::class)->paymentMethodBreakdown(DashboardService::viewerMerchantIds(), $this->pageFilters ?? []);
 
         return [
             'datasets' => [
@@ -36,14 +46,5 @@ class PaymentMethodBreakdownChart extends ChartWidget
     protected function getType(): string
     {
         return 'pie';
-    }
-
-    /**
-     * 统计范围：超级管理员不限，商户级管理员是名下全部商户，普通商户用户是自己那一个。
-     * 统一走 DashboardService::viewerMerchantIds()，见该方法注释。
-     */
-    private function resolveMerchantIds(): ?array
-    {
-        return DashboardService::viewerMerchantIds();
     }
 }

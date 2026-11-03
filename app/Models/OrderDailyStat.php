@@ -19,6 +19,7 @@ class OrderDailyStat extends Model
 {
     /** 指标列，供聚合与看板共用，避免两处各写一份列名清单。 */
     public const METRIC_COLUMNS = [
+        'created_orders', 'unpaid_terminal_orders',
         'paid_orders', 'paid_amount',
         'failed_orders', 'failed_amount',
         'refunded_orders', 'refunded_amount',
@@ -40,6 +41,8 @@ class OrderDailyStat extends Model
             'merchant_id' => 'integer',
             'application_id' => 'integer',
             'payment_method_id' => 'integer',
+            'created_orders' => 'integer',
+            'unpaid_terminal_orders' => 'integer',
             'paid_orders' => 'integer',
             'paid_amount' => 'decimal:2',
             'failed_orders' => 'integer',
@@ -78,6 +81,6 @@ class OrderDailyStat extends Model
      */
     public function scopeForViewer(Builder $query, ?array $merchantIds): Builder
     {
-        return $merchantIds === null ? $query : $query->whereIn('merchant_id', $merchantIds);
+        return $merchantIds === null ? $query : $query->whereIn($this->qualifyColumn('merchant_id'), $merchantIds);
     }
 }
