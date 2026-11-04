@@ -949,8 +949,11 @@ return [
             'manual_status_reason' => 'Reason',
         ],
         'logistics_anomaly_reasons' => [
-            'no_delivery_15d' => 'No delivery more than 15 days after shipment',
-            'stale_5d' => 'No tracking update for more than 5 days',
+            'no_delivery_15d' => 'Not delivered after :days days',
+            'stale_5d' => 'No tracking update for :days days',
+            'delivery_failure' => 'Delivery failed',
+            'expired' => 'Transit time expired',
+            'provider_exception' => 'Exception reported by logistics provider',
         ],
         // Provider tracking status labels (DB keeps English enums; aligned with 17TRACK v2.4)
         'tracking_statuses' => [
@@ -1358,6 +1361,10 @@ return [
         'max_failed_times' => [
             'helper' => 'Enter an integer of at least 1 (default: 5). Payment methods without an override dynamically inherit this value. Channels are automatically disabled when consecutive order creation failures reach the limit.',
         ],
+        'logistics_anomaly' => [
+            'stale_days_helper' => 'Enter an integer from 1 to 3650 days (default: 5). Flag a shipment when its latest tracking event has not changed for this period; use the shipment time when there are no tracking events.',
+            'no_delivery_days_helper' => 'Enter an integer from 1 to 3650 days (default: 15). Flag a shipment still undelivered after this period. Each day is 24 hours; the next check uses the saved threshold.',
+        ],
     ],
 
     'onboard_merchant' => [
@@ -1612,6 +1619,7 @@ return [
     ],
 
     'telegram_notification' => [
+        'logistics_anomaly' => "⚠️ Logistics anomaly\n\nOrder: :order_no\nMerchant order: :merchant_order_no\nTracking number: :tracking_number\nTracking status: :status\nReason: :reason\n\nPlease review the tracking details in the dashboard and follow up promptly.",
         'payment_link_creation_failed' => "❌ Payment link creation failed\n\nMerchant ID: :merchant_id\nOrder: :order_no\nMerchant order: :merchant_order_no\nSource: :source\nAmount: :currency :amount (USD :converted_amount)\nPayment channel: :payment_method (ID :payment_method_id)\nGateway host: :gateway_host\nHTTP status: :http_status\nGateway error code: :pga_code\nReason: :error\n\nThe local order has been retained. Check the payment channel and gateway error, then retry creating the payment link.",
         'logistics_import_completed' => "📦 Logistics import completed\n\nFile: :file_name\nTotal records: :total\nSucceeded: :success\nFailed: :failed",
         'order_paid' => "✅ Payment received\n\nOrder: :order_no\nAmount: :currency:amount (≈ $:converted_amount)\nPayment method: :payment_method",

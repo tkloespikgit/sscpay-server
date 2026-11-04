@@ -112,7 +112,7 @@ class OrderShipping extends Model
 
         $existing = static::query()->withoutGlobalScopes()->where('order_id', $orderId)->first();
 
-        // 运单号变更时清空 Provider 注册标记，便于后续重新 register；同号改其它字段保留已注册状态。
+        /** 运单号变更后旧轨迹与签收结果不再适用；同号编辑保留跟踪快照。 */
         if (
             $existing
             && array_key_exists('tracking_number', $attributes)
@@ -121,7 +121,18 @@ class OrderShipping extends Model
             $attributes = array_merge($attributes, [
                 'tracking_registered_at' => null,
                 'tracking_provider' => null,
+                'tracking_carrier_code' => null,
+                'tracking_status' => null,
+                'tracking_sub_status' => null,
+                'tracking_last_event_at' => null,
+                'tracking_last_event_desc' => null,
+                'tracking_delivered_at' => null,
+                'tracking_checked_at' => null,
+                'tracking_last_polled_at' => null,
                 'tracking_error' => null,
+                'logistics_anomaly' => false,
+                'logistics_anomaly_reason' => null,
+                'logistics_anomaly_at' => null,
             ]);
         }
 

@@ -268,3 +268,19 @@
 首次上线执行 `2026_11_03_223806_add_failure_limits_to_payment_methods_table` 即可同时补缺默认配置；若已执行，人工重新启用清零只部署代码。专用 Seeder 可以安全重跑，但不是迁移完成后的必需步骤；具体命令见 [数据库上线操作](database.md#2-租户身份和渠道)。
 
 **依据：** [PaymentMethod](../app/Models/PaymentMethod.php)、[PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[新增迁移](../database/migrations/2026_11_03_223806_add_failure_limits_to_payment_methods_table.php)、[PaymentFailureSettingsSeeder](../database/seeders/PaymentFailureSettingsSeeder.php)、[SystemConfigSeeder](../database/seeders/SystemConfigSeeder.php)、[建单失败保护测试](../tests/Feature/PaymentMethodCreationFailureTest.php)、[阈值配置测试](../tests/Feature/PaymentFailureSettingsTest.php)。
+
+## D-26 物流异常统一判定、可配置阈值与商户提醒
+
+**状态：当前工作区实现，未提交（2026-11-04，按用户要求）。** 物流 Provider 的 `Exception`、`DeliveryFailure`、`Expired` 主状态统一设置 `logistics_anomaly=true`，用于列表红色、异常筛选和 Telegram 提醒；仍展示原状态的中文含义。当前 `Delivered` 清异常并保存签收时间，不推进订单业务状态为 `completed`。供应商异常优先于时间异常；其他状态按已有签收时间豁免、发货超期、事件陈旧依次判断。
+
+**原因与影响：** 仅按时间标异会遗漏投递失败或运输过久；写死 5/15 天也不能适应不同物流时效。新增系统配置 `logistics_tracking.stale_days`（默认 5）与 `logistics_tracking.no_delivery_days`（默认 15），均为 1–3650 整数天，连续 24 小时算一天，满阈值即判异。没有事件时间时从发货时间计算陈旧；保存清缓存，非法旧值回退默认。保留历史原因码 `stale_5d` / `no_delivery_15d`，展示使用当前配置，提醒携带触发时的阈值快照。
+
+每天 06:00 的扫描保留原订单快照和业务状态范围，补扫供应商异常及已有异常，支持调大阈值后清除时间异常；按缓存游标分批轮转。首次预测异常且驱动、订单快照、商户凭证均允许时先主动查一次，查询确认已签收或轨迹新鲜则不误报；查询失败仍按本地数据判定。已有异常不反复查询。
+
+异常保存时锁定当前商户的物流行，正常→异常才在提交后派发 `LogisticsAnomalyDetected`；重复回调不重复排队，恢复正常后再次异常可再提醒。独立队列监听器复用 `TelegramNotificationService`，仅向订单所属商户 Bot 发送订单号、商户单号、运单号、状态和原因，不发送凭证或客户资料。动态内容截断并 HTML 转义；缺失/禁用 Bot 跳过，限流或 HTTP 失败每 60 秒重试，最长 24 小时，提醒故障不回滚物流。
+
+更换运单号清除原 Provider 注册、承运商、主/子状态、轨迹事件、签收时间、查询时间、错误和异常字段；同号编辑保留。迟到的旧号注册或查询结果不得覆盖新号。未填写新发货时间时仍保留原发货时间，沿用原录入规则；本次不批量清洗历史物流，也不改变支付插件同步、商户网站物流回传或账务。
+
+迁移与专用 Seeder 仅补缺失系统配置，不覆盖已保存值，回滚保留配置。部署需执行新配置迁移；已有运单由后续扫描或回调逐步应用新判定，不回填历史轨迹。
+
+**依据：** [LogisticsTrackingSyncService](../app/Services/LogisticsTracking/LogisticsTrackingSyncService.php)、[异常扫描命令](../app/Console/Commands/ReflagLogisticsTrackingAnomaliesCommand.php)、[OrderShipping](../app/Models/OrderShipping.php)、[异常事件](../app/Events/LogisticsAnomalyDetected.php)、[提醒监听器](../app/Listeners/SendLogisticsAnomalyNotification.php)、[配置迁移](../database/migrations/2026_11_04_094301_add_logistics_anomaly_thresholds_to_system_configs.php)、[配置 Seeder](../database/seeders/LogisticsAnomalySettingsSeeder.php)、[异常判定测试](../tests/Feature/LogisticsAnomalyTrackingTest.php)、[配置测试](../tests/Feature/LogisticsAnomalySettingsTest.php)、[Telegram 测试](../tests/Feature/LogisticsAnomalyTelegramTest.php)。

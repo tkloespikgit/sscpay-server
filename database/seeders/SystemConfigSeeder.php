@@ -173,5 +173,6 @@ class SystemConfigSeeder extends Seeder
         ]);
 
         $this->call(PaymentFailureSettingsSeeder::class);
+        $this->call(LogisticsAnomalySettingsSeeder::class);
     }
 }

@@ -5,6 +5,7 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\OrderResource;
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
 use App\Models\Order;
+use App\Models\SystemConfig;
 use App\Models\User;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use Filament\Facades\Filament;
@@ -82,15 +83,21 @@ class OrderTrackingStatusListColumnTest extends TestCase
 
     public function test_anomaly_reason_is_localized(): void
     {
+        $this->app->setLocale('zh_CN');
+        SystemConfig::set('logistics_tracking.no_delivery_days', '7');
+        SystemConfig::set('logistics_tracking.stale_days', '3');
+
         $this->assertSame(
-            __('admin.order.logistics_anomaly_reasons.no_delivery_15d'),
+            '发货满 7 天未签收',
             OrderResource::formatLogisticsAnomalyReason(LogisticsTrackingSyncService::ANOMALY_NO_DELIVERY)
         );
         $this->assertSame(
-            __('admin.order.logistics_anomaly_reasons.stale_5d'),
+            '轨迹满 3 天无更新',
             OrderResource::formatLogisticsAnomalyReason(LogisticsTrackingSyncService::ANOMALY_STALE)
         );
         $this->assertNull(OrderResource::formatLogisticsAnomalyReason(null));
+        $this->assertSame('投递失败', OrderResource::formatLogisticsAnomalyReason('delivery_failure'));
+        $this->assertSame('运输过久', OrderResource::formatLogisticsAnomalyReason('expired'));
     }
 
     public function test_tracking_status_and_sub_status_are_localized(): void

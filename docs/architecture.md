@@ -191,10 +191,14 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 | `checkout:check-cloudflare-ips` | 每周一 09:00 |
 | `checkout:sync-domains` | 每 15 分钟，防重叠 |
 | `logistics-imports:prune` | 每天 03:10，防重叠 |
-| `logistics-tracking:reflag-anomalies` | 每天 06:00，防重叠；本地重算物流异常；仅 `logistics_anomaly` false→true 且启用门闩通过时主动查一次 |
+| `logistics-tracking:reflag-anomalies` | 每天 06:00，防重叠；按供应商状态和系统配置天数重算物流异常，含已有异常以支持阈值放宽后恢复；仅 false→true 且启用门闩通过时主动查一次，确认异常后排队 Telegram 提醒 |
 | `orders:notify-unshipped-overdue` | 每天 10:00，防重叠；超 10 天未发货汇总 Telegram（不看物流跟踪开关） |
 
 ## 6. 按任务定位
+
+物流异常统一在 `LogisticsTrackingSyncService` 判定：`Exception` / `DeliveryFailure` / `Expired` 立即标异常；未签收超时与轨迹无更新分别读取系统配置 `logistics_tracking.no_delivery_days` / `logistics_tracking.stale_days`（默认 15 / 5 天，按连续 24 小时计算）。无事件时从发货时间计算轨迹陈旧；当前 `Delivered` 清除异常。保存时锁定当前商户的运单，避免重复回调重复提醒，并拒绝换号后的旧查询结果。换号清空旧 Provider 轨迹、签收、查询及异常字段，同号编辑保留。
+
+异常从 false→true 时提交后派发 `LogisticsAnomalyDetected`，由独立队列监听器向订单商户的 Telegram Bot 提醒，消息包含订单号、商户单号、运单号、状态及原因。正常恢复后再次异常可重新通知；同一异常持续期间不重复派发。消息使用触发时的阈值快照，动态内容截断并 HTML 转义；缺失/禁用 Bot 跳过，限流或发送失败每 60 秒重试，最长 24 小时，不影响物流落库。规则见 [D-26](decisions.md#d-26-物流异常统一判定可配置阈值与商户提醒)。
 
 仪表盘 `AdminDashboard` 使用当天、昨天、近 7 天、近 30 天、本月、上月快捷页签；自定义区间通过弹窗确认后应用，取消保留原区间。所有交易组件共享同一日期条件，按系统时区、包含首尾日期；近 7/30 天含当天，本月截至当天。页面不再提供支付方式筛选，订单数量与交易金额使用独立图表。`DashboardService` 从 `order_daily_stats` 读取创建订单数、支付成功数/成交额、失败数、商户排名与渠道占比，不在页面请求中扫描订单、日志或触发聚合。
 

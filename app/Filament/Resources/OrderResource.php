@@ -8,6 +8,7 @@ use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderShipping;
 use App\Models\PaymentMethod;
+use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
@@ -645,7 +646,11 @@ class OrderResource extends Resource
         }
 
         $key = 'admin.order.logistics_anomaly_reasons.'.$reason;
-        $translated = __($key);
+        $translated = __($key, ['days' => match ($reason) {
+            LogisticsTrackingSyncService::ANOMALY_NO_DELIVERY => LogisticsTrackingSyncService::noDeliveryDays(),
+            LogisticsTrackingSyncService::ANOMALY_STALE => LogisticsTrackingSyncService::staleDays(),
+            default => '',
+        }]);
 
         return $translated === $key ? $reason : $translated;
     }

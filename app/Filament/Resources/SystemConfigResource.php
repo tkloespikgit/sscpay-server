@@ -98,12 +98,13 @@ class SystemConfigResource extends Resource
                     ->label(__('admin.system_config.fields.config_value'))
                     ->numeric()
                     ->required()
-                    ->rules(fn (?SystemConfig $record): array => $record?->config_key === PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY
-                        ? ['integer', 'min:1', 'max:4294967295']
-                        : [])
-                    ->helperText(fn (?SystemConfig $record): ?string => $record?->config_key === PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY
-                        ? __('admin.system_config.max_failed_times.helper')
-                        : null)
+                    ->rules(fn (?SystemConfig $record): array => SystemConfigForm::numberRules($record))
+                    ->helperText(fn (?SystemConfig $record): ?string => match ($record?->config_key) {
+                        PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY => __('admin.system_config.max_failed_times.helper'),
+                        'logistics_tracking.stale_days' => __('admin.system_config.logistics_anomaly.stale_days_helper'),
+                        'logistics_tracking.no_delivery_days' => __('admin.system_config.logistics_anomaly.no_delivery_days_helper'),
+                        default => null,
+                    })
                     ->visible(fn (Get $get) => $get('value_type') === SystemConfig::TYPE_NUMBER),
 
                 Repeater::make('value_json')

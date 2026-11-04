@@ -142,6 +142,10 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 
 系统配置 `logistics_tracking.available_drivers`（JSON 枚举，空=[]=平台关闭）由超管维护；商户在「物流跟踪」页选用驱动并配置 `base_url` / API Token / Webhook Secret / `webhook_token`。
 
+物流异常天数也由超管在系统配置的物流跟踪分组维护：`logistics_tracking.stale_days` 默认 5、`logistics_tracking.no_delivery_days` 默认 15，均为 1–3650 的整数天，按连续 24 小时计算。保存清缓存，扫描和回调立即采用当前值；放宽阈值后已有时间异常由下一轮扫描重算。新增数据迁移 `2026_11_04_094301_add_logistics_anomaly_thresholds_to_system_configs` 与 `LogisticsAnomalySettingsSeeder` 仅补缺失配置、不覆盖已保存值，回滚保留配置；部署执行新增迁移即可，无需重跑全部 Seeder。
+
+`logistics_anomaly_reason` 保留历史原因码 `stale_5d` / `no_delivery_15d` 以兼容旧数据，码中的数字不再代表当前阈值；展示读取配置，Telegram 事件携带触发时的天数。新增原因码 `delivery_failure` / `expired` / `provider_exception` 对应供应商异常主状态。换运单号清空旧 `tracking_*` 和三个异常字段（不影响插件 `sync_*` 的独立同步流程）；原发货时间仍沿用录入规则，未指定新时间时保留。
+
 `orders.original_amount` 保存折扣前请求应付金额供幂等比较，历史订单为 NULL 时回退 `amount`；`auto_discount` 保存本次自动减免，默认 0，已包含在 `discount` 中。先验证请求公式和原始商品，再增加折扣、减少 `amount`，随后计算汇率、风控、手续费与结算快照。原始商品不变，商品匹配溢出折扣仍可叠加；补单与开关变化不重新抽取自动折扣。查询、通知与远端支付使用折扣后实际金额。
 
 ### 自动匹配商品的订单折扣（2026-09-30）

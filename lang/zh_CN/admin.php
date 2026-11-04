@@ -949,8 +949,11 @@ return [
             'manual_status_reason' => '备注原因',
         ],
         'logistics_anomaly_reasons' => [
-            'no_delivery_15d' => '发货超过 15 天未签收',
-            'stale_5d' => '轨迹超过 5 天无更新',
+            'no_delivery_15d' => '发货满 :days 天未签收',
+            'stale_5d' => '轨迹满 :days 天无更新',
+            'delivery_failure' => '投递失败',
+            'expired' => '运输过久',
+            'provider_exception' => '物流供应商报告异常',
         ],
         // 物流 Provider 主/子状态展示文案（落库仍为英文枚举；当前对齐 17TRACK v2.4）
         'tracking_statuses' => [
@@ -1359,6 +1362,10 @@ return [
         'max_failed_times' => [
             'helper' => '填写大于或等于 1 的整数，默认 5 次。支付方式未单独设置时动态沿用此值；连续建单失败达到阈值后自动禁用通道。',
         ],
+        'logistics_anomaly' => [
+            'stale_days_helper' => '填写 1–3650 的整数天数，默认 5 天。最新物流事件达到此天数未更新时标记异常；没有轨迹事件时从发货时间计算。',
+            'no_delivery_days_helper' => '填写 1–3650 的整数天数，默认 15 天。发货达到此天数仍未签收时标记异常。每一天按 24 小时计算，保存后下一次检查使用新阈值。',
+        ],
     ],
 
     'onboard_merchant' => [
@@ -1613,6 +1620,7 @@ return [
     ],
 
     'telegram_notification' => [
+        'logistics_anomaly' => "⚠️ 物流异常提醒\n\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n物流单号：:tracking_number\n物流状态：:status\n异常原因：:reason\n\n请在后台核实物流轨迹并及时处理。",
         'payment_link_creation_failed' => "❌ 创建支付链接失败\n\n商户 ID：:merchant_id\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n来源：:source\n金额：:currency :amount（折算 USD :converted_amount）\n支付渠道：:payment_method（ID :payment_method_id）\n支付站点：:gateway_host\nHTTP 状态：:http_status\n网关错误码：:pga_code\n失败原因：:error\n\n本地订单已保留，请核实渠道与网关错误后重试补建支付链接。",
         'logistics_import_completed' => "📦 物流导入完成\n\n文件：:file_name\n总记录：:total\n成功：:success\n失败：:failed",
         'order_paid' => "✅ 支付成功通知\n\n订单号：:order_no\n金额：:currency:amount（≈ \$:converted_amount）\n支付方式：:payment_method",

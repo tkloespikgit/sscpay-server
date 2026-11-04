@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\RegisterLogisticsTrackingJob;
+use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
 use App\Models\MerchantLogisticsTrackingSetting;
 use App\Models\OrderShipping;
@@ -258,14 +259,33 @@ class SeventeenTrackWebhookTest extends TestCase
         $this->assertNull($shipping->fresh()->tracking_status);
     }
 
-    public function test_same_tracking_number_update_does_not_clear_registration_marker(): void
+    public function test_same_tracking_number_update_preserves_tracking_snapshot_and_anomaly(): void
     {
-        Queue::fake();
+        $this->freezeTime();
+        Http::preventStrayRequests();
+        Queue::fake([RegisterLogisticsTrackingJob::class, SyncOrderTrackingJob::class]);
 
         $shipping = $this->createShipping('1Z-KEEP', [
             'tracking_registered_at' => now()->subHour(),
             'tracking_provider' => 'seventeen_track',
+            'tracking_status' => 'InTransit',
+            'tracking_sub_status' => 'InTransit_Other',
+            'tracking_carrier_code' => '100001',
+            'tracking_last_event_at' => now()->subDays(6),
+            'tracking_last_event_desc' => 'Original event',
+            'tracking_checked_at' => now()->subHour(),
+            'tracking_last_polled_at' => now()->subHour(),
+            'tracking_error' => 'Previous query failed',
+            'logistics_anomaly' => true,
+            'logistics_anomaly_reason' => LogisticsTrackingSyncService::ANOMALY_STALE,
+            'logistics_anomaly_at' => now()->subDay(),
         ], orderAttrs: ['logistics_tracking_enabled' => true, 'status' => 'shipped']);
+        $originalSnapshot = array_intersect_key($shipping->fresh()->getRawOriginal(), array_flip([
+            'tracking_registered_at', 'tracking_provider', 'tracking_status', 'tracking_sub_status',
+            'tracking_carrier_code', 'tracking_last_event_at', 'tracking_last_event_desc',
+            'tracking_checked_at', 'tracking_last_polled_at', 'tracking_error',
+            'logistics_anomaly', 'logistics_anomaly_reason', 'logistics_anomaly_at',
+        ]));
 
         app(OrderShippingService::class)->record($shipping->order->fresh(), 0, [
             'logistics_company' => 'ups',
@@ -274,17 +294,31 @@ class SeventeenTrackWebhookTest extends TestCase
         ]);
 
         $shipping->refresh();
-        $this->assertNotNull($shipping->tracking_registered_at);
-        $this->assertSame('seventeen_track', $shipping->tracking_provider);
+        $this->assertSame($originalSnapshot, array_intersect_key($shipping->getRawOriginal(), $originalSnapshot));
+        Queue::assertPushed(RegisterLogisticsTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
+        Queue::assertPushed(SyncOrderTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
     }
 
-    public function test_tracking_number_change_clears_registration_marker(): void
+    public function test_tracking_number_change_clears_previous_tracking_snapshot_and_anomaly(): void
     {
-        Queue::fake();
+        $this->freezeTime();
+        Http::preventStrayRequests();
+        Queue::fake([RegisterLogisticsTrackingJob::class, SyncOrderTrackingJob::class]);
 
         $shipping = $this->createShipping('1Z-OLD', [
             'tracking_registered_at' => now()->subHour(),
             'tracking_provider' => 'seventeen_track',
+            'tracking_carrier_code' => '100001',
+            'tracking_status' => 'InTransit',
+            'tracking_sub_status' => 'InTransit_Other',
+            'tracking_last_event_at' => now()->subDays(6),
+            'tracking_last_event_desc' => 'Original event',
+            'tracking_checked_at' => now()->subHour(),
+            'tracking_last_polled_at' => now()->subHour(),
+            'tracking_error' => 'Previous query failed',
+            'logistics_anomaly' => true,
+            'logistics_anomaly_reason' => LogisticsTrackingSyncService::ANOMALY_STALE,
+            'logistics_anomaly_at' => now()->subDay(),
         ], orderAttrs: ['logistics_tracking_enabled' => true, 'status' => 'shipped']);
 
         app(OrderShippingService::class)->record($shipping->order->fresh(), 0, [
@@ -294,8 +328,61 @@ class SeventeenTrackWebhookTest extends TestCase
 
         $shipping->refresh();
         $this->assertSame('1Z-NEW', $shipping->tracking_number);
-        $this->assertNull($shipping->tracking_registered_at);
-        $this->assertNull($shipping->tracking_provider);
+        $this->assertDatabaseHas('order_shippings', [
+            'id' => $shipping->id,
+            'tracking_registered_at' => null,
+            'tracking_provider' => null,
+            'tracking_carrier_code' => null,
+            'tracking_status' => null,
+            'tracking_sub_status' => null,
+            'tracking_last_event_at' => null,
+            'tracking_last_event_desc' => null,
+            'tracking_delivered_at' => null,
+            'tracking_checked_at' => null,
+            'tracking_last_polled_at' => null,
+            'tracking_error' => null,
+            'logistics_anomaly' => false,
+            'logistics_anomaly_reason' => null,
+            'logistics_anomaly_at' => null,
+        ]);
+        Queue::assertPushed(RegisterLogisticsTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
+        Queue::assertPushed(SyncOrderTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
+    }
+
+    public function test_new_tracking_number_in_transit_does_not_inherit_previous_delivery(): void
+    {
+        $this->freezeTime();
+        Http::preventStrayRequests();
+        Queue::fake([RegisterLogisticsTrackingJob::class, SyncOrderTrackingJob::class]);
+        $shipping = $this->createShipping('1Z-DELIVERED', [
+            'tracking_status' => 'Delivered',
+            'tracking_sub_status' => 'Delivered_Other',
+            'tracking_delivered_at' => now()->subDay(),
+        ], orderAttrs: ['logistics_tracking_enabled' => true, 'status' => 'shipped']);
+
+        app(OrderShippingService::class)->record($shipping->order->fresh(), 0, [
+            'logistics_company' => 'ups',
+            'tracking_number' => '1Z-REPLACEMENT',
+            'shipped_at' => now(),
+        ]);
+
+        $shipping->refresh();
+        $this->assertNull($shipping->tracking_status);
+        $this->assertNull($shipping->tracking_delivered_at);
+
+        $body = $this->payloadJson('1Z-REPLACEMENT', 'InTransit', now()->toIso8601String());
+        $this->call('POST', $this->webhookPath(), [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_SIGN' => hash('sha256', $body.'/'.$this->secret),
+        ], $body)->assertOk();
+
+        $shipping->refresh();
+        $this->assertSame('InTransit', $shipping->tracking_status);
+        $this->assertNull($shipping->tracking_delivered_at);
+        $this->assertFalse($shipping->logistics_anomaly);
+        $this->assertSame('shipped', $shipping->order->fresh()->status);
+        Queue::assertPushed(RegisterLogisticsTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
+        Queue::assertPushed(SyncOrderTrackingJob::class, fn ($job) => $job->orderShippingId === $shipping->id);
     }
 
     /**

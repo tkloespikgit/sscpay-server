@@ -45,13 +45,15 @@ class SystemConfigForm
         $type = $record->value_type;
         $value = $data['value_'.$type] ?? null;
 
-        if ($record->config_key === PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY) {
+        $numberRules = static::numberRules($record);
+
+        if ($numberRules !== []) {
             $field = $statePath.'.value_number';
             $validationData = [];
             Arr::set($validationData, $field, $value);
 
             Validator::make($validationData, [
-                $field => ['required', 'integer', 'min:1', 'max:4294967295'],
+                $field => ['required', ...$numberRules],
             ])->validate();
         }
 
@@ -67,6 +69,18 @@ class SystemConfigForm
                     default => (string) $value,
                 },
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function numberRules(?SystemConfig $record): array
+    {
+        return match ($record?->config_key) {
+            PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY => ['integer', 'min:1', 'max:4294967295'],
+            'logistics_tracking.stale_days', 'logistics_tracking.no_delivery_days' => ['integer', 'min:1', 'max:3650'],
+            default => [],
+        };
     }
 
     protected static function validatedOrderStatusColors(mixed $value, string $statePath): string
