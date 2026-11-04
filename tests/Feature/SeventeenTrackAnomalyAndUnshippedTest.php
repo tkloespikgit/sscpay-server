@@ -299,6 +299,10 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
 
     public function test_unshipped_overdue_command_sends_merchant_telegram_digest(): void
     {
+        $this->app->setLocale('zh_CN');
+        $this->travelTo('2026-11-04 12:00:00');
+        config()->set('app.timezone', 'Asia/Shanghai');
+        Http::preventStrayRequests();
         Http::fake([
             'api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 1]]),
         ]);
@@ -312,7 +316,11 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
 
         $this->makeOrder('SSC-OVER', 'M-OVER', [
             'status' => 'paid',
-            'paid_at' => now()->subHours(LogisticsTrackingSyncService::UNSHIPPED_HOURS + 2),
+            'paid_at' => '2026-10-20 12:30:00',
+            'transaction_id' => 'TX-OVER',
+            'payment_method_id' => $this->makePaymentMethod('overdue-stripe')->id,
+            'currency' => 'EUR',
+            'amount' => '42.50',
         ]);
         $this->makeOrder('SSC-FRESH', 'M-FRESH', [
             'status' => 'paid',
@@ -323,7 +331,46 @@ class SeventeenTrackAnomalyAndUnshippedTest extends TestCase
 
         Http::assertSent(fn ($request) => str_contains($request->url(), 'api.telegram.org')
             && str_contains((string) $request['text'], 'SSC-OVER')
+            && str_contains((string) $request['text'], 'M-OVER')
+            && str_contains((string) $request['text'], 'TX-OVER')
+            && str_contains((string) $request['text'], 'OVERDUE-STRIPE')
+            && str_contains((string) $request['text'], '2026-10-20 12:30:00 CST')
+            && str_contains((string) $request['text'], 'EUR 42.50')
             && ! str_contains((string) $request['text'], 'SSC-FRESH'));
+    }
+
+    public function test_unshipped_digest_splits_long_messages_and_includes_every_order_beyond_twenty(): void
+    {
+        $this->app->setLocale('zh_CN');
+        $this->freezeTime();
+        TelegramBot::create([
+            'merchant_id' => $this->merchant->id,
+            'bot_token' => '123:ABC',
+            'chat_id' => '-1001',
+            'is_enabled' => true,
+        ]);
+        Http::preventStrayRequests();
+        Http::fake(['api.telegram.org/bot123:ABC/sendMessage' => Http::response(['ok' => true])]);
+        for ($index = 1; $index <= 25; $index++) {
+            $this->makeOrder('SSC-BULK-'.$index, 'M-BULK-'.$index, [
+                'status' => 'paid',
+                'paid_at' => now()->subDays(12),
+                'transaction_id' => str_repeat('T', 60).'TX-BULK-'.$index,
+            ]);
+        }
+
+        $this->artisan('orders:notify-unshipped-overdue')->assertSuccessful();
+
+        $requests = Http::recorded(fn ($request): bool => str_contains($request->url(), 'api.telegram.org/'));
+        $this->assertGreaterThan(1, $requests->count());
+        $messages = $requests->map(fn ($record): string => $record[0]['text']);
+        foreach ($messages as $message) {
+            $this->assertLessThanOrEqual(4000, mb_strlen($message));
+        }
+        $text = $messages->implode("\n");
+        for ($index = 1; $index <= 25; $index++) {
+            $this->assertStringContainsString('TX-BULK-'.$index."\n", $text);
+        }
     }
 
     public function test_order_creation_snapshots_application_logistics_tracking_flag(): void

@@ -66,6 +66,12 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
             $this->assertStringContainsString($value, $request['text']);
         }
         $this->assertStringContainsString('创建支付链接失败', $request['text']);
+        $this->assertStringContainsString('系统订单号：'.$order->order_no, $request['text']);
+        $this->assertStringContainsString('商户订单号：'.$order->merchant_order_no, $request['text']);
+        $this->assertStringContainsString('三方交易号：暂无', $request['text']);
+        $this->assertStringContainsString('支付方式名称：FAILURE-TEST', $request['text']);
+        $this->assertStringContainsString('付款时间：未付款', $request['text']);
+        $this->assertStringContainsString('原始交易金额：USD 100.00', $request['text']);
         $this->assertNull($order->refresh()->pay_url);
         $this->assertSame('pending', $order->status);
     }

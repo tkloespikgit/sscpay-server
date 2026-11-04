@@ -605,6 +605,15 @@ class MerchantShipmentSyncTest extends TestCase
     public function test_failed_orders_are_combined_into_one_merchant_telegram_message_and_not_notified_twice(): void
     {
         $firstOrder = $this->prepareOrder();
+        $this->app->setLocale('zh_CN');
+        config()->set('app.timezone', 'Asia/Shanghai');
+        $firstOrder->update([
+            'transaction_id' => 'TX-SHIPMENT',
+            'payment_method_id' => $this->makePaymentMethod('shipment-stripe')->id,
+            'paid_at' => '2026-10-18 12:30:00',
+            'currency' => 'EUR',
+            'amount' => '83.25',
+        ]);
         $secondOrder = $this->makeOrder('SSC-SECOND', 'MERCHANT-SECOND', ['status' => 'paid']);
         $bot = TelegramBot::create([
             'merchant_id' => $this->merchant->id,
@@ -637,9 +646,94 @@ class MerchantShipmentSyncTest extends TestCase
         $this->assertStringContainsString('MERCHANT-SECOND', $message['text']);
         $this->assertStringContainsString('TRACK-FIRST', $message['text']);
         $this->assertStringContainsString('TRACK-SECOND', $message['text']);
+        $this->assertStringContainsString('TX-SHIPMENT', $message['text']);
+        $this->assertStringContainsString('SHIPMENT-STRIPE', $message['text']);
+        $this->assertStringContainsString('2026-10-18 12:30:00 CST', $message['text']);
+        $this->assertStringContainsString('EUR 83.25', $message['text']);
         $this->assertSame('sent', $first->refresh()->alert_status);
         $this->assertSame('sent', $second->refresh()->alert_status);
         $this->assertNotNull($first->alerted_at);
+    }
+
+    public function test_failure_digest_splits_escaped_order_details_without_losing_pending_alerts(): void
+    {
+        $firstOrder = $this->prepareOrder();
+        $method = $this->makePaymentMethod('long-notice');
+        $method->update(['method_name' => str_repeat('"', 80)]);
+        $this->application->update(['name' => str_repeat('"', 50)]);
+        TelegramBot::create([
+            'merchant_id' => $this->merchant->id,
+            'bot_token' => 'shipment-bot-token',
+            'chat_id' => 'shipment-chat',
+            'is_enabled' => true,
+        ]);
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(['https://api.telegram.org/botshipment-bot-token/sendMessage' => Http::response(['ok' => true])]);
+        $syncs = [];
+        for ($index = 1; $index <= 5; $index++) {
+            $order = $index === 1 ? $firstOrder : $this->makeOrder('SSC-LONG-'.$index, 'M-LONG-'.$index, ['status' => 'paid']);
+            $order->update([
+                'merchant_order_no' => str_repeat('"', 60).'M-LONG-'.$index,
+                'transaction_id' => str_repeat('"', 60).'TX-LONG-'.$index,
+                'payment_method_id' => $method->id,
+                'paid_at' => '2026-10-18 12:30:00',
+            ]);
+            $this->recordShipping($order, 'TRACK-LONG-'.$index);
+            $sync = $this->latestSync($order);
+            $sync->update(['status' => 'failed', 'alert_status' => 'pending', 'last_error' => str_repeat('"', 100)]);
+            $syncs[] = $sync;
+        }
+
+        $this->assertSame(5, app(MerchantShipmentSyncService::class)->notifyFailures());
+
+        $requests = Http::recorded(fn (Request $request): bool => str_contains($request->url(), 'api.telegram.org/'));
+        $this->assertGreaterThan(1, $requests->count());
+        $messages = $requests->map(fn ($record): string => $record[0]['text']);
+        foreach ($messages as $message) {
+            $this->assertLessThanOrEqual(4000, mb_strlen($message));
+        }
+        $text = $messages->implode("\n");
+        foreach ($syncs as $index => $sync) {
+            $this->assertSame('sent', $sync->refresh()->alert_status);
+            $this->assertStringContainsString('TX-LONG-'.($index + 1), $text);
+        }
+        $this->assertStringContainsString('&quot;', $text);
+    }
+
+    public function test_failure_digest_does_not_load_details_from_another_merchants_order(): void
+    {
+        $order = $this->prepareOrder();
+        $other = Merchant::create([
+            'name' => 'Other Merchant', 'contact_person' => 'Other',
+            'contact_phone' => '123456', 'contact_email' => 'other@example.com',
+        ]);
+        $otherApplication = Application::createWithCredentials([
+            'merchant_id' => $other->id, 'name' => 'Other App', 'website' => 'https://other.example.com',
+        ]);
+        $otherOrder = $this->makeOrder('SSC-OTHER-SECRET', 'M-OTHER-SECRET', [
+            'merchant_id' => $other->id,
+            'application_id' => $otherApplication->id,
+            'transaction_id' => 'TX-OTHER-SECRET',
+        ]);
+        TelegramBot::create([
+            'merchant_id' => $this->merchant->id,
+            'bot_token' => 'shipment-bot-token', 'chat_id' => 'shipment-chat', 'is_enabled' => true,
+        ]);
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(['https://api.telegram.org/botshipment-bot-token/sendMessage' => Http::response(['ok' => true])]);
+        $this->recordShipping($order);
+        $sync = $this->latestSync($order);
+        $sync->update(['order_id' => $otherOrder->id, 'status' => 'failed', 'alert_status' => 'pending']);
+
+        app(MerchantShipmentSyncService::class)->notifyFailures();
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request['chat_id'] === 'shipment-chat'
+            && str_contains($request['text'], 'MERCHANT-LOGISTICS')
+            && ! str_contains($request['text'], 'OTHER-SECRET'));
+        $this->assertSame('sent', $sync->refresh()->alert_status);
     }
 
     public function test_a_failed_telegram_delivery_remains_pending_until_the_notification_can_be_sent(): void

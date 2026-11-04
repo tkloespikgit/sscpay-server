@@ -7,6 +7,7 @@ namespace App\Services\PaymentGateway;
 use App\Events\PaymentLinkCreationFailed;
 use App\Models\Order;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
@@ -152,7 +153,7 @@ class PaymentGatewayService
                 return;
             }
 
-            $details = [
+            $details = OrderTelegramSummary::details($order) + [
                 'merchant_id' => (string) $order->merchant_id,
                 'order_no' => (string) $order->order_no,
                 'merchant_order_no' => (string) $order->merchant_order_no,

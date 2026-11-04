@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -177,13 +178,15 @@ class OrderPaymentStatusService
         ]);
 
         $message = __('admin.telegram_notification.payment_method_forbidden', [
-            'method_name' => $method->method_name,
-            'method_code' => $method->method_code,
-            'order_no' => $order->order_no,
+            'method_name' => e((string) $method->method_name),
+            'method_code' => e((string) $method->method_code),
+            'order_no' => e((string) $order->order_no),
         ]);
 
         foreach ($recipientIds as $merchantId) {
-            $this->telegram->send($merchantId, $message);
+            $this->telegram->send($merchantId, $merchantId === (int) $order->merchant_id
+                ? $message."\n\n".OrderTelegramSummary::forOrder($order)
+                : $message);
         }
     }
 
@@ -463,10 +466,10 @@ class OrderPaymentStatusService
             ]);
 
             $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_settle_failed', [
-                'order_no' => $order->order_no,
+                'order_no' => e((string) $order->order_no),
                 'status' => __('admin.order.statuses.'.$targetStatus),
-                'error' => $exception->getMessage(),
-            ]));
+                'error' => e((string) $exception->getMessage()),
+            ])."\n\n".OrderTelegramSummary::forOrder($order));
         }
     }
 
@@ -540,10 +543,10 @@ class OrderPaymentStatusService
             ]);
 
             $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_settle_failed', [
-                'order_no' => $order->order_no,
+                'order_no' => e((string) $order->order_no),
                 'status' => __('admin.order.statuses.'.$targetStatus),
-                'error' => $e->getMessage(),
-            ]));
+                'error' => e((string) $e->getMessage()),
+            ])."\n\n".OrderTelegramSummary::forOrder($order));
         }
     }
 
@@ -570,11 +573,11 @@ class OrderPaymentStatusService
         ]);
 
         $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_amount_mismatch', [
-            'order_no' => $order->order_no,
+            'order_no' => e((string) $order->order_no),
             'gateway_amount' => (string) $payloadAmount,
             'order_amount' => (string) $order->amount,
             'currency' => strtoupper((string) $order->currency),
-        ]));
+        ])."\n\n".OrderTelegramSummary::forOrder($order));
     }
 
     /**
@@ -602,9 +605,9 @@ class OrderPaymentStatusService
         }
 
         $this->telegram->send($order->merchant_id, __('admin.telegram_notification.dispute_review_gateway_status_ignored', [
-            'order_no' => $order->order_no,
+            'order_no' => e((string) $order->order_no),
             'status' => __('admin.order.statuses.'.$targetStatus),
-        ]));
+        ])."\n\n".OrderTelegramSummary::forOrder($order));
     }
 
     private function shouldApply(string $oldStatus, string $targetStatus, bool $allowPaidOverride): bool

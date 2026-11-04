@@ -57,6 +57,10 @@ class LogisticsAnomalyTelegramTest extends TestCase
             && str_contains($request['text'], '物流异常提醒')
             && str_contains($request['text'], 'SSC-ANOMALY')
             && str_contains($request['text'], 'MERCHANT-ANOMALY')
+            && str_contains($request['text'], 'TX-ANOMALY')
+            && str_contains($request['text'], 'Logistics Stripe')
+            && str_contains($request['text'], '2026-10-18 12:30:00 CST')
+            && str_contains($request['text'], 'EUR 83.25')
             && str_contains($request['text'], '1Z-ANOMALY')
             && str_contains($request['text'], '运输途中'));
         $this->assertNotNull($bot->refresh()->last_sent_at);
@@ -229,13 +233,18 @@ class LogisticsAnomalyTelegramTest extends TestCase
 
     /**
      * @param  array<string, string>  $overrides
-     * @return array{order_no: string, merchant_order_no: string, tracking_number: string, status: string, reason: string, days: string}
+     * @return array<string, string>
      */
     private function details(array $overrides = []): array
     {
         return array_merge([
             'order_no' => 'SSC-ANOMALY',
             'merchant_order_no' => 'MERCHANT-ANOMALY',
+            'transaction_id' => 'TX-ANOMALY',
+            'payment_method_name' => 'Logistics Stripe',
+            'paid_at' => '2026-10-18 12:30:00 CST',
+            'currency' => 'EUR',
+            'amount' => '83.25',
             'tracking_number' => '1Z-ANOMALY',
             'status' => 'InTransit',
             'reason' => 'stale_5d',

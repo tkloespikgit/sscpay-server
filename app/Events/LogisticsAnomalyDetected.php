@@ -10,7 +10,7 @@ class LogisticsAnomalyDetected
     use Dispatchable;
 
     /**
-     * @param  array{order_no: string, merchant_order_no: string, tracking_number: string, status: string, reason: string, days: string}  $details
+     * @param  array<string, string>  $details  订单与物流异常的标量快照
      */
     public function __construct(
         public readonly int $merchantId,

@@ -22,6 +22,7 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Support\OrderTelegramSummary;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
@@ -220,7 +221,11 @@ class OrderCreationService
             $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data);
             $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
         } else {
-            [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant, $convertedAmount);
+            [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant, $convertedAmount, [
+                'merchant_order_no' => (string) $data['merchant_order_no'],
+                'currency' => (string) $data['currency'],
+                'amount' => (string) $data['amount'],
+            ]);
         }
 
         // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
@@ -364,16 +369,17 @@ class OrderCreationService
     }
 
     /**
+     * @param  array<string, string>  $orderDetails
      * @return array{0: PaymentMethod, 1: array<string, int|string>}
      */
-    private function resolveGroupPaymentMethod(PaymentGroup $group, Merchant $merchant, string $amountUsd): array
+    private function resolveGroupPaymentMethod(PaymentGroup $group, Merchant $merchant, string $amountUsd, array $orderDetails): array
     {
         $amountError = null;
         $excludedMethodIds = [];
 
         while (true) {
             try {
-                $method = $this->paymentService->resolvePaymentMethod($group, (float) $amountUsd, $excludedMethodIds);
+                $method = $this->paymentService->resolvePaymentMethod($group, (float) $amountUsd, $excludedMethodIds, $orderDetails);
             } catch (NoAvailablePaymentMethodException $error) {
                 throw $amountError ?? $error;
             }
@@ -419,7 +425,12 @@ class OrderCreationService
             $otherMethodIds = $group->paymentMethods()
                 ->where('payment_methods.id', '!=', $previousMethodId)
                 ->pluck('payment_methods.id')->map(fn ($id): int => (int) $id)->all();
-            $method = $this->paymentService->resolvePaymentMethod($group, (float) $order->converted_amount, $otherMethodIds);
+            $method = $this->paymentService->resolvePaymentMethod(
+                $group,
+                (float) $order->converted_amount,
+                $otherMethodIds,
+                OrderTelegramSummary::details($order),
+            );
 
             if ($method->id !== (int) $previousMethodId) {
                 throw new NoAvailablePaymentMethodException($group->group_key);

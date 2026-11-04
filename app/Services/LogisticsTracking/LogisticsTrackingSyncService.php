@@ -11,6 +11,7 @@ use App\Services\LogisticsTracking\Contracts\LogisticsTrackingDriver;
 use App\Services\LogisticsTracking\DTOs\DriverCredentials;
 use App\Services\LogisticsTracking\DTOs\TrackingNumber;
 use App\Services\LogisticsTracking\DTOs\TrackSnapshot;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -508,9 +509,7 @@ class LogisticsTrackingSyncService
 
             if (! $wasAnomaly && $current->logistics_anomaly) {
                 $reason = (string) $current->logistics_anomaly_reason;
-                $details = [
-                    'order_no' => (string) $current->order->order_no,
-                    'merchant_order_no' => (string) $current->order->merchant_order_no,
+                $details = OrderTelegramSummary::details($current->order) + [
                     'tracking_number' => (string) $current->tracking_number,
                     'status' => (string) $current->tracking_status,
                     'reason' => $reason,

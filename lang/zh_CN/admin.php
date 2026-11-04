@@ -1670,6 +1670,10 @@ return [
     ],
 
     'telegram_notification' => [
+        'order_summary' => "系统订单号：:order_no\n商户订单号：:merchant_order_no\n三方交易号：:transaction_id\n支付方式名称：:payment_method_name\n付款时间：:paid_at\n原始交易金额：:currency :amount",
+        'order_detail_unavailable' => '暂无',
+        'order_not_paid' => '未付款',
+        'order_dispute_opened' => "⚠️ 争议审核事件已开立\n\n事件编号：:event_no\n到期时间：:due_at\n请及时在后台查看并提交审核材料。",
         'logistics_anomaly' => "⚠️ 物流异常提醒\n\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n物流单号：:tracking_number\n物流状态：:status\n异常原因：:reason\n\n请在后台核实物流轨迹并及时处理。",
         'payment_link_creation_failed' => "❌ 创建支付链接失败\n\n商户 ID：:merchant_id\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n来源：:source\n金额：:currency :amount（折算 USD :converted_amount）\n支付渠道：:payment_method（ID :payment_method_id）\n支付站点：:gateway_host\nHTTP 状态：:http_status\n网关错误码：:pga_code\n失败原因：:error\n\n本地订单已保留，请核实渠道与网关错误后重试补建支付链接。",
         'logistics_import_completed' => "📦 物流导入完成\n\n文件：:file_name\n总记录：:total\n成功：:success\n失败：:failed",
@@ -1679,8 +1683,8 @@ return [
         'order_shipped' => "🚚 订单已发货\n\n订单号：:order_no",
         'order_failed' => "❌ 支付失败/取消通知\n\n订单号：:order_no\n状态：:status",
         'order_disputing' => "⚠️ 支付争议通知\n\n订单号：:order_no\n建议尽快核实并考虑暂停发货，已拉取最新订单日志，可在后台订单详情查看",
-        'order_refund_gateway' => "💸 网关退款通知\n\n订单号：:order_no\n金额：:currency:amount\n此退款来自网关/商城系统主动发起，系统未自动扣减商户余额，请人工核实后在后台执行退款操作；已拉取最新订单日志，可在后台订单详情查看",
-        'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统未自动扣减商户余额，请人工核实后处理资损；已拉取最新订单日志，可在后台订单详情查看",
+        'order_refund_gateway' => "💸 网关退款通知\n\n订单号：:order_no\n金额：:currency:amount\n此退款来自网关/商城系统主动发起，系统已尝试自动记账，请核对订单台账，若未入账请在后台补录；已拉取最新订单日志，可在后台订单详情查看",
+        'order_chargeback_gateway' => "🚫 拒付通知\n\n订单号：:order_no\n金额：:currency:amount\n争议已判定商家败诉或资金被强制扣回，系统已尝试自动记账，请核对订单台账，若未入账请在后台补录并处理资损；已拉取最新订单日志，可在后台订单详情查看",
         'order_dispute_due_soon' => "⏰ 争议审核事件即将到期\n\n订单号：:order_no\n事件编号：:event_no\n到期时间：:due_at\n请尽快处理，逾期将自动结束并释放冻结资金。",
         'unshipped_overdue' => "⏰ 超期未发货提醒\n\n共 :count 笔订单支付已超过 :hours 小时仍未录入物流。\n请尽快在后台发货或导入物流模板。\n\n:list",
         'dispute_review_gateway_status_ignored' => "🔔 网关状态更新（争议审核期间）\n\n订单号：:order_no\n网关侧最新状态：:status\n该订单当前处于人工争议审核中，系统未自动处理此次状态更新。请核实网关侧的实际结果，并视情况手动关闭审核事件以释放冻结资金。",

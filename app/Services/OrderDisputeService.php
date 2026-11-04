@@ -2,14 +2,17 @@
 
 namespace App\Services;
 
+use App\Events\OrderDisputeOpened;
 use App\Exceptions\BalanceOperationException;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderDisputeEventReply;
 use App\Models\User;
+use App\Support\OrderTelegramSummary;
 use App\Support\RichTextSanitizer;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -50,7 +53,26 @@ class OrderDisputeService
             'deadline_hours' => $deadlineHours,
         ];
 
-        return $this->balanceService->freezeForDisputeEvent($order, $operator, $attributes);
+        $event = $this->balanceService->freezeForDisputeEvent($order, $operator, $attributes);
+        DB::afterCommit(function () use ($event): void {
+            try {
+                $order = Order::query()->withoutGlobalScopes()->forMerchant($event->merchant_id)->findOrFail($event->order_id);
+                OrderDisputeOpened::dispatch(
+                    $event->merchant_id,
+                    OrderTelegramSummary::details($order),
+                    $event->event_no,
+                    $event->due_at->copy()->timezone(config('app.timezone'))->format('Y-m-d H:i:s T'),
+                );
+            } catch (\Throwable $exception) {
+                Log::warning('争议审核开立通知派发失败', [
+                    'merchant_id' => $event->merchant_id,
+                    'dispute_event_id' => $event->id,
+                    'exception' => $exception::class,
+                ]);
+            }
+        });
+
+        return $event;
     }
 
     /**
@@ -119,10 +141,14 @@ class OrderDisputeService
     public function sendDueReminder(OrderDisputeEvent $event, TelegramNotificationService $telegram): void
     {
         $message = __('admin.telegram_notification.order_dispute_due_soon', [
-            'order_no' => $event->order_no,
-            'event_no' => $event->event_no,
+            'order_no' => e($event->order_no),
+            'event_no' => e($event->event_no),
             'due_at' => $event->due_at->toDateTimeString(),
         ]);
+
+        $order = Order::query()->withoutGlobalScopes()->withTrashed()
+            ->forMerchant($event->merchant_id)->findOrFail($event->order_id);
+        $message .= "\n\n".OrderTelegramSummary::forOrder($order);
 
         $telegram->send($event->merchant_id, $message);
 

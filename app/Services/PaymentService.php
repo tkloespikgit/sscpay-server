@@ -6,6 +6,7 @@ use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Random\Randomizer;
@@ -42,10 +43,11 @@ class PaymentService
 
     /**
      * @param  list<int>  $excludedMethodIds  本次选择已排除的支付方式。
+     * @param  array<string, string>  $orderDetails  建单前已知的原币金额与商户订单信息。
      *
      * @throws NoAvailablePaymentMethodException
      */
-    public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd, array $excludedMethodIds = []): PaymentMethod
+    public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd, array $excludedMethodIds = [], array $orderDetails = []): PaymentMethod
     {
         $candidates = $group->activePaymentMethods()
             ->forMerchant((int) $group->merchant_id)
@@ -68,7 +70,7 @@ class PaymentService
 
         if ($passing === []) {
             if ($excludedMethodIds === []) {
-                $this->alertNoAvailablePaymentMethod($group, $amountUsd, $candidates->count());
+                $this->alertNoAvailablePaymentMethod($group, $amountUsd, $candidates->count(), $orderDetails);
             }
 
             throw new NoAvailablePaymentMethodException($group->group_key);
@@ -145,8 +147,10 @@ class PaymentService
      * （比如所有通道的日限额都设太低），短时间内会被同一批客户结账重试
      * 反复触发，不去重会把 Telegram 刷屏，也会占掉 30 条/分钟的全局限流额度，
      * 挤掉其他更重要的通知（支付成功、争议提醒等）。
+     *
+     * @param  array<string, string>  $orderDetails
      */
-    private function alertNoAvailablePaymentMethod(PaymentGroup $group, float $amountUsd, int $candidateCount): void
+    private function alertNoAvailablePaymentMethod(PaymentGroup $group, float $amountUsd, int $candidateCount, array $orderDetails): void
     {
         $dedupeKey = "no_available_payment_method_alert:{$group->id}";
 
@@ -163,7 +167,7 @@ class PaymentService
             'group_key' => $group->group_key,
             'amount' => number_format($amountUsd, 2),
             'reason' => $reason,
-        ]));
+        ])."\n\n".OrderTelegramSummary::render($orderDetails));
     }
 
     /**

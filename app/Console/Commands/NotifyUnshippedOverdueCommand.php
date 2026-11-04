@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Order;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\TelegramNotificationService;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 
@@ -18,8 +19,7 @@ class NotifyUnshippedOverdueCommand extends Command
 
     protected $description = '汇总超期未发货订单并发送商户 Telegram 通知';
 
-    /** 单条消息中列出的订单号上限，超出用「另有 N 笔」摘要。 */
-    private const LIST_LIMIT = 20;
+    private const MESSAGE_LENGTH_LIMIT = 4000;
 
     public function handle(TelegramNotificationService $telegram): int
     {
@@ -31,7 +31,7 @@ class NotifyUnshippedOverdueCommand extends Command
             ->where('paid_at', '<=', $deadline)
             ->doesntHave('shipping')
             ->orderBy('paid_at')
-            ->get(['id', 'merchant_id', 'order_no', 'merchant_order_no', 'paid_at']);
+            ->get(['id', 'merchant_id', 'order_no', 'merchant_order_no', 'transaction_id', 'payment_method_id', 'payment_method', 'paid_at', 'currency', 'amount']);
 
         if ($orders->isEmpty()) {
             $this->info('No overdue unshipped orders.');
@@ -42,22 +42,27 @@ class NotifyUnshippedOverdueCommand extends Command
         $sent = 0;
 
         $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($telegram, &$sent): void {
-            $count = $group->count();
-            $lines = $group->take(self::LIST_LIMIT)->map(
-                fn (Order $order) => e($order->order_no).' / '.e((string) $order->merchant_order_no)
-            )->implode("\n");
-
-            $more = $count > self::LIST_LIMIT
-                ? "\n… 另有 ".($count - self::LIST_LIMIT).' 笔'
-                : '';
-
-            $message = __('admin.telegram_notification.unshipped_overdue', [
-                'count' => $count,
+            $heading = __('admin.telegram_notification.unshipped_overdue', [
+                'count' => $group->count(),
                 'hours' => LogisticsTrackingSyncService::UNSHIPPED_HOURS,
-                'list' => $lines.$more,
+                'list' => '',
             ]);
+            $message = $heading;
+            $notified = false;
+            $summaries = OrderTelegramSummary::forOrders($group);
 
-            if ($telegram->send((int) $merchantId, $message)) {
+            foreach ($group as $order) {
+                $summary = $summaries[(int) $order->id];
+
+                if ($message !== $heading && mb_strlen($message."\n\n".$summary) > self::MESSAGE_LENGTH_LIMIT) {
+                    $notified = $telegram->send((int) $merchantId, $message) || $notified;
+                    $message = $heading;
+                }
+
+                $message .= "\n\n".$summary;
+            }
+
+            if ($telegram->send((int) $merchantId, $message) || $notified) {
                 $sent++;
             }
         });

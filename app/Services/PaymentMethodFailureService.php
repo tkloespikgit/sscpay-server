@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\PaymentMethod;
+use App\Support\OrderTelegramSummary;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -46,7 +47,9 @@ final readonly class PaymentMethodFailureService
 
             foreach ($recipients as $merchantId) {
                 try {
-                    $this->telegram->send((int) $merchantId, $message);
+                    $this->telegram->send((int) $merchantId, (int) $merchantId === (int) $order->merchant_id
+                        ? $message."\n\n".OrderTelegramSummary::forOrder($order)
+                        : $message);
                 } catch (Throwable $error) {
                     Log::warning('支付通道连续失败禁用提醒发送失败', [
                         'payment_method_id' => $method->id,

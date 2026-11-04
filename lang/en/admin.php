@@ -1669,6 +1669,10 @@ return [
     ],
 
     'telegram_notification' => [
+        'order_summary' => "System order: :order_no\nMerchant order: :merchant_order_no\nThird-party transaction: :transaction_id\nPayment method name: :payment_method_name\nPaid at: :paid_at\nOriginal transaction amount: :currency :amount",
+        'order_detail_unavailable' => 'Unavailable',
+        'order_not_paid' => 'Not paid',
+        'order_dispute_opened' => "⚠️ Dispute review event opened\n\nEvent No.: :event_no\nDue at: :due_at\nPlease review the event in the dashboard and submit supporting materials promptly.",
         'logistics_anomaly' => "⚠️ Logistics anomaly\n\nOrder: :order_no\nMerchant order: :merchant_order_no\nTracking number: :tracking_number\nTracking status: :status\nReason: :reason\n\nPlease review the tracking details in the dashboard and follow up promptly.",
         'payment_link_creation_failed' => "❌ Payment link creation failed\n\nMerchant ID: :merchant_id\nOrder: :order_no\nMerchant order: :merchant_order_no\nSource: :source\nAmount: :currency :amount (USD :converted_amount)\nPayment channel: :payment_method (ID :payment_method_id)\nGateway host: :gateway_host\nHTTP status: :http_status\nGateway error code: :pga_code\nReason: :error\n\nThe local order has been retained. Check the payment channel and gateway error, then retry creating the payment link.",
         'logistics_import_completed' => "📦 Logistics import completed\n\nFile: :file_name\nTotal records: :total\nSucceeded: :success\nFailed: :failed",
@@ -1678,8 +1682,8 @@ return [
         'order_shipped' => "🚚 Order shipped\n\nOrder: :order_no",
         'order_failed' => "❌ Payment failed/cancelled\n\nOrder: :order_no\nStatus: :status",
         'order_disputing' => "⚠️ Payment dispute opened\n\nOrder: :order_no\nPlease review promptly and consider pausing fulfillment. Latest order logs have been fetched — check the order detail page.",
-        'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — merchant balance was NOT auto-deducted. Please verify and process the refund manually. Latest order logs have been fetched — check the order detail page.",
-        'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — merchant balance was NOT auto-deducted. Please verify and handle the loss manually. Latest order logs have been fetched — check the order detail page.",
+        'order_refund_gateway' => "💸 Gateway refund notice\n\nOrder: :order_no\nAmount: :currency:amount\nThis refund was initiated by the gateway/store, not by us — Automatic accounting has been attempted. Check the order ledger and record the refund manually if it remains unsettled. Latest order logs have been fetched — check the order detail page.",
+        'order_chargeback_gateway' => "🚫 Chargeback notice\n\nOrder: :order_no\nAmount: :currency:amount\nDispute was lost or funds were force-reversed — Automatic accounting has been attempted. Check the order ledger and record the chargeback manually if it remains unsettled. Latest order logs have been fetched — check the order detail page.",
         'order_dispute_due_soon' => "⏰ Dispute review event is about to expire\n\nOrder: :order_no\nEvent No.: :event_no\nDue at: :due_at\nPlease handle it soon — it will be auto-closed and the frozen funds released once it expires.",
         'unshipped_overdue' => "⏰ Overdue unshipped orders\n\n:count order(s) have been paid for more than :hours hours without logistics.\nPlease ship or import tracking soon.\n\n:list",
         'dispute_review_gateway_status_ignored' => "🔔 Gateway status update (during dispute review)\n\nOrder: :order_no\nLatest gateway status: :status\nThis order is currently under manual dispute review, so this status update was not applied automatically. Please verify the actual outcome with the gateway and manually close the review event to release the frozen funds if appropriate.",

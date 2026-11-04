@@ -56,6 +56,11 @@ class LogisticsAnomalyTrackingTest extends TestCase
         Event::assertDispatched(LogisticsAnomalyDetected::class, fn (LogisticsAnomalyDetected $event): bool => $event->merchantId === $this->merchant->id && $event->details === [
             'order_no' => 'SSC-PROVIDER',
             'merchant_order_no' => 'M-PROVIDER',
+            'transaction_id' => '',
+            'payment_method_name' => 'test_method',
+            'paid_at' => '',
+            'currency' => 'USD',
+            'amount' => '100.00',
             'tracking_number' => 'PROVIDER',
             'status' => $status,
             'reason' => $reason,

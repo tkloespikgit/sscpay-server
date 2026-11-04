@@ -5,6 +5,7 @@ namespace App\Listeners;
 use App\Events\LogisticsAnomalyDetected;
 use App\Models\TelegramBot;
 use App\Services\TelegramNotificationService;
+use App\Support\OrderTelegramSummary;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
 use Illuminate\Queue\InteractsWithQueue;
@@ -42,7 +43,10 @@ class SendLogisticsAnomalyNotification implements ShouldQueueAfterCommit
             $details,
         );
 
-        if ($this->telegram->send($event->merchantId, __('admin.telegram_notification.logistics_anomaly', $details))) {
+        $message = __('admin.telegram_notification.logistics_anomaly', $details)
+            ."\n\n".OrderTelegramSummary::render($event->details);
+
+        if ($this->telegram->send($event->merchantId, $message)) {
             return;
         }
 
