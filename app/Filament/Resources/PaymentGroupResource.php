@@ -6,7 +6,7 @@ use App\Filament\Resources\PaymentGroupResource\Pages;
 use App\Filament\Resources\PaymentGroupResource\RelationManagers\PaymentMethodsRelationManager;
 use App\Models\Merchant;
 use App\Models\PaymentGroup;
-use App\Models\PaymentMethod;
+use App\Services\PaymentGroupMethodService;
 use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -15,6 +15,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\ViewField;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
@@ -28,8 +29,8 @@ use Filament\Tables\Table;
  * 支付组（3.6 节）。group_key 是商户下单接口里传的 group_key，
  * 修改要谨慎——商户端代码里硬编码了这个值，改了这里也要通知商户同步改。
  *
- * 表单：「基本信息」与「描述」分两块；描述区为 compact，字段自上而下为
- * 组描述 → Logo → 统计时区。
+ * 创建和编辑均按左侧基本信息 5/12、右侧组内支付方式 7/12 排列。
+ * Logo、统计时区和描述保留在基本信息内，窄屏改为上下排列。
  */
 class PaymentGroupResource extends Resource
 {
@@ -60,8 +61,9 @@ class PaymentGroupResource extends Resource
         $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
         $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
         $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
+        $isEdit = $schema->getOperation() === 'edit';
 
-        return $schema->components([
+        return $schema->columns($isEdit ? 1 : ['default' => 1, 'lg' => 1, 'xl' => 12])->components([
             Section::make(__('admin.payment_group.sections.basic_info'))->schema([
                 // 商户用户锁定成自己所在商户；超管/商户级管理员的 merchant_id 为 NULL，
                 // 见 BelongsToMerchant：自动回填只对绑定单一商户的普通用户生效，两者都必须显式选。
@@ -77,9 +79,10 @@ class PaymentGroupResource extends Resource
                     ->required()
                     ->searchable()
                     ->live()
-                    ->disabled(! $canPickMerchant)
+                    ->disabled(fn (string $operation): bool => $operation === 'edit' || ! $canPickMerchant)
                     ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                     ->dehydrated()
+                    ->helperText(fn (string $operation): ?string => $operation === 'edit' ? __('admin.payment_group.help.merchant_immutable') : null)
                     // 换了商户之后，上一个商户的支付方式选项失效，清掉避免把别家商户的方式挂进来。
                     ->afterStateUpdated(fn (Set $set) => $set('paymentMethods', [])),
                 TextInput::make('group_key')
@@ -89,93 +92,53 @@ class PaymentGroupResource extends Resource
                     ->helperText(__('admin.payment_group.help.group_key')),
                 TextInput::make('group_name')->label(__('admin.payment_group.fields.group_name'))->required()->maxLength(100),
                 Toggle::make('is_active')->label(__('admin.payment_group.fields.status'))->default(true)->inline(false),
-                Select::make('paymentMethods')
-                    ->label(__('admin.payment_group.fields.payment_methods'))
-                    ->relationship(
-                        'paymentMethods',
-                        'method_name',
-                        // 搜索走的是 relationship 的动态搜索（绕开下方 options 闭包），
-                        // 必须在这里也按所选商户过滤，否则平台侧账号搜索时会搜出别家商户的支付方式。
-                        // 提交时 Filament 也拿这个查询做所选 ID 的存在性校验，所以过滤规则
-                        // 必须和下方 options 闭包完全一致：用 forMerchant() 而不是只匹配
-                        // merchant_id，否则分配给该商户的系统级支付方式（merchant_id 为空）
-                        // 在下拉里选得到、提交时却被判成 "selected ... is invalid"。
-                        modifyQueryUsing: function ($query, Get $get) use ($canPickMerchant) {
-                            if ($canPickMerchant) {
-                                if (blank($get('merchant_id'))) {
-                                    // 还没选商户时不允许搜出任何支付方式，逼操作者先选商户。
-                                    return $query->whereRaw('1 = 0');
-                                }
-
-                                return $query->forMerchant((int) $get('merchant_id'));
-                            }
-
-                            return $query;
-                        },
-                    )
-                    // 平台侧账号（超管、商户级管理员）：按所选商户加载（forMerchant 绕开全局 Scope 显式过滤）；
-                    // 商户用户：全局 Scope 已自动过滤到自己商户，不用额外处理。
-                    ->options(function (Get $get) use ($canPickMerchant) {
-                        if ($canPickMerchant) {
-                            $merchantId = $get('merchant_id');
-
-                            if (! $merchantId) {
-                                return collect();
-                            }
-
-                            return PaymentMethod::query()
-                                ->forMerchant((int) $merchantId)
-                                ->where('is_active', true)
-                                ->pluck('method_name', 'id');
-                        }
-
-                        return PaymentMethod::query()
-                            ->where('is_active', true)
-                            ->pluck('method_name', 'id');
-                    })
-                    ->multiple()
-                    ->searchable()
-                    ->preload()
-                    ->pivotData(['priority' => 100])
-                    ->helperText(__('admin.payment_group.help.payment_methods'))
+                FileUpload::make('logo_path')
+                    ->label(__('admin.payment_group.fields.logo'))
+                    ->image()
+                    // 落地页访问者是未登录客户，必须走公开可读的盘（同收款链接 Logo）。
+                    ->disk(config('checkout.media_disk', 'public'))
+                    ->directory(config('checkout.payment_group_logo_directory', 'payment-groups/logos'))
+                    ->visibility('public')
+                    ->maxSize(2048)
+                    // 落地页按固定尺寸渲染组卡片，这里把上传图统一压到 320×120
+                    // （cover：先等比缩放再居中裁切），避免商户传不同比例的图把版面顶乱。
+                    // ⚠️ Filament v5 的缩放是**浏览器端** FilePond 插件做的（参数序列化后交给前端，
+                    //    见 FileUpload 的 automaticallyResizeImages*），不是服务端处理：
+                    //    SVG 不会被缩放，绕过前端直传也会跳过。落地页另有 CSS 兜底
+                    //    （h-12 / max-w-[160px] / object-contain），所以 320×120 是引导值而非常量约束。
+                    ->automaticallyResizeImagesMode('cover')
+                    ->automaticallyResizeImagesToWidth('320')
+                    ->automaticallyResizeImagesToHeight('120')
+                    ->helperText(__('admin.payment_group.help.logo'))
                     ->columnSpanFull(),
-            ])->columns(2),
+                Select::make('timezone')
+                    ->label(__('admin.payment_group.fields.timezone'))
+                    ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
+                    ->default(fn () => (string) config('app.timezone', 'UTC'))
+                    ->searchable()
+                    ->helperText(__('admin.payment_group.help.timezone'))
+                    ->columnSpanFull(),
+                Textarea::make('description')
+                    ->label(__('admin.payment_group.fields.description'))
+                    ->rows(2)
+                    ->columnSpanFull(),
+            ])->columns(2)->columnSpan($isEdit ? 'full' : ['default' => 1, 'xl' => 5]),
 
-            // 独立描述区（compact + rows(2)），Logo / 统计时区叠在描述下方，减少卡片空白。
-            Section::make(__('admin.payment_group.sections.description'))
-                ->compact()
-                ->schema([
-                    Textarea::make('description')
-                        ->label(__('admin.payment_group.fields.description'))
-                        ->rows(2)
-                        ->columnSpanFull(),
-                    FileUpload::make('logo_path')
-                        ->label(__('admin.payment_group.fields.logo'))
-                        ->image()
-                        // 落地页访问者是未登录客户，必须走公开可读的盘（同收款链接 Logo）。
-                        ->disk(config('checkout.media_disk', 'public'))
-                        ->directory(config('checkout.payment_group_logo_directory', 'payment-groups/logos'))
-                        ->visibility('public')
-                        ->maxSize(2048)
-                        // 落地页按固定尺寸渲染组卡片，这里把上传图统一压到 320×120
-                        // （cover：先等比缩放再居中裁切），避免商户传不同比例的图把版面顶乱。
-                        // ⚠️ Filament v5 的缩放是**浏览器端** FilePond 插件做的（参数序列化后交给前端，
-                        //    见 FileUpload 的 automaticallyResizeImages*），不是服务端处理：
-                        //    SVG 不会被缩放，绕过前端直传也会跳过。落地页另有 CSS 兜底
-                        //    （h-12 / max-w-[160px] / object-contain），所以 320×120 是引导值而非常量约束。
-                        ->automaticallyResizeImagesMode('cover')
-                        ->automaticallyResizeImagesToWidth('320')
-                        ->automaticallyResizeImagesToHeight('120')
-                        ->helperText(__('admin.payment_group.help.logo'))
-                        ->columnSpanFull(),
-                    Select::make('timezone')
-                        ->label(__('admin.payment_group.fields.timezone'))
-                        ->options(fn () => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz) => [$tz => $tz])->all())
-                        ->default(fn () => (string) config('app.timezone', 'UTC'))
-                        ->searchable()
-                        ->helperText(__('admin.payment_group.help.timezone'))
-                        ->columnSpanFull(),
-                ]),
+            ...($isEdit ? [] : [ViewField::make('paymentMethods')
+                ->label(__('admin.payment_group.fields.payment_methods'))
+                ->hiddenLabel()
+                ->view('filament.resources.payment-group-resource.create-payment-method-panel')
+                ->viewData(function (Get $get, PaymentGroupMethodService $service): array {
+                    $merchantId = filled($get('merchant_id')) ? (int) $get('merchant_id') : null;
+
+                    return [
+                        'merchantId' => $merchantId,
+                        'methods' => $service->availableForMerchant(auth()->user(), $merchantId),
+                    ];
+                })
+                ->default([])
+                ->rules(['array', 'list'])
+                ->columnSpan(['default' => 1, 'xl' => 7])]),
         ]);
     }
 
@@ -231,7 +194,7 @@ class PaymentGroupResource extends Resource
 
     public static function canEdit($record): bool
     {
-        return static::canViewAny();
+        return $record instanceof PaymentGroup && PaymentGroupMethodService::canManage(auth()->user(), $record);
     }
 
     public static function canDelete($record): bool

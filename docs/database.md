@@ -70,6 +70,10 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 
 迁移 `2026_11_03_173100` 为商户新增 `default_fee_percent`、`default_fee_fixed`、`default_refund_fee`、`default_chargeback_fee`、`default_reserve_percent`、`default_reserve_days`（均默认 0），为独立配置新增可空 `settlement_mode`、`settlement_days`。比例保留 4 位小数，USD 费用保留 2 位。新分配系统级渠道时，分配与复制商户默认值在同一事务完成；`merchant_payment_settings(merchant_id,payment_method_id)` 的唯一配置存在时保留，不因重新分配或商户默认值变化而覆盖。保存商户时会为该商户既有有效分配中缺失的配置补齐默认值；已有记录（含空值或 0）和历史订单不改写，也不自动扫描全平台。自有渠道仍沿用原有覆盖/渠道默认规则。
 
+商户编辑页的“授权支付渠道”弹窗取消系统渠道授权时，在同一事务删除当前 `(merchant_id,payment_method_id)` 独立配置及分配关系、清理该商户支付组引用；重复取消也清理该组合残留配置。其他商户及其他渠道的配置不变，重新授权按商户最新已保存的默认值新建配置，不回写订单财务快照。该清理仅用于此弹窗的明确取消动作，旧支付方式编辑页及直接 Pivot 解除关系仍保留配置；不批量删除历史未授权配置。见 [D-27](decisions.md#d-27-商户编辑页集中授权系统支付渠道)。
+
+支付组内的加入、移出和权重修改只写 `payment_group_methods`，移出不改变 `merchant_payment_methods` 或 `merchant_payment_settings`。新选择默认权重 100，重复加入保留已有权重；权重限 1–2,147,483,647 整数，对应 MySQL signed integer。创建页的渠道与权重暂存为 `[{id,priority}]`，提交时按当前商户重新核对全部渠道可用性，在同一事务创建组并写入每项权重；非法列表或授权变化不留下半成组。支付组编辑主表单不再同步渠道关系。`payment_groups.merchant_id` 仅创建时确定，创建后不支持跨商户转移；编辑保存入口及模型实例更新均校验不可变，不因伪造归属提交清除成员或修改权重。未添加数据库触发器，直接 SQL 或绕过模型事件的批量更新不属于业务入口。见 [D-28](decisions.md#d-28-支付组内支付方式常驻双栏管理)。
+
 商户不再要求填写联系方式。历史 `contact_person`、`contact_phone`、`contact_email` 列保留原结构与已有值；`Merchant` 模型为未提供的字段统一使用空字符串缺省值，普通创建和入驻向导共用这一行为。后台表单不再收集这些字段，编辑已有商户不会清空历史联系方式；管理员登录账号和订单客户邮箱仍独立使用。
 
 付款链接邮件仅使用 `applications.sender_email` / `sender_name` / `mail_driver` / 加密 `mail_credentials`，正文使用应用的 `payment_link_mail_template`，留空使用系统默认模板。`payment_methods` 中同名五列保留历史数据及凭证解密兼容，但已退出批量赋值、配置界面和邮件配置选择；复制渠道时也不复制这五列。此变更无需新增迁移，不自动把渠道邮件设置复制给应用。

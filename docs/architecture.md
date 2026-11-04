@@ -64,7 +64,11 @@ flowchart TD
 
 `MerchantResource::canEdit()` 在每次编辑页请求和保存时重新查询数据库中的商户归属，并检查用户启用状态与商户管理权限；不能只依赖初次打开页面时的 `getEloquentQuery()`。商户转交其他管理员或平台后，原管理员已打开的编辑页也会失去保存权限。
 
-创建、编辑商户与入驻向导通过 `MerchantPaymentSettingsForm` 共用默认财务表单：商户保存交易/退款/拒付手续费、保证金比例及锁定天数，并沿用商户的结算模式/周期作为默认值。新分配系统级支付方式时，双向分配关系使用 `MerchantPaymentMethod`，在事务内先锁商户，再写分配并由 `MerchantPaymentSettingsService::initializeForAssignment()` 复制最新默认值到 `merchant_payment_settings`。已有独立配置不覆盖，取消后重新分配也保留；修改商户默认值仅影响后续首次配置的新分配。保存商户时还会通过 `initializeMissingForMerchant()` 为该商户已有分配中缺失的独立配置补齐默认值，与商户保存共用事务；已有记录（含空值或 0）保留。商户自有渠道保留原有独立配置入口和渠道默认回退规则，不后台扫描全平台历史分配。
+商户编辑页顶部的“授权支付渠道”弹窗按未授权/已授权双栏展示渠道，支持名称/编码搜索与逐项点击即时保存，不提交商户主表单。`MerchantPaymentMethodAssignmentService` 每次重新读取操作者状态、商户管理/渠道管理权限及商户当前归属；可调整的系统级渠道须未软删且 `owner_id` 等于该商户已保存的 `owner_id`，超管代管商户时也按商户所属管理员筛选。未设置所属管理员的平台直管商户沿用当前超级管理员名下渠道。本商户自有支付方式无需分配关系，固定显示在右侧并禁止授权/撤销操作；其他商户自有渠道及范围外系统渠道隐藏，已有隐藏分配保留。系统渠道授权复用分配 Pivot 初始化独立财务配置；在此弹窗撤销时，同一事务内清理分配关系、该商户全部支付组（含软删组）的渠道引用及该商户与渠道的独立财务配置，并刷新配置表。其他商户或渠道的配置保留；重新授权复制该商户最新已保存的默认值。详见 [D-27](decisions.md#d-27-商户编辑页集中授权系统支付渠道)。
+
+支付组创建、编辑页共用未加入/已加入双栏面板，渠道行按名称/编码、固定宽度权重输入和移出按钮对齐。创建页先选择商户，再由 `availableForMerchant()` 加载其可用渠道；`ViewField('paymentMethods')` 暂存 `[{id, priority}]`，切商户清空旧选择与权重，未提交不写组或关系。`createGroup()` 在商户行锁事务内重新验证用户权限、商户范围、渠道授权/软删状态、ID 唯一和整数权重，再一次保存组及关系。编辑页由 `PaymentMethodsRelationManager` 逐项即时加入/移出，修改权重失焦或回车时保存；下方保留当天负载快照。`PaymentGroupMethodService` 每次核对启用用户、支付组管理权限、组和商户当前归属，渠道使用 `forMerchant()` 限定为该商户自有及已授权系统渠道。组内操作不撤销商户授权或删除独立财务配置。编辑主表单不构建渠道关系字段，避免覆盖即时结果和权重。新选择默认权重 100，创建时可设置独立值。支付组创建后不能更换所属商户：编辑字段禁用、保存入口锁定当前商户及组并拒绝篡改归属，`PaymentGroup::updating` 也阻止实例变更 `merchant_id`。详见 [D-28](decisions.md#d-28-支付组内支付方式常驻双栏管理)。
+
+创建、编辑商户与入驻向导通过 `MerchantPaymentSettingsForm` 共用默认财务表单：商户保存交易/退款/拒付手续费、保证金比例及锁定天数，并沿用商户的结算模式/周期作为默认值。新分配系统级支付方式时，双向分配关系使用 `MerchantPaymentMethod`，在事务内先锁商户，再写分配并由 `MerchantPaymentSettingsService::initializeForAssignment()` 复制最新默认值到 `merchant_payment_settings`。配置仍存在时不覆盖，修改商户默认值仅影响后续需要首次初始化的分配；商户编辑弹窗取消会删除配置，重新授权重新初始化。原支付方式编辑页及直接 Pivot 解除关系仍保留配置，避免系统渠道转为商户自有时误删有效独立配置。保存商户时还会通过 `initializeMissingForMerchant()` 为该商户已有分配中缺失的独立配置补齐默认值，与商户保存共用事务；已有记录（含空值或 0）保留。商户自有渠道保留原有独立配置入口和渠道默认回退规则，不后台扫描全平台历史分配。
 
 `PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。启用的超级管理员可在系统级支付方式编辑页通过“更改归属管理员”重新指派给启用的平台管理员（含超管），由 `PaymentMethodOwnershipService` 校验操作者、目标账号并锁定渠道后只更新归属；不改变商户分配、支付组或下单范围。商户自有渠道仍按 `merchant_id` 管理。
 
@@ -215,6 +219,8 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 | 连续建单失败与自动停用 | `app/Services/PaymentMethodFailureService.php`、`OrderCreationService.php`、`app/Models/PaymentMethod.php`、`database/seeders/PaymentFailureSettingsSeeder.php` | `tests/Feature/PaymentMethodCreationFailureTest.php`、`PaymentFailureSettingsTest.php` |
 | 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`tests/Feature/Filament/MerchantWithdrawalRequestTest.php` |
 | 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
+| 商户支付渠道授权 | `MerchantResource/Pages/EditMerchant`、`MerchantPaymentMethodAssignmentService`、`MerchantPaymentMethod` | `Filament/MerchantPaymentMethodAssignmentTest`、`MerchantPaymentDefaultsAssignmentTest` |
+| 支付组成员和权重 | `PaymentGroupResource`、`PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager`、`PaymentGroupMethodService` | `Filament/PaymentGroupMethodManagementTest`、`Filament/PaymentGroupLoadSnapshotTest`、`PaymentRoutingTest` |
 | 历史订单漏配汇损补算 | `app/Console/Commands/RecalculateOrderSurcharge.php`、`app/Services/OrderSurchargeRecalculationService.php`、[操作手册](../doc/order-surcharge-recalculation.md) | `tests/Feature/RecalculateOrderSurchargeTest.php` |
 | 统计 | `app/Services/OrderStatsAggregator.php`、`OrderStatsQueryService.php`、`DashboardService.php` | `tests/Feature/OrderStatsAggregatorTest.php`、`DashboardOrderStatsAlignmentTest.php`、`tests/Feature/Filament/OrderStatsPageTest.php` |
 | 收款链接和域名 | `app/Services/Checkout/`、`app/Http/Controllers/CheckoutLinkController.php`、`app/Models/CheckoutLink.php` | `tests/Feature/CheckoutLinkTest.php`、`tests/Feature/Filament/CheckoutLinkFormTest.php`、`MerchantDomainResourceTest.php` |

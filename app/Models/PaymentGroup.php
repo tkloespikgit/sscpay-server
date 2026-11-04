@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class PaymentGroup extends Model
 {
@@ -26,6 +27,17 @@ class PaymentGroup extends Model
         'timezone',
         'is_active',
     ];
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $group): void {
+            if ($group->isDirty('merchant_id')) {
+                throw ValidationException::withMessages([
+                    'merchant_id' => __('admin.payment_group.validation.merchant_immutable'),
+                ]);
+            }
+        });
+    }
 
     protected function casts(): array
     {

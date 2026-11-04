@@ -87,11 +87,12 @@ class MerchantResource extends Resource
                 Toggle::make('status')->label(__('admin.merchant.fields.status'))->default(true)->inline(false),
                 // 商户归属哪个商户级管理员，只有真超管能看/能改（用来重新指派归属）；
                 // 商户级管理员自己建的商户，归属在 CreateMerchant 页面里自动落成自己，不需要也不允许在这里选。
+                MerchantPaymentSettingsForm::defaultsSection(),
+
                 Textarea::make('remark')->label(__('admin.merchant.fields.remark'))->rows(3)->columnSpanFull(),
 
-            ])->columns(2),
+            ])->columns(2)->columnSpanFull(),
 
-            MerchantPaymentSettingsForm::defaultsSection(),
         ]);
     }
 

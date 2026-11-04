@@ -221,6 +221,8 @@
 
 **原因与影响：** 商户默认值是首次分配的模板，分配后的独立值不随默认值变化；已有配置及取消后重新分配保留，不批量覆盖历史。分配关系与配置初始化共用事务，先锁商户再写分配；配置唯一约束和 `firstOrCreate` 防止覆盖。商户自有渠道保留既有覆盖入口与回退规则。2026-11-03 后续按用户反馈补充：保存商户时为该商户已有有效分配中缺失的配置补齐默认值，避免存量分配一直回退渠道费率；已有记录（含空值或 0）不改写，不后台扫描全平台。
 
+2026-11-04 按用户后续要求，**商户编辑弹窗**取消授权时保留配置的规则由 [D-27](#d-27-商户编辑页集中授权系统支付渠道) 替代：同步删除对应独立财务配置，重新授权使用商户当时的默认值。原支付方式编辑页及直接 Pivot 解除关系仍保留配置，不将删除钩子扩散到系统渠道转商户自有等旧路径。
+
 本项扩展 [D-17](#d-17-商户独立财务配置订单结算与保证金)：结算模式和周期也允许逐渠道设置。新订单从选中渠道的独立配置生成全部财务快照；手续费/保证金空值回退渠道默认，结算空值回退商户默认。[D-24](#d-24-网关建单失败立即返回与原渠道重试) 的原渠道重试不重算已保存快照，已有支付链接、已收款及历史订单亦不重算。新迁移只添加商户默认列和独立配置结算列，不改既有余额或账务记录。
 
 **依据：** [MerchantPaymentSettingsForm](../app/Filament/Support/MerchantPaymentSettingsForm.php)、[MerchantPaymentMethod](../app/Models/MerchantPaymentMethod.php)、[MerchantPaymentSettingsService](../app/Services/MerchantPaymentSettingsService.php)、[PaymentMethod](../app/Models/PaymentMethod.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[分配回归测试](../tests/Feature/MerchantPaymentDefaultsAssignmentTest.php)、[独立结算表单测试](../tests/Feature/MerchantPaymentSettlementOverridesTest.php)。
@@ -284,3 +286,27 @@
 迁移与专用 Seeder 仅补缺失系统配置，不覆盖已保存值，回滚保留配置。部署需执行新配置迁移；已有运单由后续扫描或回调逐步应用新判定，不回填历史轨迹。
 
 **依据：** [LogisticsTrackingSyncService](../app/Services/LogisticsTracking/LogisticsTrackingSyncService.php)、[异常扫描命令](../app/Console/Commands/ReflagLogisticsTrackingAnomaliesCommand.php)、[OrderShipping](../app/Models/OrderShipping.php)、[异常事件](../app/Events/LogisticsAnomalyDetected.php)、[提醒监听器](../app/Listeners/SendLogisticsAnomalyNotification.php)、[配置迁移](../database/migrations/2026_11_04_094301_add_logistics_anomaly_thresholds_to_system_configs.php)、[配置 Seeder](../database/seeders/LogisticsAnomalySettingsSeeder.php)、[异常判定测试](../tests/Feature/LogisticsAnomalyTrackingTest.php)、[配置测试](../tests/Feature/LogisticsAnomalySettingsTest.php)、[Telegram 测试](../tests/Feature/LogisticsAnomalyTelegramTest.php)。
+
+## D-27 商户编辑页集中授权系统支付渠道
+
+**状态：当前工作区实现，未提交（2026-11-04，按用户要求及后续澄清）。** 商户编辑页顶部提供“授权支付渠道”，弹窗左侧显示可授权系统渠道，右侧显示已有授权和本商户自有支付方式；点击左侧授权、点击右侧系统渠道取消授权并即时移动，操作逐项立即保存，关闭不撤销。本商户自有支付方式固定在右侧并标记“商户自有（不可取消）”，不提供变更按钮。支持名称/编码搜索、数量和停用状态展示，不提交商户主表单中的未保存资料或默认财务配置。
+
+**原因与影响：** 从商户维度连续授权多个渠道，减少逐个打开支付方式编辑页的操作。启用的平台账号须同时具备商户管理与渠道管理权限；超管可选择所有商户，商户级管理员限自己名下商户。按用户最终澄清，系统渠道范围依据该商户已保存的所属管理员（`payment_methods.owner_id=merchants.owner_id`、`payment_methods.merchant_id IS NULL`、未软删除），不按当前登录管理员筛选；超管代管其他管理员商户时可以调整该商户所属管理员的系统渠道。所属管理员为空的平台直管商户延续当前超管名下渠道的行为，不合并其他超管渠道或无归属渠道。商户自有渠道（`payment_methods.merchant_id=当前商户 ID`）无需 Pivot 授权，直接显示在右侧，服务端也拒绝通过本入口增删其授权。范围外系统渠道及其他商户自有渠道隐藏，已有隐藏分配保留。直接调用授权/撤销也须符合相同渠道归属条件，不改变支付方式 Resource 原有的管理权限。停用与授权独立，停用渠道仍可配置授权，使用时继续受既有启用检查限制。
+
+`MerchantPaymentMethodAssignmentService` 每次重读操作者、权限与归属，在事务内先锁商户、再锁渠道，以显式授权/撤销实现幂等，不整表覆盖分配关系。授权复用 `MerchantPaymentMethod` 的默认财务初始化，沿用 [D-22](#d-22-商户默认财务配置按分配复制)。按用户后续要求，在此弹窗取消授权时同步删除该商户与渠道的 `merchant_payment_settings`，替代此前取消后保留配置的规则；重新授权复制商户当时已保存的默认配置。撤销同时移除当前商户支付组（含软删除组）内该渠道引用，保留其他商户及该商户其他渠道的配置、分配和支付组；重新授权不自动恢复旧组引用。即使分配已不存在，重复撤销也会清除该商户与渠道的残留配置。本次仅修改商户弹窗的明确撤销路径，不批量清理历史残留，不改变旧支付方式编辑页或直接 Pivot 解除关系的配置保留行为，避免系统渠道转为商户自有时误删仍有效的费率。页面同步刷新独立财务配置表，不调用支付网关，不改变渠道归属、历史订单或账务，无需新增迁移。
+
+**依据：** [EditMerchant](../app/Filament/Resources/MerchantResource/Pages/EditMerchant.php)、[MerchantPaymentMethodAssignmentService](../app/Services/MerchantPaymentMethodAssignmentService.php)、[弹窗模板](../resources/views/filament/resources/merchant-resource/payment-method-authorization.blade.php)、[授权回归测试](../tests/Feature/Filament/MerchantPaymentMethodAssignmentTest.php)。
+
+## D-28 支付组内支付方式常驻双栏管理
+
+**状态：当前工作区实现，未提交（2026-11-04，按用户要求及后续补充）。** 支付组创建和编辑页共用未加入/已加入双栏面板，名称/编码搜索、数量、停用状态以及右侧进单权重输入均在页面内操作。渠道信息、固定宽度权重和移出图标按行对齐，编辑时只在权重改变后失焦/回车保存，去掉逐行保存按钮；校验错误显示在对应行。创建页先选择商户再加载渠道，未选择时显示引导，成员和权重随创建一起保存。编辑页点击加入或移出即时保存，原当天成交、笔数、负载率和候选序表格保留；软删除的有效组内成员显示在右侧供移除，不允许加入已删除渠道或修改其权重。
+
+**原因与影响：** 减少逐次打开添加/编辑弹窗的步骤，同时保留组内路由权重。候选按支付组当前所属商户的 `PaymentMethod::forMerchant()` 读取，包含商户自有及已分配系统渠道，与商户授权弹窗按渠道归属管理员筛选的用途不同。普通商户账号也可操作自己的支付组，须有支付组管理权限。Service 和独立关系组件每次重查操作者启用状态、权限、组/商户归属；写入先锁商户、再锁组及渠道，防止与商户撤销授权并发时插回失效关系。
+
+操作仅修改 `payment_group_methods`，不解除商户授权、不删除财务配置、不改其他组；新选择默认权重 100，重复加入保留已有权重。权重为 1–2,147,483,647 整数，编辑保存后同时刷新表和路由负载快照缓存。停用渠道可配置组关系，实际下单继续受既有启用和风控规则约束，不改变前三候选随机等路由策略。
+
+创建页通过非 relationship 的 `ViewField('paymentMethods')` 暂存 `[{id,priority}]`。选择商户后才返回该商户可用的安全字段；切换商户由服务端清空暂存选择与权重，并按商户重建面板，加载期间禁用旧面板。`CreatePaymentGroup` 提交时提取暂存列表，`PaymentGroupMethodService::createGroup()` 锁商户并重读操作者权限/归属，校验列表键、唯一渠道 ID、权重及每个渠道的当前可用性，再原子创建支付组和带权重的关系。已撤销授权、软删除、越权商户或非法权重均拒绝，不留下支付组；空选择可创建。此流程替代初版创建页多选下拉，创建之前不写组或 Pivot。
+
+编辑页彻底移除主表单的 `paymentMethods` 关系字段，避免主表单保存覆盖即时成员变更，或把权重重置为旧 `pivotData` 中的 100。按用户后续明确要求，**支付组创建后不能转移到其他商户，超级管理员也无例外**：编辑页禁用所属商户选择；保存时锁定当前商户和组，若提交商户与数据库归属不同则报字段验证错误，整次保存不写入，也不清理组成员。`PaymentGroup::updating` 还会拒绝模型实例的 `merchant_id` 变更，保护其他 Eloquent 实例更新路径；创建和同商户普通编辑正常。此要求替代中间实现中的“转移商户后清理旧成员”，移除转移逻辑和初始商户追踪。面板始终使用数据库已保存的所属商户，普通保存后仍派事件刷新关系组件。无需新增迁移或数据库触发器，不通过本次改动批量修正历史数据或重置存量权重。
+
+**依据：** [PaymentGroupResource](../app/Filament/Resources/PaymentGroupResource.php)、[CreatePaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/CreatePaymentGroup.php)、[EditPaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/EditPaymentGroup.php)、[PaymentGroup](../app/Models/PaymentGroup.php)、[PaymentMethodsRelationManager](../app/Filament/Resources/PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager.php)、[PaymentGroupMethodService](../app/Services/PaymentGroupMethodService.php)、[共用列表](../resources/views/filament/resources/payment-group-resource/method-panel-lists.blade.php)、[行为测试](../tests/Feature/Filament/PaymentGroupMethodManagementTest.php)。

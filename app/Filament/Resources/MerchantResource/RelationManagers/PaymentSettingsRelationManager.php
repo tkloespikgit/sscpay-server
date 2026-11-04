@@ -18,10 +18,19 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
+use Livewire\Attributes\On;
 
 class PaymentSettingsRelationManager extends RelationManager
 {
     protected static string $relationship = 'paymentSettings';
+
+    #[On('merchant-payment-methods-updated')]
+    public function refreshPaymentSettings(): void
+    {
+        abort_unless($this->mayManage(), 403);
+
+        $this->resetTable();
+    }
 
     public function mount(): void
     {

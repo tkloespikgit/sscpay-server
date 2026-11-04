@@ -4,24 +4,24 @@ namespace App\Filament\Resources\PaymentGroupResource\RelationManagers;
 
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Models\Scopes\MerchantScope;
+use App\Models\User;
+use App\Services\PaymentGroupMethodService;
 use App\Services\PaymentService;
-use Filament\Actions\AttachAction;
-use Filament\Actions\DetachAction;
-use Filament\Actions\EditAction;
-use Filament\Forms\Components\TextInput;
 use Filament\Resources\RelationManagers\RelationManager;
-use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
+use Livewire\Attributes\On;
 
 /**
  * 支付组内的支付方式 + 组内进单占比权重（priority，数值越大分配占比越高）。
  * 列表同时展示当天负载快照（成交额 / 笔数 / 负载率 / 候选序），口径见
  * PaymentService::routingLoadSnapshot()；下单时按负载排序后从前三等概率随机。
- * 用 AttachAction 的 form 承载 priority 这个 pivot 字段，
- * 编辑已挂载记录的 priority 也走单独的 EditAction（同样操作 pivot）。
+ * 直接展示双栏面板，加入、移出和权重调整均逐项保存，不使用弹窗。
  */
 class PaymentMethodsRelationManager extends RelationManager
 {
@@ -31,6 +31,73 @@ class PaymentMethodsRelationManager extends RelationManager
      * @var array<int, array{weight: int, amount: float, count: int, load_ratio: float, rank: int|null, in_top3: bool}>|null
      */
     private ?array $routingLoadSnapshotCache = null;
+
+    public function mount(): void
+    {
+        $this->refreshManagedGroup();
+
+        parent::mount();
+    }
+
+    public function hydrate(): void
+    {
+        $this->refreshManagedGroup();
+    }
+
+    public static function canViewForRecord(Model $ownerRecord, string $pageClass): bool
+    {
+        return $ownerRecord instanceof PaymentGroup
+            && PaymentGroupMethodService::canManage(auth()->user(), $ownerRecord);
+    }
+
+    #[On('payment-group-updated')]
+    public function refreshGroup(): void
+    {
+        $this->refreshManagedGroup();
+        $this->resetValidation();
+        $this->refreshMethods();
+    }
+
+    public function setPaymentMethodMembership(int $paymentMethodId, bool $included, PaymentGroupMethodService $service): void
+    {
+        $actor = auth()->user();
+        abort_unless($actor instanceof User, 403);
+
+        $service->setMembership($actor, $this->getOwnerRecord(), $paymentMethodId, $included);
+        $this->resetValidation('weights.'.$paymentMethodId);
+        $this->refreshMethods();
+    }
+
+    public function savePaymentMethodWeight(int $paymentMethodId, mixed $priority, PaymentGroupMethodService $service): void
+    {
+        $actor = auth()->user();
+        abort_unless($actor instanceof User, 403);
+
+        try {
+            $service->saveWeight($actor, $this->getOwnerRecord(), $paymentMethodId, $priority);
+        } catch (ValidationException $exception) {
+            throw ValidationException::withMessages([
+                'weights.'.$paymentMethodId => $exception->errors()['priority'] ?? [$exception->getMessage()],
+            ]);
+        }
+        $this->resetValidation('weights.'.$paymentMethodId);
+        $this->refreshMethods();
+    }
+
+    private function refreshManagedGroup(): void
+    {
+        abort_unless(PaymentGroupMethodService::canManage(auth()->user(), $this->getOwnerRecord()), 403);
+
+        $this->ownerRecord = PaymentGroup::query()
+            ->withoutGlobalScope(MerchantScope::class)
+            ->findOrFail($this->getOwnerRecord()->getKey());
+    }
+
+    private function refreshMethods(): void
+    {
+        $this->routingLoadSnapshotCache = null;
+        $this->resetTable();
+    }
 
     /**
      * 标题用 getTitle() 方法覆盖而不是静态属性——PHP 静态属性的默认值
@@ -42,18 +109,21 @@ class PaymentMethodsRelationManager extends RelationManager
         return __('admin.payment_group.relation_manager.title');
     }
 
-    public function form(Schema $schema): Schema
-    {
-        return $schema->components([
-            TextInput::make('priority')->label(__('admin.payment_group.relation_manager.priority'))->integer()->minValue(1)->default(100)->helperText(__('admin.payment_group.relation_manager.priority_help')),
-        ]);
-    }
-
     public function table(Table $table): Table
     {
         return $table
             ->recordTitleAttribute('method_name')
-            ->description(__('admin.payment_group.relation_manager.load_snapshot_help'))
+            ->modifyQueryUsing(fn (Builder $query): Builder => $query->forMerchant((int) $this->getOwnerRecord()->merchant_id))
+            ->header(function (PaymentGroupMethodService $service): View {
+                $methods = $service->methods(auth()->user(), $this->getOwnerRecord());
+
+                return view('filament.resources.payment-group-resource.payment-method-panel', [
+                    'columns' => [
+                        'available' => $methods->where('is_in_group', false),
+                        'included' => $methods->where('is_in_group', true),
+                    ],
+                ]);
+            })
             ->columns([
                 TextColumn::make('method_name')->label(__('admin.payment_method.model_label')),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
@@ -90,34 +160,7 @@ class PaymentMethodsRelationManager extends RelationManager
                         default => 'gray',
                     }),
             ])
-            ->defaultSort('pivot_priority', 'desc')
-            ->headerActions([
-                AttachAction::make()
-                    // 候选支付方式必须限定在"本支付组所属商户可用"的范围内。不加这个的话
-                    // AttachAction 的候选集是「当前账号能看到的全部支付方式」减去已挂载项，
-                    // 完全不参考支付组属于哪个商户——超管能看到所有商户的，商户级管理员能
-                    // 看到名下多个商户的，于是可以把 B 商户的支付方式挂进 A 商户的支付组，
-                    // A 的订单就会路由进 B 的通道收款（PaymentService::resolvePaymentMethod()
-                    // 只取组内启用的支付方式，不再校验归属），手续费、限额、观察者可见范围
-                    // 全部串到 B 去。支付组主表单早就防住了这一点（见 PaymentGroupResource
-                    // 里 paymentMethods 字段的注释），关系管理器这条路径必须用同样的规则。
-                    // 用 forMerchant() 而不是只比 merchant_id：它会把"分配给该商户使用的
-                    // 系统级支付方式"一并算进可用范围，与主表单口径一致。
-                    // recordSelectOptionsQuery 同时作用于下拉选项和提交时按 ID 取记录
-                    // （见 AttachAction::getRecordSelect() 与 action 闭包），所以伪造
-                    // recordId 也绕不过去。
-                    ->recordSelectOptionsQuery(fn (Builder $query) => $query->forMerchant(
-                        (int) $this->getOwnerRecord()->merchant_id,
-                    ))
-                    ->form(fn (AttachAction $action) => [
-                        $action->getRecordSelect(),
-                        TextInput::make('priority')->label(__('admin.payment_group.relation_manager.priority'))->integer()->minValue(1)->default(100),
-                    ]),
-            ])
-            ->recordActions([
-                EditAction::make(),
-                DetachAction::make(),
-            ]);
+            ->defaultSort('pivot_priority', 'desc');
     }
 
     /**
