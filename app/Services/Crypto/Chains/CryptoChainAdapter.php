@@ -12,7 +12,8 @@ use App\Models\Order;
  * - 不在此：金额互斥盐编排、订单匹配、入账、过期 → 见 CryptoPaymentService
  * - 订阅类型（FUNGIBLE vs NATIVE）由是否配置 token_contract 决定，见 TatumClient
  *
- * 注册：CryptoServiceProvider 将实现挂入 CryptoChainRegistry（P0：Tron → Ethereum）。
+ * 注册：CryptoServiceProvider 将实现挂入 CryptoChainRegistry（当前仅 Tron；
+ * ETH/BTC 适配器文件可存在但未注册，见各类文件头注释）。
  */
 interface CryptoChainAdapter
 {
