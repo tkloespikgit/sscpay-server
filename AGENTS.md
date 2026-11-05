@@ -69,6 +69,16 @@ git diff --check
 - 未提交行为和已提交事实分开描述，不将观察到的实现包装成已确认的长期业务决策。
 - 本文件保持为简短入口；详细业务说明放到 `docs/`，避免后续 AI 每次加载大量重复资料。
 
+## Cursor Cloud specific instructions
+
+- 可运行的应用是本仓库。同级的四个 `sscpay-*` 仓库是 WordPress 插件，只需 `composer install`，不会单独起服务。
+- 平台后台是 `http://127.0.0.1:8000/admin`，商户后台是 `/merchant`，观察者后台是 `/observer`。
+- 这台机器没有可用的 systemd。不要用 `service mysql start`。MySQL 与 Redis 由环境的 start 脚本直接拉起；数据库用户是 `ubuntu`（socket 认证，无密码），库名 `order_system`，独立测试库名 `order_system_testing`。
+- 必须设置 `APP_TIMEZONE=Asia/Shanghai`。本机 tzdata 没有旧别名 `PRC`，Carbon 会因此拒绝启动。
+- 本地 `.env` 把 Turnstile 的 site key 和 secret 留空，登录页和收款页会跳过人机验证。
+- `php artisan test` 仍按 `phpunit.xml` 使用 SQLite。生成列里的 MySQL `IF()` 在 SQLite 上会失败，这是当前迁移 SQL 的行为，不是缺扩展。跑迁移类测试时改用独立的 `order_system_testing`，不要指向 `order_system`。
+- 平台管理员用 `php artisan make:super-admin` 创建。不要用 `make:filament-user`，也不要在已有 `.env` 上重新执行 `key:generate`。
+
 ===
 
 <laravel-boost-guidelines>
