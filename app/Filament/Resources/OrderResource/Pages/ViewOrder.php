@@ -96,7 +96,17 @@ class ViewOrder extends ViewRecord
                 Grid::make(4)->schema([
                     TextEntry::make('currency')->label(__('admin.order.fields.currency')),
                     TextEntry::make('amount')->label(__('admin.order.fields.amount'))->money(fn ($record) => $record->currency),
-                    TextEntry::make('converted_amount')->label(__('admin.order.fields.converted_amount'))->money('usd'),
+                    TextEntry::make('converted_amount')
+                        ->label(__('admin.order.fields.converted_amount'))
+                        ->formatStateUsing(function ($state, $record): string {
+                            $raw = (string) ($state ?? '0');
+                            if ($record->isCryptoCheckout()) {
+                                return number_format((float) $raw, 3, '.', ',');
+                            }
+
+                            return number_format((float) $raw, 2, '.', ',');
+                        })
+                        ->prefix('$'),
                     TextEntry::make('exchange_rate')->label(__('admin.order.fields.exchange_rate')),
                     // 原始汇率 / 汇损百分比 / 汇损费用属于平台内部财务信息，仅超级管理员可见，
                     // 商户用户看到的金额信息到实际汇率为止。
@@ -111,6 +121,35 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('settlement_amount')->label(__('admin.order.fields.settlement_amount'))->money('usd'),
                 ]),
             ]),
+
+            Section::make(__('admin.order.sections.crypto_payment'))
+                ->visible(fn ($record) => $record->isCryptoCheckout())
+                ->schema([
+                    Grid::make(2)->schema([
+                        TextEntry::make('crypto_receive_address')
+                            ->label(__('admin.order.fields.crypto_receive_address'))
+                            ->copyable()
+                            ->columnSpanFull(),
+                        TextEntry::make('converted_amount')
+                            ->label(__('admin.order.fields.crypto_amount_expected'))
+                            ->formatStateUsing(fn ($state): string => number_format((float) ($state ?? '0'), 3, '.', '')),
+                        TextEntry::make('crypto_amount_received')
+                            ->label(__('admin.order.fields.crypto_amount_received'))
+                            ->formatStateUsing(fn ($state): string => number_format((float) ($state ?? '0'), 3, '.', '')),
+                        TextEntry::make('crypto_expires_at')
+                            ->label(__('admin.order.fields.crypto_expires_at'))
+                            ->dateTime(),
+                        TextEntry::make('transaction_id')
+                            ->label(__('admin.order.fields.crypto_txid'))
+                            ->copyable()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('crypto_txids')
+                            ->label(__('admin.order.fields.crypto_txids'))
+                            ->formatStateUsing(fn ($state) => is_array($state) ? implode(', ', $state) : (string) $state)
+                            ->columnSpanFull()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                    ]),
+                ]),
 
             Section::make(__('admin.order.sections.customer_info'))->schema([
                 Grid::make(2)->schema([

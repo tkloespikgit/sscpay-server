@@ -20,6 +20,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\HtmlString;
 
 /**
  * 观察者账户自己登录后看到的订单列表：完全只读（不提供 create/edit/delete/任何
@@ -105,12 +106,20 @@ class OrderResource extends Resource
                     ->color(fn (?Order $record) => $record?->shipping ? 'primary' : 'gray'),
 
                 TextColumn::make('amount')->label(__('admin.order.columns.amount_original'))
-                    ->getStateUsing(fn (Order $record) => $observer?->scaleAmount($record->amount))
-                    ->formatStateUsing(fn ($state, Order $record) => number_format((float) $state, 2).' '.strtoupper((string) $record->currency))
+                    ->formatStateUsing(fn ($state, Order $record): string|HtmlString => AdminOrderResource::originalCurrencyAmountState(
+                        $record,
+                        $record->amount,
+                        fn (string $amount): string => (string) ($observer?->scaleAmount($amount) ?? $amount),
+                    ))
+                    ->html()
+                    ->alignCenter()
                     ->sortable(),
                 TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))
-                    ->getStateUsing(fn (Order $record) => $observer?->scaleAmount($record->converted_amount))
-                    ->money('usd')
+                    ->formatStateUsing(fn ($state, Order $record): string => AdminOrderResource::convertedAmountState(
+                        $record,
+                        $record->converted_amount,
+                        fn (string $amount): string => (string) ($observer?->scaleAmount($amount) ?? $amount),
+                    ))
                     ->sortable(),
 
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
