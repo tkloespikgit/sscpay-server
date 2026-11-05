@@ -47,6 +47,7 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
+| `/api/webhooks/tatum/address` | `TatumWebhookController` | POST，Tatum 链上入账通知；当前不做验签，直接匹配入账 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
@@ -75,6 +76,22 @@ flowchart TD
 `PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。启用的超级管理员可在系统级支付方式编辑页通过“更改归属管理员”重新指派给启用的平台管理员（含超管），由 `PaymentMethodOwnershipService` 校验操作者、目标账号并锁定渠道后只更新归属；不改变商户分配、支付组或下单范围。商户自有渠道仍按 `merchant_id` 管理。
 
 支付方式列表在商户端固定使用当前商户的生效手续费、保证金及结算配置；平台端未选商户时显示渠道默认值，使用“查看商户生效配置”筛选后，通过 `forMerchant()` 展示该商户自有和已分配渠道，并加载仅限该商户的独立配置。筛选值须属于当前平台用户可管理的启用商户，非法或越权选择返回空表；商户账号伪造此筛选不会切换财务上下文。列表显示与下单保持相同空值回退规则，未初始化的存量分配仍回退渠道费率，不能仅改变显示值伪装配置已生效。
+
+加密网关不单独建资产模型，也不在渠道上存 `gateway_driver`：与 Stripe/PayPal 一样靠配置模板的 `payment_config_tag` 区分——`crypto` 或 `crypto_*`（如 `crypto_tron_usdt`）走本站链上编排，其余走 WP 插件。链/币/合约/收款地址及 Tatum 凭证写在 `payment_methods.config`（缺省可回退 `config/tatum.php`）；归属仍走渠道自有或系统级分配。建单快照链/币/合约/地址；`tatum_subscription_id` 可回填渠道 config。**稳定决策**见 [D-29](decisions.md#d-29-crypto-payment-amount-mutex)；**实现方案**见 [crypto-payment.md](../doc/crypto-payment.md)。现行口径：固定址 + 金额互斥——无汇损折算 → 盐写入 `converted_amount`（千分位）→ 按盐后额算费；webhook / 付款页匹配同字段。**P0 仅 USDT**（须 `token_contract`）；Registry **当前仅挂载 Tron**。
+
+**代码地图（`app/Services/Crypto/`）**
+
+| 类 | 职责 |
+|---|---|
+| `CryptoPaymentService` | 编排：`converted_amount` 金额互斥、订阅、webhook 匹配入账、过期 |
+| `CryptoQuoteService` + `CryptoQuote` | 报价服务（稳定币 peg / Tatum）；P0 建单不写入订单 |
+| `CryptoChainRegistry` + `Chains/*Adapter` | 按链：Tatum chain、深链、合约别名、占位地址（当前挂载 Tron） |
+| `TatumClient` | HTTP：地址订阅与汇率（凭证 using 渠道 config） |
+| `CryptoCheckoutLinkBuilder` | 付款页深链（金额取 `converted_amount`）；QR 用纯地址 |
+| 入口 | `OrderCreationService` 加密分支；`TatumWebhookController`；`PaymentPageController`；`crypto:expire-payments` |
+| 容器 | `CryptoServiceProvider`（`bootstrap/providers.php`）单例绑定 `CryptoChainRegistry` |
+
+Tatum 订阅：有 `token_contract` → `INCOMING_FUNGIBLE_TX`，空合约 → `INCOMING_NATIVE_TX`（P0 建单要求 USDT 必填合约，故实际走 FUNGIBLE）。入账以 webhook payload 为准。新链：实现 `CryptoChainAdapter` 并挂进 `CryptoServiceProvider`。
 
 支付方式详情页提供“生成进货单”，历史记录由 `PurchaseOrdersRelationManager` 展示，仅启用的超级管理员可生成、查看和编辑运费/优惠。`PurchaseOrderService` 从所选支付方式的 `siteProducts()` 随机选品并保存独立进货快照：商品不足 30 种全选，否则随机选 30 至总数种，每种 10–20 件；价格采用 `price_min`（视作 USD）× 7 × 0.3，四舍五入为人民币两位小数。默认运费按商品合计 3%–8%、优惠按 10%–20% 随机生成，也可手动输入金额。下单时间可设置，付款/发货/签收时间及交易号为模拟数据。此入口只写 `purchase_orders` 和 `purchase_order_items`，不创建收款订单、不调用网关或改变商户余额；运费/优惠编辑通过 Service 锁单重算总额。
 

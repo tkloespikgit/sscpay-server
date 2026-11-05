@@ -310,3 +310,15 @@
 编辑页彻底移除主表单的 `paymentMethods` 关系字段，避免主表单保存覆盖即时成员变更，或把权重重置为旧 `pivotData` 中的 100。按用户后续明确要求，**支付组创建后不能转移到其他商户，超级管理员也无例外**：编辑页禁用所属商户选择；保存时锁定当前商户和组，若提交商户与数据库归属不同则报字段验证错误，整次保存不写入，也不清理组成员。`PaymentGroup::updating` 还会拒绝模型实例的 `merchant_id` 变更，保护其他 Eloquent 实例更新路径；创建和同商户普通编辑正常。此要求替代中间实现中的“转移商户后清理旧成员”，移除转移逻辑和初始商户追踪。面板始终使用数据库已保存的所属商户，普通保存后仍派事件刷新关系组件。无需新增迁移或数据库触发器，不通过本次改动批量修正历史数据或重置存量权重。
 
 **依据：** [PaymentGroupResource](../app/Filament/Resources/PaymentGroupResource.php)、[CreatePaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/CreatePaymentGroup.php)、[EditPaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/EditPaymentGroup.php)、[PaymentGroup](../app/Models/PaymentGroup.php)、[PaymentMethodsRelationManager](../app/Filament/Resources/PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager.php)、[PaymentGroupMethodService](../app/Services/PaymentGroupMethodService.php)、[共用列表](../resources/views/filament/resources/payment-group-resource/method-panel-lists.blade.php)、[行为测试](../tests/Feature/Filament/PaymentGroupMethodManagementTest.php)。
+
+## D-29 crypto-payment-amount-mutex
+
+加密收款金额互斥（listen-only；匹配键 `converted_amount`）。
+
+**状态：已实现（`dev_cryto`，2026-11-05）。** 加密渠道由配置模板 `payment_config_tag` 为 `crypto` / `crypto_*` 识别；链上参数与 Tatum 凭证落在 `payment_methods.config`（可回退 `config/tatum.php`）。模式为固定收款地址 + Tatum 订阅（listen-only，本站不持私钥）。P0 **仅 USDT** 且须 `token_contract`；当前 Registry **仅注册 Tron**（Ethereum / Bitcoin 适配器已入库未挂载，见 `f553f47`）。
+
+**金额与匹配：** 加密建单用 `original_rate`（汇损为 0）折算后，在地址锁内对 `orders.converted_amount`（列 `decimal(15,3)`，常量精度 3）向下加盐（步长 0.001，总偏移 ≤ 1）；再按盐后额重算手续费与 `settlement_amount`。同址、未过期 `pending` 窗口内 `(crypto_receive_address, converted_amount)` 至多一单。付款页、深链、webhook 与成交额统计均以该字段为应付/匹配键；**禁止拆笔**（入账须与应付精确相等）。不写 `crypto_amount_expected` / scale / quote 列。
+
+**原因与影响：** 听链事件无本站订单号，须在业务上构造可反查不变量；USDT peg≈1 时用 `converted_amount` 双职可避免第二套应付字段。代价是成交额可被盐压低至多 1 USD；过期释放金额槽后迟到同额款可能误配新单（P1 可加冷却）。过期由 `crypto:expire-payments` 调度；入账入口 `TatumWebhookController`。
+
+**依据：** [crypto-payment.md](../doc/crypto-payment.md)、[OrderCreationService](../app/Services/OrderCreationService.php)、[CryptoPaymentService](../app/Services/Crypto/CryptoPaymentService.php)、[database.md](database.md) 订单 crypto 字段说明、[CryptoPaymentTest](../tests/Feature/CryptoPaymentTest.php)。

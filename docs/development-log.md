@@ -2,6 +2,11 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-05：加密收款文档收口
+
+- 实现方案：[doc/crypto-payment.md](../doc/crypto-payment.md)（含建单/付款页/webhook/过期调用链）。稳定决策：[D-29](decisions.md#d-29-crypto-payment-amount-mutex)；architecture / database / `AGENTS.md` 已链入。
+- Registry **仅挂载 Tron USDT**。`EthereumChainAdapter` / `BitcoinChainAdapter` 已入库未注册（`f553f47`）。
+
 ## 2026-11-04：订单 Telegram 通知统一摘要与审核开立提醒（当前工作区，未提交）
 
 - 按用户要求，订单相关 Telegram 消息统一附系统订单号、商户订单号、三方交易号、支付方式名称、付款时间及原币实际交易金额。`OrderTelegramSummary` 读取 `transaction_id`、系统时区 `paid_at`、`currency`/`amount`，不混用 WordPress 订单号、折算金额或折扣前金额；支付方式名称限定商户可见范围，兼容软删除及无渠道 ID 的历史订单。空值和中英文文案统一处理，动态字段限长并 HTML 转义。
