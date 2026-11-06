@@ -25,6 +25,8 @@ class MerchantRoleProvisioningService
 {
     public const MERCHANT_ADMIN_LABEL = '商户管理员';
 
+    public const PAYMENT_CHANNEL_ADMIN_LABEL = '支付通道管理员';
+
     public const TEMPLATE_CONFIG_KEY = 'permissions.merchant_role_templates';
 
     /**

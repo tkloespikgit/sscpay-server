@@ -7,6 +7,7 @@ use App\Filament\Resources\MerchantResource\Pages\CreateMerchant;
 use App\Filament\Resources\MerchantResource\Pages\EditMerchant;
 use App\Filament\Resources\PaymentMethodResource\Pages\CreatePaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\EditPaymentMethod;
+use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
 use App\Models\User;
 use App\Support\Permissions;
 use Filament\Facades\Filament;
@@ -156,7 +157,7 @@ class StaticConfigShowcaseTest extends TestCase
             ->assertSee('/showcase#merchant', false);
     }
 
-    public function test_merchant_payment_pages_link_to_the_payment_demo(): void
+    public function test_payment_demo_entry_is_only_on_the_list_page(): void
     {
         $user = User::factory()->create([
             'merchant_id' => $this->merchant->id,
@@ -168,15 +169,19 @@ class StaticConfigShowcaseTest extends TestCase
         Filament::setCurrentPanel('merchant');
 
         Livewire::actingAs($user)
-            ->test(CreatePaymentMethod::class)
+            ->test(ListPaymentMethods::class)
             ->assertOk()
             ->assertActionVisible('staticConfigShowcase')
             ->assertSee('/showcase#payment', false);
 
         Livewire::actingAs($user)
+            ->test(CreatePaymentMethod::class)
+            ->assertOk()
+            ->assertActionDoesNotExist('staticConfigShowcase');
+
+        Livewire::actingAs($user)
             ->test(EditPaymentMethod::class, ['record' => $method->id])
             ->assertOk()
-            ->assertActionVisible('staticConfigShowcase')
-            ->assertSee('/showcase#payment', false);
+            ->assertActionDoesNotExist('staticConfigShowcase');
     }
 }

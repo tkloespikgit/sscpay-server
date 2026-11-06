@@ -3,8 +3,10 @@
 namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
+use App\Filament\Support\StaticConfigShowcaseAction;
 use App\Models\Merchant;
 use App\Models\User;
+use App\Support\StaticConfigShowcase;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 use Livewire\Attributes\Computed;
@@ -65,6 +67,7 @@ class ListPaymentMethods extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            StaticConfigShowcaseAction::make(StaticConfigShowcase::PAYMENT),
             CreateAction::make(),
         ];
     }
