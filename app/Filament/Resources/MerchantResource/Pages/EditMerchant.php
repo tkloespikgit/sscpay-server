@@ -4,9 +4,11 @@ namespace App\Filament\Resources\MerchantResource\Pages;
 
 use App\Filament\Resources\MerchantResource;
 use App\Filament\Resources\MerchantResource\RelationManagers\PaymentSettingsRelationManager;
+use App\Filament\Support\StaticConfigShowcaseAction;
 use App\Models\User;
 use App\Services\MerchantPaymentMethodAssignmentService;
 use App\Services\MerchantPaymentSettingsService;
+use App\Support\StaticConfigShowcase;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
@@ -40,6 +42,7 @@ class EditMerchant extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            StaticConfigShowcaseAction::make(StaticConfigShowcase::MERCHANT),
             $this->getAuthorizePaymentMethodsAction(),
             DeleteAction::make(), // 软删除，关联数据保留（4.1 节）
         ];

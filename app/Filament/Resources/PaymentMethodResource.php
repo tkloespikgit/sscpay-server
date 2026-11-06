@@ -168,12 +168,14 @@ class PaymentMethodResource extends Resource
                     TextEntry::make('sub_title')
                         ->hiddenLabel()
                         ->state(new HtmlString('<h3 class="fi-section-header-heading">电商网站配置</h3>'))
-                        ->columnSpanFull(),
+                        ->columnSpanFull()
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
 
                     TextInput::make('domain')
                         ->label(__('admin.payment_method.fields.domain'))
                         ->placeholder('https://example.com')
-                        ->required()
+                        ->required(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
                         ->url()
                         // 失焦同步状态，让右侧网关配置里的 webhook 地址能跟随域名实时更新。
                         ->live(onBlur: true)
@@ -187,12 +189,14 @@ class PaymentMethodResource extends Resource
                     TextInput::make('domain_client_id')
                         ->label(__('admin.payment_method.fields.domain_client_id'))
                         ->placeholder('ck_xxxxxxxx')
-                        ->required()
+                        ->required(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
                         ->maxLength(255),
                     TextInput::make('domain_client_sk')
                         ->label(__('admin.payment_method.fields.domain_client_sk'))
                         ->placeholder('cs_xxxxxxxx')
-                        ->required()
+                        ->required(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
                         ->maxLength(255),
                     // 支付插件的所有接口（/pay /sync-tracking /gateway-config /order-logs 等）
                     // 统一用上面这对 WooCommerce REST API 密钥做 Basic Auth；
@@ -206,17 +210,21 @@ class PaymentMethodResource extends Resource
                         ->options(fn () => static::matchModeOptions())
                         ->default('MATCH')
                         ->columnSpanFull()
-                        ->required(),
+                        ->required(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
                     TextInput::make('invoice_prefix')
                         ->label(__('admin.payment_method.fields.invoice_prefix'))
-                        ->maxLength(50),
+                        ->maxLength(50)
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
                     TextInput::make('virtual_product_prefix')
                         ->label(__('admin.payment_method.fields.virtual_product_prefix'))
-                        ->maxLength(50),
+                        ->maxLength(50)
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
                     TextInput::make('order_no_prefix')
                         ->label(__('admin.payment_method.fields.order_no_prefix'))
                         ->maxLength(10)
-                        ->placeholder('PAY'),
+                        ->placeholder('PAY')
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
                     Select::make('order_no_format')
                         ->label(__('admin.payment_method.fields.order_no_format'))
                         ->options([
@@ -225,7 +233,8 @@ class PaymentMethodResource extends Resource
                         ])
                         ->native(false)
                         ->live()
-                        ->helperText(__('admin.payment_method.help.order_no_format')),
+                        ->helperText(__('admin.payment_method.help.order_no_format'))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
                     TextInput::make('order_no_length')
                         ->label(__('admin.payment_method.fields.order_no_length'))
                         ->numeric()
@@ -233,7 +242,8 @@ class PaymentMethodResource extends Resource
                         ->maxValue(30)
                         ->default(20)
                         ->required(fn (Get $get) => filled($get('order_no_format')))
-                        ->helperText(__('admin.payment_method.help.order_no_length')),
+                        ->helperText(__('admin.payment_method.help.order_no_length'))
+                        ->visible(fn (Get $get): bool => ! static::selectedConfigMapIsCrypto($get)),
 
                 ])->columns(2)->columnSpan(2),
             ]),
@@ -247,6 +257,7 @@ class PaymentMethodResource extends Resource
                                     'id'))
                             ->searchable()
                             ->live()
+                            ->helperText(__('admin.payment_method.help.config_map'))
                             // 换了模板之后，上一个模板残留的 config.* 值没有意义，清掉避免脏数据。
                             ->afterStateUpdated(fn (Set $set) => $set('config', [])),
 
@@ -254,7 +265,8 @@ class PaymentMethodResource extends Resource
                         // 路径尾段 {gateway} 用所选模板的 payment_config_tag 替换。
                         Placeholder::make('webhook_url')
                             ->label(__('admin.payment_method.fields.webhook_url'))
-                            ->visible(fn (Get $get) => filled($get('config_map_id')))
+                            ->visible(fn (Get $get) => filled($get('config_map_id'))
+                                && ! static::selectedConfigMapIsCrypto($get))
                             ->content(function (Get $get) {
                                 $configMap = $get('config_map_id')
                                     ? PaymentMethodConfigMap::find($get('config_map_id'))
@@ -532,6 +544,21 @@ class PaymentMethodResource extends Resource
     }
 
     /**
+     * 表单当前选中的配置模板是否为加密网关（payment_config_tag = crypto / crypto_*）。
+     */
+    protected static function selectedConfigMapIsCrypto(Get $get): bool
+    {
+        $configMapId = $get('config_map_id');
+        if (blank($configMapId)) {
+            return false;
+        }
+
+        $tag = PaymentMethodConfigMap::query()->whereKey($configMapId)->value('payment_config_tag');
+
+        return PaymentMethod::isCryptoConfigTag(is_string($tag) ? $tag : null);
+    }
+
+    /**
      * 同步支付配置的核心逻辑：POST /gateway-config 到站点的支付插件，成功后把返回的
      * config_id 落库到 payment_config_id。Edit 页面的手动同步按钮（用未保存的表单状态）
      * 和保存后的自动同步（用刚落库的 $record）共用这份实现，只是 $data 的来源不同。
@@ -597,6 +624,16 @@ class PaymentMethodResource extends Resource
      */
     public static function syncGatewayConfigAndNotify(PaymentMethod $record): void
     {
+        // 加密渠道不走 WP /gateway-config；配置存在 payment_methods.config。
+        if ($record->isCryptoGateway()) {
+            Notification::make()
+                ->success()
+                ->title(__('admin.payment_method.actions.crypto_save_success'))
+                ->send();
+
+            return;
+        }
+
         $result = static::syncGatewayConfig($record);
 
         if ($result['success']) {

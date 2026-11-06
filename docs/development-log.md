@@ -20,6 +20,16 @@
 - 验证：显式 SQLite `:memory:`、清空 `DB_URL`、使用独立配置缓存路径。全量联跑曾执行 1220 项（9700 断言），剩余 1 错误/5 失败均由上述 HEAD 基线复现；后续补齐通知事务及旧反向资金保护回归，最终仅排除这六个失败用例，执行 1219 项、9718 断言，其中 **1215 项通过、4 项跳过**（四项需 MySQL 的并发测试另跑）。独立随机 MySQL 测试库的并发专项 **4 项/132 断言**、迁移升级及审计回滚保护 **17 项/292 断言**全部通过，结束后测试库已删除。
 - `vendor/bin/pint --dirty --format agent`、52 个改动 PHP 文件语法、相对链接和 `git diff --check` 通过；`npm run build` 成功，现有 Node 20.1.0 低于 Vite 声明版本但构建完成，未升级依赖。未调用真实支付/物流/Telegram API，未执行业务库迁移、提交或部署；上线须先执行新增迁移并重启队列进程。时间冲突及查询并发冲突保留接收审计，由后台“查询最新状态”核对，不会自动全量查网关。
 
+## 2026-11-06：静态配置演示入口与权限（当前工作区，未提交）
+
+- `/showcase` 改为受控路由，页面移出 `public/`。平台管理员（超管）和商户级管理员可看全部演示；商户管理员和支付通道管理员只看支付方式配置（账号与所属商户启用，且为该商户名下对应默认角色）。单独授予支付方式权限不放行。未登录或无权 403。页头入口挂在入驻向导、商户创建/编辑；支付方式演示入口只在支付方式列表页。
+- 验证见 `tests/Feature/StaticConfigShowcaseTest.php`。
+
+## 2026-11-05：加密收款文档收口
+
+- 实现方案：[doc/crypto-payment.md](../doc/crypto-payment.md)（含建单/付款页/webhook/过期调用链）。稳定决策：[D-29](decisions.md#d-29-crypto-payment-amount-mutex)；architecture / database / `AGENTS.md` 已链入。
+- Registry **仅挂载 Tron USDT**。`EthereumChainAdapter` / `BitcoinChainAdapter` 已入库未注册（`f553f47`）。
+
 ## 2026-11-04：订单 Telegram 通知统一摘要与审核开立提醒（当前工作区，未提交）
 
 - 按用户要求，订单相关 Telegram 消息统一附系统订单号、商户订单号、三方交易号、支付方式名称、付款时间及原币实际交易金额。`OrderTelegramSummary` 读取 `transaction_id`、系统时区 `paid_at`、`currency`/`amount`，不混用 WordPress 订单号、折算金额或折扣前金额；支付方式名称限定商户可见范围，兼容软删除及无渠道 ID 的历史订单。空值和中英文文案统一处理，动态字段限长并 HTML 转义。

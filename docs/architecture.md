@@ -47,16 +47,20 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
+| `/api/webhooks/tatum/address` | `TatumWebhookController` | POST，Tatum 链上入账通知；当前不做验签，直接匹配入账 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
 | 争议附件 | `DisputeAttachmentController` | 控制器内检查访问权限，不因公开路由而公开文件 |
+| 静态配置演示 `/showcase` | `StaticConfigShowcaseController`、`resources/views/showcase/merchant-admin.blade.php` | 不在 `public/`；控制器内鉴权，未登录或无权 403 |
 
 平台日志页仅由 `AdminPanelProvider` 注册并限制超级管理员访问。`RecentLogProvider` 复用日志插件解析器，在请求内缓存结果，绕过插件全量 Redis 缓存；按文件修改时间优先选择符合插件单文件上限且累计不超过 2 MiB 的日志，保留其中最新 1000 条。页面筛选和统计只覆盖这部分记录，完整历史仍在服务器日志中。`LogViewer` 关闭自动发现，避免被共享页面扫描加入商户后台。
 
 商户配置分组的“服务配置”由 `ServiceSettings` 统一提供物流跟踪与 Telegram 两个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。页面允许具备任一服务管理权限的用户访问，各区块只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载两个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
 
 订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；渠道禁用广播仅向订单所属商户追加完整摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
+
+静态配置演示不落库、不提交。`StaticConfigShowcase::screensFor()` 决定可见屏：平台管理员（超管）和商户级管理员可见入驻向导、商户配置、支付方式配置；商户管理员和支付通道管理员仅在账号与所属商户启用时可见支付方式配置，且必须是该商户名下的这两个默认角色，单独授予支付方式权限不够。页面不挂全局 auth 中间件（项目没有 `login` 路由），未登录直接 403。入驻向导、商户创建/编辑的页头入口链到当前域名的 `/showcase#对应屏`。支付方式演示入口只在支付方式列表页页头。
 
 租户过滤有三种场景：
 
@@ -75,6 +79,22 @@ flowchart TD
 `PaymentMethod` 自己覆盖商户 scope：既支持商户自有渠道，也支持经 `merchant_payment_methods` 分配的系统级渠道。`owner_id` 解决管理员维护未分配渠道时的可见性；编辑权限还需查 Resource。启用的超级管理员可在系统级支付方式编辑页通过“更改归属管理员”重新指派给启用的平台管理员（含超管），由 `PaymentMethodOwnershipService` 校验操作者、目标账号并锁定渠道后只更新归属；不改变商户分配、支付组或下单范围。商户自有渠道仍按 `merchant_id` 管理。
 
 支付方式列表在商户端固定使用当前商户的生效手续费、保证金及结算配置；平台端未选商户时显示渠道默认值，使用“查看商户生效配置”筛选后，通过 `forMerchant()` 展示该商户自有和已分配渠道，并加载仅限该商户的独立配置。筛选值须属于当前平台用户可管理的启用商户，非法或越权选择返回空表；商户账号伪造此筛选不会切换财务上下文。列表显示与下单保持相同空值回退规则，未初始化的存量分配仍回退渠道费率，不能仅改变显示值伪装配置已生效。
+
+加密网关不单独建资产模型，也不在渠道上存 `gateway_driver`：与 Stripe/PayPal 一样靠配置模板的 `payment_config_tag` 区分——`crypto` 或 `crypto_*`（如 `crypto_tron_usdt`）走本站链上编排，其余走 WP 插件。链/币/合约/收款地址及 Tatum 凭证写在 `payment_methods.config`（缺省可回退 `config/tatum.php`）；归属仍走渠道自有或系统级分配。建单快照链/币/合约/地址；`tatum_subscription_id` 可回填渠道 config。**稳定决策**见 [D-29](decisions.md#d-29-crypto-payment-amount-mutex)；**实现方案**见 [crypto-payment.md](../doc/crypto-payment.md)。现行口径：固定址 + 金额互斥——无汇损折算 → 盐写入 `converted_amount`（千分位）→ 按盐后额算费；webhook / 付款页匹配同字段。**P0 仅 USDT**（须 `token_contract`）；Registry **当前仅挂载 Tron**。
+
+**代码地图（`app/Services/Crypto/`）**
+
+| 类 | 职责 |
+|---|---|
+| `CryptoPaymentService` | 编排：`converted_amount` 金额互斥、订阅、webhook 匹配入账、过期 |
+| `CryptoQuoteService` + `CryptoQuote` | 报价服务（稳定币 peg / Tatum）；P0 建单不写入订单 |
+| `CryptoChainRegistry` + `Chains/*Adapter` | 按链：Tatum chain、深链、合约别名、占位地址（当前挂载 Tron） |
+| `TatumClient` | HTTP：地址订阅与汇率（凭证 using 渠道 config） |
+| `CryptoCheckoutLinkBuilder` | 付款页深链（金额取 `converted_amount`）；QR 用纯地址 |
+| 入口 | `OrderCreationService` 加密分支；`TatumWebhookController`；`PaymentPageController`；`crypto:expire-payments` |
+| 容器 | `CryptoServiceProvider`（`bootstrap/providers.php`）单例绑定 `CryptoChainRegistry` |
+
+Tatum 订阅：有 `token_contract` → `INCOMING_FUNGIBLE_TX`，空合约 → `INCOMING_NATIVE_TX`（P0 建单要求 USDT 必填合约，故实际走 FUNGIBLE）。入账以 webhook payload 为准。新链：实现 `CryptoChainAdapter` 并挂进 `CryptoServiceProvider`。
 
 支付方式详情页提供“生成进货单”，历史记录由 `PurchaseOrdersRelationManager` 展示，仅启用的超级管理员可生成、查看和编辑运费/优惠。`PurchaseOrderService` 从所选支付方式的 `siteProducts()` 随机选品并保存独立进货快照：商品不足 30 种全选，否则随机选 30 至总数种，每种 10–20 件；价格采用 `price_min`（视作 USD）× 7 × 0.3，四舍五入为人民币两位小数。默认运费按商品合计 3%–8%、优惠按 10%–20% 随机生成，也可手动输入金额。下单时间可设置，付款/发货/签收时间及交易号为模拟数据。此入口只写 `purchase_orders` 和 `purchase_order_items`，不创建收款订单、不调用网关或改变商户余额；运费/优惠编辑通过 Service 锁单重算总额。
 
@@ -237,6 +257,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | 商户网站物流回传 | `app/Services/MerchantShipmentSyncService.php`、`app/Jobs/SyncMerchantShipmentJob.php`、`app/Models/OrderShipmentSync.php`、`OrderShipmentSyncAttempt.php`、`app/Console/Commands/ProcessMerchantShipmentSyncs.php`；应用配置和订单详情 | `tests/Feature/MerchantShipmentSyncTest.php`、`tests/Feature/Filament/MerchantShipmentSyncSettingsTest.php` |
 | 物流轨迹跟踪 / 异常 / 未发货 TG | `app/Services/LogisticsTracking/`、`LogisticsTrackingWebhookController`、`RegisterLogisticsTrackingJob`、`MerchantLogisticsTrackingSetting`、`ServiceSettings`、`logistics-tracking:reflag-anomalies` / `orders:notify-unshipped-overdue`；系统 `available_drivers` 枚举；商户自选驱动+base_url+密钥；Webhook `POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}`；无历史回填 | `tests/Feature/SeventeenTrackWebhookTest.php`、`SeventeenTrackAnomalyAndUnshippedTest.php`、`tests/Feature/Filament/ServiceSettingsTest.php`、`LogisticsTrackingSettingsAccessTest.php` |
 | 权限、面板和用户 | `app/Models/User.php`、`app/Models/Observer.php`、`app/Models/Scopes/MerchantScope.php`、`app/Support/Permissions.php`、相关 Resource | 按功能选择 `tests/Feature/Filament/`，补充真实越权边界的断言 |
+| 静态配置演示 | `app/Support/StaticConfigShowcase.php`、`app/Http/Controllers/StaticConfigShowcaseController.php`、`app/Filament/Support/StaticConfigShowcaseAction.php`、`resources/views/showcase/merchant-admin.blade.php` | `tests/Feature/StaticConfigShowcaseTest.php` |
 | 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。

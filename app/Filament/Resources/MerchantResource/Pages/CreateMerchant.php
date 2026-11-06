@@ -3,11 +3,20 @@
 namespace App\Filament\Resources\MerchantResource\Pages;
 
 use App\Filament\Resources\MerchantResource;
+use App\Filament\Support\StaticConfigShowcaseAction;
+use App\Support\StaticConfigShowcase;
 use Filament\Resources\Pages\CreateRecord;
 
 class CreateMerchant extends CreateRecord
 {
     protected static string $resource = MerchantResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            StaticConfigShowcaseAction::make(StaticConfigShowcase::MERCHANT),
+        ];
+    }
 
     /**
      * 商户级管理员创建商户时，表单里根本没有 owner_id 字段（对他们隐藏），

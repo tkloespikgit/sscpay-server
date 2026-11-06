@@ -144,10 +144,13 @@ class EditPaymentMethod extends EditRecord
 
     protected function getFormActions(): array
     {
-        return [
-            ...parent::getFormActions(),
-            $this->getSyncGatewayConfigAction(),
-        ];
+        $actions = [...parent::getFormActions()];
+
+        if (! $this->record->isCryptoGateway()) {
+            $actions[] = $this->getSyncGatewayConfigAction();
+        }
+
+        return $actions;
     }
 
     /**

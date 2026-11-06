@@ -20,6 +20,8 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Services\Crypto\Chains\CryptoChainRegistry;
+use App\Services\Crypto\CryptoPaymentService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Support\Money;
@@ -198,7 +200,7 @@ class OrderCreationService
             }
         }
 
-        // 5. 汇率 + 汇损快照
+        // 5. 汇率 + 汇损快照（加密渠道稍后改为市场汇率、无汇损、千分位）。
         $rate = ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
 
         $convertedAmount = bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
@@ -207,6 +209,11 @@ class OrderCreationService
         $discountConverted = bcmul((string) $data['discount'], (string) $rate['actual_rate'], 2);
         $taxConverted = bcmul((string) $data['tax'], (string) $rate['actual_rate'], 2);
         $surchargeFee = bcmul((string) $data['amount'], (string) $rate['surcharge_amount'], 2);
+        $storedExchangeRate = (string) $rate['actual_rate'];
+        $storedSurchargePercent = $rate['surcharge_percent'];
+        $storedSurchargeType = $rate['surcharge_type'];
+        $storedSurchargeAmount = $rate['surcharge_amount'];
+        $itemConvertRate = (string) $rate['actual_rate'];
 
         // 6. 锁定唯一支付方式。group_key 两种模式下都必填：即便商户点名了渠道，
         // 也仍然校验支付组存在且启用，并把组 ID 记在订单上（对账/统计口径不变）。
@@ -230,14 +237,34 @@ class OrderCreationService
             ]);
         }
 
+        // 加密：无汇损、converted_amount 千分位互斥盐，再按盐后额重算手续费。
+        $cryptoBind = [];
+        if ($paymentMethod->isCryptoGateway()) {
+            $cryptoService = app(CryptoPaymentService::class);
+            $cryptoService->assertSupportedUsdtMethod($paymentMethod);
+
+            $marketRate = (string) $rate['original_rate'];
+            $scale = CryptoPaymentService::CONVERTED_SCALE;
+            $convertedAmount = bcmul((string) $data['amount'], $marketRate, $scale);
+            $subtotalConverted = bcmul((string) $data['subtotal'], $marketRate, $scale);
+            $shippingFeeConverted = bcmul((string) $data['shipping_fee'], $marketRate, $scale);
+            $discountConverted = bcmul((string) $data['discount'], $marketRate, $scale);
+            $taxConverted = bcmul((string) $data['tax'], $marketRate, $scale);
+            $surchargeFee = '0';
+            $storedExchangeRate = $marketRate;
+            $storedSurchargePercent = 0;
+            $storedSurchargeType = (string) ($rate['surcharge_type'] ?? 'percent');
+            $storedSurchargeAmount = 0;
+            $itemConvertRate = $marketRate;
+        }
+
         // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
         // 手工建单固定传布尔 true（保持"手工建单必发"的既有行为）。落库而不是只在
         // 调用方内存里判断——后台订单详情页的"立即重发"按钮要按这个字段决定是否展示。
         $sendMail = in_array($data['send_mail'] ?? null, ['Y', true], true);
 
-        // 8. 事务内创建订单 + 商品明细；第 9 步（远程创建支付订单）在事务外执行，
-        // 避免 HTTP 调用占用事务时间。
-        $order = DB::transaction(function () use (
+        // 8. 事务内创建订单 + 商品明细；加密单在地址锁内完成「盐 + 落库」防撞额。
+        $persistOrder = function () use (
             $data,
             $merchant,
             $application,
@@ -245,92 +272,162 @@ class OrderCreationService
             $group,
             $paymentMethod,
             $rate,
-            $convertedAmount,
+            &$convertedAmount,
             $subtotalConverted,
             $shippingFeeConverted,
             $discountConverted,
             $taxConverted,
             $surchargeFee,
             $sendMail,
-            $financialSnapshot,
+            &$financialSnapshot,
             $originalAmount,
-            $autoDiscount
-        ) {
-            $order = Order::createWithGeneratedIdentifiers([
-                'merchant_id' => $merchant->id,
-                'application_id' => $application->id,
-                'payment_group_id' => $group->id,
-                // 收款链接下单时由 CheckoutLinkOrderService 传入，其余来源为 null
-                'checkout_link_id' => $data['checkout_link_id'] ?? null,
-                'merchant_order_no' => $data['merchant_order_no'],
-                'source' => $source,
-                // 电商网站平台类型（API 下单必传；手工建单可选，没传就是 null）
-                'platform' => $data['platform'] ?? null,
-                'currency' => $data['currency'],
-                'subtotal' => $data['subtotal'],
-                'shipping_fee' => $data['shipping_fee'],
-                'discount' => $data['discount'],
-                'tax' => $data['tax'],
-                'amount' => $data['amount'],
-                'original_amount' => $originalAmount,
-                'auto_discount' => $autoDiscount,
-                'logistics_tracking_enabled' => (bool) $application->is_logistics_tracking_enabled,
-                'converted_currency' => 'USD',
-                'converted_amount' => $convertedAmount,
-                'subtotal_converted' => $subtotalConverted,
-                'shipping_fee_converted' => $shippingFeeConverted,
-                'discount_converted' => $discountConverted,
-                'tax_converted' => $taxConverted,
-                'exchange_rate' => $rate['actual_rate'],
-                'original_exchange_rate' => $rate['original_rate'],
-                'surcharge_percent' => $rate['surcharge_percent'],
-                'surcharge_type' => $rate['surcharge_type'],
-                'surcharge_amount' => $rate['surcharge_amount'],
-                'surcharge_fee' => $surchargeFee,
-                ...$financialSnapshot,
-                'customer_first_name' => $data['customer_first_name'],
-                'customer_last_name' => $data['customer_last_name'],
-                'customer_email' => $data['customer_email'],
-                'customer_phone' => $data['customer_phone'],
-                'shipping_address_line1' => $data['shipping_address_line1'],
-                'shipping_address_line2' => $data['shipping_address_line2'] ?? null,
-                'shipping_city' => $data['shipping_city'],
-                'shipping_state' => $data['shipping_state'] ?? null,
-                'shipping_country' => $data['shipping_country'],
-                'shipping_zip' => $data['shipping_zip'],
-                'payment_method' => $paymentMethod->method_code,
-                'payment_method_id' => $paymentMethod->id,
-                'designated_payment_method_key' => filled($data['payment_method_key'] ?? null) ? $data['payment_method_key'] : null,
-                'customer_ip' => $data['customer_ip'] ?? null,
-                'user_agent' => $data['user_agent'] ?? null,
-                'accept_language' => isset($data['accept_language'])
-                    ? mb_substr((string) $data['accept_language'], 0, 255)
-                    : null,
-                'notify_url' => $data['notify_url'] ?? null,
-                'return_url' => $data['return_url'] ?? null,
-                'cancel_url' => $data['cancel_url'] ?? null,
-                'status' => 'pending',
-                'remark' => $data['remark'] ?? null,
-                'send_mail' => $sendMail,
-                'ad_params' => $data['ad_params'] ?? null,
-            ], 3, $paymentMethod);
+            $autoDiscount,
+            $storedExchangeRate,
+            $storedSurchargePercent,
+            $storedSurchargeType,
+            $storedSurchargeAmount,
+            $itemConvertRate,
+            &$cryptoBind,
+        ): Order {
+            return DB::transaction(function () use (
+                $data,
+                $merchant,
+                $application,
+                $source,
+                $group,
+                $paymentMethod,
+                $rate,
+                $convertedAmount,
+                $subtotalConverted,
+                $shippingFeeConverted,
+                $discountConverted,
+                $taxConverted,
+                $surchargeFee,
+                $sendMail,
+                $financialSnapshot,
+                $originalAmount,
+                $autoDiscount,
+                $storedExchangeRate,
+                $storedSurchargePercent,
+                $storedSurchargeType,
+                $storedSurchargeAmount,
+                $itemConvertRate,
+                $cryptoBind,
+            ) {
+                $order = Order::createWithGeneratedIdentifiers([
+                    'merchant_id' => $merchant->id,
+                    'application_id' => $application->id,
+                    'payment_group_id' => $group->id,
+                    // 收款链接下单时由 CheckoutLinkOrderService 传入，其余来源为 null
+                    'checkout_link_id' => $data['checkout_link_id'] ?? null,
+                    'merchant_order_no' => $data['merchant_order_no'],
+                    'source' => $source,
+                    // 电商网站平台类型（API 下单必传；手工建单可选，没传就是 null）
+                    'platform' => $data['platform'] ?? null,
+                    'currency' => $data['currency'],
+                    'subtotal' => $data['subtotal'],
+                    'shipping_fee' => $data['shipping_fee'],
+                    'discount' => $data['discount'],
+                    'tax' => $data['tax'],
+                    'amount' => $data['amount'],
+                    'original_amount' => $originalAmount,
+                    'auto_discount' => $autoDiscount,
+                    'logistics_tracking_enabled' => (bool) $application->is_logistics_tracking_enabled,
+                    'converted_currency' => 'USD',
+                    'converted_amount' => $convertedAmount,
+                    'subtotal_converted' => $subtotalConverted,
+                    'shipping_fee_converted' => $shippingFeeConverted,
+                    'discount_converted' => $discountConverted,
+                    'tax_converted' => $taxConverted,
+                    'exchange_rate' => $storedExchangeRate,
+                    'original_exchange_rate' => $rate['original_rate'],
+                    'surcharge_percent' => $storedSurchargePercent,
+                    'surcharge_type' => $storedSurchargeType,
+                    'surcharge_amount' => $storedSurchargeAmount,
+                    'surcharge_fee' => $surchargeFee,
+                    ...$financialSnapshot,
+                    ...$cryptoBind,
+                    'customer_first_name' => $data['customer_first_name'],
+                    'customer_last_name' => $data['customer_last_name'],
+                    'customer_email' => $data['customer_email'],
+                    'customer_phone' => $data['customer_phone'],
+                    'shipping_address_line1' => $data['shipping_address_line1'],
+                    'shipping_address_line2' => $data['shipping_address_line2'] ?? null,
+                    'shipping_city' => $data['shipping_city'],
+                    'shipping_state' => $data['shipping_state'] ?? null,
+                    'shipping_country' => $data['shipping_country'],
+                    'shipping_zip' => $data['shipping_zip'],
+                    'payment_method' => $paymentMethod->method_code,
+                    'payment_method_id' => $paymentMethod->id,
+                    'designated_payment_method_key' => filled($data['payment_method_key'] ?? null) ? $data['payment_method_key'] : null,
+                    'customer_ip' => $data['customer_ip'] ?? null,
+                    'user_agent' => $data['user_agent'] ?? null,
+                    'accept_language' => isset($data['accept_language'])
+                        ? mb_substr((string) $data['accept_language'], 0, 255)
+                        : null,
+                    'notify_url' => $data['notify_url'] ?? null,
+                    'return_url' => $data['return_url'] ?? null,
+                    'cancel_url' => $data['cancel_url'] ?? null,
+                    'status' => 'pending',
+                    'remark' => $data['remark'] ?? null,
+                    'send_mail' => $sendMail,
+                    'ad_params' => $data['ad_params'] ?? null,
+                ], 3, $paymentMethod);
 
-            foreach ($data['items'] as $item) {
-                $order->items()->create([
-                    'product_sku' => $item['product_sku'] ?? null,
-                    'product_id' => $item['product_id'],
-                    'product_url' => $item['product_url'],
-                    'product_name' => $item['product_name'],
-                    'product_description' => $item['product_description'] ?? null,
-                    'unit_price' => $item['unit_price'],
-                    'quantity' => $item['quantity'],
-                    'total_price' => bcmul((string) $item['unit_price'], (string) $item['quantity'], 2),
-                    'converted_unit_price' => bcmul((string) $item['unit_price'], (string) $rate['actual_rate'], 2),
-                ]);
-            }
+                foreach ($data['items'] as $item) {
+                    $order->items()->create([
+                        'product_sku' => $item['product_sku'] ?? null,
+                        'product_id' => $item['product_id'],
+                        'product_url' => $item['product_url'],
+                        'product_name' => $item['product_name'],
+                        'product_description' => $item['product_description'] ?? null,
+                        'unit_price' => $item['unit_price'],
+                        'quantity' => $item['quantity'],
+                        'total_price' => bcmul((string) $item['unit_price'], (string) $item['quantity'], 2),
+                        'converted_unit_price' => bcmul((string) $item['unit_price'], $itemConvertRate, 2),
+                    ]);
+                }
 
-            return $order;
-        });
+                return $order;
+            });
+        };
+
+        if ($paymentMethod->isCryptoGateway()) {
+            $cryptoService = app(CryptoPaymentService::class);
+            $address = $paymentMethod->cryptoReceiveAddress();
+            $ttl = max(1, (int) config('tatum.payment_ttl_minutes', 480));
+            $chain = app(CryptoChainRegistry::class)->normalize($paymentMethod->cryptoChain());
+
+            $order = Cache::lock($cryptoService->amountLockKey($address), 20)->block(10, function () use (
+                $cryptoService,
+                $paymentMethod,
+                $merchant,
+                $address,
+                $ttl,
+                $chain,
+                &$convertedAmount,
+                &$financialSnapshot,
+                &$cryptoBind,
+                $persistOrder,
+            ): Order {
+                PaymentMethod::query()->whereKey($paymentMethod->id)->lockForUpdate()->first();
+                $convertedAmount = $cryptoService->allocateUniqueConvertedAmountForAddress($address, $convertedAmount);
+                $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
+                $cryptoBind = [
+                    'crypto_chain' => $chain,
+                    'crypto_symbol' => $paymentMethod->cryptoSymbol(),
+                    'crypto_token_contract' => $paymentMethod->cryptoTokenContract(),
+                    'crypto_receive_address' => $address,
+                    'crypto_expires_at' => now()->addMinutes($ttl),
+                    'crypto_amount_received' => bcadd('0', '0', CryptoPaymentService::CONVERTED_SCALE),
+                    'crypto_txids' => [],
+                ];
+
+                return $persistOrder();
+            });
+        } else {
+            $order = $persistOrder();
+        }
 
         // 指定渠道（源网站直连）下单，落库成功即提醒商户——不等远程建支付单
         // 这步（下面第 9 步，可能失败）结束，保持跟"订单已创建"的语义一致。
@@ -559,11 +656,13 @@ class OrderCreationService
             throw new PaymentMethodNotAvailableException($methodKey);
         }
 
-        foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
-            $url = (string) ($data[$field] ?? '');
+        if (! $method->isCryptoGateway()) {
+            foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
+                $url = (string) ($data[$field] ?? '');
 
-            if (! $this->isSameHost($url, $method->domain)) {
-                throw new PaymentMethodDomainMismatchException($field, $url, $methodKey, (string) $method->domain);
+                if (! $this->isSameHost($url, $method->domain)) {
+                    throw new PaymentMethodDomainMismatchException($field, $url, $methodKey, (string) $method->domain);
+                }
             }
         }
 
@@ -593,6 +692,14 @@ class OrderCreationService
     {
         if (! $paymentMethod) {
             throw new PaymentGatewayException('订单锁定的支付方式已不存在，无法远程创建支付订单', -1);
+        }
+
+        // 加密网关：不调 WP PGA /pay，由本站绑定地址+应付额并订阅 Tatum。
+        if ($paymentMethod->isCryptoGateway()) {
+            app(CryptoPaymentService::class)->prepareCheckout($order, $paymentMethod);
+            $order->refresh();
+
+            return;
         }
 
         $paymentMethod->loadMissing('configMap');

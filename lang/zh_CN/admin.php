@@ -21,6 +21,12 @@ return [
         'observer' => '观察者账户',
     ],
 
+    'showcase' => [
+        'static_config' => [
+            'action' => '静态配置演示',
+        ],
+    ],
+
     'log_viewer' => [
         'nav_label' => '日志查看',
         'scope_description' => '优先读取最近修改的日志文件，合计不超过 :size MiB，显示其中最新 :count 条记录；超大文件会跳过。筛选和统计仅限这些记录，完整历史请查看服务器日志。',
@@ -422,7 +428,7 @@ return [
             'risk_control' => '金额和笔数限制填 0 表示不限制；连续建单失败阈值留空则沿用系统默认',
             'max_failed_times' => '填写大于或等于 1 的整数，留空沿用系统默认。连续建单失败达到阈值时自动禁用通道，成功建单后重置计数。',
             'max_failed_times_inherited' => '沿用系统默认（:count 次）',
-            'config_map' => '选择该支付方式对应的支付类型模板，下方会自动出现对应的配置项',
+            'config_map' => '选择支付类型模板，下方出现对应配置项。加密渠道选 payment_config_tag 为 crypto / crypto_* 的模板（如 TRON USDT），本站听链不入 WP',
             'gateway_credentials' => '网关对接账号凭证，密码类字段均为明文保存与展示',
             'site_config' => '配置对应的 WordPress 站点及 WooCommerce 插件 REST API 密钥，三项均为必填',
             'domain' => 'WordPress 网站域名，必须以 https:// 开头，如 https://example.com',
@@ -498,6 +504,7 @@ return [
             'sync_gateway_config_failed' => '支付配置同步失败',
             'sync_gateway_config_success' => '支付配置同步成功，支付配置 ID 已更新',
             'save_sync_success' => '配置已保存并同步到电商网站',
+            'crypto_save_success' => '加密渠道配置已保存（无需同步到电商网站）',
             'save_sync_failed' => '配置已保存，同步电商网站失败，请检查配置之后重试',
             'detach_all_groups' => '脱离全部支付组',
             'detach_all_groups_heading' => '脱离全部支付组',
@@ -524,6 +531,7 @@ return [
         ],
         'help' => [
             'fields' => '定义该支付类型需要填哪些配置项（如 Stripe 需要 Publishable Key、Secret Key）。允许新增字段、改名，但不允许删除已保存的模板，避免正在使用它的支付方式丢失配置。',
+            'payment_config_tag' => 'PGA 填插件识别的类型名（如 stripe、paypal）。本站链上监听填 crypto 或以 crypto_ 开头（如 crypto_tron_usdt），不走 WordPress。',
         ],
         'actions' => [
             'add_field' => '添加配置项',
@@ -941,6 +949,7 @@ return [
         'sections' => [
             'order_info' => '订单信息',
             'amount_info' => '金额信息',
+            'crypto_payment' => '链上收款',
             'customer_info' => '客户与收货信息',
             'shipping_info' => '物流信息',
         ],
@@ -970,6 +979,12 @@ return [
             'fee_percent_amount' => '百分比手续费',
             'fee_fixed_amount' => '固定手续费',
             'settlement_amount' => '实际到账金额',
+            'crypto_receive_address' => '链上收款地址',
+            'crypto_amount_expected' => '链上应付（金额 USD）',
+            'crypto_amount_received' => '已收加密金额',
+            'crypto_expires_at' => '链上付款截止时间',
+            'crypto_txid' => '主交易号 (txid)',
+            'crypto_txids' => '全部 txid',
             'customer_first_name' => '客户名',
             'customer_last_name' => '客户姓',
             'customer_email' => '邮箱',

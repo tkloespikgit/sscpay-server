@@ -33,6 +33,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\HtmlString;
 
 /**
  * 订单管理（4.4 / 7.7 节）。列表支持商户、应用、支付方式、状态、
@@ -119,11 +120,16 @@ class OrderResource extends Resource
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))
                     ->formatStateUsing(fn (?string $state, $record) => $state ?? $record->payment_method),
 
-                // 提交的原始币种金额（如 100.00 EUR）
+                // 原币种实际应付居中；有折扣前差额时右下角小号删除线展示 original_amount。
+                // 用内联 style，避免依赖 Filament 主题未收录的 Tailwind utility。
                 TextColumn::make('amount')->label(__('admin.order.columns.amount_original'))
-                    ->formatStateUsing(fn ($state, $record) => number_format((float) $state, 2).' '.strtoupper((string) $record->currency))
+                    ->formatStateUsing(fn ($state, Order $record): string|HtmlString => static::originalCurrencyAmountState($record, $state))
+                    ->html()
+                    ->alignCenter()
                     ->sortable(),
-                TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))->money('usd')->sortable(),
+                TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))
+                    ->formatStateUsing(fn ($state, Order $record): string => static::convertedAmountState($record, $state))
+                    ->sortable(),
                 TextColumn::make('settlement_amount')->label(__('admin.order.columns.amount_settled'))
                     ->money('usd')
                     ->placeholder(__('admin.order.placeholders.none'))
@@ -704,6 +710,58 @@ class OrderResource extends Resource
         }]);
 
         return $translated === $key ? $reason : $translated;
+    }
+
+    /**
+     * 列表「成交额 USD」：加密订单千分位（与详情/链上匹配一致），普通订单两位；观察者可传入折算。
+     *
+     * @param  (callable(string): string)|null  $scaleAmount
+     */
+    public static function convertedAmountState(
+        Order $record,
+        mixed $amountState,
+        ?callable $scaleAmount = null,
+    ): string {
+        $raw = $scaleAmount !== null
+            ? (string) $scaleAmount((string) ($amountState ?? '0'))
+            : (string) ($amountState ?? '0');
+        $decimals = $record->isCryptoCheckout() ? $record->cryptoAmountScale() : 2;
+
+        return '$'.number_format((float) $raw, $decimals, '.', ',');
+    }
+
+    /**
+     * 列表「原始币种金额」单元格：主金额居中；有折扣前差额时右下角小号删除线展示 original_amount。
+     * $scaleAmount 供观察者面板折算展示金额；平台/客服传 null。
+     *
+     * @param  (callable(string): string)|null  $scaleAmount
+     */
+    public static function originalCurrencyAmountState(
+        Order $record,
+        mixed $amountState,
+        ?callable $scaleAmount = null,
+    ): string|HtmlString {
+        $displayAmount = $scaleAmount !== null
+            ? (string) $scaleAmount((string) $amountState)
+            : (string) $amountState;
+        $main = number_format((float) $displayAmount, 2).' '.strtoupper((string) $record->currency);
+
+        if (! $record->hasDistinctOriginalAmount()) {
+            return $main;
+        }
+
+        $rawOriginal = (string) $record->original_amount;
+        $originalValue = $scaleAmount !== null ? (string) $scaleAmount($rawOriginal) : $rawOriginal;
+        $struck = number_format((float) $originalValue, 2).' '.strtoupper((string) $record->currency);
+
+        return new HtmlString(
+            '<div style="display:flex;flex-direction:column;align-items:center;gap:0.125rem;width:100%">'
+            .'<span>'.e($main).'</span>'
+            .'<span style="align-self:flex-end;font-size:0.75rem;line-height:1.2;color:var(--gray-500);text-decoration:line-through">'
+            .e($struck)
+            .'</span>'
+            .'</div>'
+        );
     }
 
     /**

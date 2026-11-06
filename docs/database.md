@@ -35,7 +35,7 @@ erDiagram
 | `users` / `User` | `is_super_admin`、`merchant_id` 区分超管、商户级管理员和商户用户；范围入口为 `manageableMerchantIds()` |
 | `roles`、权限相关表 | Spatie 权限；商户角色有商户归属，平台共享角色另有范围。定义见 `app/Support/Permissions.php` 与 `PermissionSeeder` |
 | `applications` / `Application` | 商户接入身份、`app_id`、加密 `api_key`、应用网站与邮件/广告配置；含 `is_auto_discount_enabled`、`is_logistics_tracking_enabled`（均仅影响新单） |
-| `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式及连续建单失败保护。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者 |
+| `payment_methods` / `PaymentMethod` | 渠道、站点、网关配置、限额、费率、商品模式及连续建单失败保护。`merchant_id=NULL` 表示系统级渠道；`owner_id` 标识维护者；是否加密由关联模板 `payment_config_tag`（`crypto` / `crypto_*`，含 `crypto_tron_usdt` / `crypto_eth_usdt`）约定，链上参数在 `config`；**P0 仅 USDT**且须填 `token_contract` |
 | `merchant_payment_methods` | 系统级渠道分配给商户的多对多表；不是所有订单的商户归属表 |
 | `merchant_payment_settings` | 商户与可使用渠道的独立财务配置，交易/退款/拒付手续费、保证金比例/锁定天数、结算模式/周期；金融 NULL 继承渠道默认值，结算 NULL 继承商户默认值，0 为显式零值 |
 | `merchant_logistics_tracking_settings` | 商户物流跟踪：选用 `driver`、可选 `base_url`、encrypted `api_token` / `webhook_secret`、公开 `webhook_token`；每商户至多一条有效记录 |
@@ -94,7 +94,7 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 | `designated_payment_method_key` | 记录本次是否显式指定渠道，区别于普通组内路由 |
 | `source`、`platform`、`checkout_link_id` | 入口来源（`api`/`manual`/`checkout_link`）、平台类型、可选的收款链接关联 |
 | `currency`、`subtotal`、`shipping_fee`、`discount`、`tax`、`amount` | 订单原币种金额；公式容差当前为 0.01，商品小计按两位小数核对 |
-| `converted_currency`、`converted_amount`、各 `*_converted` | 下单时折算金额，结算基准 USD；成交额统计使用 `converted_amount` |
+| `converted_currency`、`converted_amount`、各 `*_converted` | 下单时折算金额，结算基准 USD；成交额统计使用 `converted_amount`。列精度 `decimal(15,3)`：加密单可含金额互斥盐并兼作链上匹配键；法币单仍按两位语义写入（尾数 `0`） |
 | `original_exchange_rate`、`exchange_rate`、`surcharge_*` | 市场汇率、实际汇率与汇损快照；不能用当前汇率回算历史单 |
 | `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 首次建单保存的交易手续费与净入账快照；百分比手续费与净额保留两位小数，千分位直接舍去，不四舍五入，也不取整到整数美元；重试不重算，支付入账使用 `settlement_amount` |
 | `settlement_mode`、`settlement_days` | 首次建单优先保存该商户/渠道的独立起算方式与周期，空值回退商户默认；重试不重算，NULL 标记历史单，不补建结算记录 |
@@ -102,7 +102,8 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 | `refunded_amount` | 累计退款原币种金额，不是 USD |
 | `accept_language` | 浏览器语言偏好列表，nullable VARCHAR(255)；统一建单入口最多保留 255 字符，避免请求头导致建单失败 |
 | `shipping_state`、`shipping_city` | 收款链接按 PayPal `admin_area_1` / `admin_area_2` 语义保存：省州按国家转换为官方代码或名称，城市保存城镇名称；服务端与 Google 回填共用映射。其他入口协议保持原有语义，详见[收款链接地址规则](../doc/checkout-link.md#地址字段与-paypal-rest) |
-| `pay_url`、`wp_order_id`、`transaction_id` | 远端收银台链接、WordPress 订单 ID、网关交易号。缺少 `pay_url` 的本地单可能需要补建远端 |
+| `pay_url`、`wp_order_id`、`transaction_id` | 远端收银台链接、WordPress 订单 ID、网关交易号。缺少 `pay_url` 的本地单可能需要补建远端。加密单的 `pay_url` 为本站 `/payment/{token}` |
+| `crypto_chain`、`crypto_symbol`、`crypto_token_contract`、`crypto_receive_address`、`crypto_amount_received`、`crypto_expires_at`、`crypto_txids` | 链上收款建单快照与到账进度。P0：无汇损折算后盐写入 `converted_amount`（千分位），匹配同字段；精度常量 3，无 `crypto_amount_expected` / `crypto_amount_scale` / `crypto_quote_*`。匹配靠同址 + 未过期 pending + 精确 `converted_amount`。稳定币白名单见 `crypto.stablecoin_symbols`（默认仅 USDT） |
 | `payment_link_token`、`send_mail`、`payment_link_sent_at` | 订单级付款链接与邮件意图/发送时间，不等同于 `checkout_links.slug` |
 | `normal_status` | 可空正常阶段快照，主要兼容旧单人工已完成在争议往返后的恢复；新单仍以真实结算及有效物流事实推导，不替代结算审计 |
 | `gateway_status`、`gateway_status_updated_at`、`gateway_status_version` | 最近接受的标准化网关状态、网关事件时间及本地递增版本；用于区分网关事实和订单主状态，并防止旧回调或查询结果覆盖新事实；新增列不回填历史事件 |

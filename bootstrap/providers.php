@@ -1,9 +1,17 @@
 <?php
 
+use App\Providers\AppServiceProvider;
+use App\Providers\Filament\AdminPanelProvider;
+use App\Providers\Filament\MerchantPanelProvider;
+use App\Providers\Filament\ObserverPanelProvider;
+use App\Services\Crypto\CryptoServiceProvider;
+use App\Services\PaymentGateway\PaymentGatewayServiceProvider;
+
 return [
-    App\Providers\AppServiceProvider::class,
-    App\Providers\Filament\AdminPanelProvider::class,
-    App\Providers\Filament\MerchantPanelProvider::class,
-    App\Providers\Filament\ObserverPanelProvider::class,
-    App\Services\PaymentGateway\PaymentGatewayServiceProvider::class,
+    AppServiceProvider::class,
+    AdminPanelProvider::class,
+    MerchantPanelProvider::class,
+    ObserverPanelProvider::class,
+    PaymentGatewayServiceProvider::class,
+    CryptoServiceProvider::class,
 ];

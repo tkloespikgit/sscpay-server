@@ -66,7 +66,8 @@ class PaymentMethodConfigMapResource extends Resource
                 TextInput::make('payment_config_tag')
                     ->label(__('admin.payment_method_config_map.fields.payment_config_tag'))
                     ->required()
-                    ->maxLength(100),
+                    ->maxLength(100)
+                    ->helperText(__('admin.payment_method_config_map.help.payment_config_tag')),
                 Toggle::make('is_active')
                     ->label(__('admin.payment_method_config_map.fields.is_active'))
                     ->default(true),
