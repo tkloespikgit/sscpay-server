@@ -9,10 +9,12 @@ use App\Filament\Resources\PaymentMethodResource\Pages\CreatePaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\EditPaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
 use App\Models\User;
+use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -45,50 +47,52 @@ class StaticConfigShowcaseTest extends TestCase
         $this->actingAs($admin)->get(route('showcase.merchant-admin'))->assertForbidden();
     }
 
-    public function test_merchant_without_payment_permission_cannot_open_the_showcase(): void
+    public function test_merchant_without_an_allowed_role_cannot_open_the_showcase(): void
     {
-        $user = User::factory()->create([
-            'merchant_id' => $this->merchant->id,
-            'is_super_admin' => false,
-            'status' => true,
-        ]);
+        $user = $this->merchantUser();
+        $user->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
 
         $this->actingAs($user)->get(route('showcase.merchant-admin'))->assertForbidden();
     }
 
-    public function test_merchant_of_a_disabled_merchant_cannot_open_the_showcase(): void
+    public function test_order_admin_cannot_open_the_showcase(): void
+    {
+        $user = $this->merchantUser();
+        $user->assignRole($this->merchantRole('订单管理员'));
+
+        $this->actingAs($user)->get(route('showcase.merchant-admin'))->assertForbidden();
+    }
+
+    public function test_merchant_admin_of_a_disabled_merchant_cannot_open_the_showcase(): void
     {
         $this->merchant->update(['status' => false]);
-        $user = User::factory()->create([
-            'merchant_id' => $this->merchant->id,
-            'is_super_admin' => false,
-            'status' => true,
-        ]);
-        $user->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
+        $user = $this->merchantUser();
+        $user->assignRole($this->merchantRole(MerchantRoleProvisioningService::MERCHANT_ADMIN_LABEL));
 
         $this->actingAs($user)->get(route('showcase.merchant-admin'))->assertForbidden();
     }
 
-    public function test_merchant_only_receives_the_payment_method_screen(): void
+    public function test_merchant_admin_and_payment_channel_admin_only_receive_the_payment_screen(): void
     {
-        $user = User::factory()->create([
-            'merchant_id' => $this->merchant->id,
-            'is_super_admin' => false,
-            'status' => true,
-        ]);
-        $user->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
+        foreach ([
+            MerchantRoleProvisioningService::MERCHANT_ADMIN_LABEL,
+            MerchantRoleProvisioningService::PAYMENT_CHANNEL_ADMIN_LABEL,
+        ] as $roleName) {
+            $user = $this->merchantUser();
+            $user->assignRole($this->merchantRole($roleName));
 
-        $this->actingAs($user)
-            ->get(route('showcase.merchant-admin'))
-            ->assertOk()
-            ->assertSee('data-screens="payment"', false)
-            ->assertSee('id="screen-payment"', false)
-            ->assertSee('id="user-name">商户', false)
-            ->assertDontSee('id="screen-onboard"', false)
-            ->assertDontSee('id="screen-merchant"', false)
-            ->assertDontSee('data-nav="onboard"', false)
-            ->assertDontSee('data-nav="merchant"', false)
-            ->assertDontSee('演示身份', false);
+            $this->actingAs($user)
+                ->get(route('showcase.merchant-admin'))
+                ->assertOk()
+                ->assertSee('data-screens="payment"', false)
+                ->assertSee('id="screen-payment"', false)
+                ->assertSee('id="user-name">商户', false)
+                ->assertDontSee('id="screen-onboard"', false)
+                ->assertDontSee('id="screen-merchant"', false)
+                ->assertDontSee('data-nav="onboard"', false)
+                ->assertDontSee('data-nav="merchant"', false)
+                ->assertDontSee('演示身份', false);
+        }
     }
 
     public function test_platform_staff_receive_every_screen(): void
@@ -159,12 +163,10 @@ class StaticConfigShowcaseTest extends TestCase
 
     public function test_payment_demo_entry_is_only_on_the_list_page(): void
     {
-        $user = User::factory()->create([
-            'merchant_id' => $this->merchant->id,
-            'is_super_admin' => false,
-            'status' => true,
-        ]);
-        $user->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
+        $user = $this->merchantUser();
+        $user->assignRole($this->merchantRole(MerchantRoleProvisioningService::MERCHANT_ADMIN_LABEL));
+        $directGrant = $this->merchantUser();
+        $directGrant->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
         $method = $this->makePaymentMethod('showcase-payment');
         Filament::setCurrentPanel('merchant');
 
@@ -173,6 +175,11 @@ class StaticConfigShowcaseTest extends TestCase
             ->assertOk()
             ->assertActionVisible('staticConfigShowcase')
             ->assertSee('/showcase#payment', false);
+
+        Livewire::actingAs($directGrant)
+            ->test(ListPaymentMethods::class)
+            ->assertOk()
+            ->assertActionHidden('staticConfigShowcase');
 
         Livewire::actingAs($user)
             ->test(CreatePaymentMethod::class)
@@ -183,5 +190,22 @@ class StaticConfigShowcaseTest extends TestCase
             ->test(EditPaymentMethod::class, ['record' => $method->id])
             ->assertOk()
             ->assertActionDoesNotExist('staticConfigShowcase');
+    }
+
+    private function merchantUser(): User
+    {
+        return User::factory()->create([
+            'merchant_id' => $this->merchant->id,
+            'is_super_admin' => false,
+            'status' => true,
+        ]);
+    }
+
+    private function merchantRole(string $name): Role
+    {
+        return Role::query()
+            ->where('merchant_id', $this->merchant->id)
+            ->where('name', $name)
+            ->firstOrFail();
     }
 }

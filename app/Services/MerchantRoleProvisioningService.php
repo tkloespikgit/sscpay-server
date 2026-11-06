@@ -181,7 +181,7 @@ class MerchantRoleProvisioningService
                 ],
             ],
             'payment_channel_admin' => [
-                'label' => '支付通道管理员',
+                'label' => self::PAYMENT_CHANNEL_ADMIN_LABEL,
                 'permissions' => [Permissions::PAYMENT_METHODS_MANAGE, Permissions::PAYMENT_GROUPS_MANAGE],
             ],
             // 客服角色：只给"客服订单查询"这一个权限。
