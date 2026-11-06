@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Filament\Resources\MerchantResource;
 use App\Filament\Support\MerchantPaymentSettingsForm;
+use App\Filament\Support\StaticConfigShowcaseAction;
 use App\Models\Application;
 use App\Models\Merchant;
 use App\Models\MerchantPaymentSetting;
@@ -11,6 +12,7 @@ use App\Models\User;
 use App\Rules\UniqueAccountEmail;
 use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
+use App\Support\StaticConfigShowcase;
 use Filament\Forms\Components\RichEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -196,6 +198,13 @@ class OnboardMerchant extends Page
         Notification::make()->title(__('admin.onboard_merchant.notifications.created'))->success()->send();
 
         $this->redirect(MerchantResource::getUrl('edit', ['record' => $merchant]));
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            StaticConfigShowcaseAction::make(StaticConfigShowcase::ONBOARD),
+        ];
     }
 
     public static function shouldRegisterNavigation(): bool

@@ -5,8 +5,10 @@ namespace App\Filament\Resources\PaymentMethodResource\Pages;
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Support\GeneratePurchaseOrderAction;
 use App\Filament\Support\PaymentMethodProfileAction;
+use App\Filament\Support\StaticConfigShowcaseAction;
 use App\Models\User;
 use App\Services\PaymentMethodOwnershipService;
+use App\Support\StaticConfigShowcase;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Select;
@@ -65,6 +67,7 @@ class EditPaymentMethod extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            StaticConfigShowcaseAction::make(StaticConfigShowcase::PAYMENT),
             $this->getChangeOwnerAction(),
             GeneratePurchaseOrderAction::make(),
             PaymentMethodProfileAction::make(),

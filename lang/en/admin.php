@@ -23,6 +23,12 @@ return [
         'observer' => 'Observer Accounts',
     ],
 
+    'showcase' => [
+        'static_config' => [
+            'action' => 'Static config demo',
+        ],
+    ],
+
     'log_viewer' => [
         'nav_label' => 'Log Viewer',
         'scope_description' => 'Reads recent log files up to :size MiB in total and shows their latest :count entries. Larger files are skipped. Filters and counts apply only to these entries; view server logs for the full history.',

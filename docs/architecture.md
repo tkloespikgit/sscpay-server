@@ -52,12 +52,15 @@ flowchart TD
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
 | 争议附件 | `DisputeAttachmentController` | 控制器内检查访问权限，不因公开路由而公开文件 |
+| 静态配置演示 `/showcase` | `StaticConfigShowcaseController`、`resources/views/showcase/merchant-admin.blade.php` | 不在 `public/`；控制器内鉴权，未登录或无权 403 |
 
 平台日志页仅由 `AdminPanelProvider` 注册并限制超级管理员访问。`RecentLogProvider` 复用日志插件解析器，在请求内缓存结果，绕过插件全量 Redis 缓存；按文件修改时间优先选择符合插件单文件上限且累计不超过 2 MiB 的日志，保留其中最新 1000 条。页面筛选和统计只覆盖这部分记录，完整历史仍在服务器日志中。`LogViewer` 关闭自动发现，避免被共享页面扫描加入商户后台。
 
 商户配置分组的“服务配置”由 `ServiceSettings` 统一提供物流跟踪与 Telegram 两个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。页面允许具备任一服务管理权限的用户访问，各区块只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载两个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
 
 订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；渠道禁用广播仅向订单所属商户追加完整摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
+
+静态配置演示不落库、不提交。`StaticConfigShowcase::screensFor()` 决定可见屏：平台账号（超管、商户级管理员）可见入驻向导、商户配置、支付方式配置；普通商户仅在账号启用、所属商户启用且具备 `payment_methods.manage` 时可见支付方式配置，响应里不包含另外两屏。页面不挂全局 auth 中间件（项目没有 `login` 路由），未登录直接 403。入驻向导、商户创建/编辑、支付方式创建/编辑的页头入口链到当前域名的 `/showcase#对应屏`。
 
 租户过滤有三种场景：
 
@@ -247,6 +250,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 | 商户网站物流回传 | `app/Services/MerchantShipmentSyncService.php`、`app/Jobs/SyncMerchantShipmentJob.php`、`app/Models/OrderShipmentSync.php`、`OrderShipmentSyncAttempt.php`、`app/Console/Commands/ProcessMerchantShipmentSyncs.php`；应用配置和订单详情 | `tests/Feature/MerchantShipmentSyncTest.php`、`tests/Feature/Filament/MerchantShipmentSyncSettingsTest.php` |
 | 物流轨迹跟踪 / 异常 / 未发货 TG | `app/Services/LogisticsTracking/`、`LogisticsTrackingWebhookController`、`RegisterLogisticsTrackingJob`、`MerchantLogisticsTrackingSetting`、`ServiceSettings`、`logistics-tracking:reflag-anomalies` / `orders:notify-unshipped-overdue`；系统 `available_drivers` 枚举；商户自选驱动+base_url+密钥；Webhook `POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}`；无历史回填 | `tests/Feature/SeventeenTrackWebhookTest.php`、`SeventeenTrackAnomalyAndUnshippedTest.php`、`tests/Feature/Filament/ServiceSettingsTest.php`、`LogisticsTrackingSettingsAccessTest.php` |
 | 权限、面板和用户 | `app/Models/User.php`、`app/Models/Observer.php`、`app/Models/Scopes/MerchantScope.php`、`app/Support/Permissions.php`、相关 Resource | 按功能选择 `tests/Feature/Filament/`，补充真实越权边界的断言 |
+| 静态配置演示 | `app/Support/StaticConfigShowcase.php`、`app/Http/Controllers/StaticConfigShowcaseController.php`、`app/Filament/Support/StaticConfigShowcaseAction.php`、`resources/views/showcase/merchant-admin.blade.php` | `tests/Feature/StaticConfigShowcaseTest.php` |
 | 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。

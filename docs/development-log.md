@@ -2,6 +2,11 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-06：静态配置演示入口与权限（当前工作区，未提交）
+
+- `/showcase` 改为受控路由，页面移出 `public/`。平台账号（超管、商户级管理员）可看入驻向导、商户配置、支付方式配置；普通商户只看支付方式配置（账号与所属商户启用，且具备 `payment_methods.manage`）。未登录或无权 403。页头入口挂在入驻向导、商户创建/编辑、支付方式创建/编辑。
+- 验证见 `tests/Feature/StaticConfigShowcaseTest.php`。
+
 ## 2026-11-05：加密收款文档收口
 
 - 实现方案：[doc/crypto-payment.md](../doc/crypto-payment.md)（含建单/付款页/webhook/过期调用链）。稳定决策：[D-29](decisions.md#d-29-crypto-payment-amount-mutex)；architecture / database / `AGENTS.md` 已链入。
