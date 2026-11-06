@@ -261,10 +261,16 @@ class PaymentMethod extends Model
 
     public const MAX_FAILED_TIMES_CONFIG_KEY = 'payment.max_failed_times';
 
+    public function merchantDisplayName(): string
+    {
+        return filled($this->display_name) ? $this->display_name : $this->method_name;
+    }
+
     protected $fillable = [
         'merchant_id',
         'method_code',
         'method_name',
+        'display_name',
         'is_active',
         'sort_order',
         'config_map_id',

@@ -96,6 +96,8 @@ flowchart TD
 
 Tatum 订阅：有 `token_contract` → `INCOMING_FUNGIBLE_TX`，空合约 → `INCOMING_NATIVE_TX`（P0 建单要求 USDT 必填合约，故实际走 FUNGIBLE）。入账以 webhook payload 为准。新链：实现 `CryptoChainAdapter` 并挂进 `CryptoServiceProvider`。
 
+商品同步 `WooCommerceProductSyncService` 只拉取原商品及变体，不调用翻译 API；原名称未变时保留 `site_products.name_translated`，原名称变化则清除旧译名。`PurchaseOrderService` 在选品后、进货单写入事务前调用 `ProductNameTranslationService`，只为选中且缺少译名的商品请求百度翻译并保存，下次复用；未配置或翻译失败时使用原名称，后续生成可重试，不改已有进货单名称快照。
+
 支付方式详情页提供“生成进货单”，历史记录由 `PurchaseOrdersRelationManager` 展示，仅启用的超级管理员可生成、查看和编辑运费/优惠。`PurchaseOrderService` 从所选支付方式的 `siteProducts()` 随机选品并保存独立进货快照：商品不足 30 种全选，否则随机选 30 至总数种，每种 10–20 件；价格采用 `price_min`（视作 USD）× 7 × 0.3，四舍五入为人民币两位小数。默认运费按商品合计 3%–8%、优惠按 10%–20% 随机生成，也可手动输入金额。下单时间可设置，付款/发货/签收时间及交易号为模拟数据。此入口只写 `purchase_orders` 和 `purchase_order_items`，不创建收款订单、不调用网关或改变商户余额；运费/优惠编辑通过 Service 锁单重算总额。
 
 历史记录的“查看采购订单”在新标签页打开 `purchase-orders.show`（`/purchase-orders/{purchaseOrder}`），由 `PurchaseOrderController` 再次校验启用的超级管理员身份后查询记录，并用 `resources/views/purchase-orders/show.blade.php` 展示 1688 样式的采购页面。商品、价格、数量和时间来自进货快照，图片读取关联站点商品的当前安全 HTTP(S) 地址，供需方名称读取支付方式当前档案；没有图片时显示占位。权益词由 `PurchaseOrderService::initializePerksWords()` 在首次打开任一采购页面时随机选取 4–8 个并保存到该单的 `perks_words`；事务中锁行并再次检查，后续两页读取相同结果，已保存的空数组也不重选。首次初始化仅写权益词，不改金额、明细或订单更新时间；运费和优惠仍从后台编辑。

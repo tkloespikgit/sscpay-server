@@ -60,6 +60,10 @@ class LogisticsTemplateTest extends TestCase
             app(LogisticsImportService::class)->generateTemplate($this->merchant->id, Order::query())
         );
 
+        $this->assertContains('app_name', $rows['header']);
+        $this->assertNotContains('app_id', $rows['header']);
+        $this->assertSame('Test App', $rows['rows'][0]['app_name']);
+
         // 新增列一律追加在表尾，不打乱原有列顺序
         $this->assertSame([
             'customer_phone',
@@ -110,7 +114,7 @@ class LogisticsTemplateTest extends TestCase
     public function test_template_preserves_all_non_amount_cells_as_text_and_amounts_as_numbers(): void
     {
         $this->merchant->update(['name' => '00012345678901234567890']);
-        $this->application->update(['app_id' => '00123456789012345678901']);
+        $this->application->update(['name' => '00123456789012345678901']);
         $this->makeOrder('001234567890123456789012', '123456789012345678901234', [
             'transaction_id' => '009876543210987654321098',
             'customer_phone' => '00123456789012345678',
@@ -131,7 +135,7 @@ class LogisticsTemplateTest extends TestCase
             $expectedText = [
                 'merchant_id' => (string) $this->merchant->id,
                 'merchant_name' => '00012345678901234567890',
-                'app_id' => '00123456789012345678901',
+                'app_name' => '00123456789012345678901',
                 'order_no' => '001234567890123456789012',
                 'merchant_order_no' => '123456789012345678901234',
                 'transaction_id' => '009876543210987654321098',

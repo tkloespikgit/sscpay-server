@@ -30,6 +30,8 @@ class PurchaseOrderService
         '延期必赔',
     ];
 
+    public function __construct(private ProductNameTranslationService $productNameTranslation) {}
+
     /**
      * @param  array{ordered_at: string, shipping_fee?: string|int|float|null, discount?: string|int|float|null}  $data
      */
@@ -46,27 +48,31 @@ class PurchaseOrderService
         $overrides = $this->validateCharges($data);
         $orderedAt = CarbonImmutable::parse($data['ordered_at'])->setTimezone(config('app.timezone'))->startOfSecond();
 
+        $productsQuery = $paymentMethod->siteProducts()->withoutGlobalScope(MerchantScope::class);
+        $totalProducts = (clone $productsQuery)->count();
+
+        if ($totalProducts === 0) {
+            throw ValidationException::withMessages([
+                'ordered_at' => __('purchase_order.errors.no_products'),
+            ]);
+        }
+
+        $selectedCount = $totalProducts < 30 ? $totalProducts : random_int(30, $totalProducts);
+        $products = $productsQuery->inRandomOrder()->limit($selectedCount)->get();
+
+        if ($products->isEmpty()) {
+            throw ValidationException::withMessages([
+                'ordered_at' => __('purchase_order.errors.no_products'),
+            ]);
+        }
+
+        foreach ($products as $product) {
+            $this->productNameTranslation->translateMissing($product);
+        }
+
         for ($attempt = 0; $attempt < 3; $attempt++) {
             try {
-                return DB::transaction(function () use ($paymentMethod, $operator, $orderedAt, $overrides): PurchaseOrder {
-                    $productsQuery = $paymentMethod->siteProducts()->withoutGlobalScope(MerchantScope::class);
-                    $totalProducts = (clone $productsQuery)->count();
-
-                    if ($totalProducts === 0) {
-                        throw ValidationException::withMessages([
-                            'ordered_at' => __('purchase_order.errors.no_products'),
-                        ]);
-                    }
-
-                    $selectedCount = $totalProducts < 30 ? $totalProducts : random_int(30, $totalProducts);
-                    $products = $productsQuery->inRandomOrder()->limit($selectedCount)->get();
-
-                    if ($products->isEmpty()) {
-                        throw ValidationException::withMessages([
-                            'ordered_at' => __('purchase_order.errors.no_products'),
-                        ]);
-                    }
-
+                return DB::transaction(function () use ($paymentMethod, $operator, $orderedAt, $overrides, $products): PurchaseOrder {
                     $items = [];
                     $subtotal = '0.00';
 

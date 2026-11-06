@@ -115,10 +115,11 @@ class OrderResource extends Resource
                         OrderSettlement::STATUS_PENDING => 'warning',
                         default => 'gray',
                     }),
-                // 展示 payment_methods.method_name；老数据/关联已被硬删除时兜底回退到
-                // 冗余存的 method_code，保证列不会空着。
+                // 商户优先展示对外名称，平台账号保留原名称；无关联时回退订单中的渠道代码。
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))
-                    ->formatStateUsing(fn (?string $state, $record) => $state ?? $record->payment_method),
+                    ->state(fn (Order $record): ?string => auth()->user()?->isPlatformStaff()
+                        ? ($record->paymentMethod?->method_name ?? $record->payment_method)
+                        : ($record->paymentMethod?->merchantDisplayName() ?? $record->payment_method)),
 
                 // 原币种实际应付居中；有折扣前差额时右下角小号删除线展示 original_amount。
                 // 用内联 style，避免依赖 Filament 主题未收录的 Tailwind utility。
@@ -278,7 +279,8 @@ class OrderResource extends Resource
                         if (! $user?->isPlatformStaff()) {
                             return PaymentMethod::query()->withTrashed()
                                 ->orderBy('sort_order')
-                                ->pluck('method_name', 'method_code');
+                                ->get(['method_code', 'method_name', 'display_name'])
+                                ->mapWithKeys(fn (PaymentMethod $method): array => [$method->method_code => $method->merchantDisplayName()]);
                         }
 
                         // 平台侧账号（超管、商户级管理员）看到的是（自己可管理范围内）全部支付方式，

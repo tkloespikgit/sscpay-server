@@ -44,6 +44,8 @@ erDiagram
 | `payment_method_config_maps`、`payment_method_profiles` | 网关字段模板及渠道资料附表；profile 每渠道至多一条 |
 | `observers`、`observer_payment_methods` | 独立观察者账户与允许查看的渠道；展示缩放不修改账务金额 |
 
+支付方式新增可空 `display_name`（最长 100 字符），`method_name` 保留原名称。商户交易列表及渠道筛选优先读取展示名称，空值/空白回退原名称；平台账号（含商户级管理员）继续显示原名称。自有、共享及软删除渠道沿用原授权范围；无渠道关联的订单回退已有渠道代码。迁移只新增字段，不回填或改写历史订单。
+
 `PaymentMethod::forMerchant()` 的含义是“商户可使用”，包含自有与已分配渠道；不能用普通商户外键过滤替代。`site_products.merchant_id` 也可为空，商品实际按支付渠道关联，避免假设所有业务模型均有非空商户 ID。
 
 迁移 [2026_11_03_223806_add_failure_limits_to_payment_methods_table](../database/migrations/2026_11_03_223806_add_failure_limits_to_payment_methods_table.php) 新增 `payment_methods.max_failed_times`（可空 unsigned integer，默认 NULL）和 `consecutive_failed_times`（unsigned integer，默认 0）。前者大于等于 1 时覆盖系统阈值，NULL 由 `PaymentMethod::maxFailedTimes()` 动态继承 `system_configs` 的 `payment.max_failed_times`（默认 5）；后者记录该渠道跨商户的连续建单失败次数，不按商户、支付组或订单单独分桶，也不统计客户后续支付失败状态。

@@ -44,7 +44,7 @@ class LogisticsImportService
     public const TEMPLATE_HEADERS = [
         'merchant_id',
         'merchant_name',
-        'app_id',
+        'app_name',
         'website',
         'order_no',
         'merchant_order_no',
@@ -255,7 +255,7 @@ class LogisticsImportService
         return [
             'merchant_id' => $order->merchant_id,
             'merchant_name' => $order->merchant?->name,
-            'app_id' => $order->application?->app_id,
+            'app_name' => $order->application?->name,
             'website' => $order->application?->website,
             'order_no' => $order->order_no,
             'merchant_order_no' => $order->merchant_order_no,

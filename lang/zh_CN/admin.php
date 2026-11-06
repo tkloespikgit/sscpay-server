@@ -386,7 +386,8 @@ return [
             'merchant_or_owner' => '所属商户 / 管理员',
             'owner' => '归属管理员',
             'method_code' => '支付方式代码',
-            'method_name' => '展示名称',
+            'method_name' => '名称',
+            'display_name' => '展示名称',
             'is_active' => '启用',
             'config_map' => '配置模板',
             'domain' => '网站域名',
@@ -423,6 +424,7 @@ return [
             'site_products_summary_synced_at' => '上次同步时间',
         ],
         'help' => [
+            'display_name' => '商户交易列表中显示的名称，留空则使用名称；管理员仍显示名称。',
             'merchant_blank_for_system_level' => '留空表示创建系统级支付方式（挂在自己名下），可在下方分配给多个商户使用；商户只能使用，不能修改配置',
             'assigned_merchants' => '被分配的商户可在自己的支付组里勾选使用这条支付方式，但不能修改配置、删除、复制或触发同步；取消分配会自动把该商户支付组里对这条支付方式的引用一并摘除',
             'risk_control' => '金额和笔数限制填 0 表示不限制；连续建单失败阈值留空则沿用系统默认',

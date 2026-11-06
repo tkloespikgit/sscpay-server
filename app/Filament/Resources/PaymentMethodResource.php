@@ -149,6 +149,10 @@ class PaymentMethodResource extends Resource
                             'unique' => __('admin.payment_method.validation.method_code_duplicate'),
                         ]),
                     TextInput::make('method_name')->label(__('admin.payment_method.fields.method_name'))->required()->maxLength(50),
+                    TextInput::make('display_name')
+                        ->label(__('admin.payment_method.fields.display_name'))
+                        ->helperText(__('admin.payment_method.help.display_name'))
+                        ->maxLength(100),
 
                     Toggle::make('is_active')->label(__('admin.payment_method.fields.is_active'))->default(true)->inline(false),
                     Toggle::make('sync_logistics')
@@ -418,6 +422,8 @@ class PaymentMethodResource extends Resource
             })
             ->columns(array_merge($columns, [
                 TextColumn::make('method_name')->label(__('admin.payment_method.fields.method_name'))->searchable(),
+                TextColumn::make('display_name')->label(__('admin.payment_method.fields.display_name'))->searchable()
+                    ->placeholder('—'),
                 TextColumn::make('method_code')->label(__('admin.payment_method.columns.code'))->badge(),
                 TextColumn::make('configMap.name')->label(__('admin.payment_method.fields.config_map'))->placeholder('—'),
                 TextColumn::make('product_match_mode')
