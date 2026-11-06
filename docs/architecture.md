@@ -1,6 +1,6 @@
 # 系统架构
 
-核对日期：2026-10-16。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
+核对日期：2026-11-06。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
 
 ## 1. 系统职责与技术栈
 
@@ -94,7 +94,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 物流模板与观察者订单导出使用 XLSX，共用 `XlsxExport` 按行写出。除订单金额外，所有单元格均显式保存为文本并设置文本格式，保留纯数字编号、前导零、长物流号和公式样式文本的原值；金额为数值单元格并显示两位小数。物流模板的空物流号等填写格同样设为文本，商户保留 XLSX 和单元格格式填写后可直接上传；旧 CSV/XLS 导入仍兼容。物流模板受单表容量限制，超过 1,048,574 笔订单时不生成下载文件，并提示缩小筛选范围，以免上传仅读首表时遗漏记录。查询继续分批读取，导出格式不改变商户/观察者范围或金额口径。
 
-观察者订单使用 `ObserverOrderStatus` 统一状态口径：`paid/shipped/completed` 展示为支付成功（`paid` 即待发货），`refunded/partially_refunded` 归并退款，`disputing/dispute_review` 归并争议中，拒付独立；其他状态在查询入口排除，列表、详情及导出一致。日期范围按系统时区的订单创建日期筛选，包含起止当天。`ObserverOrderExportService` 流式导出当前筛选/搜索命中的全部记录，重新限定观察者授权渠道及可见状态，仅输出列表字段，金额沿用账户显示比例。
+观察者订单使用 `ObserverOrderStatus` 统一状态口径：`paid/pending_settlement/shipped/completed` 展示为支付成功（`paid` 即待发货），`refunded/partially_refunded` 归并退款，`disputing/dispute_review` 归并争议中，拒付独立；其他状态在查询入口排除，列表、详情及导出一致。日期范围按系统时区的订单创建日期筛选，包含起止当天。`ObserverOrderExportService` 流式导出当前筛选/搜索命中的全部记录，重新限定观察者授权渠道及可见状态，仅输出列表字段，金额沿用账户显示比例。
 
 订单状态颜色由 `OrderStatusColor` 统一读取系统配置 `order.status_colors`（`json` 类型、`order` 分组）。普通订单列表与详情、客服查询、观察者列表与详情均按原始订单状态取色；观察者归并文案不参与配色。公开收款结果页的订单状态文字使用同一配置及调色板的 `600` 色阶。超级管理员在系统配置中直接编辑 JSON 对象，键为现有订单状态，值限于 `gray/primary/success/info/warning/danger`，允许部分覆盖或空对象；默认沿用普通订单列表配色，缺失或无效配置回退默认，未知状态为灰色。保存立即清除对应缓存；数据迁移和 Seeder 仅补齐缺失配置，不覆盖已保存颜色，数据迁移回滚保留配置。采购订单页面独立展示。
 
@@ -136,7 +136,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 ## 4. 支付状态与账务
 
-[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，最终统一进入状态应用逻辑。它处理状态映射、行锁、重复/乱序守卫、首次 `paid_at`/`failed_at`、账务和通知编排。
+[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，负责网关事实、接收审计、重复/乱序保护、首次 `paid_at`/`failed_at`、可靠记账及首次支付通知。[OrderLifecycleService](../app/Services/OrderLifecycleService.php) 根据网关、真实结算、有效物流、退款/拒付及活动审核事件推导本地主状态；后台入口不自行拼装状态机。
 
 `PendingOrderStatusSyncService` 每分钟扫描全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单，按创建满 30 分钟、90 分钟两个时点逐笔调用 `queryAndApply()`，每单最多自动补查两次。次数与最近领取时间持久化到订单，查询前用符合到期条件与原次数的原子更新领取；缺凭证、远端失败或未知状态也消耗一次，单轮每单最多一次。第一次已离开待支付状态时不再二查；停机错过时点则在 48 小时内分轮补查，实际执行顺延到下一次扫描，不承诺秒级触发。
 
@@ -144,26 +144,33 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 | 行为 | 当前实现 |
 |---|---|
-| 支付成功 | 新订单在状态事务内保存 `OrderAccountingTask`，随后按 `settlement_amount` 幂等计入总余额和待结算（经 `BalanceService::creditForPaidOrder()`）；首次正常 `paid` 派发商户通知与广告转化；曾收款状态恢复 `paid` 不重复触发首次支付副作用。旧单仍沿用原即时入账 |
-| 重复/乱序状态 | 按最终本地状态判重；已收款订单不被未收款状态回退；终态有保护；主动查询返回 `paid` 时允许纠正任意本地状态。曾收款订单恢复时，有本商户未软删除的物流记录则保存为 `shipped`，否则为 `paid`；保留原支付时间和资金审计记录 |
-| 网关 `refunded` / `confused` | 后者映射 `chargeback`；尝试自动退款/拒付记账。业务性失败保留状态并告警，支持人工补录 |
-| 网关 `disputing` | 网关争议中，更新状态并拉日志；不等同人工冻结审核 |
-| 人工 `dispute_review` | `OrderDisputeService` 编排，资金由 `BalanceService` 冻结/释放；期间 webhook 不覆盖人工审核状态，主动查询为 `paid` 可纠正订单状态，但不关闭审核事件或释放冻结 |
-| 物流 | `OrderShippingObserver` 在符合条件时推进 `shipped`，并派发物流同步 |
-| 订单结算 | `OrderSettlement` 保存本单模式、周期及保证金快照；支付或首次有效物流开始计时，到期由 `BalanceService` 将待结算分入循环保证金和可提现；争议期间暂停，到期时间不重置 |
-| 保证金 | 固定保证金只能从可提现额人工冻结；循环保证金按净结算额提取，锁定期从实际结算起算，0 天不锁定。循环保证金只到期自动释放，争议期间暂停释放 |
-| 提现 | 新申请占用独立待出款，后台确认放款即扣总额及占用，驳回恢复可提现；负可提现时禁止新增提现和确认放款，仍可驳回。旧提现保持原冻结占用方式 |
-| 订单事件日志 | `OrderEventSyncService` 拉取插件 `/order-logs` 归档；不以日志反推支付状态 |
+| 支付成功 | 首次确认支付事实时，商户通知及广告转化首次尝试与支付事实、记账待办同事务保存，提交后派发；指定渠道付款提醒按首次支付事件触发。通知 `status` 固定为 `paid`，不依赖当前主状态是否已变待结算或完成。新订单通过可靠待办幂等计入总余额和待结算；历史 `settlement_mode=NULL` 保留旧入账方式，仅本次首次确认收款保存收入待办，不从既有已支付状态补造历史收入 |
+| 正常主状态 | 支付后起算：`pending → pending_settlement → completed`；发货后起算：`pending → paid → shipped → completed`。`completed` 仅表示实际结算成功；0 天周期可以在入账或首次发货事务内完成，不等待下一轮扫描 |
+| 重复/乱序状态 | 保留当前网关引用匹配，记录标准化接收审计。依据网关 `updated_at` 及本地版本识别过期或冲突结果；不能仅因到达较晚就覆盖。已收款不回退为待支付/失败/取消/过期，首次支付副作用不重复 |
+| 主动查询 | 网关 `paid` 确认支付事实，再按实际结算和履约事实推导；已结算不降回 `paid/shipped`，已记账退款/拒付、活动审核不被抹掉。查询期间到达的新回调不能被旧查询结果覆盖；冲突接收记录需由有权限的人员使用后台“查询最新状态”核对，不自动发起全平台补查；商户 `/api/order/query` 始终只读本地 |
+| 网关 `refunded` / `confused` | 后者映射 `chargeback`；已完成也接受最终结果，保存可靠反向记账待办并尝试扣款，失败重试或转人工。保留本金防重及部分退款后拒付的人工核对；不按网关订单金额盲目重复扣款 |
+| 网关 `disputing` | 已完成也可进入争议中，暂停本单结算及循环保证金释放；不等同人工冻结审核，不自动重复冻结。胜诉恢复时按最新结算/物流事实恢复正常阶段 |
+| 人工 `dispute_review` | 允许待发货、待结算、已发货、已完成、部分退款和网关争议中的合理来源；权限及 TOTP 不变。关闭审核释放该事件冻结并重新推导主状态；仍有网关争议则保持争议，不固定回 `paid`。最终网关退款/拒付不能被活动审核永久吞掉 |
+| 物流 | 首次有效物流启动发货模式的周期，使用首次录入时间与支付时间中较晚者；改运单/补发不重启周期。支付后起算保持待结算或完成；已完成仍可补录物流，部分退款/争议等售后状态优先保留 |
+| 订单结算 | `OrderSettlement` 保存模式、周期及保证金快照；真实余额划转、结算记录 `settled` 与正常主状态 `completed` 在同一事务落地。仅到期但记账未成功不能显示完成；部分退款主状态不被结算覆盖 |
+| 争议暂停 | 结算和保证金释放直接检查活动审核、网关争议和未结清反向待办，不只看主状态。暂停保留原起算/到期时间；解除时已到期可立即或由下轮调度处理 |
+| 保证金 | 固定保证金只能从可提现额人工冻结；循环保证金按实际结算剩余净额提取，锁定期从结算时起算，0 天不锁定。订单完成时保证金仍可能未释放，之后继续按独立期限和售后保护处理 |
+| 提现 | 新申请占用独立待出款，后台确认放款扣总额与占用，驳回恢复可提现；负可提现时禁止新增提现和确认放款，仍可驳回。旧提现保持原冻结占用方式 |
+| 订单事件日志 | `OrderEventSyncService` 拉取插件 `/order-logs` 归档，不驱动支付状态；与 `order_gateway_status_events` 接收审计分开 |
 
 余额写操作集中在 [BalanceService](../app/Services/BalanceService.php)。锁顺序先商户行、再相关订单/业务单据。当前状态事务与退款/拒付账务事务分开，避免反向加锁造成死锁；不可描述为远端状态和本地资金全程原子提交。人工资金动作使用 `FinanceSecurity` 做 TOTP 二次验证。
 
 新单资金反向扣减依次使用本单待结算、本单未释放循环保证金，再由可提现承担；额外手续费直接扣可提现。原交易手续费不返还，不自动挪用固定保证金、其他订单专属资金或待出款。未结算金额耗尽后取消结算；循环保证金抵扣后只释放剩余额。新分类划转写总额为 0 的台账及分类变化，历史流水不回填。
 
-`OrderAccountingService` 以商户→订单→待办顺序处理新单可靠记账，失败由 `orders:settle-due` 补偿。待办 `merchant_id` 有意无外键，避免在持有订单锁的状态事务内反向请求商户锁；执行前核对商户归属。首次直接收到退款/拒付时，在同一账务事务先记录原收入再反向扣减。物流状态使用条件更新，避免覆盖并发退款；争议回复同样先锁商户，避免外键检查产生反向锁。
+`OrderAccountingService` 以商户→订单→待办顺序处理可靠记账，失败由 `orders:settle-due` 补偿。新单保留 paid/refund/chargeback 待办；旧单新收到的退款/拒付也保存反向待办，但不补建结算周期或重做历史收入。待办 `merchant_id` 有意无外键，避免在持有订单锁的状态事务内反向请求商户锁；执行前核对商户归属。新结算订单首次直接收到退款/拒付时，在同一账务事务先记录原收入再反向扣减。物流与结算更新在订单锁内重新推导，避免覆盖并发退款；争议回复同样先锁商户，避免外键检查产生反向锁。
 
 反向待办的本金尚未扣足时，暂停该商户的提现申请/确认放款及本单循环保证金释放，避免按旧余额出款；人工补录后按实际本金记录解除限制，调度再核销待办状态。候选扫描先排除暂停项，避免限量扫描被早期暂停记录占满。
 
-主动查询将退款/拒付订单纠正为 `paid` 时，不撤销既有扣款或修改退款累计额；已存在拒付本金流水的订单仍不可再退款或拒付，资金资格不能仅按纠正后的状态判断。规则与适用边界见 [D-18](decisions.md#d-18-主动查询已支付结果优先于本地状态)。
+正常阶段和售后事实独立保存：已结算后退款/拒付不撤销原结算审计，部分退款可能耗尽本单净待结算额而使结算记录 `cancelled`，不能据此判定全额退款。人工“直接设为完成”被移除，完成必须来自真实结算；仍可对未支付订单人工标失败。新规则替代 [D-18](decisions.md#d-18-主动查询已支付结果优先于本地状态) 中“查询 `paid` 无条件改主状态”的行为，详见 [D-29](decisions.md#d-29-订单主状态由结算与售后事实统一推导)。
+
+API 创建、查询及上传物流统一保留兼容 `status`（待结算映射为 `paid`），新增 `order_status`、`settlement_status`、`shipping_status`。后台分别展示主状态、真实结算和物流；原反向待入账筛选明确为退款/拒付记账状态。物流导入与未发货提醒按已收款事实及有效物流判断，不因先结算而漏掉尚未发货订单。
+
+部署只增加字段与网关审计表，不批量回填状态、不全量查询网关、不重记历史资金。`settlement_mode=NULL` 的历史单继续原规则，旧人工完成阶段可在收到新事件时保存到 `normal_status` 供争议往返恢复；有真实结算记录的存量单随后续事件或到期结算逐步按新规则收敛。历史被忽略的退款/拒付需单独核对，不凭主状态推断或自动补账。
 
 漏配历史汇损可使用 `orders:recalculate-surcharge`，由 `OrderSurchargeRecalculationService` 明确按商户纠正订单快照，保留历史市场汇率及手续费金额，默认预览，仅 `--apply` 写入。只处理已入账且无反向资金/争议历史的订单，保存新旧快照报告，不修改余额或台账；人工调账差额与统计补算步骤见[操作手册](../doc/order-surcharge-recalculation.md)。
 
@@ -219,8 +226,8 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 | 下单、幂等、原渠道重试、邮件补发 | `app/Http/Controllers/Api/OrderController.php`、`app/Services/OrderCreationService.php`、`app/Services/ManualOrderService.php` | `tests/Feature/OrderCreationFailoverTest.php`、`OrderCreateRetryMailTest.php`、`DesignatedOrderTelegramNotificationTest.php` |
 | 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRoutingTest.php`、`PaymentRiskPaidAtTest.php` |
 | 连续建单失败与自动停用 | `app/Services/PaymentMethodFailureService.php`、`OrderCreationService.php`、`app/Models/PaymentMethod.php`、`database/seeders/PaymentFailureSettingsSeeder.php` | `tests/Feature/PaymentMethodCreationFailureTest.php`、`PaymentFailureSettingsTest.php` |
-| 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`tests/Feature/Filament/MerchantWithdrawalRequestTest.php` |
-| 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
+| 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`OrderLifecycleTest.php`、`OrderStatusApiCompatibilityTest.php`、`tests/Feature/Filament/OrderLifecycleActionsTest.php` |
+| 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`OrderLifecycleService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
 | 商户支付渠道授权 | `MerchantResource/Pages/EditMerchant`、`MerchantPaymentMethodAssignmentService`、`MerchantPaymentMethod` | `Filament/MerchantPaymentMethodAssignmentTest`、`MerchantPaymentDefaultsAssignmentTest` |
 | 支付组成员和权重 | `PaymentGroupResource`、`PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager`、`PaymentGroupMethodService` | `Filament/PaymentGroupMethodManagementTest`、`Filament/PaymentGroupLoadSnapshotTest`、`PaymentRoutingTest` |
 | 历史订单漏配汇损补算 | `app/Console/Commands/RecalculateOrderSurcharge.php`、`app/Services/OrderSurchargeRecalculationService.php`、[操作手册](../doc/order-surcharge-recalculation.md) | `tests/Feature/RecalculateOrderSurchargeTest.php` |

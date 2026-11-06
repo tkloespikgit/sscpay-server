@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Http;
  * 商户交易结果通知服务（回调 orders.notify_url）。
  *
  * 重试调度不在这里做轮询/延迟，而是拆成两半：
- *   - dispatchInitial()：交易结果产生时（订单变为 paid/refunded 等）立即调用，
+ *   - dispatchInitial()：首次确认支付成功时调用，与本地发货/结算阶段分开，
  *     创建第 1 次尝试记录并马上入队发送。
  *   - attempt()：真正发起 HTTP 请求、判定成功/失败、写入 OrderNotificationAttempt。
  *     由 SendOrderNotificationJob 调用；该 Job 既用于首次发送，也用于
@@ -42,7 +42,7 @@ class OrderNotificationService
             $this->buildPayload($order)
         );
 
-        SendOrderNotificationJob::dispatch($attempt->id);
+        SendOrderNotificationJob::dispatch($attempt->id)->afterCommit();
 
         return $attempt;
     }
@@ -146,7 +146,7 @@ class OrderNotificationService
         return [
             'order_no' => $order->order_no,
             'merchant_order_no' => $order->merchant_order_no,
-            'status' => $order->status,
+            'status' => 'paid',
             'currency' => $order->currency,
             'amount' => (string) $order->amount,
             'converted_currency' => $order->converted_currency,

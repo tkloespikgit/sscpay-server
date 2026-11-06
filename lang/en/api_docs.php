@@ -371,7 +371,10 @@ curl_close($ch);
     "converted_amount": "205.20",
     "exchange_rate": "1.080000",
     "payment_method": "example_channel",
-    "status": "pending"
+    "status": "pending",
+    "order_status": "pending",
+    "settlement_status": null,
+    "shipping_status": "unshipped"
   }
 }',
                 ],
@@ -388,7 +391,10 @@ curl_close($ch);
                         ['converted_amount', 'string', 'Converted amount from the order snapshot, including configured exchange surcharge.'],
                         ['exchange_rate', 'string', 'Exchange rate locked at creation, including the configured surcharge.'],
                         ['payment_method', 'string', 'Final channel used by the order.'],
-                        ['status', 'string', 'Current order status; an idempotent response may already be paid or another status.'],
+                        ['status', 'string', 'Compatibility status: pending_settlement is returned as paid; other statuses are unchanged.'],
+                        ['order_status', 'string', 'Actual local order status, including pending_settlement.'],
+                        ['settlement_status', 'string / null', 'Actual settlement record: waiting_shipment, pending, settled, or cancelled; null when no record exists, including legacy orders.'],
+                        ['shipping_status', 'string', 'shipped if an active shipment exists, otherwise unshipped; independent of settlement.'],
                     ],
                 ],
                 [
@@ -451,6 +457,9 @@ curl_close($ch);
     "order_no": "ORD202611031234561234",
     "merchant_order_no": "M20261103001",
     "status": "paid",
+    "order_status": "pending_settlement",
+    "settlement_status": "pending",
+    "shipping_status": "unshipped",
     "platform": "wordpress",
     "currency": "EUR",
     "amount": "190.00",
@@ -467,7 +476,10 @@ curl_close($ch);
                     'rows' => [
                         ['order_no', 'string', 'System order reference.'],
                         ['merchant_order_no', 'string', 'Merchant order reference.'],
-                        ['status', 'string', 'Current locally saved status; see the status reference.'],
+                        ['status', 'string', 'Compatibility status: pending_settlement is returned as paid; other statuses are unchanged.'],
+                        ['order_status', 'string', 'Actual local order status, including pending_settlement.'],
+                        ['settlement_status', 'string / null', 'Actual settlement record: waiting_shipment, pending, settled, or cancelled; null when no record exists, including legacy orders.'],
+                        ['shipping_status', 'string', 'shipped if an active shipment exists, otherwise unshipped; independent of settlement.'],
                         ['platform', 'string / null', 'Store platform.'],
                         ['currency', 'string', 'Order currency.'],
                         ['amount', 'string', 'Actual amount due, after any application automatic discount.'],
@@ -495,7 +507,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'Record or replace shipment details by merchant order reference. Uploads are allowed only for paid, shipped, partially_refunded, and disputing orders. A paid order advances to shipped; the other three statuses remain unchanged. Other statuses return INVALID_ORDER_STATUS.',
+                    'text' => 'Record or replace shipment details for paid, pending_settlement, shipped, completed, partially_refunded, or disputing orders. Shipment-based settlement starts with the first active shipment and advances to shipped; a zero-day cycle may immediately complete. Payment-based orders remain awaiting settlement or completed. After-sale statuses take precedence. Other statuses return INVALID_ORDER_STATUS.',
                 ],
                 [
                     'type' => 'table',
@@ -543,6 +555,9 @@ curl_close($ch);
     "order_no": "ORD202611031234561234",
     "merchant_order_no": "M20261103001",
     "status": "shipped",
+    "order_status": "shipped",
+    "settlement_status": "pending",
+    "shipping_status": "shipped",
     "logistics_company": "DHL",
     "tracking_number": "0001234567890123456789",
     "tracking_url": "https://tracking.example.com/?number=0001234567890123456789",
@@ -557,7 +572,10 @@ curl_close($ch);
                     'rows' => [
                         ['order_no', 'string', 'System order reference.'],
                         ['merchant_order_no', 'string', 'Merchant order reference.'],
-                        ['status', 'string', 'Current order status after saving the shipment.'],
+                        ['status', 'string', 'Compatibility status: pending_settlement is returned as paid; other statuses are unchanged.'],
+                        ['order_status', 'string', 'Actual local order status, including pending_settlement.'],
+                        ['settlement_status', 'string / null', 'Actual settlement record: waiting_shipment, pending, settled, or cancelled; null when no record exists, including legacy orders.'],
+                        ['shipping_status', 'string', 'shipped if an active shipment exists, otherwise unshipped; independent of settlement.'],
                         ['logistics_company', 'string', 'Saved carrier code.'],
                         ['tracking_number', 'string', 'Saved tracking number.'],
                         ['tracking_url', 'string (URL) / null', 'Saved tracking URL.'],
@@ -704,7 +722,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'A payment-result notification is created when an order first changes from an unpaid status (pending, failed, cancelled, or expired) to paid. Later refunds, chargebacks, disputes, and shipments do not create this notification. Returning a previously paid order to paid does not create another first-payment notification. Query orders when you need other status changes.',
+                    'text' => 'A payment-result notification is created only when payment is first confirmed. Its status remains paid even when the local order has already entered pending_settlement or completed through a zero-day cycle. Later refunds, chargebacks, disputes, shipments, settlements, or recovery do not create another first-payment notification. Query orders for other status changes.',
                 ],
                 [
                     'type' => 'links',
@@ -879,9 +897,10 @@ curl_close($ch);
                     'headers' => ['Status', 'Meaning', 'Creates payment notification', 'Shipment upload allowed'],
                     'rows' => [
                         ['pending', 'Awaiting payment', 'No', 'No'],
-                        ['paid', 'Paid, awaiting shipment', 'Only on first payment', 'Yes'],
+                        ['paid', 'Paid, awaiting shipment for shipment-based terms; compatibility field also represents awaiting settlement', 'Only on first confirmed payment', 'Yes'],
+                        ['pending_settlement', 'Payment-based order awaiting settlement (order_status only)', 'First notification remains paid', 'Yes'],
                         ['shipped', 'Shipped', 'No', 'Yes'],
-                        ['completed', 'Completed', 'No', 'No'],
+                        ['completed', 'Settlement completed; after-sale events remain possible', 'No', 'Yes'],
                         ['partially_refunded', 'Partially refunded', 'No', 'Yes'],
                         ['refunded', 'Fully refunded', 'No', 'No'],
                         ['disputing', 'In dispute', 'No', 'Yes'],
@@ -894,7 +913,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'Do not treat a browser return, successful order creation, or successful shipment upload as evidence of first payment. Later status synchronization may correct saved order state. The query endpoint itself is always read-only and does not initiate gateway queries or corrections.',
+                    'text' => 'Do not treat a browser return, successful order creation, or shipment upload as first-payment evidence. Completed means actual settlement has succeeded; refunds, chargebacks, and disputes remain possible. Shipment progress is independent. Internal gateway queries confirm payment facts without erasing posted reversals or active reviews. The merchant query endpoint remains read-only and does not contact the gateway.',
                 ],
             ],
         ],

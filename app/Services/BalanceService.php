@@ -17,7 +17,6 @@ use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 /**
  * 商户余额账务服务：所有会改动商户余额/冻结余额的操作都必须经过这里，
@@ -33,6 +32,8 @@ use Illuminate\Support\Facades\Log;
  */
 class BalanceService
 {
+    public function __construct(private readonly OrderLifecycleService $lifecycle) {}
+
     /**
      * 按净结算金额入账；新单进入待结算，旧单仍直接可提现。同一订单仅入账一次。
      * 与状态事务分开执行；若有外层账务事务，必须先锁商户、再锁订单。
@@ -85,6 +86,7 @@ class BalanceService
             if (isset($settlement)) {
                 $this->startShipmentCycle($fresh, $settlement);
                 $this->settleLockedOrder($merchant, $fresh, $settlement);
+                $this->lifecycle->sync($fresh);
             }
 
             return $transaction;
@@ -100,11 +102,14 @@ class BalanceService
                 ->where('order_id', $fresh->id)->lockForUpdate()->first();
 
             if (! $settlement) {
+                $this->lifecycle->sync($fresh);
+
                 return;
             }
 
             $this->startShipmentCycle($fresh, $settlement);
             $this->settleLockedOrder($merchant, $fresh, $settlement);
+            $this->lifecycle->sync($fresh);
         });
     }
 
@@ -123,11 +128,12 @@ class BalanceService
     private function startShipmentCycle(Order $order, OrderSettlement $settlement): void
     {
         if ($settlement->status !== OrderSettlement::STATUS_WAITING_SHIPMENT
-            || ! in_array($order->status, ['paid', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
+            || ! in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
             return;
         }
 
-        $shipping = $order->shipping()->withoutGlobalScopes()->whereNull('order_shippings.deleted_at')
+        $shipping = $order->shipping()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
+            ->whereNull('order_shippings.deleted_at')
             ->oldest('created_at')->first();
 
         if (! $shipping) {
@@ -152,7 +158,8 @@ class BalanceService
     {
         if ($settlement->status !== OrderSettlement::STATUS_PENDING
             || ! $settlement->due_at || $settlement->due_at->isFuture()
-            || ! in_array($order->status, ['paid', 'shipped', 'completed', 'partially_refunded'], true)) {
+            || ! in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'], true)
+            || $this->lifecycle->isBlocked($order)) {
             return false;
         }
 
@@ -192,6 +199,7 @@ class BalanceService
             'frozen_change' => $reserve,
             'idempotency_key' => 'order_settlement:'.$order->id,
         ]);
+        $this->lifecycle->sync($order);
 
         return true;
     }
@@ -204,10 +212,10 @@ class BalanceService
      * 这些订单必须还能把账扣平。真正防重复扣款的是 refunded_amount < amount
      * 这个条件（见 assertRefundable()），不是状态本身。
      */
-    private const REFUNDABLE_STATUSES = ['paid', 'shipped', 'completed', 'partially_refunded', 'refunded'];
+    private const REFUNDABLE_STATUSES = ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded'];
 
     /** 可以执行拒付的订单状态。chargeback 在列内的理由同 REFUNDABLE_STATUSES。 */
-    private const CHARGEBACKABLE_STATUSES = ['paid', 'shipped', 'completed', 'chargeback'];
+    private const CHARGEBACKABLE_STATUSES = ['paid', 'pending_settlement', 'shipped', 'completed', 'chargeback'];
 
     /**
      * 退款（支持部分退款）。amountOriginal 为订单原币种金额，
@@ -615,29 +623,28 @@ class BalanceService
     }
 
     /**
-     * 开启争议审核事件：冻结订单金额（converted_amount，USD），订单状态改为
+     * 开启争议审核事件：冻结订单剩余未退本金（按订单快照折算 USD），订单状态改为
      * Order::STATUS_DISPUTE_REVIEW。加锁顺序与 refund()/chargeback() 一致——
      * 先锁 Merchant（mutate()），闭包内再锁 Order，避免引入新的死锁风险。
      * 新单扣除本单已被待结算或循环保证金占用的部分，避免重复冻结；记录分类流水。
      *
-     * 允许的起始状态：paid（正常已付款订单）、disputing（网关已推送争议中，
-     * 商户需要在这个窗口期提交申诉材料）。两者共用同一套冻结/回复/结束流程，
-     * 结束时统一回退为 paid（见 releaseForDisputeEvent()）——disputing 只是
-     * 多了一个允许进入的起点，不代表网关那边的争议已经有结果，真正的输赢
-     * 仍然要等网关后续状态或人工核实，本方法不对此做任何推断。
+     * 允许待发货、待结算、已发货、已完成、部分退款及网关争议中的订单开立，
+     * 这些状态共用同一套冻结/回复/结束流程，
+     * 结束时根据网关、结算及退款事实恢复状态；关闭人工审核不代表网关争议胜诉。
      *
      * $attributes 需已完成校验/XSS 过滤/图片转存（由 OrderDisputeService 负责），
      * 这里只管钱和落库，期望包含：event_no, reason, images, final_action,
      * deadline_value, deadline_unit, deadline_hours。
      *
-     * @throws BalanceOperationException 订单状态不是 paid/disputing，或该订单已存在处理中的事件
+     * @throws BalanceOperationException 订单不在已收款状态族，或已有处理中的事件
      */
     public function freezeForDisputeEvent(Order $order, User $operator, array $attributes): OrderDisputeEvent
     {
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $operator, $attributes) {
-            $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
+            $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->lockForUpdate()->findOrFail($order->id);
 
-            if (! in_array($fresh->status, ['paid', 'disputing'], true)) {
+            if (! in_array($fresh->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing'], true)) {
                 throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可开立争议审核事件，只有已收款或争议中的订单才能开立。");
             }
 
@@ -653,6 +660,13 @@ class BalanceService
 
             $amount = (string) $fresh->converted_amount;
 
+            if (bccomp((string) $fresh->refunded_amount, '0', 2) > 0) {
+                $remaining = bcsub((string) $fresh->amount, (string) $fresh->refunded_amount, 2);
+                $amount = bccomp($remaining, '0', 2) > 0
+                    ? bcdiv(bcmul($amount, $remaining, 6), (string) $fresh->amount, 2)
+                    : '0.00';
+            }
+
             if ($fresh->settlement_mode !== null) {
                 $this->creditForPaidOrder($fresh);
                 $merchant->refresh();
@@ -667,6 +681,12 @@ class BalanceService
             }
 
             $openedAt = now();
+
+            $fresh->normal_status = $this->lifecycle->normalStatus($fresh);
+
+            if ($fresh->status === 'disputing' && $fresh->gateway_status === null) {
+                $fresh->gateway_status = 'disputing';
+            }
 
             $event = OrderDisputeEvent::query()->create(array_merge($attributes, [
                 'merchant_id' => $fresh->merchant_id,
@@ -687,8 +707,8 @@ class BalanceService
                 'frozen_change' => $amount,
             ]);
 
-            $fresh->status = Order::STATUS_DISPUTE_REVIEW;
             $fresh->save();
+            $this->lifecycle->sync($fresh);
 
             return $event;
         });
@@ -698,7 +718,7 @@ class BalanceService
      * 关闭争议审核事件（人工手动或系统到期自动均走这里）：按事件自身的
      * frozen_amount 快照释放冻结（不重新读取订单当前 converted_amount，
      * 避免订单金额在此期间发生变化导致释放金额与当初冻结的不一致），订单
-     * 状态回退为 paid，事件状态置为 closed。
+     * 状态按独立网关及本地业务事实重新推导，事件状态置为 closed。
      *
      * 幂等：事件已不是 processing 时静默返回 false，不抛异常——手动关闭
      * 与到期自动关闭的定时任务可能并发碰到同一个事件，不应该让后到达的
@@ -713,7 +733,10 @@ class BalanceService
         ?string $remark = null,
     ): bool {
         $released = $this->mutate($event->merchant_id, function (Merchant $merchant) use ($event, $operator, $closeType, $remark) {
-            $fresh = OrderDisputeEvent::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($event->id);
+            $order = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->lockForUpdate()->findOrFail($event->order_id);
+            $fresh = OrderDisputeEvent::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                ->where('order_id', $order->id)->lockForUpdate()->findOrFail($event->id);
 
             if (! $fresh->isProcessing()) {
                 return false;
@@ -735,18 +758,7 @@ class BalanceService
                 'close_remark' => $remark,
             ]);
 
-            $order = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($fresh->order_id);
-
-            if ($order && $order->status === Order::STATUS_DISPUTE_REVIEW) {
-                $order->status = 'paid';
-                $order->save();
-            } elseif ($order) {
-                Log::warning('order_dispute: 关闭事件时订单状态已不是 dispute_review，跳过状态回退', [
-                    'order_id' => $order->id,
-                    'order_status' => $order->status,
-                    'dispute_event_id' => $fresh->id,
-                ]);
-            }
+            $this->lifecycle->sync($order);
 
             return true;
         });
@@ -840,11 +852,7 @@ class BalanceService
                 return false;
             }
 
-            if ($order && in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true)) {
-                return false;
-            }
-
-            if ($order && $this->hasUnsettledReversals($merchant->id, $order->id)) {
+            if ($order && $this->lifecycle->isBlocked($order)) {
                 return false;
             }
 
@@ -940,8 +948,6 @@ class BalanceService
      * 背景：Filament 的 DateTimePicker 提交的是 'Y-m-d H:i:s' 字符串，
      * 而 freezeFunds() 的 $releaseAt 声明为 ?DateTimeInterface —— 直接传字符串
      * 会抛 TypeError。这里兼容字符串入参，统一用 Carbon 解析成系统时区的时间。
-     *
-     * @param  \DateTimeInterface|string|null  $value
      */
     private function normalizeDateTime(\DateTimeInterface|string|null $value): ?\DateTimeInterface
     {

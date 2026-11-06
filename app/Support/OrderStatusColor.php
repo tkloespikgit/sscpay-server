@@ -12,6 +12,7 @@ class OrderStatusColor
     public const DEFAULT_COLORS = [
         'pending' => 'gray',
         'paid' => 'info',
+        'pending_settlement' => 'warning',
         'shipped' => 'warning',
         'completed' => 'success',
         'cancelled' => 'danger',

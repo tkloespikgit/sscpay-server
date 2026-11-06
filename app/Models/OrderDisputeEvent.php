@@ -11,16 +11,16 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * 人工发起的订单争议审核事件：财务管理员对一笔已付款订单开立，冻结该笔
  * 订单金额，交由订单管理员回复补充材料，最终人工手动或到期自动结束
- * （释放冻结资金，订单状态恢复 paid）。生命周期：
+ * （释放冻结资金，按当前业务事实恢复订单主状态）。生命周期：
  *
  *   processing 处理中 —— 已冻结 frozen_amount（USD），订单状态为
  *     Order::STATUS_DISPUTE_REVIEW，同一订单同时只能有一条（见迁移里的
  *     生成列唯一约束）。
- *   closed 已结束 —— 冻结已释放，订单状态回退 paid。close_type 区分
+ *   closed 已结束 —— 冻结已释放，订单状态按当前事实恢复。close_type 区分
  *     manual（人工，closed_by 有值）/ auto（到期系统自动关闭，closed_by 为 NULL）。
  *
- * 冻结/释放不产生 merchant_balance_transactions 流水（同提现冻结的既有约定），
- * 审计以本表状态 + opened_by/opened_at/closed_by/closed_at 为准。
+ * 冻结/释放产生金额为 0 的 merchant_balance_transactions 分类流水，
+ * 审计同时保留本表状态及 opened_by/opened_at/closed_by/closed_at。
  * final_action（拟定退款/拒付）仅作报备记录，不自动触发任何资金动作——
  * 真正的退款/拒付仍需之后单独走 BalanceService::refund()/chargeback()。
  */

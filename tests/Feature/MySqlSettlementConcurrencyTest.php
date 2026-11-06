@@ -170,7 +170,7 @@ class MySqlSettlementConcurrencyTest extends TestCase
             $this->assertTrue($results[1]['result']);
             $this->assertSame(OrderDisputeEvent::STATUS_CLOSED, $event->refresh()->status);
             $this->assertSame($results[0]['status'] === 'completed' ? 1 : 0, OrderDisputeEventReply::where('order_dispute_event_id', $eventId)->count());
-            $this->assertSame('paid', $order->refresh()->status);
+            $this->assertSame('pending_settlement', $order->refresh()->status);
             $this->assertSame('0.00', $this->merchant->refresh()->frozen_balance);
             $this->assertSame('95.00', $this->merchant->balance);
         }

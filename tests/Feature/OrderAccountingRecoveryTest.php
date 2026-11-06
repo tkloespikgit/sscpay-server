@@ -49,7 +49,7 @@ class OrderAccountingRecoveryTest extends TestCase
 
         $this->pushAndAssertAccountingFailure($order, 'paid');
 
-        $this->assertSame('paid', $order->refresh()->status);
+        $this->assertSame('pending_settlement', $order->refresh()->status);
         $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'paid', 'status' => 'pending']);
 

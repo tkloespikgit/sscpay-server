@@ -109,7 +109,7 @@ class ApiDocumentationReferenceTest extends TestCase
         sort($expected);
         sort($actual);
 
-        $this->assertCount(12, $rows);
+        $this->assertCount(13, $rows);
         $this->assertSame($expected, $actual);
         $xpath = $this->document($response->getContent());
         $sections = $xpath->query('//main//section[@id]');

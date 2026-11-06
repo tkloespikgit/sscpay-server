@@ -189,7 +189,7 @@ class OrderStatusColorConfigTest extends TestCase
         $this->assertSame(SystemConfig::TYPE_JSON, $config->value_type);
         $this->assertSame('order', $config->group);
         $this->assertInstanceOf(stdClass::class, json_decode($config->config_value));
-        $this->assertCount(12, json_decode($config->config_value, true));
+        $this->assertSame(OrderStatusColor::DEFAULT_COLORS, json_decode($config->config_value, true));
 
         $config->update(['config_value' => '{"paid":"primary"}']);
 

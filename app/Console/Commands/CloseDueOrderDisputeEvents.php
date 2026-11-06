@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 
 /**
  * 扫描"处理中且已到期"的争议审核事件，逐个自动结束（释放冻结资金，
- * 订单状态回退 paid）。close_type 落 auto，closed_by 落 NULL，
+ * 订单状态按当前结算、物流及售后事实恢复）。close_type 落 auto，closed_by 落 NULL，
  * 与人工手动结束在审计记录里可区分。
  *
  * 建议调度频率：每 5-10 分钟一次。

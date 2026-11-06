@@ -5,7 +5,7 @@ namespace App\Support;
 class ObserverOrderStatus
 {
     public const GROUPS = [
-        'paid' => ['paid', 'shipped', 'completed'],
+        'paid' => ['paid', 'pending_settlement', 'shipped', 'completed'],
         'refunded' => ['refunded', 'partially_refunded'],
         'chargeback' => ['chargeback'],
         'disputing' => ['disputing', 'dispute_review'],

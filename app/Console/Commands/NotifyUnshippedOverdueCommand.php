@@ -26,10 +26,9 @@ class NotifyUnshippedOverdueCommand extends Command
         $deadline = now()->subHours(LogisticsTrackingSyncService::UNSHIPPED_HOURS);
 
         $orders = Order::query()->withoutGlobalScopes()
-            ->where('status', 'paid')
+            ->paidUnshipped()
             ->whereNotNull('paid_at')
             ->where('paid_at', '<=', $deadline)
-            ->doesntHave('shipping')
             ->orderBy('paid_at')
             ->get(['id', 'merchant_id', 'order_no', 'merchant_order_no', 'transaction_id', 'payment_method_id', 'payment_method', 'paid_at', 'currency', 'amount']);
 

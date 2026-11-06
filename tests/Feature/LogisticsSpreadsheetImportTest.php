@@ -127,7 +127,7 @@ class LogisticsSpreadsheetImportTest extends TestCase
         $this->assertSame([2, 3, 4], $records->pluck('row_number')->all());
         $this->assertSame(['success', 'failed', 'failed'], $records->pluck('status')->all());
         $this->assertStringContainsString('unknown-carrier', $records[1]->error_message);
-        $this->assertSame('订单不存在或不是待发货状态', $records[2]->error_message);
+        $this->assertSame('订单不存在或不属于可录入物流的未发货订单', $records[2]->error_message);
         $this->assertSame('VALID-TRACKING', $validOrder->fresh()->shipping->tracking_number);
         $this->assertNull($invalidOrder->fresh()->shipping);
         $this->assertNull($otherOrder->fresh()->shipping);

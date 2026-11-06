@@ -247,7 +247,10 @@ POST {BASE_URL}/api/order/create
     "converted_amount": "205.20",
     "exchange_rate": "1.080000",
     "payment_method": "paypal",
-    "status": "pending"
+    "status": "pending",
+    "order_status": "pending",
+    "settlement_status": null,
+    "shipping_status": "unshipped"
   }
 }
 ```
@@ -260,7 +263,10 @@ POST {BASE_URL}/api/order/create
 | `converted_currency` / `converted_amount` | 折算为 USD 后的金额（含汇损） |
 | `exchange_rate` | 下单时刻锁定的结算汇率（含汇损） |
 | `payment_method` | **订单锁定的唯一支付方式**，后续重试沿用原渠道，不重新选择；若原订单指定了 `payment_method_key`，这里返回该指定渠道 |
-| `status` | 新单通常为 `pending`；幂等返回的是订单当前状态，不能假设始终待支付 |
+| `status` | 兼容状态：本地 `pending_settlement` 返回 `paid`，其余状态原样返回；新单通常为 `pending`，幂等请求可能返回已收款或售后状态 |
+| `order_status` | 本地真实订单主状态，包含新增的 `pending_settlement`；见下方状态枚举 |
+| `settlement_status` | 本单真实结算记录状态：`waiting_shipment` / `pending` / `settled` / `cancelled`；尚无记录或历史订单为 `null` |
+| `shipping_status` | 是否存在有效物流记录：`shipped` / `unshipped`；与结算状态独立 |
 
 应用可在后台开启自动折扣（默认关闭）：按请求 `amount` 的原币种金额，不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50；极小金额至少保留 0.01，不足减免时跳过。请求仍提交原始金额与原始折扣，服务端首次建单时增加折扣并减少实际应付金额。响应中的折算金额、订单查询及支付通知中的金额反映折扣后的实际付款金额。重试仍提交原始请求金额，服务端复用首次折扣，不重新随机。
 
@@ -374,6 +380,9 @@ POST {BASE_URL}/api/order/ship
     "order_no": "ORD2026070612345678",
     "merchant_order_no": "M20260706001",
     "status": "shipped",
+    "order_status": "shipped",
+    "settlement_status": "pending",
+    "shipping_status": "shipped",
     "logistics_company": "DHL",
     "tracking_number": "1234567890",
     "tracking_url": "https://www.dhl.com/track?id=1234567890",
@@ -382,12 +391,12 @@ POST {BASE_URL}/api/order/ship
 }
 ```
 
-`status` 返回订单**同步后**的最新状态：如果订单原本是 `paid`（待发货），提交物流信息后会自动推进为 `shipped`；如果订单已经是 `shipped`（或 `partially_refunded`/`disputing`），只更新物流记录，`status` 保持不变。
+`order_status` 返回保存物流后的真实主状态，`status` 仍采用兼容映射（`pending_settlement` → `paid`）。发货后起算模式首次录入有效物流后进入 `shipped` 并启动结算周期；0 天周期可能直接完成结算而返回 `completed`。支付后起算模式保持 `pending_settlement` 或已结算的 `completed`，录入物流不会倒退主状态。部分退款、争议等售后状态优先保留。`shipping_status` 返回 `shipped`，仅代表本地已有有效物流记录。
 
 ### 失败响应
 
 ```json
-{ "code": 422, "msg": "订单当前状态为「completed」，只有已支付、已发货（补发改单）或部分退款状态的订单才能录入物流信息。", "error_code": "INVALID_ORDER_STATUS" }
+{ "code": 422, "msg": "订单当前状态为「refunded」，只有已收款且未全额退款、未拒付的订单才能录入物流信息。", "error_code": "INVALID_ORDER_STATUS" }
 ```
 
 | HTTP | `error_code` | 触发条件 |
@@ -395,7 +404,7 @@ POST {BASE_URL}/api/order/ship
 | 401 | — | 同鉴权失败 |
 | 422 | （无 `error_code`，标准校验错误，`errors` 字段含具体字段错误） | 字段格式问题（必填缺失、超长、`tracking_url` 不是合法 URL 等），也包括 `logistics_company` 不在系统承运商列表中（提示联系管理员添加该承运商） |
 | 404 | `ORDER_NOT_FOUND` | 该商户名下找不到 `merchant_order_no` 对应的订单 |
-| 422 | `INVALID_ORDER_STATUS` | 订单当前状态不允许录入物流：只有 `paid`（已支付待发货）、`shipped`（已发货，视为补发/改单）、`partially_refunded`（部分退款）、`disputing`（争议中）这 4 种状态可以调用；订单处于 `pending`/`failed`/`cancelled`/`expired`/`refunded`/`chargeback`/`completed` 时会被拒绝 |
+| 422 | `INVALID_ORDER_STATUS` | 订单当前状态不允许录入物流：允许 `paid`、`pending_settlement`、`shipped`、`completed`、`partially_refunded`、`disputing` 录入或覆盖物流；`pending`、`failed`、`cancelled`、`expired`、`refunded`、`chargeback`、`dispute_review` 不允许调用。已完成仅表示结算完成，仍可补录物流 |
 
 ### 行为说明（对接前务必确认）
 
@@ -438,6 +447,9 @@ POST {BASE_URL}/api/order/query
     "order_no": "ORD2026070612345678",
     "merchant_order_no": "M20260706001",
     "status": "paid",
+    "order_status": "pending_settlement",
+    "settlement_status": "pending",
+    "shipping_status": "unshipped",
     "platform": "wordpress",
     "currency": "EUR",
     "amount": "190.00",
@@ -448,7 +460,7 @@ POST {BASE_URL}/api/order/query
 }
 ```
 
-响应字段以上述列表为准，不返回 `pay_url`、付款 token 或物流明细。需要保存的付款链接以建单响应为准；物流字段以 `/order/ship` 成功响应为准。
+创建、查询及上传物流三个成功响应均包含 `status`、`order_status`、`settlement_status`、`shipping_status`，含义与创建订单响应一致。`status` 保留旧客户端可识别的值，新增待结算仅通过 `order_status` 精确表达。查询不返回 `pay_url`、付款 token 或物流明细。需要保存的付款链接以建单响应为准；物流字段以 `/order/ship` 成功响应为准。
 
 ### 失败响应
 
@@ -464,9 +476,9 @@ POST {BASE_URL}/api/order/query
 
 ### 触发条件（重要，容易被误解）
 
-系统只在订单由此前未收款状态（`pending`、`failed`、`cancelled`、`expired`）**首次流转为 `paid`（已支付）** 时创建交易结果通知，投递到建单时保存的 `notify_url`。已收款订单（包括争议、退款等状态）恢复到 `paid` 不会重复创建首次支付通知；已创建通知的失败重试仍可能继续投递。
+系统只在**首次确认支付成功**时创建交易结果通知，投递到建单时保存的 `notify_url`。该支付事实与本地履约、结算阶段独立：订单可能已进入 `pending_settlement`，或因 0 天周期已进入 `completed`，通知中的 `status` 仍固定为 `paid`。已收款订单的状态恢复、结算或售后变化不会重复创建首次支付通知；已创建通知的失败重试仍可能继续投递。
 
-**其他状态变化都不会触发这个 webhook**，包括：`failed`（支付失败）、`cancelled`（取消）、`expired`（过期）、`refunded`（退款）、`disputing`（争议中）、`chargeback`（拒付），也包括调用 `/order/ship` 后订单从 `paid` 推进到 `shipped`。这些状态目前只在系统后台产生记录/人工提醒，**不会**同步推送给对接方。如果需要感知这些状态，目前只能通过 [POST /order/query](#post-orderquery查询订单) 轮询兜底。
+**其他状态变化都不会触发这个 webhook**，包括：`failed`（支付失败）、`cancelled`（取消）、`expired`（过期）、`refunded`（退款）、`disputing`（争议中）、`chargeback`（拒付），也包括发货推进为 `shipped`、结算推进为 `completed`。这些状态目前只在系统后台产生记录/人工提醒，**不会**同步推送给对接方。如果需要感知这些状态，目前只能通过 [POST /order/query](#post-orderquery查询订单) 轮询兜底。
 
 ### Payload
 
@@ -556,9 +568,10 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | 状态值 | 含义 | 是否触发 webhook | 是否允许调用 `/order/ship` |
 |---|---|---|---|
 | `pending` | 待支付 | 否 | 否 |
-| `paid` | 已支付（待发货） | ✅ 首次支付时 | ✅ 是 |
+| `paid` | 已支付，发货后起算模式待发货；兼容 `status` 也用于表示待结算 | ✅ 首次确认支付时 | ✅ 是 |
+| `pending_settlement` | 已支付，支付后起算模式待结算；仅在 `order_status` 返回 | 首次支付通知仍为 `paid` | ✅ 是 |
 | `shipped` | 已发货 | 否 | ✅ 是（视为补发/改单） |
-| `completed` | 已完成 | 否 | 否（终态） |
+| `completed` | 本单结算已完成，仍可发生争议、退款、拒付 | 否 | ✅ 是（可补录物流） |
 | `partially_refunded` | 部分退款 | 否 | ✅ 是 |
 | `refunded` | 已全额退款 | 否 | 否（终态） |
 | `disputing` | 争议中 | 否 | ✅ 是 |
@@ -568,7 +581,9 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | `cancelled` | 已取消 | 否 | 否（终态） |
 | `expired` | 支付链接已过期 | 否 | 否（终态） |
 
-状态更新存在重复、乱序和终态保护；例外是系统内部向网关主动查询得到 `paid` 时，可纠正包括终态在内的本地状态。该纠正不会撤销既有退款/拒付账务，或自动关闭人工审核、释放冻结资金。商户 `/order/query` 只读取本地记录，不执行这类网关查询或纠正。
+支付后起算模式按“支付成功 → 待结算 → 实际结算成功 → 已完成”推进；发货后起算模式按“支付成功 → 待发货 → 首次上传有效物流并起算 → 已发货 → 实际结算成功 → 已完成”推进。0 天周期可直接完成结算；“已完成”不表示保证金已经全部释放，也不阻止后续售后。部分退款状态不被剩余款项结算覆盖。
+
+网关回调保留重复、乱序及未收款回退保护。内部主动查询得到 `paid` 只确认支付事实，再依据实际结算、物流、退款/拒付及人工审核记录恢复主状态，不抹掉既有资金结果，不会将已结算订单降回待发货。商户 `/order/query` 始终只读取本地记录，不执行网关查询、状态修复或资金操作。
 
 ---
 

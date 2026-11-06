@@ -40,9 +40,8 @@ class Order extends Model
     /**
      * 人工发起的争议审核事件占用的订单状态（见 OrderDisputeService）。
      * 与网关 webhook 驱动的 'disputing' 是两套独立的机制——状态本身互不复用，
-     * 详见 OrderPaymentStatusService::shouldApply() 里对这个状态的专门守卫
-     * （一旦进入 dispute_review，后续 webhook 忽略；主动查询返回 paid 时可纠正
-     * 订单状态，但不关闭审核事件或释放冻结资金）。
+     * 网关事实独立保存；已支付查询不关闭审核，真实退款/拒付通过可靠待办
+     * 在同一账务事务中处理审核冻结与反向扣款。
      * 但 'disputing' 允许作为开立争议审核事件的起点之一（商户需要在网关争议
      * 处理期间提交申诉材料），见 BalanceService::freezeForDisputeEvent()——
      * 这只是放宽了开立时校验的起始状态，两套状态机的定义和驱动方式仍然独立。
@@ -50,6 +49,8 @@ class Order extends Model
      * 这里单独定义常量只是因为这个值需要被好几处新代码引用，避免手滑打错。
      */
     public const STATUS_DISPUTE_REVIEW = 'dispute_review';
+
+    public const STATUS_PENDING_SETTLEMENT = 'pending_settlement';
 
     /**
      * "从未收到过钱"的状态：订单要么还没支付，要么支付没成功。
@@ -140,6 +141,10 @@ class Order extends Model
         'wp_order_id',
         'transaction_id',
         'status',
+        'normal_status',
+        'gateway_status',
+        'gateway_status_updated_at',
+        'gateway_status_version',
         'paid_at',
         'failed_at',
         'pending_status_query_count',
@@ -152,6 +157,8 @@ class Order extends Model
     {
         return [
             'paid_at' => 'datetime',
+            'gateway_status_updated_at' => 'datetime',
+            'gateway_status_version' => 'integer',
             'failed_at' => 'datetime',
             'pending_status_query_count' => 'integer',
             'pending_status_last_queried_at' => 'datetime',
@@ -312,6 +319,11 @@ class Order extends Model
         return $this->hasMany(OrderNotificationAttempt::class);
     }
 
+    public function gatewayStatusEvents(): HasMany
+    {
+        return $this->hasMany(OrderGatewayStatusEvent::class);
+    }
+
     public function adConversionAttempts(): HasMany
     {
         return $this->hasMany(AdConversionAttempt::class);
@@ -421,7 +433,8 @@ class Order extends Model
      */
     public function scopePaidUnshipped(Builder $query): Builder
     {
-        return $query->where('status', 'paid')->doesntHave('shipping');
+        return $query->whereIn('status', ['paid', self::STATUS_PENDING_SETTLEMENT, 'shipped', 'completed', 'partially_refunded', 'disputing'])
+            ->doesntHave('shipping');
     }
 
     /**
@@ -437,6 +450,23 @@ class Order extends Model
     public function scopePaidEver(Builder $query): Builder
     {
         return $query->whereNotIn('status', self::NEVER_PAID_STATUSES);
+    }
+
+    /** 网关已确认反转但本金未记账的订单不得释放资金。 */
+    public function scopeWithoutUnresolvedGatewayReversal(Builder $query): Builder
+    {
+        return $query->where(function (Builder $query): void {
+            $query->whereNull('gateway_status')
+                ->orWhereNotIn('gateway_status', ['refunded', 'chargeback'])
+                ->orWhere(fn (Builder $refund) => $refund->where('gateway_status', 'refunded')->whereColumn('refunded_amount', '>=', 'amount'))
+                ->orWhere(fn (Builder $chargeback) => $chargeback->where('gateway_status', 'chargeback')
+                    ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
+        })->where(function (Builder $query): void {
+            $query->whereNotIn('status', ['refunded', 'chargeback'])
+                ->orWhere(fn (Builder $refund) => $refund->where('status', 'refunded')->whereColumn('refunded_amount', '>=', 'amount'))
+                ->orWhere(fn (Builder $chargeback) => $chargeback->where('status', 'chargeback')
+                    ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
+        });
     }
 
     /**

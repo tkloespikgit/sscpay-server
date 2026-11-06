@@ -111,6 +111,7 @@ return [
         'cancelled_body' => 'Your payment was not completed. You can go back and try again.',
         'order_no' => 'Order number',
         'status' => 'Status',
+        'paid' => 'Payment received',
         'back' => 'Back to checkout',
     ],
 

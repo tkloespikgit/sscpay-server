@@ -6,8 +6,8 @@ use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
-use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\OrderDetailsConflictException;
+use App\Exceptions\OrderItemsMismatchException;
 use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Http\Controllers\Controller;
@@ -89,7 +89,7 @@ class OrderController extends Controller
                 'converted_amount' => (string) $order->converted_amount,
                 'exchange_rate' => (string) $order->exchange_rate,
                 'payment_method' => $order->payment_method,
-                'status' => $order->status,
+                ...$this->statusData($order),
             ],
         ]);
     }
@@ -119,7 +119,7 @@ class OrderController extends Controller
             'data' => [
                 'order_no' => $order->order_no,
                 'merchant_order_no' => $order->merchant_order_no,
-                'status' => $order->status,
+                ...$this->statusData($order),
                 'platform' => $order->platform,
                 'currency' => $order->currency,
                 'amount' => (string) $order->amount,
@@ -169,13 +169,26 @@ class OrderController extends Controller
             'data' => [
                 'order_no' => $order->order_no,
                 'merchant_order_no' => $order->merchant_order_no,
-                'status' => $order->refresh()->status,
+                ...$this->statusData($order->refresh()),
                 'logistics_company' => $shipping->logistics_company,
                 'tracking_number' => $shipping->tracking_number,
                 'tracking_url' => $shipping->tracking_url,
                 'shipped_at' => $shipping->shipped_at->toIso8601String(),
             ],
         ]);
+    }
+
+    /**
+     * @return array{status: string, order_status: string, settlement_status: ?string, shipping_status: string}
+     */
+    private function statusData(Order $order): array
+    {
+        return [
+            'status' => $order->status === 'pending_settlement' ? 'paid' : $order->status,
+            'order_status' => $order->status,
+            'settlement_status' => $order->settlement()->forMerchant($order->merchant_id)->value('status'),
+            'shipping_status' => $order->shipping()->forMerchant($order->merchant_id)->exists() ? 'shipped' : 'unshipped',
+        ];
     }
 
     private function errorResponse(string $code, string $message, int $httpStatus): JsonResponse

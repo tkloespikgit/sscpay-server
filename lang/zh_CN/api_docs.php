@@ -371,7 +371,10 @@ curl_close($ch);
     "converted_amount": "205.20",
     "exchange_rate": "1.080000",
     "payment_method": "example_channel",
-    "status": "pending"
+    "status": "pending",
+    "order_status": "pending",
+    "settlement_status": null,
+    "shipping_status": "unshipped"
   }
 }',
                 ],
@@ -388,7 +391,10 @@ curl_close($ch);
                         ['converted_amount', 'string', '按订单快照折算后的金额，包含配置的汇损。'],
                         ['exchange_rate', 'string', '下单锁定汇率，包含配置的汇损。'],
                         ['payment_method', 'string', '最终用于该订单的渠道。'],
-                        ['status', 'string', '当前订单状态；幂等响应可能已经是 paid 或其他状态。'],
+                        ['status', 'string', '兼容状态：pending_settlement 返回 paid，其余状态原样返回。'],
+                        ['order_status', 'string', '本地真实订单主状态，包含 pending_settlement（待结算）。'],
+                        ['settlement_status', 'string / null', '真实结算记录状态 waiting_shipment、pending、settled、cancelled；尚无记录或历史订单为 null。'],
+                        ['shipping_status', 'string', '有有效物流为 shipped，否则 unshipped；与结算进度独立。'],
                     ],
                 ],
                 [
@@ -451,6 +457,9 @@ curl_close($ch);
     "order_no": "ORD202611031234561234",
     "merchant_order_no": "M20261103001",
     "status": "paid",
+    "order_status": "pending_settlement",
+    "settlement_status": "pending",
+    "shipping_status": "unshipped",
     "platform": "wordpress",
     "currency": "EUR",
     "amount": "190.00",
@@ -467,7 +476,10 @@ curl_close($ch);
                     'rows' => [
                         ['order_no', 'string', '系统订单号。'],
                         ['merchant_order_no', 'string', '商户订单号。'],
-                        ['status', 'string', '本地保存的当前状态，见状态枚举。'],
+                        ['status', 'string', '兼容状态：pending_settlement 返回 paid，其余状态原样返回。'],
+                        ['order_status', 'string', '本地真实订单主状态，包含 pending_settlement（待结算）。'],
+                        ['settlement_status', 'string / null', '真实结算记录状态 waiting_shipment、pending、settled、cancelled；尚无记录或历史订单为 null。'],
+                        ['shipping_status', 'string', '有有效物流为 shipped，否则 unshipped；与结算进度独立。'],
                         ['platform', 'string / null', '下单平台类型。'],
                         ['currency', 'string', '订单币种。'],
                         ['amount', 'string', '实际应付金额，包含应用自动折扣的结果。'],
@@ -495,7 +507,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => '按商户订单号录入或覆盖物流。只有 paid、shipped、partially_refunded、disputing 状态允许上传；paid 保存后推进为 shipped，其他三种状态保持不变。其他状态返回 INVALID_ORDER_STATUS。',
+                    'text' => '按商户订单号录入或覆盖物流。paid、pending_settlement、shipped、completed、partially_refunded、disputing 允许上传。发货后起算首次保存物流后进入 shipped 并起算，0 天周期可能直接 completed；支付后起算仍保持待结算或已完成。售后状态优先保留；其他状态返回 INVALID_ORDER_STATUS。',
                 ],
                 [
                     'type' => 'table',
@@ -543,6 +555,9 @@ curl_close($ch);
     "order_no": "ORD202611031234561234",
     "merchant_order_no": "M20261103001",
     "status": "shipped",
+    "order_status": "shipped",
+    "settlement_status": "pending",
+    "shipping_status": "shipped",
     "logistics_company": "DHL",
     "tracking_number": "0001234567890123456789",
     "tracking_url": "https://tracking.example.com/?number=0001234567890123456789",
@@ -557,7 +572,10 @@ curl_close($ch);
                     'rows' => [
                         ['order_no', 'string', '系统订单号。'],
                         ['merchant_order_no', 'string', '商户订单号。'],
-                        ['status', 'string', '保存物流后的最新订单状态。'],
+                        ['status', 'string', '兼容状态：pending_settlement 返回 paid，其余状态原样返回。'],
+                        ['order_status', 'string', '本地真实订单主状态，包含 pending_settlement（待结算）。'],
+                        ['settlement_status', 'string / null', '真实结算记录状态 waiting_shipment、pending、settled、cancelled；尚无记录或历史订单为 null。'],
+                        ['shipping_status', 'string', '有有效物流为 shipped，否则 unshipped；与结算进度独立。'],
                         ['logistics_company', 'string', '保存的承运商代码。'],
                         ['tracking_number', 'string', '保存的运单号。'],
                         ['tracking_url', 'string (URL) / null', '保存的查件地址。'],
@@ -698,7 +716,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => '订单从此前未收款状态 pending、failed、cancelled、expired 首次变为 paid 时创建支付结果通知。退款、拒付、争议、发货等后续状态不会创建这个通知；曾支付订单恢复 paid 也不重复创建首次支付通知。需要感知其他状态时使用订单查询兜底。',
+                    'text' => '首次确认支付成功时创建支付结果通知，通知 status 固定为 paid，与订单可能已经进入 pending_settlement 或 0 天周期 completed 无关。退款、拒付、争议、发货和结算等后续变化不创建这个通知，恢复正常状态也不重发首次通知。需要其他状态时使用订单查询。',
                 ],
                 [
                     'type' => 'links',
@@ -873,9 +891,10 @@ curl_close($ch);
                     'headers' => ['状态', '含义', '创建支付通知', '允许上传物流'],
                     'rows' => [
                         ['pending', '待支付', '否', '否'],
-                        ['paid', '已支付，待发货', '仅首次支付成功', '是'],
+                        ['paid', '已支付，发货后起算待发货；兼容字段也表示待结算', '仅首次确认支付', '是'],
+                        ['pending_settlement', '支付后起算待结算（仅 order_status）', '首次通知仍为 paid', '是'],
                         ['shipped', '已发货', '否', '是'],
-                        ['completed', '已完成', '否', '否'],
+                        ['completed', '本单已结算，仍允许售后', '否', '是'],
                         ['partially_refunded', '部分退款', '否', '是'],
                         ['refunded', '已全额退款', '否', '否'],
                         ['disputing', '争议中', '否', '是'],
@@ -888,7 +907,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => '不要把浏览器回跳、成功建单或成功上传物流当成首次支付成功。系统可能因后续状态同步纠正已保存状态；查询接口本身始终只读，不会发起网关查询或纠正。',
+                    'text' => '不要把浏览器回跳、成功建单或成功上传物流当成首次支付成功。已完成表示实际结算完成，不代表不能退款、拒付或争议；物流与结算独立。内部网关查询只确认支付事实，不抹掉已记账售后或人工审核；商户查询接口始终只读，不发起网关查询或纠正。',
                 ],
             ],
         ],

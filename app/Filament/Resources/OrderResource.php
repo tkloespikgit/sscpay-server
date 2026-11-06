@@ -6,8 +6,10 @@ use App\Filament\Resources\OrderResource\Pages;
 use App\Models\Application;
 use App\Models\Merchant;
 use App\Models\Order;
+use App\Models\OrderSettlement;
 use App\Models\OrderShipping;
 use App\Models\PaymentMethod;
+use App\Models\User;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
@@ -68,7 +70,7 @@ class OrderResource extends Resource
             // shipping.tracking_number 列会自动触发 shipping 的预加载，这里额外带上
             // shipping.operator，避免点击"物流信息"弹窗时才现查触发懒加载；
             // paymentMethod 用于把 payment_method 列从 method_code 换成 method_name 展示。
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent', 'settlement']))
             ->columns([
                 // 商户名称列仅平台侧账号（超管、商户级管理员）可见（商户用户本来就只看自己的订单）
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
@@ -101,6 +103,17 @@ class OrderResource extends Resource
                     ->badge()
                     ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
                     ->color(fn (string $state): string => OrderStatusColor::get($state)),
+                TextColumn::make('settlement.status')
+                    ->label(__('admin.order.columns.settlement_status'))
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): ?string => $state ? __('settlement.statuses.'.$state) : null)
+                    ->placeholder(__('settlement.no_record'))
+                    ->color(fn (?string $state): string => match ($state) {
+                        OrderSettlement::STATUS_SETTLED => 'success',
+                        OrderSettlement::STATUS_CANCELLED => 'danger',
+                        OrderSettlement::STATUS_PENDING => 'warning',
+                        default => 'gray',
+                    }),
                 // 展示 payment_methods.method_name；老数据/关联已被硬删除时兜底回退到
                 // 冗余存的 method_code，保证列不会空着。
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))
@@ -284,6 +297,7 @@ class OrderResource extends Resource
                 SelectFilter::make('status')->label(__('admin.order.filters.status'))->multiple()->options([
                     'pending' => __('admin.order.statuses.pending'),
                     'paid' => __('admin.order.statuses.paid'),
+                    'pending_settlement' => __('admin.order.statuses.pending_settlement'),
                     'shipped' => __('admin.order.statuses.shipped'),
                     'completed' => __('admin.order.statuses.completed'),
                     'cancelled' => __('admin.order.statuses.cancelled'),
@@ -310,11 +324,28 @@ class OrderResource extends Resource
                             ->when(($data['value'] ?? null) === 'unshipped', fn ($q) => $q->doesntHave('shipping'));
                     }),
 
+                SelectFilter::make('settlement_status')
+                    ->label(__('admin.order.filters.settlement_status'))
+                    ->options([
+                        OrderSettlement::STATUS_WAITING_SHIPMENT => __('settlement.statuses.waiting_shipment'),
+                        OrderSettlement::STATUS_PENDING => __('settlement.statuses.pending'),
+                        OrderSettlement::STATUS_SETTLED => __('settlement.statuses.settled'),
+                        OrderSettlement::STATUS_CANCELLED => __('settlement.statuses.cancelled'),
+                        'none' => __('settlement.no_record'),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $status = $data['value'] ?? null;
+
+                        return $query
+                            ->when($status === 'none', fn (Builder $query): Builder => $query->doesntHave('settlement'))
+                            ->when(filled($status) && $status !== 'none', fn (Builder $query): Builder => $query->whereHas('settlement', fn (Builder $query): Builder => $query->where('status', $status)));
+                    }),
+
                 // 待入账：状态已是退款/拒付、但钱还没从商户余额扣掉的订单。
                 // 主要用来捞出历史遗留的那一批（网关回调早期只改状态不扣款，
                 // 见 Order::scopePendingReversalSettlement()），供财务逐单补录。
                 SelectFilter::make('pending_reversal_settlement')
-                    ->label(__('admin.order.filters.settlement_status'))
+                    ->label(__('admin.order.filters.reversal_accounting_status'))
                     ->options([
                         'pending' => __('admin.order.filters.settlement_pending'),
                     ])
@@ -417,16 +448,18 @@ class OrderResource extends Resource
     /**
      * "查询最新状态"（文档第七节 /order-query）：列表行内和详情页头部共用同一个
      * Action 定义，避免两处各写一遍、改文案的时候漏改一处。用 ORDERS_VIEW 权限
-     * 把关而不是单独开一个权限——这是个"拉取插件侧最新数据"的只读触发动作，
-     * 谁能看订单谁就能点，跟退款/拒付那种真正的资金操作不是一回事。
+     * 把关；查询结果可能补偿本地状态和记账，因此执行时仍须核对当前权限及租户范围。
      */
     public static function queryStatusAction(): Action
     {
         return Action::make('queryOrderStatus')
             ->label(__('admin.order.actions.query_status'))
             ->icon('heroicon-o-arrow-path')
-            ->visible(fn () => (bool) auth()->user()?->can(Permissions::ORDERS_VIEW))
-            ->action(function ($record) {
+            ->authorize(fn (): bool => static::canViewAny())
+            ->visible(fn (): bool => static::canViewAny())
+            ->action(function (Order $record): void {
+                abort_unless(static::canPerformOrderAction($record, Permissions::ORDERS_VIEW), 403);
+
                 try {
                     $result = app(OrderPaymentStatusService::class)->queryAndApply($record);
                 } catch (PaymentGatewayException $e) {
@@ -470,6 +503,24 @@ class OrderResource extends Resource
                         ->send();
                 }
             });
+    }
+
+    public static function canPerformOrderAction(Order $record, string $permission): bool
+    {
+        $user = auth()->user();
+        if (! $user instanceof User) {
+            return false;
+        }
+
+        $user->refresh();
+        if (! $user->status || ! $user->can(Permissions::ORDERS_VIEW) || ! $user->can($permission)) {
+            return false;
+        }
+
+        $merchantId = Order::query()->withoutGlobalScopes()->whereNull('deleted_at')->whereKey($record->id)->value('merchant_id');
+        $merchantIds = $user->manageableMerchantIds();
+
+        return $merchantId !== null && ($merchantIds === null || in_array((int) $merchantId, $merchantIds, true));
     }
 
     /**

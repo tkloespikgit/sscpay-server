@@ -66,7 +66,7 @@
 
 ## D-08 网关争议与人工审核分开
 
-**状态：已实现；主动查询的 `paid` 例外由 D-18 补充。** 网关 `disputing` 与人工 `dispute_review` 是两套机制；人工审核期间忽略 webhook 状态覆盖并可告警。主动查询返回 `paid` 可纠正订单状态，审核事件与冻结独立保留。审核开立/关闭冻结或释放快照金额，拟定的 `final_action` 不自动执行退款/拒付。
+**状态：已实现；原主动查询例外由 D-18 补充，2026-11-06 的状态恢复与最终反向结果处理由 [D-29](#d-29-订单主状态由结算与售后事实统一推导) 替代。** 网关 `disputing` 与人工 `dispute_review` 仍是两套机制；审核期间的普通支付状态不能抹掉活动审核，最终网关退款/拒付则保存并可靠记账，与审核冻结协调处理。关闭审核按独立事实恢复主状态，不再固定回 `paid`。审核拟定的 `final_action` 本身仍不触发退款/拒付。
 
 **原因与影响：** 人工收集材料及截止期限不能被异步网关消息打断。单订单同时最多一个处理中事件，由行锁与生成列唯一约束共同保护。
 
@@ -161,6 +161,8 @@
 
 ## D-18 主动查询已支付结果优先于本地状态
 
+**替代关系：2026-11-06 的 [D-29](#d-29-订单主状态由结算与售后事实统一推导) 已替代下述“`paid` 无条件改为本地 `paid/shipped`”规则。以下保留为历史实现记录；当前查询确认支付事实，再结合结算及售后事实推导主状态。**
+
 **状态：当前工作区已实现，未提交（2026-10-17，按用户要求）。** `OrderPaymentStatusService::queryAndApply()` 查询网关返回 `paid` 时，无论本地是过期、失败、退款、拒付、已完成或人工审核等状态，都纠正为 `paid`；本地已为 `paid` 时幂等跳过。此例外补充 D-08，webhook 与查询非 `paid` 结果继续使用原有状态守卫。
 
 2026-11-03 工作区修正：曾收款订单恢复 `paid` 时，有本商户未软删除的物流记录则恢复为 `shipped`，避免争议取消后误回到待发货。查询和允许落地的 webhook 共用此规则，按最终本地状态判重；已被旧逻辑改成 `paid` 且仍有有效物流的订单再次查询即可纠正。首次支付沿用原有入账、通知及预录物流推进流程。
@@ -177,7 +179,7 @@
 
 **原因与影响：** 避免未付款订单在 48 小时内反复请求网关。订单持久化 `pending_status_query_count` 与 `pending_status_last_queried_at`，在网关调用之前按当前状态、窗口、到期条件及原次数原子领取，异常、未知状态和缺凭证都消耗一次，重复或并发调用不会突破两次上限。第一次查询后已离开待支付状态则停止；手工查询不计入自动额度，客户端内部连接重试仍沿用原策略。
 
-首次部署须执行新增迁移。此前没有可恢复的查询计数，历史订单默认从 0 累计并保留 48 小时窗口，不从日志推断次数；回滚/重建计数会重开额度，生产优先前向修复。本规则仅改变定时查询的选择和次数，支付状态落地继续遵循 D-18。
+首次部署须执行新增迁移。此前没有可恢复的查询计数，历史订单默认从 0 累计并保留 48 小时窗口，不从日志推断次数；回滚/重建计数会重开额度，生产优先前向修复。本规则仅改变定时查询的选择和次数，支付状态落地当前遵循 D-29；此前的 D-18 规则保留为历史记录。
 
 **依据：** [PendingOrderStatusSyncService](../app/Services/PendingOrderStatusSyncService.php)、[Order](../app/Models/Order.php)、[迁移](../database/migrations/2026_10_17_024742_add_pending_status_query_tracking_to_orders_table.php)、[调度](../routes/console.php)、[回归测试](../tests/Feature/SyncPendingOrderStatusesTest.php)。
 
@@ -310,3 +312,20 @@
 编辑页彻底移除主表单的 `paymentMethods` 关系字段，避免主表单保存覆盖即时成员变更，或把权重重置为旧 `pivotData` 中的 100。按用户后续明确要求，**支付组创建后不能转移到其他商户，超级管理员也无例外**：编辑页禁用所属商户选择；保存时锁定当前商户和组，若提交商户与数据库归属不同则报字段验证错误，整次保存不写入，也不清理组成员。`PaymentGroup::updating` 还会拒绝模型实例的 `merchant_id` 变更，保护其他 Eloquent 实例更新路径；创建和同商户普通编辑正常。此要求替代中间实现中的“转移商户后清理旧成员”，移除转移逻辑和初始商户追踪。面板始终使用数据库已保存的所属商户，普通保存后仍派事件刷新关系组件。无需新增迁移或数据库触发器，不通过本次改动批量修正历史数据或重置存量权重。
 
 **依据：** [PaymentGroupResource](../app/Filament/Resources/PaymentGroupResource.php)、[CreatePaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/CreatePaymentGroup.php)、[EditPaymentGroup](../app/Filament/Resources/PaymentGroupResource/Pages/EditPaymentGroup.php)、[PaymentGroup](../app/Models/PaymentGroup.php)、[PaymentMethodsRelationManager](../app/Filament/Resources/PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager.php)、[PaymentGroupMethodService](../app/Services/PaymentGroupMethodService.php)、[共用列表](../resources/views/filament/resources/payment-group-resource/method-panel-lists.blade.php)、[行为测试](../tests/Feature/Filament/PaymentGroupMethodManagementTest.php)。
+
+## D-29 订单主状态由结算与售后事实统一推导
+
+**状态：当前工作区实现，未提交（2026-11-06，按用户要求）。** 补充 D-07、D-17，替代 D-18 中“主动查询 `paid` 可无条件覆盖订单主状态”的行为及 D-08 中人工审核期间吞掉最终网关退款/拒付的处理。`completed` 表示本单正常结算阶段完成，仍可进入网关争议、人工审核、退款或拒付；不是售后终态。
+
+**原因与影响：** 旧完成状态只能由人工标签产生，实际结算未同步主状态；同时完成保护吞掉真实售后回调。支付、履约、结算和售后使用同一状态字段的多个直接写入入口，还会在查询/审核关闭后错误回到待发货。现在由 `OrderLifecycleService` 复用真实结算、有效物流、退款/拒付流水、活动审核和网关事实统一推导。
+
+- 支付后起算（数据库仍为 `immediate`）确认支付后进入 `pending_settlement`，实际结算成功后进入 `completed`；发货后起算（`shipped`）先 `paid`，首次有效物流启动周期后 `shipped`，真实结算后 `completed`。0 天周期可同次完成，不强制停留在中间状态。
+- 起算和金额规则不变：支付按首次 `paid_at`；物流按首次有效录入与支付时间中较晚者，改号/补发不重启；N×24 小时；结算只划转剩余净额，循环保证金期限从实际结算起算。部分退款保留售后主状态，结算 `cancelled` 不能等同订单已全退。
+- 已完成也接收网关 `disputing/refunded/confused`，后者映射 `chargeback`；保存可靠反向待办再尝试记账。重复事件、账务唯一键、退款累计和已拒付本金流水共同防重；部分退款后拒付仍需人工核对，不重复扣本金。旧单新收到反向结果可以补偿该反向记账，不重做历史收入或结算。
+- 人工审核开立支持合理已收款阶段，保留权限、租户范围和 TOTP；关闭只处理该事件冻结并重新推导主状态，不固定回 `paid`。活动审核、网关争议和未结清反向待办直接阻止结算或保证金释放，不依赖主状态标签；暂停保留原周期。
+- 网关事实独立保存在 `gateway_status/gateway_status_updated_at/gateway_status_version`，接收结果写 `order_gateway_status_events`，只保留标准化白名单摘要。保留当前网关尝试引用校验，对旧事件、同时间冲突及查询期间新回调做保护。`conflict/query_race` 保留审计和警告，由后台“查询最新状态”核对，不自动批量重查。查询 `paid` 不抹掉实际退款/拒付、活动审核或已完成结算；不重复首次入账、商户通知、广告转化或指定渠道付款提醒。
+- 首次通知及广告转化意图与首次支付事实同事务保存、提交后派发，持久化失败则回滚以支持回调重试；首次支付通知继续固定 `status=paid`。后台新增待结算、真实结算展示/筛选，人工直接“设为完成”取消。API 旧 `status` 将待结算映射为 `paid`，新增 `order_status/settlement_status/shipping_status`；观察者待结算归支付成功，风控/统计仍取曾支付成功和 `paid_at`。
+
+**历史兼容与上线：** 迁移仅新增字段及审计表，不批量改状态、回填事件、全量查询网关或重记账。`settlement_mode=NULL` 的历史订单保留原资金规则，旧人工完成阶段在后续事件中通过 `normal_status` 保存，以便争议往返恢复。已有结算快照的存量订单随新事件和到期处理收敛；历史忽略的售后需单独核对。部署先执行新增迁移，再使用新代码并重启队列进程；已有接收审计后禁止破坏性回滚，使用前向修复。
+
+**依据：** [OrderLifecycleService](../app/Services/OrderLifecycleService.php)、[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[BalanceService](../app/Services/BalanceService.php)、[OrderAccountingService](../app/Services/OrderAccountingService.php)、[网关状态审计迁移](../database/migrations/2026_11_06_102253_add_gateway_status_tracking_to_orders.php)、[API 控制器](../app/Http/Controllers/Api/OrderController.php)、[生命周期测试](../tests/Feature/OrderLifecycleTest.php)、[结算测试](../tests/Feature/OrderSettlementBalanceTest.php)、[API 兼容测试](../tests/Feature/OrderStatusApiCompatibilityTest.php)、[后台动作测试](../tests/Feature/Filament/OrderLifecycleActionsTest.php)。

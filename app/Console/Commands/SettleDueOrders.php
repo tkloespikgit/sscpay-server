@@ -69,7 +69,12 @@ class SettleDueOrders extends Command
         $started = $this->processCandidates(
             OrderSettlement::query()->withoutGlobalScopes()->where('status', 'waiting_shipment')
                 ->whereHas('order', fn (Builder $query) => $query->withoutGlobalScopes()
-                    ->whereIn('status', ['paid', 'shipped', 'completed', 'partially_refunded'])->whereHas('shipping')),
+                    ->whereIn('status', ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'])
+                    ->withoutUnresolvedGatewayReversal()
+                    ->where(fn (Builder $gateway) => $gateway->whereNull('gateway_status')->orWhere('gateway_status', '!=', 'disputing'))
+                    ->whereDoesntHave('activeDisputeEvent', fn (Builder $events) => $events->withoutGlobalScopes())
+                    ->whereDoesntHave('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())
+                    ->whereHas('shipping')),
             (int) $limit,
             function (OrderSettlement $settlement) use ($balanceService): bool {
                 $order = Order::query()->withoutGlobalScopes()
@@ -89,7 +94,11 @@ class SettleDueOrders extends Command
         $settled = $this->processCandidates(
             OrderSettlement::query()->withoutGlobalScopes()->where('status', 'pending')->where('due_at', '<=', now())
                 ->whereHas('order', fn (Builder $query) => $query->withoutGlobalScopes()
-                    ->whereIn('status', ['paid', 'shipped', 'completed', 'partially_refunded'])),
+                    ->whereIn('status', ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'])
+                    ->withoutUnresolvedGatewayReversal()
+                    ->where(fn (Builder $gateway) => $gateway->whereNull('gateway_status')->orWhere('gateway_status', '!=', 'disputing'))
+                    ->whereDoesntHave('activeDisputeEvent', fn (Builder $events) => $events->withoutGlobalScopes())
+                    ->whereDoesntHave('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())),
             (int) $limit,
             fn (OrderSettlement $settlement): bool => $balanceService->settleOrder($settlement),
             $failed,

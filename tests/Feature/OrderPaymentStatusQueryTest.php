@@ -86,7 +86,7 @@ class OrderPaymentStatusQueryTest extends TestCase
     }
 
     #[DataProvider('previouslyPaidStatuses')]
-    public function test_queried_paid_overrides_previously_paid_status_without_repeating_payment_side_effects(string $status): void
+    public function test_queried_paid_preserves_reversal_facts_without_repeating_payment_side_effects(string $status): void
     {
         $this->freezeTime();
         $order = $this->queryableOrder($status, [
@@ -98,18 +98,19 @@ class OrderPaymentStatusQueryTest extends TestCase
         Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
         $this->fakeQuery('paid');
 
+        $expected = in_array($status, ['refunded', 'chargeback'], true) ? $status : 'partially_refunded';
         $result = app(OrderPaymentStatusService::class)->queryAndApply($order);
 
         $this->assertSame([
             'queried_status' => 'paid',
             'mapped_status' => 'paid',
             'old_status' => $status,
-            'new_status' => 'paid',
-            'changed' => true,
+            'new_status' => $expected,
+            'changed' => $expected !== $status,
         ], $result);
         $this->assertDatabaseHas('orders', [
             'id' => $order->id,
-            'status' => 'paid',
+            'status' => $expected,
             'paid_at' => '2026-10-16 08:00:00',
             'refunded_amount' => '20.00',
         ]);
@@ -119,8 +120,12 @@ class OrderPaymentStatusQueryTest extends TestCase
         $this->assertDatabaseCount('ad_conversion_attempts', 0);
         Bus::assertNotDispatched(SendOrderNotificationJob::class);
         Bus::assertNotDispatched(NotifyAdConversionJob::class);
-        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->oldStatus === $status
-            && $event->newStatus === 'paid');
+        if ($expected !== $status) {
+            Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->oldStatus === $status
+                && $event->newStatus === $expected);
+        } else {
+            Event::assertNotDispatched(OrderStatusChanged::class);
+        }
         Http::assertSentCount(1);
     }
 
@@ -197,8 +202,8 @@ class OrderPaymentStatusQueryTest extends TestCase
         Http::preventStrayRequests();
 
         $service = app(OrderPaymentStatusService::class);
-        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
-        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
+        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid', 'updated_at' => now()->toIso8601String()]);
+        $service->handle(['s_order_id' => $order->order_no, 'status' => 'paid', 'updated_at' => now()->toIso8601String()]);
 
         $this->assertDatabaseHas('orders', [
             'id' => $order->id,
@@ -341,7 +346,7 @@ class OrderPaymentStatusQueryTest extends TestCase
         ]);
         Bus::assertNotDispatched(SendOrderNotificationJob::class);
         Bus::assertNotDispatched(NotifyAdConversionJob::class);
-        Event::assertDispatched(OrderStatusChanged::class);
+        Event::assertNotDispatched(OrderStatusChanged::class);
         Http::assertSentCount(1);
     }
 
@@ -450,8 +455,8 @@ class OrderPaymentStatusQueryTest extends TestCase
     public static function disputeShipmentStatuses(): array
     {
         return [
-            'unshipped' => [false, 'paid'],
-            'shipped' => [true, 'shipped'],
+            'unshipped' => [false, 'dispute_review'],
+            'shipped' => [true, 'dispute_review'],
         ];
     }
 
@@ -484,7 +489,6 @@ class OrderPaymentStatusQueryTest extends TestCase
             'refunded' => ['refunded'],
             'chargeback' => ['chargeback'],
             'completed' => ['completed'],
-            'dispute_review' => ['dispute_review'],
         ];
     }
 

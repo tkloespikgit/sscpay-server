@@ -6,6 +6,7 @@ use App\Exceptions\BalanceOperationException;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderAccountingTask;
+use App\Models\OrderDisputeEvent;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -14,14 +15,16 @@ class OrderAccountingService
 {
     public function __construct(private readonly BalanceService $balanceService) {}
 
-    /** 在持有订单行锁的状态事务内调用；旧单不补建历史记账任务。 */
-    public function recordForStatus(Order $order, string $targetStatus): void
+    /** 在订单锁内记录可靠待办；旧单仅记录本次首次收款或新发生的反向待办，不补历史收入。 */
+    public function recordForStatus(Order $order, string $targetStatus, bool $firstPayment = false): void
     {
-        if ($order->settlement_mode === null || in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
+        if (in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
             return;
         }
 
-        $this->recordTask($order, OrderAccountingTask::TYPE_PAID);
+        if ($order->settlement_mode !== null || $firstPayment) {
+            $this->recordTask($order, OrderAccountingTask::TYPE_PAID);
+        }
 
         if (in_array($targetStatus, ['refunded', 'chargeback'], true)) {
             $this->recordTask($order, $targetStatus === 'refunded' ? OrderAccountingTask::TYPE_REFUND : OrderAccountingTask::TYPE_CHARGEBACK);
@@ -64,11 +67,7 @@ class OrderAccountingService
                     return false;
                 }
 
-                if ($order->settlement_mode === null) {
-                    throw new RuntimeException('历史订单不能执行新结算记账任务。');
-                }
-
-                if ($fresh->type !== OrderAccountingTask::TYPE_PAID) {
+                if ($fresh->type !== OrderAccountingTask::TYPE_PAID && $order->settlement_mode !== null) {
                     $paidTask = OrderAccountingTask::query()->withoutGlobalScopes()
                         ->where('merchant_id', $order->merchant_id)->where('order_id', $order->id)
                         ->where('type', OrderAccountingTask::TYPE_PAID)->lockForUpdate()->firstOrFail();
@@ -77,6 +76,15 @@ class OrderAccountingService
                         $this->balanceService->creditForPaidOrder($order);
                         $this->complete($paidTask);
                     }
+                }
+
+                if ($fresh->type !== OrderAccountingTask::TYPE_PAID) {
+                    $review = $order->activeDisputeEvent()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->first();
+                    if ($review) {
+                        $this->balanceService->releaseForDisputeEvent($review, null, OrderDisputeEvent::CLOSE_TYPE_AUTO,
+                            '网关已确认退款或拒付，审核冻结与反向扣款在同一事务处理。');
+                    }
+                    $order->refresh();
                 }
 
                 if ($fresh->type === OrderAccountingTask::TYPE_PAID) {

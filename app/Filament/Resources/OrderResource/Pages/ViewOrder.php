@@ -46,6 +46,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Size;
 use Filament\Support\Enums\TextSize;
 use Filament\Support\Icons\Heroicon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Js;
 
 class ViewOrder extends ViewRecord
@@ -65,6 +66,15 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
                         ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
                         ->color(fn (string $state): string => OrderStatusColor::get($state)),
+                    TextEntry::make('settlement.status')
+                        ->label(__('admin.order.columns.settlement_status'))
+                        ->badge()
+                        ->formatStateUsing(fn (?string $state): ?string => $state ? __('settlement.statuses.'.$state) : null)
+                        ->placeholder(__('settlement.no_record')),
+                    TextEntry::make('settlement.due_at')->label(__('settlement.fields.due_at'))->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('settlement.settled_at')->label(__('settlement.fields.settled_at'))->dateTime()
+                        ->placeholder(__('admin.order.placeholders.none')),
                     TextEntry::make('source')->label(__('admin.order.fields.source')),
                     TextEntry::make('platform')->label(__('admin.order.fields.platform'))->placeholder(__('admin.order.placeholders.none')),
                     IconEntry::make('logistics_tracking_enabled')
@@ -271,9 +281,8 @@ class ViewOrder extends ViewRecord
                         ->label(fn ($record) => $record->shipping ? __('admin.order.actions_shipping.update') : __('admin.order.actions_shipping.record'))
                         ->icon('heroicon-o-truck')
                         ->size(Size::ExtraSmall)
-                        // 终态订单（已完成/已取消/已退款/已拒付）不允许录入物流，
-                        // 直接隐藏按钮，避免用户填完表单提交时才被拒绝。
-                        ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_SHIP)
+                        ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_SHIP))
+                        ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_SHIP)
                             && in_array($record->status, OrderShippingService::RECORDABLE_STATUSES, true))
                         // shipped_at 必须一起回填：补发/改单时 fillForm() 给了值的表单
                         // 不会再套用字段上的 default()，漏填这一项会把已有的发货时间
@@ -309,6 +318,8 @@ class ViewOrder extends ViewRecord
                             Textarea::make('remark')->label(__('admin.order.fields.remark'))->rows(2),
                         ])
                         ->action(function (array $data, OrderShippingService $service) {
+                            $this->authorizeOrderAction(Permissions::ORDERS_SHIP);
+                            $this->record->refresh();
                             $service->record($this->record, auth()->id(), $data);
 
                             // 待支付/部分退款的订单录入物流后状态不会被推进，
@@ -478,76 +489,70 @@ class ViewOrder extends ViewRecord
     }
 
     /**
-     * 超级管理员专用兜底：当自动状态流转（网关回调 / 查询最新状态）因为异常
-     * 没能生效时，人工把订单强制改到「交易成功」或「失败」。
-     *
-     * 不复用 OrderPaymentStatusService::applyStatus()——那条路径带着"已收款
-     * 状态不允许回退""终态不接受覆盖"这些为网关事件设计的保护规则，人工纠错
-     * 恰恰是要绕开这些规则；这里只做最小化校验（来源状态是否合理）+ 直接落库
-     * + 照样 fire OrderStatusChanged（下游 Telegram 监听器已经兼容非网关来源）。
-     *
-     * 「拒付」不在这里：已有 chargebackAction 走 BalanceService::chargeback()
-     * 真实扣款 + 2FA，语义和这个"纯改状态标签"的动作不一样，不重复实现。
-     * completed/failed 本身不涉及金额变动，所以不需要 2FA。
+     * 未收款订单的人工失败兜底；完成状态只由真实结算结果产生。
      */
     private function manualStatusChangeAction(): Action
     {
-        // 目标状态 => 允许的来源状态（业务含义：completed 只能从"已收过款"的
-        // 状态族确认完成；failed 只能从"还没收到钱"的 pending 标记为失败，
-        // 已收款订单不允许被标记为失败，避免和真实到账的钱对不上）。
-        $allowedSources = [
-            'completed' => ['paid', 'shipped', 'partially_refunded'],
-            'failed' => ['pending'],
-        ];
-
         return Action::make('manualStatusChange')
             ->label(__('admin.order.actions.manual_status_change'))
             ->icon('heroicon-o-wrench-screwdriver')
             ->color('gray')
             ->requiresConfirmation()
-            ->visible(fn ($record) => (bool) auth()->user()?->is_super_admin
-                && collect($allowedSources)->contains(fn ($sources) => in_array($record->status, $sources, true)))
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_VIEW)
+                && (bool) auth()->user()?->is_super_admin)
+            ->visible(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_VIEW)
+                && (bool) auth()->user()?->is_super_admin && $record->status === 'pending')
             ->modalDescription(__('admin.order.actions.manual_status_change_desc'))
-            ->schema(fn ($record) => [
+            ->schema([
                 Select::make('target_status')
                     ->label(__('admin.order.fields.manual_status_target'))
-                    ->options(collect($allowedSources)
-                        ->filter(fn ($sources) => in_array($record->status, $sources, true))
-                        ->keys()
-                        ->mapWithKeys(fn (string $status) => [$status => __('admin.order.statuses.'.$status)]))
+                    ->options(['failed' => __('admin.order.statuses.failed')])
                     ->required(),
                 Textarea::make('reason')->label(__('admin.order.fields.manual_status_reason'))->rows(2)->maxLength(500),
             ])
-            ->action(function (array $data) use ($allowedSources) {
-                $order = $this->record;
-                $target = $data['target_status'];
+            ->action(function (array $data): void {
+                $operator = $this->authorizeOrderAction(Permissions::ORDERS_VIEW);
+                abort_unless($operator->is_super_admin, 403);
 
-                if (! in_array($order->status, $allowedSources[$target] ?? [], true)) {
+                $changed = DB::transaction(function () use ($data, $operator): bool {
+                    $order = Order::query()->withoutGlobalScopes()->whereKey($this->record->id)->lockForUpdate()->firstOrFail();
+                    if ($order->status !== 'pending' || ($data['target_status'] ?? null) !== 'failed') {
+                        return false;
+                    }
+
+                    $note = now()->toDateTimeString()." [{$operator->name}] 手动改状态 pending → failed"
+                        .(filled($data['reason'] ?? null) ? "：{$data['reason']}" : '');
+                    $order->forceFill([
+                        'status' => 'failed',
+                        'failed_at' => $order->failed_at ?? now(),
+                        'remark' => trim(($order->remark ? $order->remark."\n" : '').$note),
+                    ])->save();
+                    DB::afterCommit(fn () => event(new OrderStatusChanged($order, 'pending', 'failed')));
+
+                    return true;
+                });
+
+                if (! $changed) {
                     Notification::make()->title(__('admin.order.actions.manual_status_change_invalid'))->danger()->send();
 
                     return;
                 }
 
-                $oldStatus = $order->status;
-                $operator = auth()->user();
-
-                $note = now()->toDateTimeString()." [{$operator->name}] 手动改状态 {$oldStatus} → {$target}"
-                    .(filled($data['reason'] ?? null) ? "：{$data['reason']}" : '');
-
-                $order->forceFill([
-                    'status' => $target,
-                    // 口径与 OrderPaymentStatusService 一致：失败时间只落首次。
-                    // 订单每日统计的「失败」指标按它归日，人工改成 failed 的订单
-                    // 不盖时间戳的话会落回下单那天（见 add_failed_at 迁移注释）。
-                    'failed_at' => $target === 'failed' ? ($order->failed_at ?? now()) : $order->failed_at,
-                    'remark' => trim(($order->remark ? $order->remark."\n" : '').$note),
-                ])->save();
-
-                event(new OrderStatusChanged($order, $oldStatus, $target));
-
                 Notification::make()->title(__('admin.order.actions.manual_status_change_success'))->success()->send();
                 $this->record->refresh();
             });
+    }
+
+    private function canPerformOrderAction(Order $record, string $permission): bool
+    {
+        return OrderResource::canPerformOrderAction($record, $permission);
+    }
+
+    private function authorizeOrderAction(string $permission): User
+    {
+        abort_unless($this->canPerformOrderAction($this->record, $permission), 403);
+
+        return auth()->user();
     }
 
     /**
@@ -560,8 +565,7 @@ class ViewOrder extends ViewRecord
      * 该方法内部已经捕获 PaymentGatewayException（计入 orders_failed 而不抛出），
      * 所以这里只需要按返回的 stats 分派通知。
      *
-     * 与「查询订单」一样属于只读拉取动作：只归档日志，不改订单状态、不触发入账
-     * （状态流转由 payment_status webhook 驱动），因此不需要 2FA。
+     * 此动作只归档日志，不改订单状态、不触发入账，因此不需要 2FA。
      */
     private function syncOrderEventsAction(): Action
     {
@@ -643,8 +647,7 @@ class ViewOrder extends ViewRecord
     /**
      * 开立争议审核事件（仅超级管理员/商户财务管理员）：冻结订单金额，
      * 订单状态改为 dispute_review。需要资金操作强制 2FA（同 refund/chargeback）。
-     * 已付款（paid）或网关已推送争议中（disputing，商户需要在这个窗口期
-     * 提交申诉材料）且当前没有处理中事件的订单才可见——前置条件在
+     * 已收款且当前没有处理中事件的订单才可见——前置条件在
      * BalanceService::freezeForDisputeEvent() 里还会再校验一遍，这里只是
      * 提前隐藏按钮，避免用户填完表单才被拒绝。
      */
@@ -654,8 +657,9 @@ class ViewOrder extends ViewRecord
             ->label(__('admin.order_dispute_event.actions.open'))
             ->icon('heroicon-o-exclamation-triangle')
             ->color('danger')
-            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDER_DISPUTES_OPEN)
-                && in_array($record->status, ['paid', 'disputing'], true)
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDER_DISPUTES_OPEN))
+            ->visible(fn (Order $record) => $this->canPerformOrderAction($record, Permissions::ORDER_DISPUTES_OPEN)
+                && in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing'], true)
                 && ! $record->activeDisputeEvent)
             ->schema([
                 TextInput::make('event_no')
@@ -698,7 +702,8 @@ class ViewOrder extends ViewRecord
             ])
             ->action(function (array $data, OrderDisputeService $service) {
                 try {
-                    $user = auth()->user();
+                    $user = $this->authorizeOrderAction(Permissions::ORDER_DISPUTES_OPEN);
+                    $this->record->refresh();
                     FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
                     $event = $service->open($this->record, $user, $data);
                 } catch (BalanceOperationException $e) {
@@ -736,9 +741,11 @@ class ViewOrder extends ViewRecord
             ->color('danger')
             // status=refunded 也放行：那是网关标记了退款但钱还没扣的历史订单，
             // 必须还能补录把账扣平（放行条件与 BalanceService::assertRefundable() 一致）。
-            ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_REFUND)
-                && in_array($record->status, ['paid', 'shipped', 'completed', 'partially_refunded', 'refunded'], true)
-                && bccomp((string) $record->refundableAmount(), '0', 2) > 0)
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND))
+            ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND)
+                && in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded'], true)
+                && bccomp((string) $record->refundableAmount(), '0', 2) > 0
+                && ! BalanceService::hasChargebackLedger($record))
             ->modalHeading(__('admin.finance.refund.action'))
             ->modalDescription(fn ($record) => __('admin.finance.refund.desc', [
                 'remaining' => number_format((float) $record->refundableAmount(), 2),
@@ -758,7 +765,8 @@ class ViewOrder extends ViewRecord
             ])
             ->action(function (array $data) {
                 try {
-                    $user = auth()->user();
+                    $user = $this->authorizeOrderAction(Permissions::ORDERS_REFUND);
+                    $this->record->refresh();
                     FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
                     app(BalanceService::class)->refund($this->record, $data['amount'], $user, $data['reason'] ?? null);
                 } catch (BalanceOperationException $e) {
@@ -785,9 +793,11 @@ class ViewOrder extends ViewRecord
             ->requiresConfirmation()
             // status=chargeback 且没落过拒付流水的也放行：网关标记了拒付但钱还没扣的
             // 历史订单需要补录（放行条件与 BalanceService::assertChargebackable() 一致）。
-            ->visible(fn ($record) => auth()->user()->can(Permissions::ORDERS_CHARGEBACK)
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_CHARGEBACK))
+            ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_CHARGEBACK)
                 && bccomp((string) $record->refunded_amount, '0', 2) === 0
-                && (in_array($record->status, ['paid', 'shipped', 'completed'], true)
+                && ! BalanceService::hasChargebackLedger($record)
+                && (in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed'], true)
                     || ($record->status === 'chargeback' && ! BalanceService::hasChargebackLedger($record))))
             ->modalHeading(__('admin.finance.chargeback.action'))
             ->modalDescription(fn ($record) => __('admin.finance.chargeback.desc', [
@@ -800,7 +810,8 @@ class ViewOrder extends ViewRecord
             ])
             ->action(function (array $data) {
                 try {
-                    $user = auth()->user();
+                    $user = $this->authorizeOrderAction(Permissions::ORDERS_CHARGEBACK);
+                    $this->record->refresh();
                     FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
                     app(BalanceService::class)->chargeback($this->record, $user, $data['reason'] ?? null);
                 } catch (BalanceOperationException $e) {

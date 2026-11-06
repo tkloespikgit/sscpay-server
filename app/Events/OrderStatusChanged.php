@@ -15,5 +15,6 @@ class OrderStatusChanged
         public readonly Order $order,
         public readonly string $oldStatus,
         public readonly string $newStatus,
+        public readonly bool $firstPayment = false,
     ) {}
 }

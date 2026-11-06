@@ -28,7 +28,7 @@ class OrderDisputeService
     public function __construct(private readonly BalanceService $balanceService) {}
 
     /**
-     * 开立争议审核事件（仅超级管理员/商户财务管理员）。订单状态为 paid 或
+     * 开立争议审核事件（仅超级管理员/商户财务管理员）。正常已收款状态族及
      * disputing 均可开立——disputing 是网关已经推送了争议中状态、商户需要
      * 在这个窗口期提交申诉材料的场景，实际的冻结/校验规则见
      * BalanceService::freezeForDisputeEvent()。
@@ -37,7 +37,7 @@ class OrderDisputeService
      *                       images（本地临时盘相对路径数组，可选）, final_action,
      *                       deadline_value, deadline_unit
      *
-     * @throws BalanceOperationException 订单状态不是 paid/disputing，或已存在处理中的事件
+     * @throws BalanceOperationException 订单不在允许的已收款状态族，或已存在处理中的事件
      */
     public function open(Order $order, User $operator, array $data): OrderDisputeEvent
     {

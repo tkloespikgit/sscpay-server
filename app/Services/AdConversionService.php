@@ -74,7 +74,7 @@ class AdConversionService
 
             $attempt = AdConversionAttempt::createInitialAttempt($order, $platform, $payload);
 
-            NotifyAdConversionJob::dispatch($attempt->id);
+            NotifyAdConversionJob::dispatch($attempt->id)->afterCommit();
         }
     }
 

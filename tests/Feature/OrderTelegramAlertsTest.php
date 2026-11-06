@@ -51,7 +51,7 @@ class OrderTelegramAlertsTest extends TestCase
         $this->assertSame('refunded', $order->refresh()->status);
     }
 
-    public function test_ignored_gateway_status_during_review_contains_the_order_details_and_is_not_repeated(): void
+    public function test_paid_gateway_fact_during_review_keeps_the_review_and_deduplicates_its_alert(): void
     {
         $order = $this->paidOrder();
         $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
@@ -61,8 +61,8 @@ class OrderTelegramAlertsTest extends TestCase
         ]);
         $this->fakeDelivery();
 
-        $this->pushStatus($order, 'refunded');
-        $this->pushStatus($order, 'refunded');
+        $this->pushStatus($order, 'paid');
+        $this->pushStatus($order, 'paid');
 
         $message = $this->singleMessage();
         $this->assertStringContainsString('网关状态更新（争议审核期间）', $message);

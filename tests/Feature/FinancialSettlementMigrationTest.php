@@ -277,6 +277,71 @@ class FinancialSettlementMigrationTest extends TestCase
         $this->assertSettlementSchemaIntact();
     }
 
+    public function test_gateway_tracking_upgrade_preserves_legacy_orders_and_existing_settlement_funds(): void
+    {
+        $this->gatewayTrackingMigration()->down();
+        $this->createMerchantAndApplication();
+        $this->merchant->update([
+            'balance' => '1000.00', 'frozen_balance' => '200.00', 'pending_settlement_balance' => '95.00',
+        ]);
+        $legacy = $this->makeOrder('legacy-before-tracking', 'legacy-before-tracking', [
+            'status' => 'completed', 'paid_at' => now()->subDays(30), 'settlement_mode' => null,
+        ]);
+        $modern = $this->makeOrder('new-before-tracking', 'new-before-tracking', [
+            'status' => 'paid', 'paid_at' => now(), 'settlement_amount' => '95.00',
+            'settlement_mode' => 'immediate', 'settlement_days' => 2,
+        ]);
+        $settlement = OrderSettlement::create([
+            'merchant_id' => $modern->merchant_id, 'order_id' => $modern->id,
+            'amount' => '95.00', 'remaining_amount' => '95.00', 'mode' => 'immediate', 'cycle_days' => 2,
+            'reserve_percent' => '10', 'reserve_days' => 7, 'status' => 'pending',
+            'started_at' => now(), 'due_at' => now()->addDays(2),
+        ]);
+        $ledger = MerchantBalanceTransaction::create([
+            'merchant_id' => $modern->merchant_id, 'order_id' => $modern->id,
+            'type' => MerchantBalanceTransaction::TYPE_ORDER_PAID, 'amount' => '95.00',
+            'balance_before' => '905.00', 'balance_after' => '1000.00',
+            'pending_settlement_change' => '95.00', 'idempotency_key' => 'order_paid:'.$modern->id,
+        ]);
+        $records = [$this->merchant, $legacy, $modern, $settlement, $ledger];
+        $before = array_map(static fn (Model $record): array => $record->fresh()->getAttributes(), $records);
+
+        $this->gatewayTrackingMigration()->up();
+
+        foreach ($records as $index => $record) {
+            $this->assertSame($before[$index], array_intersect_key($record->fresh()->getAttributes(), $before[$index]));
+        }
+        $this->assertSame('completed', $legacy->fresh()->status);
+        $this->assertSame('paid', $modern->fresh()->status);
+        $this->assertNull($legacy->fresh()->gateway_status);
+        $this->assertSame(0, $modern->fresh()->gateway_status_version);
+        $this->assertDatabaseCount('order_settlements', 1);
+        $this->assertDatabaseCount('merchant_balance_transactions', 1);
+        $this->assertDatabaseCount('order_accounting_tasks', 0);
+        $this->assertDatabaseCount('order_gateway_status_events', 0);
+    }
+
+    public function test_gateway_tracking_rollback_preserves_received_audit_and_tracking_columns(): void
+    {
+        $this->createMerchantAndApplication();
+        $order = $this->makeOrder('tracking-audit-order', 'tracking-audit-order');
+        $audit = $order->gatewayStatusEvents()->create([
+            'merchant_id' => $order->merchant_id, 'gateway_reference' => $order->order_no,
+            'source' => 'webhook', 'status' => 'paid', 'outcome' => 'accepted', 'payload' => ['status' => 'paid'],
+        ]);
+        $before = $audit->fresh()->getAttributes();
+
+        try {
+            $this->gatewayTrackingMigration()->down();
+            $this->fail('Gateway audit records must prevent destructive rollback.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('网关状态审计记录已产生，禁止回滚删除；请使用前向迁移。', $exception->getMessage());
+        }
+
+        $this->assertTrue(Schema::hasColumns('orders', ['normal_status', 'gateway_status', 'gateway_status_updated_at', 'gateway_status_version']));
+        $this->assertSame($before, $audit->fresh()->getAttributes());
+    }
+
     public function test_a_long_settlement_cycle_persists_a_due_date_beyond_2038(): void
     {
         $this->createMerchantAndApplication();
@@ -342,5 +407,10 @@ class FinancialSettlementMigrationTest extends TestCase
     private function settlementMigration(): Migration
     {
         return require database_path('migrations/2026_10_16_183626_create_order_settlements_table.php');
+    }
+
+    private function gatewayTrackingMigration(): Migration
+    {
+        return require database_path('migrations/2026_11_06_102253_add_gateway_status_tracking_to_orders.php');
     }
 }

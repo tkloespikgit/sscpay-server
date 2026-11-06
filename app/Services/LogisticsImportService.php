@@ -451,7 +451,7 @@ class LogisticsImportService
     }
 
     /**
-     * 单行同步：完全沿用改造前的匹配与校验规则——只认该商户下 paid 且未发货的订单，
+     * 单行同步：完全沿用改造前的匹配与校验规则——只认该商户下已收款、未发货且允许履约的订单，
      * 承运商编码必须在 carriers 表里（见 Carrier::isValidCode()），落库走
      * OrderShippingService::record()（内部会投递 SyncOrderTrackingJob 同步给插件）。
      *
@@ -475,7 +475,7 @@ class LogisticsImportService
             ->first();
 
         if (! $order) {
-            throw new \RuntimeException('订单不存在或不是待发货状态');
+            throw new \RuntimeException('订单不存在或不属于可录入物流的未发货订单');
         }
 
         $logisticsCompany = trim((string) $record->logistics_company);

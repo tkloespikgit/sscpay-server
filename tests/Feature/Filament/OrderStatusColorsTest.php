@@ -31,6 +31,7 @@ class OrderStatusColorsTest extends TestCase
     private const CUSTOM_COLORS = [
         'pending' => 'info',
         'paid' => 'danger',
+        'pending_settlement' => 'warning',
         'shipped' => 'primary',
         'completed' => 'gray',
         'cancelled' => 'success',
@@ -104,6 +105,7 @@ class OrderStatusColorsTest extends TestCase
         SystemConfig::set('order.status_colors', self::CUSTOM_COLORS);
         $groups = [
             'paid' => 'paid',
+            'pending_settlement' => 'paid',
             'shipped' => 'paid',
             'completed' => 'paid',
             'refunded' => 'refunded',
@@ -138,7 +140,7 @@ class OrderStatusColorsTest extends TestCase
         $data = ['link' => $link, 'outcome' => 'success', 'order' => $order];
 
         $this->view('checkout.result', $data)
-            ->assertSee('style="color: '.FilamentColor::getColor('danger')[600].'">paid</dd>', escape: false)
+            ->assertSee('style="color: '.FilamentColor::getColor('danger')[600].'">'.__('checkout.result.paid').'</dd>', escape: false)
             ->assertSee($order->order_no);
         $this->view('checkout.result', array_replace($data, ['order' => null]))
             ->assertSee($link->title)

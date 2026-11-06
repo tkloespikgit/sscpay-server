@@ -3,12 +3,13 @@
 return [
     'model_label' => 'Order Settlement',
     'model_label_plural' => 'Order Settlements',
+    'no_record' => 'No Settlement Record',
     'days' => 'days',
     'list_help' => 'Review order settlement snapshots, unsettled amounts, and actual settlement times. Settlement and rolling reserve release pause during disputes and resume after resolution.',
     'dispute_paused' => 'Disputed: automatic settlement / reserve release paused',
     'settings' => [
         'title' => 'Merchant Settlement Settings',
-        'mode_help' => 'Immediate settlement starts the cycle on payment; shipment settlement starts when the order is marked shipped. Applies to new orders only.',
+        'mode_help' => 'Payment-based settlement starts on successful payment; shipment-based settlement starts at the later of payment and the first valid tracking submission. Orders complete after the cycle and successful settlement. Applies to new orders only.',
         'cycle_help' => 'One cycle applies to all payment methods. Zero days settles as soon as the conditions are met. New orders snapshot these settings; existing orders remain unchanged.',
     ],
     'fields' => [
@@ -27,7 +28,7 @@ return [
         'cancelled_at' => 'Cancelled At',
     ],
     'modes' => [
-        'immediate' => 'Immediate Settlement',
+        'immediate' => 'From Payment',
         'shipped' => 'Settlement after Shipment',
     ],
     'statuses' => [

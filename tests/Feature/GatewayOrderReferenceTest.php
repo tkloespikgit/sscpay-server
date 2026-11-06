@@ -64,7 +64,7 @@ class GatewayOrderReferenceTest extends TestCase
             'transaction_id' => 'txn-current',
         ]);
 
-        $this->assertSame('paid', $order->refresh()->status);
+        $this->assertSame('completed', $order->refresh()->status);
         $this->assertSame('txn-current', $order->transaction_id);
         $this->assertFalse($order->paymentMethod->is_active);
         $this->assertDatabaseHas('merchant_balance_transactions', [
@@ -73,7 +73,9 @@ class GatewayOrderReferenceTest extends TestCase
             'amount' => '97.00',
         ]);
         Event::assertDispatched(OrderStatusChanged::class, fn ($event): bool => $event->order->id === $order->id
-            && $event->newStatus === 'paid');
+            && $event->firstPayment && $event->newStatus === 'pending_settlement');
+        Event::assertDispatched(OrderStatusChanged::class, fn ($event): bool => $event->order->id === $order->id
+            && ! $event->firstPayment && $event->newStatus === 'completed');
     }
 
     public function test_query_result_without_a_reference_is_ignored_when_the_channel_changes_during_the_request(): void

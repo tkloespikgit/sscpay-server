@@ -179,6 +179,25 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         Http::assertNothingSent();
     }
 
+    #[DataProvider('initialPaymentProgress')]
+    public function test_first_payment_reminder_does_not_depend_on_the_local_settlement_stage(string $status): void
+    {
+        Http::preventStrayRequests();
+        Http::fake(['api.telegram.org/bottest-bot-token/sendMessage' => Http::response(['ok' => true], 200)]);
+        $order = $this->designatedPaidOrder();
+        $order->update(['status' => $status]);
+
+        app(SendTelegramNotification::class)->handleOrderStatusChanged(new OrderStatusChanged($order, 'pending', $status, firstPayment: true));
+
+        Http::assertSentCount(5);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function initialPaymentProgress(): array
+    {
+        return ['settling' => ['pending_settlement'], 'immediately_settled' => ['completed']];
+    }
+
     /** @return array<string, array{string}> */
     public static function neverPaidStatuses(): array
     {

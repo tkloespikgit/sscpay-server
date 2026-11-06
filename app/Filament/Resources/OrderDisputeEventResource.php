@@ -24,7 +24,7 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * 争议审核事件（人工发起，与网关 webhook 驱动的 disputing 是两套独立机制，
- * 见 OrderPaymentStatusService::shouldApply() 里的守卫）。开立/回复只能从
+ * 见 OrderLifecycleService 对活动审核事件的独立判断）。开立/回复只能从
  * 订单详情页发起（有前置条件校验，不适合通用建表单），这里只提供
  * 独立的列表搜索页 + 详情页（回复线程 + 结束动作）。
  */

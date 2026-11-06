@@ -6,6 +6,7 @@ use App\Jobs\SendPaymentLinkJob;
 use App\Mail\PaymentLinkMail;
 use App\Models\Application;
 use App\Models\Merchant;
+use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
@@ -141,6 +142,16 @@ class OrderCreateRetryMailTest extends TestCase
         $send(['currency' => 'EUR'])->assertStatus(409)->assertJsonPath('error_code', 'ORDER_DETAILS_CONFLICT');
         Queue::assertPushed(SendPaymentLinkJob::class, $expectedQueuedJobs);
         Http::assertSentCount(2);
+
+        $order = Order::query()->forMerchant($merchant->id)->where('merchant_order_no', 'RETRY-001')->firstOrFail();
+        $order->update(['status' => 'pending_settlement']);
+        $send()->assertOk()
+            ->assertJsonPath('data.status', 'paid')
+            ->assertJsonPath('data.order_status', 'pending_settlement')
+            ->assertJsonPath('data.settlement_status', null)
+            ->assertJsonPath('data.shipping_status', 'unshipped');
+        Http::assertSentCount(2);
+        Queue::assertPushed(SendPaymentLinkJob::class, $expectedQueuedJobs);
 
         foreach (Queue::pushed(SendPaymentLinkJob::class) as $job) {
             $this->assertSame('payment-links', $job->queue);

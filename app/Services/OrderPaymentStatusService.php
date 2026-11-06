@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Events\OrderStatusChanged;
 use App\Exceptions\BalanceOperationException;
+use App\Models\Merchant;
 use App\Models\Order;
+use App\Models\OrderGatewayStatusEvent;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
@@ -15,57 +17,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * 订单支付状态落地服务（doc/s-system-payment-status-notify.md 第一~七节）。
- * 两个入口共用同一套状态映射/幂等/回退保护逻辑（applyStatus()），区别只是
- * 数据来源：
- *   - handle()：被动接收 payment_status webhook（PaymentGatewayWebhookController
- *     验签通过后调用），第一~五节。
- *   - queryAndApply()：后台"查询最新状态"按钮主动调用 /order-query 接口
- *     （第七节），用于补偿回调丢失、核对状态，也是目前唯一能查到 expired
- *     状态的途径（expired 不会触发 webhook，见第六节）。
- *
- * 状态映射（插件 status -> orders.status，已与业务方对齐）：
- *   - disputing：系统原本没有，新增同名独立状态。
- *   - confused（争议败诉/拒付）：复用系统里已有的 chargeback——两者业务含义一致
- *     （钱被强制扣回），区别只在"谁触发的"（人工后台操作 vs 插件通知），
- *     不需要为此再拆一个状态值。
- *   - failed（支付失败）：系统原本没有对应值，新增独立状态，不与 cancelled
- *     （主动取消）混用，便于后续做失败率/风控分析。
- *   - expired（付款链接过期）：系统原本靠 Order::isPaymentLinkExpired() 动态计算，
- *     没有落库状态；这里新增同名独立状态，只有 queryAndApply() 会用到它
- *     （webhook 永远不会推送这个状态）。
- *
- * 幂等：同一 webhook 事件可能因插件侧重试收到多次相同 payload（文档第一节）。
- * 这里没有额外建一张去重表，而是直接用"目标状态是否等于当前状态"判断——
- * 重复投递的 payload 到达时订单早已是目标状态，直接跳过，不重复触发
- * 入账/通知/Telegram。主动查询场景同理复用这个判断。
- *
- * 曾收款订单恢复 paid 时，有本商户有效物流记录则恢复为 shipped。
- * 主动查询返回 paid 时以网关结果为准，允许覆盖任意本地状态；其他场景继续
- * 使用回退保护：已经终态的订单（failed/cancelled/expired/refunded/chargeback/
- * completed）不再接受状态覆盖；已经收过款的订单族（paid 及其后续流转
- * 状态）不允许被 pending/failed/cancelled/expired 这类"还没收到钱"的状态
- * 往回改——网关不应该把一笔已经到账的订单覆盖成没到账，出现这种数据大概率
- * 是乱序投递或插件侧异常，只记警告日志，不落库。
- *
- * 【refunded / confused（拒付）的资金处理】这两个状态意味着钱已经从商户那边
- * 出去了，收到即**自动扣减商户余额**并补齐 order_refunds / 余额流水，
- * 见 settleGatewayReversal()。
- *
- * 早先的版本刻意不自动扣款，要求人工核实后再走 BalanceService::refund()/chargeback()。
- * 但那条人工路径实际上是堵死的：订单一旦被改成 refunded/chargeback，
- * 这两个方法的状态校验和详情页按钮的 visible() 就全都不再放行，
- * 结果是"状态显示已退款、钱还挂在商户余额上、且没有任何界面能把账平掉"，
- * 线上已经因此产生了一批余额虚高的订单。现在改为自动入账，三道防线兜住风险：
- * webhook 的 HMAC 签名校验、shouldApply() 的终态守卫（挡重复投递）、
- * 余额流水的唯一幂等键（挡重复扣款）。
- *
- * 自动入账失败（如已部分退款的订单又收到拒付）时退回原先的行为：只改状态 +
- * Telegram 提醒，人工从订单详情页的退款/拒付按钮补录（那两个按钮现在对
- * "已标记但未入账"的订单可见）。
- *
- * disputing 不在此列：争议中资金仍在商户账上，结果未定，只做状态更新 +
- * 重新拉 /order-logs + Telegram 提醒。
+ * 接收网关支付事实，在订单锁内保存审计和可靠记账待办。
+ * 本地主状态由 OrderLifecycleService 根据售后、审核、结算和物流事实推导；
+ * 资金处理在状态事务之后按商户→订单锁序执行，失败由持久化待办补偿。
  */
 class OrderPaymentStatusService
 {
@@ -80,27 +34,8 @@ class OrderPaymentStatusService
         'confused' => 'chargeback',
     ];
 
-    /**
-     * 已经算"收过款"的状态族：不允许被下面的"还没收到钱"状态往回覆盖。
-     */
-    private const PAID_FAMILY_STATUSES = ['paid', 'shipped', 'completed', 'partially_refunded', 'disputing'];
+    private const ALERT_STATUSES = ['disputing', 'chargeback', 'refunded'];
 
-    /**
-     * 终态保护：只有主动查询返回 paid 时允许覆盖。
-     */
-    private const TERMINAL_STATUSES = ['failed', 'cancelled', 'expired', 'refunded', 'chargeback', 'completed'];
-
-    /**
-     * 收到这些状态时：更新状态 + 立即重新拉一遍该订单的 /order-logs +（交给
-     * OrderStatusChanged 事件的 Telegram 监听器）提醒人工处理。
-     */
-    private const ALERT_STATUSES = ['disputing', 'confused', 'refunded'];
-
-    /**
-     * 资金反向流动的状态（钱已经从商户那边出去了）：收到即自动入账扣减商户余额，
-     * 见 settleGatewayReversal()。disputing 不在列内——争议中资金仍在商户账上，
-     * 结果未定，要等网关判下来推 refunded/confused 或回到 paid。
-     */
     private const REVERSAL_STATUSES = ['refunded', 'chargeback'];
 
     public function __construct(
@@ -111,6 +46,7 @@ class OrderPaymentStatusService
         private readonly AdConversionService $adConversionService,
         private readonly TelegramNotificationService $telegram,
         private readonly OrderAccountingService $accountingService,
+        private readonly OrderLifecycleService $lifecycle,
     ) {}
 
     /**
@@ -122,7 +58,7 @@ class OrderPaymentStatusService
         $pluginStatus = (string) ($payload['status'] ?? '');
 
         if ($sOrderId === '' || ! isset(self::STATUS_MAP[$pluginStatus])) {
-            Log::warning('payment_status webhook: 缺少 s_order_id 或未知 status，忽略', $payload);
+            Log::warning('payment_status webhook: 缺少 s_order_id 或未知 status，忽略', ['s_order_id' => $sOrderId, 'status' => $pluginStatus]);
 
             return;
         }
@@ -216,8 +152,8 @@ class OrderPaymentStatusService
 
     /**
      * 主动查询该订单在插件侧的最新状态并按需更新本地状态（文档第七节），
-     * 供后台"查询最新状态"按钮和定时补查使用。返回 paid 时覆盖任意本地状态，
-     * 已有支付时间、退款/拒付台账和人工审核冻结不随状态纠正而重置。
+     * 供后台"查询最新状态"按钮和定时补查使用。返回 paid 时确认支付事实，
+     * 本地主状态仍由结算、售后及人工审核事实推导。
      *
      * @return array{queried_status:string,mapped_status:?string,old_status:string,new_status:string,changed:bool}
      *
@@ -226,7 +162,9 @@ class OrderPaymentStatusService
      */
     public function queryAndApply(Order $order): array
     {
+        $order->refresh();
         $gatewayReference = $order->gatewayOrderReference();
+        $expectedVersion = (int) $order->gateway_status_version;
         $method = $order->paymentMethodConfig();
 
         if (! $method || empty($method->domain) || empty($method->domain_client_id) || empty($method->domain_client_sk)) {
@@ -261,9 +199,7 @@ class OrderPaymentStatusService
 
         $targetStatus = self::STATUS_MAP[$pluginStatus];
 
-        // 主动查询以网关结果为准：返回 paid 时允许覆盖本地任意状态（含 failed 等终态），
-        // 因为网关是付款事实的权威来源，本地先判失败、网关后报成功是常见时序。
-        $oldStatus = $this->applyStatus($order, $targetStatus, $data, $gatewayReference, allowPaidOverride: true);
+        $oldStatus = $this->applyStatus($order, $targetStatus, $data, $gatewayReference, allowPaidOverride: true, expectedVersion: $expectedVersion);
 
         return [
             'queried_status' => $pluginStatus,
@@ -288,164 +224,164 @@ class OrderPaymentStatusService
         string $gatewayReference,
         bool $allowPaidOverride = false,
         bool $checkForbiddenAccount = false,
+        ?int $expectedVersion = null,
     ): ?string {
-        // 订单当前处于人工审核事件中时，除主动查询返回 paid 外，shouldApply() 会
-        // 把网关消息吞掉（见该方法内的守卫注释）——但如果这条被吞的消息恰好
-        // 就是这次审核在等的最终结果（网关那边争议已经判下来了），审核期间冻结的
-        // 资金不会自动解冻，必须有人手动去关闭审核事件才会释放。这里单独记一下
-        // 这种情况，事务提交后（不占用行锁）发条 Telegram 提醒，避免运营/财务
-        // 只能靠自己盯着网关后台才知道"这时候该去把审核事件关掉放钱了"。
-        $ignoredDuringDisputeReview = false;
-        $staleGatewayReference = false;
         $disabledMethod = null;
-        $appliedStatus = $targetStatus;
+        $source = $allowPaidOverride ? 'query' : 'webhook';
+        $result = DB::transaction(function () use ($order, $targetStatus, $payload, $gatewayReference, $source, $checkForbiddenAccount, $expectedVersion, &$disabledMethod): array {
+            Merchant::query()->withoutGlobalScopes()->whereKey($order->merchant_id)->lockForUpdate()->firstOrFail();
+            $locked = Order::query()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->lockForUpdate()->findOrFail($order->id);
+            $old = $locked->status;
+            $timestamp = null;
+            $invalidTimestamp = false;
+            if (filled($payload['updated_at'] ?? null)) {
+                try {
+                    $timestamp = Carbon::parse($payload['updated_at'], 'UTC')->setTimezone(config('app.timezone'));
+                } catch (\Throwable) {
+                    $invalidTimestamp = true;
+                }
+            }
 
-        $oldStatus = DB::transaction(function () use ($order, $targetStatus, $payload, $gatewayReference, $allowPaidOverride, $checkForbiddenAccount, &$ignoredDuringDisputeReview, &$staleGatewayReference, &$disabledMethod, &$appliedStatus) {
-            $disabledMethod = null;
-            $locked = Order::query()->withoutGlobalScopes()->lockForUpdate()->find($order->id);
+            $outcome = $invalidTimestamp ? 'conflict' : $this->gatewayOutcome($locked, $targetStatus, $timestamp, $source, $expectedVersion);
             if ($locked->gatewayOrderReference() !== $gatewayReference
                 || (filled($payload['s_order_id'] ?? null) && (string) $payload['s_order_id'] !== $gatewayReference)) {
-                $staleGatewayReference = true;
-                Log::warning('payment_status: 忽略已切换渠道的网关状态', [
-                    'order_no' => $locked->order_no,
-                    's_order_id' => $gatewayReference,
-                    'current_gateway_order_no' => $locked->gatewayOrderReference(),
-                ]);
+                $outcome = 'obsolete_reference';
+            }
 
-                return null;
+            OrderGatewayStatusEvent::query()->create([
+                'merchant_id' => $locked->merchant_id,
+                'order_id' => $locked->id,
+                'gateway_reference' => $gatewayReference,
+                'source' => $source,
+                'status' => $targetStatus,
+                'gateway_updated_at' => $timestamp,
+                'outcome' => $outcome,
+                'payload' => array_intersect_key($payload, array_flip([
+                    'status', 's_order_id', 'wp_order_id', 'transaction_id', 'amount', 'currency', 'paid_at', 'updated_at',
+                ])),
+            ]);
+
+            if ($outcome === 'obsolete_reference') {
+                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false];
             }
 
             if ($checkForbiddenAccount) {
                 $disabledMethod = $this->disablePaymentMethodIfForbidden($locked, $payload);
             }
 
-            $old = $locked->status;
-            $appliedStatus = $targetStatus === 'paid'
-                && ! in_array($old, Order::NEVER_PAID_STATUSES, true)
-                && $locked->shipping()->forMerchant($locked->merchant_id)->exists()
-                    ? 'shipped'
-                    : $targetStatus;
+            if (! in_array($outcome, ['accepted', 'duplicate'], true)) {
+                Log::warning('payment_status: 网关状态未覆盖本地事实，需核对审计记录', [
+                    'order_id' => $locked->id, 'target_status' => $targetStatus, 'outcome' => $outcome,
+                ]);
 
-            if ($old === $appliedStatus || ! $this->shouldApply($old, $targetStatus, $allowPaidOverride)) {
-                $ignoredDuringDisputeReview = $old === Order::STATUS_DISPUTE_REVIEW;
-
-                return null;
+                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false];
             }
 
-            $locked->status = $appliedStatus;
+            $firstPayment = $targetStatus === 'paid' && $locked->paid_at === null
+                && in_array($old, Order::NEVER_PAID_STATUSES, true);
+            $locked->normal_status = $this->lifecycle->normalStatus($locked);
+            $locked->gateway_status = $targetStatus;
+            if ($timestamp !== null) {
+                $locked->gateway_status_updated_at = $timestamp;
+            }
+            if ($outcome === 'accepted') {
+                $locked->gateway_status_version = (int) $locked->gateway_status_version + 1;
+            }
 
-            // 支付成功时间：首次进入"已收款状态族"时落一次快照，之后永不覆盖。
-            // 用所有已收款状态而不是只判断 targetStatus === 'paid'，因为网关可能直接
-            // 推送 paid 之后的状态（如争议/退款），这些状态同样意味着钱已经收到过。
-            // 争议胜诉回退到 paid（BalanceService::releaseForDisputeEvent）不会走到这里，
-            // 即便走到，empty() 判断也保证不会把首次支付时间改写成回退时间。
-            if (empty($locked->paid_at) && ! in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
-                // 插件的 paid_at 是 UTC；优先采用真实支付时间，旧插件未提供时用接收时间。
+            if ($locked->paid_at === null && ! in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
                 $locked->paid_at = filled($payload['paid_at'] ?? null)
-                    ? Carbon::parse($payload['paid_at'], 'UTC')->setTimezone(config('app.timezone'))
-                    : now();
+                    ? Carbon::parse($payload['paid_at'], 'UTC')->setTimezone(config('app.timezone')) : now();
             }
-
-            // 支付失败时间：口径与 paid_at 对称，只落首次。订单每日统计的
-            // 「失败」指标按这个时间归日——用 created_at 的话，下单后好几天才
-            // 被判失败的订单会落进早已统计封存的那一天（见迁移注释）。
-            if (empty($locked->failed_at) && $targetStatus === 'failed') {
+            if ($locked->failed_at === null && $targetStatus === 'failed') {
                 $locked->failed_at = now();
             }
-
             if (empty($locked->wp_order_id) && ! empty($payload['wp_order_id'])) {
                 $locked->wp_order_id = (int) $payload['wp_order_id'];
             }
-
-            // 三方交易号：直接以网关这次返回的为准覆盖（不是只在为空时回填）——
-            // 同一订单后续事件通常复用同一个交易号（见文档第四节示例），网关侧
-            // 是这个值的权威来源，没有理由保留本地的旧值。
             if (! empty($payload['transaction_id'])) {
                 $locked->transaction_id = (string) $payload['transaction_id'];
             }
 
+            $locked->status = $this->lifecycle->resolve($locked, $targetStatus);
             $locked->save();
+            $this->accountingService->recordForStatus($locked, $targetStatus, $firstPayment);
+            if ($firstPayment) {
+                $this->notificationService->dispatchInitial($locked);
+                $this->adConversionService->dispatchInitial($locked);
+            }
 
-            $this->accountingService->recordForStatus($locked, $targetStatus);
-
-            return $old;
+            return ['old' => $old, 'accepted' => true, 'first' => $firstPayment, 'changed' => $old !== $locked->status];
         }, 3);
 
         $order->refresh();
-
-        if ($staleGatewayReference) {
-            return null;
-        }
-
         if ($disabledMethod) {
             $this->notifyForbiddenPaymentMethod($order, $disabledMethod);
         }
-
-        if ($ignoredDuringDisputeReview) {
-            $this->alertDisputeReviewGatewayStatusIgnored($order, $targetStatus);
-        }
-
-        if ($oldStatus === null) {
-            if ($order->settlement_mode !== null) {
-                $this->processAccounting($order, $targetStatus, $payload);
-                $this->advancePreRecordedShipment($order);
-            }
-
+        if (! $result['accepted']) {
             return null;
         }
 
-        // paid 的二义性（文档第五节第 5 点）：只有从"从未收款状态族"
-        // （pending/failed/cancelled/expired）进入 paid 才是**首次**支付成功，
-        // 才入账、才推首单商户通知。
-        //
-        // 已经收过钱的状态族（paid/shipped/completed/partially_refunded）、
-        // 争议中（disputing）、人工审核中（dispute_review）恢复到 paid 时
-        // 都**不重复入账**：
-        //   - disputing → paid 是"争议胜诉"，钱早就入过账了；
-        //   - dispute_review → paid 是人工审核期间网关报了 paid，
-        //     钱同样早就收过（余额里已有），重复入账会多给商户钱，
-        //     而审核事件和冻结资金要等人工关闭事件才释放，不能在这里动。
-        if ($targetStatus === 'paid'
-            && in_array($oldStatus, Order::NEVER_PAID_STATUSES, true)) {
-            if ($order->settlement_mode === null) {
-                $this->balanceService->creditForPaidOrder($order);
-            } else {
-                // 支付成功通知表达网关事实，不依赖记账是否暂时成功；只在首次状态流转派发。
-                $this->notificationService->dispatchInitial($order);
-                $this->adConversionService->dispatchInitial($order);
-                $this->processAccounting($order, $targetStatus, $payload);
-            }
+        if ($result['changed'] || $result['first']) {
+            $event = new OrderStatusChanged(clone $order, $result['old'], $order->status, $result['first']);
+            DB::afterCommit(fn () => event($event));
+        }
 
+        $this->processAccounting($order, $targetStatus, $payload);
+        if ($targetStatus === 'paid') {
             $this->advancePreRecordedShipment($order);
-
-            if ($order->settlement_mode === null) {
-                $this->notificationService->dispatchInitial($order);
-                $this->adConversionService->dispatchInitial($order);
-            }
         }
 
-        // 网关侧的退款/拒付要把钱从商户余额里真正扣掉。刻意放在上面那个事务**之外**：
-        //   1. BalanceService::mutate() 先锁商户行再锁订单行，而本方法的事务是先锁
-        //      订单行，嵌进去就是相反的加锁顺序，撞上并发的人工退款会死锁；
-        //   2. 放外面的话，入账失败不会把已经正确落库的订单状态一起回滚，可以干净地
-        //      退回"只改状态 + 告警人工处理"这个兜底行为。
-        if (in_array($targetStatus, self::REVERSAL_STATUSES, true)) {
-            if ($order->settlement_mode === null) {
-                $this->settleGatewayReversal($order, $targetStatus, $payload);
-            } else {
-                $this->processAccounting($order, $targetStatus, $payload);
-            }
-        } elseif ($targetStatus !== 'paid' && $order->settlement_mode !== null) {
-            $this->processAccounting($order, $targetStatus, $payload);
-        }
-
-        if (in_array($targetStatus, self::ALERT_STATUSES, true)) {
+        if ($result['changed'] && in_array($targetStatus, self::ALERT_STATUSES, true)) {
             $this->eventSync->syncOrderNow($order);
         }
+        if ($order->status === Order::STATUS_DISPUTE_REVIEW && $targetStatus === 'paid') {
+            $this->alertDisputeReviewGatewayStatusIgnored($order, $targetStatus);
+        }
 
-        event(new OrderStatusChanged($order, $oldStatus, $appliedStatus));
+        $order->refresh();
 
-        return $oldStatus;
+        return $result['old'] !== $order->status ? $result['old'] : null;
+    }
+
+    /** 时间相同的冲突由一次无并发变更的主动查询裁决；无版本的旧插件保留收款及反向事件兼容。 */
+    private function gatewayOutcome(Order $order, string $target, ?Carbon $timestamp, string $source, ?int $expectedVersion): string
+    {
+        if ($source === 'query' && $expectedVersion !== (int) $order->gateway_status_version) {
+            return 'query_race';
+        }
+        if (in_array($order->status, ['failed', 'cancelled', 'expired'], true)
+            && (in_array($target, Order::NEVER_PAID_STATUSES, true) || ($target === 'paid' && $source !== 'query'))) {
+            return 'protected';
+        }
+        if ($order->gateway_status_updated_at !== null) {
+            if ($timestamp === null) {
+                return $target === $order->gateway_status ? 'duplicate' : ($source === 'query' ? 'accepted' : 'conflict');
+            }
+            if ($timestamp->lt($order->gateway_status_updated_at)) {
+                return 'stale';
+            }
+            if ($timestamp->eq($order->gateway_status_updated_at) && $target !== $order->gateway_status && $source !== 'query') {
+                return 'conflict';
+            }
+        }
+
+        if (in_array($target, Order::NEVER_PAID_STATUSES, true)
+            && ($order->paid_at !== null || ! in_array($order->status, Order::NEVER_PAID_STATUSES, true))) {
+            return 'protected';
+        }
+        if ($target === 'paid' && $source !== 'query' && $timestamp === null
+            && ($order->gateway_status === 'disputing' || $order->status === 'disputing')) {
+            return 'conflict';
+        }
+        if (in_array($order->gateway_status, self::REVERSAL_STATUSES, true)
+            && $target !== $order->gateway_status && $source !== 'query') {
+            return 'protected';
+        }
+        if ($target === $order->gateway_status && ($timestamp === null || $timestamp->eq($order->gateway_status_updated_at))) {
+            return 'duplicate';
+        }
+
+        return 'accepted';
     }
 
     private function processAccounting(Order $order, string $targetStatus, array $payload): void
@@ -476,78 +412,8 @@ class OrderPaymentStatusService
     /** 支付前预录入物流的订单，支付落地后通过相同的条件更新推进状态。 */
     private function advancePreRecordedShipment(Order $order): void
     {
-        if ($order->status !== 'paid' || ! $order->shipping()->forMerchant($order->merchant_id)->exists()) {
-            return;
-        }
-
-        $advanced = Order::query()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
-            ->whereKey($order->id)->where('status', 'paid')->update(['status' => 'shipped', 'updated_at' => now()]);
-
-        if ($advanced === 1) {
-            $order->refresh();
-            $this->balanceService->startSettlementForShippedOrder($order);
-            event(new OrderStatusChanged($order, 'paid', 'shipped'));
-        }
-    }
-
-    /**
-     * 网关退款/拒付的自动入账。
-     *
-     * 金额一律取本地账面的剩余未退金额（amount - refunded_amount），不取 payload
-     * 里的 amount——按文档第二节那个字段是订单金额而不是退款金额，而且扣款金额
-     * 用自己的账面数比信任外部字段安全。payload 金额与订单金额对不上时照常入账，
-     * 另发一条告警：这种不一致本身就值得人看一眼。
-     *
-     * 业务性失败（典型：已部分退款的订单又收到拒付，chargeback() 会拒绝）必须
-     * 捕获——webhook 控制器不捕获异常，冒上去会变成 5xx 触发插件退避重试 5 次，
-     * 而这类失败重试多少次都不会成功，只会刷日志后永久卡住。这里退回原先的
-     * "只改状态 + 提醒人工处理"，人工入口见订单详情页的退款/拒付按钮。
-     * 基础设施异常（数据库挂了）不在捕获范围内，照旧冒出去让插件重试。
-     */
-    private function settleGatewayReversal(Order $order, string $targetStatus, array $payload): void
-    {
-        $this->alertIfPayloadAmountMismatches($order, $payload);
-
-        try {
-            if ($targetStatus === 'refunded') {
-                $remaining = bcsub((string) $order->amount, (string) $order->refunded_amount, 2);
-
-                // 人工已经先退平了（先部分退款、网关随后推全额退款的情况），没有要补的
-                if (bccomp($remaining, '0', 2) <= 0) {
-                    return;
-                }
-
-                $this->balanceService->refund(
-                    $order,
-                    $remaining,
-                    null,
-                    __('admin.finance.refund.gateway_auto_reason'),
-                    "gateway_refund:{$order->id}",
-                );
-            } else {
-                $this->balanceService->chargeback(
-                    $order,
-                    null,
-                    __('admin.finance.chargeback.gateway_auto_reason'),
-                    "gateway_chargeback:{$order->id}",
-                );
-            }
-
-            $order->refresh();
-        } catch (BalanceOperationException $e) {
-            Log::warning('payment_status webhook: 网关退款/拒付自动入账失败，已回退为人工处理', [
-                'order_no' => $order->order_no,
-                'merchant_id' => $order->merchant_id,
-                'target_status' => $targetStatus,
-                'error' => $e->getMessage(),
-            ]);
-
-            $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_settle_failed', [
-                'order_no' => e((string) $order->order_no),
-                'status' => __('admin.order.statuses.'.$targetStatus),
-                'error' => e((string) $e->getMessage()),
-            ])."\n\n".OrderTelegramSummary::forOrder($order));
-        }
+        $this->balanceService->startSettlementForShippedOrder($order);
+        $order->refresh();
     }
 
     /**
@@ -580,21 +446,7 @@ class OrderPaymentStatusService
         ])."\n\n".OrderTelegramSummary::forOrder($order));
     }
 
-    /**
-     * 人工审核期间收到的网关状态被 shouldApply() 吞掉时，单独提醒一下——
-     * 不代表争议已经胜诉/败诉，只是告诉人"网关这边已经有动静了，去核实一下
-     * 要不要关闭审核事件放钱"，真正的资金动作仍然要走人工关闭审核事件
-     * （BalanceService::releaseForDisputeEvent()）+ 视情况后续 refund()/chargeback()。
-     *
-     * 网关同一个事件可能重试多次投递相同 payload（订单一直停在 dispute_review，
-     * 没有"状态已变"这个天然的幂等信号可用），这里用缓存做一次性去重，
-     * 避免每次重试都再发一条一模一样的提醒刷屏。
-     *
-     * 去重 key 特意按"当前这一条处理中的审核事件"（activeDisputeEvent）分组，
-     * 不能只按订单 ID——同一笔订单可能先后开过好几轮独立的审核事件（关闭后
-     * 因故重新开立），按订单 ID 去重会被上一轮审核期间发过的提醒误伤，导致
-     * 这一轮真正该提醒的同样目标状态被误判成"已经提醒过"而漏发。
-     */
+    /** 网关确认已支付不关闭人工审核；按审核事件去重提醒人工核对。 */
     private function alertDisputeReviewGatewayStatusIgnored(Order $order, string $targetStatus): void
     {
         $activeDisputeEventId = $order->activeDisputeEvent?->id ?? $order->id;
@@ -608,47 +460,5 @@ class OrderPaymentStatusService
             'order_no' => e((string) $order->order_no),
             'status' => __('admin.order.statuses.'.$targetStatus),
         ])."\n\n".OrderTelegramSummary::forOrder($order));
-    }
-
-    private function shouldApply(string $oldStatus, string $targetStatus, bool $allowPaidOverride): bool
-    {
-        if ($allowPaidOverride && $targetStatus === 'paid') {
-            return true;
-        }
-
-        // 订单当前处于人工发起的争议审核事件中（见 OrderDisputeService）：
-        // 这套机制与网关 webhook 驱动的 disputing 完全独立，人工审核期间
-        // 不允许网关事件静默覆盖订单状态（无论目标状态是什么），人工审核
-        // 结果优先。审核结束后订单状态由 BalanceService::releaseForDisputeEvent()
-        // 负责改回 paid，不经过这里。
-        if ($oldStatus === Order::STATUS_DISPUTE_REVIEW) {
-            Log::warning('payment_status: 订单当前处于人工发起的争议审核事件中，忽略网关状态覆盖，人工审核结果优先', [
-                'old_status' => $oldStatus,
-                'target_status' => $targetStatus,
-            ]);
-
-            return false;
-        }
-
-        if (in_array($oldStatus, self::TERMINAL_STATUSES, true)) {
-            Log::warning('payment_status: 订单已是终态，忽略状态覆盖', [
-                'old_status' => $oldStatus,
-                'target_status' => $targetStatus,
-            ]);
-
-            return false;
-        }
-
-        if (in_array($oldStatus, self::PAID_FAMILY_STATUSES, true)
-            && in_array($targetStatus, ['pending', 'failed', 'cancelled', 'expired'], true)) {
-            Log::warning('payment_status: 已收款订单不允许被回退为未支付/失败/取消/过期，忽略', [
-                'old_status' => $oldStatus,
-                'target_status' => $targetStatus,
-            ]);
-
-            return false;
-        }
-
-        return true;
     }
 }

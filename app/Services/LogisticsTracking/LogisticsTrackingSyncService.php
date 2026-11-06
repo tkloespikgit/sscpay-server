@@ -54,7 +54,7 @@ class LogisticsTrackingSyncService
      * @var list<string>
      */
     public const TRACKING_ORDER_STATUSES = [
-        'paid', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW,
+        'paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing', Order::STATUS_DISPUTE_REVIEW,
     ];
 
     public function __construct(private readonly LogisticsTrackingManager $manager) {}

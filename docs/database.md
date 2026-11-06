@@ -1,6 +1,6 @@
 # 数据库与重要模型
 
-核对日期：2026-09-28。结构依据是 [database/migrations/](../database/migrations/) 的完整迁移链，运行语义依据是 [app/Models/](../app/Models/) 和 [app/Services/](../app/Services/)。本文不替代字段级迁移定义，也不代表已核验生产库。
+核对日期：2026-11-06。结构依据是 [database/migrations/](../database/migrations/) 的完整迁移链，运行语义依据是 [app/Models/](../app/Models/) 和 [app/Services/](../app/Services/)。本文不替代字段级迁移定义，也不代表已核验生产库。
 
 ## 1. 核心关系
 
@@ -104,6 +104,8 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 | `shipping_state`、`shipping_city` | 收款链接按 PayPal `admin_area_1` / `admin_area_2` 语义保存：省州按国家转换为官方代码或名称，城市保存城镇名称；服务端与 Google 回填共用映射。其他入口协议保持原有语义，详见[收款链接地址规则](../doc/checkout-link.md#地址字段与-paypal-rest) |
 | `pay_url`、`wp_order_id`、`transaction_id` | 远端收银台链接、WordPress 订单 ID、网关交易号。缺少 `pay_url` 的本地单可能需要补建远端 |
 | `payment_link_token`、`send_mail`、`payment_link_sent_at` | 订单级付款链接与邮件意图/发送时间，不等同于 `checkout_links.slug` |
+| `normal_status` | 可空正常阶段快照，主要兼容旧单人工已完成在争议往返后的恢复；新单仍以真实结算及有效物流事实推导，不替代结算审计 |
+| `gateway_status`、`gateway_status_updated_at`、`gateway_status_version` | 最近接受的标准化网关状态、网关事件时间及本地递增版本；用于区分网关事实和订单主状态，并防止旧回调或查询结果覆盖新事实；新增列不回填历史事件 |
 | `paid_at`、`failed_at` | 首次支付/失败时间；插件支付时间按 UTC 解析后转系统时区，首次写入后不覆盖 |
 | `pending_status_query_count`、`pending_status_last_queried_at` | 定时补查已领取次数（默认 0）和最近领取时间（默认 NULL）；创建满 30/90 分钟各一次，最多两次，调用网关前原子递增，失败也计次；手工查询不占用 |
 
@@ -160,9 +162,9 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 ## 4. 状态、资金与审计
 
-`Order::NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired']`。`paidEver()` 取其补集，包含发货、完成、部分退款、退款、拒付、网关争议和人工争议审核状态。新增状态会影响风控和统计，必须同步审查这个口径。
+`Order::NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired']`。`paidEver()` 取其补集，包含待结算、发货、完成、部分退款、退款、拒付、网关争议和人工争议审核状态。新增状态会影响风控和统计，必须同步审查这个口径。
 
-主动查询网关返回 `paid` 时可以纠正任意本地状态，仍保留首次 `paid_at`、`failed_at`、`refunded_amount` 和退款/拒付台账；人工审核事件及其冻结金额也独立保留。曾收款状态恢复 `paid` 不重放首次支付入账；已扣拒付本金的订单按流水阻止再次退款或拒付。详见 [D-18](decisions.md#d-18-主动查询已支付结果优先于本地状态)。
+订单主状态由 `OrderLifecycleService` 根据独立事实推导：支付后起算为 `pending_settlement`，发货后起算为 `paid/shipped`，只有真实结算记录 `settled` 才推进为 `completed`；部分退款等售后优先保留。`completed` 不阻止网关争议、退款或拒付。主动查询 `paid` 只更新支付事实，不擦除退款/拒付台账、人工审核或已完成结算，首次支付/失败时间不重置，也不重放首次入账或通知。详见 [D-29](decisions.md#d-29-订单主状态由结算与售后事实统一推导)。
 
 定时补查使用 `orders_pending_status_sync_index(status, paid_at, pending_status_query_count, created_at)` 支持全平台到期扫描。新增迁移只添加补查字段及索引，历史查询没有可恢复的次数记录，既有订单从 0 开始累计，仍限最近 48 小时；不会按历史日志臆测已执行次数。回滚会删除补查计数和时间，生产优先前向修复，避免重新开放已消耗的补查机会。详见 [D-19](decisions.md#d-19-待支付订单按创建时间最多自动补查两次)。
 
@@ -172,7 +174,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `merchant_withdrawals` | 新申请 `uses_pending_balance=true`，占用 `pending_withdrawal_balance`；后台确认放款扣总额与占用，驳回只释放占用。旧记录 false，继续使用原冻结额，不回填 |
 | `merchant_fund_freezes` | `order_id=NULL` 为固定保证金，否则为本单循环保证金；原额 `amount` 不变，`remaining_amount` 保存余额，旧 NULL 回退原额；`consumed` 表示已抵扣完。系统生成允许 `frozen_by=NULL` |
 | `order_settlements` | 每订单一条结算审计记录，净额、剩余待结算额、实际保证金/可提现分配、起算/预计/实际结算时间；状态 waiting_shipment/pending/settled/cancelled |
-| `order_accounting_tasks` | 新单状态事务内写入的 paid/refund/chargeback 可靠待办，按订单+类型唯一；含次数、重试时间、完成时间、脱敏错误和需人工处理状态。执行前校验商户归属；不删除审计记录 |
+| `order_accounting_tasks` | 新单状态事务内写入 paid/refund/chargeback 可靠待办；旧单新收到反向结果也保存 refund/chargeback 待办；仅本次首次确认收款可保存 paid 待办并沿用原即时入账，不补建历史收入和结算；按订单+类型唯一；含次数、重试时间、完成时间、脱敏错误和需人工处理状态。执行前校验商户归属；不删除审计记录 |
 | `order_refunds` | 退款单：原币种 `amount`、USD `amount_usd` 等；同一订单允许多次部分退款 |
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
@@ -180,6 +182,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_shipment_syncs` | 商户网站物流回传批次；关联商户、订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态 |
 | `order_shipment_sync_attempts` | 每批回传的逐次 HTTP 请求结果；保存地址、鉴权头、HTTP 状态、响应、错误及请求时间，不保存应用 API 密钥；签名在实际发送时现算 |
 | `order_events` | 插件事件归档，按系统订单号与外部日志 ID 去重，不驱动订单状态 |
+| `order_gateway_status_events` | 网关 webhook/主动查询的标准化接收审计，记录商户、订单、网关尝试引用、来源、映射状态、事件时间、处理结果和白名单摘要；不保存凭证或完整客户 body，不等同插件日志 |
 | `order_notification_attempts` | 商户回调每次尝试的请求、响应、结果、下次重试时间 |
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
 | `logistics_import_tasks`、`logistics_import_task_records` | 批量物流导入任务及逐行结果 |
@@ -190,7 +193,9 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 余额可为负；可提现 = `balance - frozen_balance - pending_settlement_balance - pending_withdrawal_balance`。商户显示的待出款由 `pendingWithdrawalBalance()` 将新待出款加旧待审核提现合计；`reserveBalance()` 将原冻结额减去这部分旧提现。两者按读时归类，不改历史余额或流水，且保持总额 = 待结算 + 保证金/冻结 + 可提现 + 待出款。列表使用 `legacyPendingWithdrawals` 的预聚合避免逐行查询。
 
-结算及锁定天数按 N×86400 秒计算。循环保证金基数为当次结算净额，金额 bcmath 截至分；锁定天数为 0 时不冻结。新结算 `due_at` 和冻结 `release_at` 使用 DATETIME，支持较长锁定期，避免 MySQL TIMESTAMP 的 2038 年边界。新规则不追历史订单；金融审计已产生后，新增结算/可靠待办相关迁移会拒绝破坏性回滚，应使用前向修复。
+结算及锁定天数按 N×86400 秒计算。发货周期取首次有效物流录入时间与支付时间中较晚者，不采用可补填的发货时间；起算后修改运单不重置周期。实际结算事务同步推进正常订单完成，保证金释放时间独立，售后不撤销原结算审计。循环保证金基数为当次结算净额，金额 bcmath 截至分；锁定天数为 0 时不冻结。新结算 `due_at` 和冻结 `release_at` 使用 DATETIME，支持较长锁定期，避免 MySQL TIMESTAMP 的 2038 年边界。迁移不批量修正旧订单状态或余额；`settlement_mode=NULL` 仍不补建结算记录，存量新结算订单仅随新事件或到期处理按原快照推进。金融审计已产生后，新增结算/可靠待办/网关接收审计相关迁移会拒绝破坏性回滚，应使用前向修复。
+
+迁移 `2026_11_06_102253_add_gateway_status_tracking_to_orders` 新增正常阶段及网关事实字段，并创建接收审计表。新字段可空或有默认值，不批量回填订单；审计 `merchant_id` 有意无外键，避免持订单锁时反向锁商户，写入服务显式限定商户。`order_id` 限制删除；已有审计时迁移拒绝回滚删除。接收审计保留重复、过期、冲突等处理结果；业务幂等由可靠待办和资金流水约束保证，不把同状态永久去重当作网关事件顺序。
 
 退款/拒付本金优先消耗本单待结算和循环保证金，其余及额外手续费扣可提现。原交易手续费不返还；固定保证金、其他订单专属金额、待出款不自动挪用。人工争议对新单只追加扣除本单待结算/循环保证金后尚未保护的部分，避免重复冻结；旧事件的冻结金额快照保持原值。金融审计表不能套用普通配置表的删除策略。
 

@@ -152,8 +152,8 @@ class OrderSurchargeRecalculationService
         if ($order->currency === 'USD' || $order->converted_currency !== 'USD') {
             return '无需换汇或结算币种不是 USD。';
         }
-        if (! in_array($order->status, ['paid', 'shipped', 'completed'], true)) {
-            return '仅处理已入账的 paid/shipped/completed 订单。';
+        if (! in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed'], true)) {
+            return '仅处理已入账的 paid/pending_settlement/shipped/completed 订单。';
         }
         if ($order->mismatched_refunds || $order->mismatched_disputes || $order->mismatched_transactions) {
             return '关联资金或争议记录商户不一致，需单独核对。';

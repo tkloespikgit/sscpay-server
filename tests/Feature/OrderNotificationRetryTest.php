@@ -8,6 +8,7 @@ use App\Services\OrderNotificationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -22,6 +23,26 @@ class OrderNotificationRetryTest extends TestCase
         $this->createMerchantAndApplication();
         Bus::fake([SendOrderNotificationJob::class]);
         Http::preventStrayRequests();
+    }
+
+    #[DataProvider('paymentProgressStatuses')]
+    public function test_initial_payment_notification_keeps_paid_when_local_progress_has_advanced(string $status): void
+    {
+        $order = $this->makeOrder('SSC-PROGRESS', 'M-PROGRESS', [
+            'status' => $status, 'notify_url' => 'https://merchant.example/callback',
+        ]);
+
+        $attempt = app(OrderNotificationService::class)->dispatchInitial($order);
+
+        $this->assertSame('paid', $attempt->request_payload['status']);
+        $this->assertSame($status, $order->refresh()->status);
+        Bus::assertDispatchedTimes(SendOrderNotificationJob::class, 1);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function paymentProgressStatuses(): array
+    {
+        return ['settling' => ['pending_settlement'], 'zero_day_settled' => ['completed']];
     }
 
     private function failedAttempt(string $suffix): OrderNotificationAttempt
