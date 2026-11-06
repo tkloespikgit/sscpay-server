@@ -22,6 +22,7 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Support\Money;
 use App\Support\OrderTelegramSummary;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Builder;
@@ -47,7 +48,8 @@ use Illuminate\Support\Facades\DB;
  *      （跳过组内路由与限额风控），代价是强制校验三个回跳地址都落在该渠道绑定的
  *      电商网站域名上。
  *   7. 交易手续费快照 + 最小金额校验：按锁定的支付方式当前的 fee_percent/fee_fixed
- *      算出这笔订单的手续费与实际到账金额（settlement_amount），三者都写死在订单上，
+ *      算出这笔订单的手续费与实际到账金额（settlement_amount）。百分比手续费和净额
+ *      保留两位小数，千分位直接舍去；三者都写死在订单上，
  *      后续商户改支付方式费率不影响已下的订单。手续费之和超过订单 USD 金额（到账会
  *      变负）时直接拒单，不建订单记录。
  *   8. 事务内创建订单 + 商品明细。
@@ -348,8 +350,9 @@ class OrderCreationService
     private function financialSnapshot(PaymentMethod $method, Merchant $merchant, string $amountUsd): array
     {
         $settings = $method->configurationForMerchant($merchant);
-        $percentFee = bcmul($amountUsd, bcdiv($settings['fee_percent'], '100', 8), 2);
-        $totalFee = bcadd($percentFee, $settings['fee_fixed'], 2);
+        $percentFee = Money::truncate(bcmul($amountUsd, bcdiv($settings['fee_percent'], '100', 8), 8));
+        $fixedFee = Money::truncate($settings['fee_fixed']);
+        $totalFee = bcadd($percentFee, $fixedFee, 2);
 
         if (bccomp($totalFee, $amountUsd, 2) > 0) {
             throw new MinimumAmountNotMetException($method->minTransactionAmount($merchant->id), $amountUsd);
@@ -357,8 +360,8 @@ class OrderCreationService
 
         return [
             'fee_percent_amount' => $percentFee,
-            'fee_fixed_amount' => $settings['fee_fixed'],
-            'settlement_amount' => bcsub($amountUsd, $totalFee, 2),
+            'fee_fixed_amount' => $fixedFee,
+            'settlement_amount' => Money::truncate(bcsub($amountUsd, $totalFee, 8)),
             'reserve_percent' => $settings['reserve_percent'],
             'reserve_days' => $settings['reserve_days'],
             'refund_fee_snapshot' => $settings['refund_fee'],

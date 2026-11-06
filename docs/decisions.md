@@ -329,3 +329,9 @@
 **历史兼容与上线：** 迁移仅新增字段及审计表，不批量改状态、回填事件、全量查询网关或重记账。`settlement_mode=NULL` 的历史订单保留原资金规则，旧人工完成阶段在后续事件中通过 `normal_status` 保存，以便争议往返恢复。已有结算快照的存量订单随新事件和到期处理收敛；历史忽略的售后需单独核对。部署先执行新增迁移，再使用新代码并重启队列进程；已有接收审计后禁止破坏性回滚，使用前向修复。
 
 **依据：** [OrderLifecycleService](../app/Services/OrderLifecycleService.php)、[OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php)、[BalanceService](../app/Services/BalanceService.php)、[OrderAccountingService](../app/Services/OrderAccountingService.php)、[网关状态审计迁移](../database/migrations/2026_11_06_102253_add_gateway_status_tracking_to_orders.php)、[API 控制器](../app/Http/Controllers/Api/OrderController.php)、[生命周期测试](../tests/Feature/OrderLifecycleTest.php)、[结算测试](../tests/Feature/OrderSettlementBalanceTest.php)、[API 兼容测试](../tests/Feature/OrderStatusApiCompatibilityTest.php)、[后台动作测试](../tests/Feature/Filament/OrderLifecycleActionsTest.php)。
+
+## D-30 净入账保留两位小数并舍去千分位
+
+**状态：当前工作区实现（2026-11-06，按用户要求）。** 净额不向下取整到整数美元。百分比手续费先按更高精度计算，再保留两位小数，第三位及之后直接舍去，不四舍五入；固定手续费本身已是两位小数。净额为 USD 成交额减去这两项手续费，同样只保留两位小数。手续费仍超过成交额时拒单；净额为正的美分金额可以下单。历史订单快照不重算。
+
+**依据：** [Money](../app/Support/Money.php)、[OrderCreationService](../app/Services/OrderCreationService.php)、[精度测试](../tests/Feature/SettlementAmountPrecisionTest.php)。

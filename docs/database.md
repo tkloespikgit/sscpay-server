@@ -96,7 +96,7 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 | `currency`、`subtotal`、`shipping_fee`、`discount`、`tax`、`amount` | 订单原币种金额；公式容差当前为 0.01，商品小计按两位小数核对 |
 | `converted_currency`、`converted_amount`、各 `*_converted` | 下单时折算金额，结算基准 USD；成交额统计使用 `converted_amount` |
 | `original_exchange_rate`、`exchange_rate`、`surcharge_*` | 市场汇率、实际汇率与汇损快照；不能用当前汇率回算历史单 |
-| `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 首次建单保存的交易手续费与净入账快照；重试不重算，支付入账使用 `settlement_amount` |
+| `fee_percent_amount`、`fee_fixed_amount`、`settlement_amount` | 首次建单保存的交易手续费与净入账快照；百分比手续费与净额保留两位小数，千分位直接舍去，不四舍五入，也不取整到整数美元；重试不重算，支付入账使用 `settlement_amount` |
 | `settlement_mode`、`settlement_days` | 首次建单优先保存该商户/渠道的独立起算方式与周期，空值回退商户默认；重试不重算，NULL 标记历史单，不补建结算记录 |
 | `reserve_percent`、`reserve_days`、`refund_fee_snapshot`、`chargeback_fee_snapshot` | 首次建单保存的保证金及反向手续费快照；重试不重算，历史反向手续费快照为 NULL 时沿用原渠道规则 |
 | `refunded_amount` | 累计退款原币种金额，不是 USD |
