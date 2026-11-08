@@ -5,6 +5,7 @@ namespace App\Filament\Support;
 use App\Models\User;
 use App\Support\StaticConfigShowcase;
 use Filament\Actions\Action;
+use Illuminate\Support\Facades\Route;
 
 /**
  * 打开当前登录者有权查看的静态配置演示页，不连库、不提交。
@@ -21,9 +22,13 @@ class StaticConfigShowcaseAction
             ->visible(function () use ($screen): bool {
                 $user = auth()->user();
 
-                return $user instanceof User && StaticConfigShowcase::allows($user, $screen);
+                return Route::has('showcase.merchant-admin')
+                    && $user instanceof User
+                    && StaticConfigShowcase::allows($user, $screen);
             })
-            ->url(fn (): string => route('showcase.merchant-admin', absolute: false).'#'.$screen)
+            ->url(fn (): ?string => Route::has('showcase.merchant-admin')
+                ? route('showcase.merchant-admin', absolute: false).'#'.$screen
+                : null)
             ->openUrlInNewTab();
     }
 }

@@ -13,7 +13,10 @@ use App\Services\MerchantRoleProvisioningService;
 use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\RouteCollection;
+use Illuminate\Support\Facades\Route;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\TestWith;
 use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
@@ -190,6 +193,33 @@ class StaticConfigShowcaseTest extends TestCase
             ->test(EditPaymentMethod::class, ['record' => $method->id])
             ->assertOk()
             ->assertActionDoesNotExist('staticConfigShowcase');
+    }
+
+    #[TestWith([OnboardMerchant::class])]
+    #[TestWith([CreateMerchant::class])]
+    #[TestWith([ListPaymentMethods::class])]
+    public function test_config_pages_still_render_when_the_demo_route_is_missing(string $page): void
+    {
+        $admin = User::factory()->create(['is_super_admin' => true, 'status' => true]);
+        $originalRoutes = Route::getRoutes();
+        $routes = new RouteCollection;
+        foreach ($originalRoutes as $route) {
+            if ($route->getName() !== 'showcase.merchant-admin') {
+                $routes->add($route);
+            }
+        }
+        Route::setRoutes($routes);
+        app('url')->setRoutes($routes);
+
+        try {
+            Livewire::actingAs($admin)
+                ->test($page)
+                ->assertOk()
+                ->assertActionHidden('staticConfigShowcase');
+        } finally {
+            Route::setRoutes($originalRoutes);
+            app('url')->setRoutes($originalRoutes);
+        }
     }
 
     private function merchantUser(): User
