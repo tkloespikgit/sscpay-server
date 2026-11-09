@@ -4,6 +4,7 @@ namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\ApplicationResource\Pages\EditApplication;
 use App\Filament\Resources\OrderResource\Pages\ViewOrder;
+use App\Filament\Resources\OrderResource\RelationManagers\OrderShipmentSyncsRelationManager;
 use App\Jobs\SyncMerchantShipmentJob;
 use App\Models\Merchant;
 use App\Models\Order;
@@ -11,6 +12,7 @@ use App\Models\OrderShipmentSync;
 use App\Models\OrderShipping;
 use App\Models\User;
 use App\Support\Permissions;
+use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -136,8 +138,8 @@ class MerchantShipmentSyncSettingsTest extends TestCase
 
         Livewire::actingAs($this->orderUser(true))
             ->test(ViewOrder::class, ['record' => $order->id])
-            ->assertActionVisible('pushMerchantShipment')
-            ->callAction('pushMerchantShipment')
+            ->assertActionVisible(TestAction::make('pushMerchantShipment')->schemaComponent())
+            ->callAction(TestAction::make('pushMerchantShipment')->schemaComponent())
             ->assertHasNoActionErrors()
             ->assertNotified(__('admin.merchant_shipment_sync.queued'));
 
@@ -161,8 +163,7 @@ class MerchantShipmentSyncSettingsTest extends TestCase
 
         Livewire::actingAs($this->orderUser(false))
             ->test(ViewOrder::class, ['record' => $order->id])
-            ->assertActionHidden('pushMerchantShipment')
-            ->call('mountAction', 'pushMerchantShipment')
+            ->assertDontSee(__('admin.merchant_shipment_sync.push'))
             ->assertNotNotified();
 
         $this->assertDatabaseCount('order_shipment_syncs', 0);
@@ -198,9 +199,21 @@ class MerchantShipmentSyncSettingsTest extends TestCase
         Livewire::actingAs($this->orderUser(false))
             ->test(ViewOrder::class, ['record' => $order->id])
             ->assertOk()
-            ->assertSee('ORIGINAL-HISTORY')
+            ->assertSee(__('admin.merchant_shipment_sync.tab'))
             ->assertSee('Merchant order not found')
+            ->assertDontSee('ORIGINAL-HISTORY')
+            ->assertDontSeeHtml('<script>alert("history-response")</script>');
+
+        Livewire::actingAs($this->orderUser(false))
+            ->test(OrderShipmentSyncsRelationManager::class, [
+                'ownerRecord' => $order,
+                'pageClass' => ViewOrder::class,
+            ])
+            ->assertOk()
+            ->assertSee('ORIGINAL-HISTORY')
             ->assertSee(__('admin.merchant_shipment_sync.alert_statuses.unavailable'))
+            ->assertSee('https://merchant.example.com/api/fulfillment/shipment?store=5')
+            ->assertSee('history-response')
             ->assertDontSeeHtml('<script>alert("history-response")</script>');
 
         Queue::assertNothingPushed();
@@ -214,8 +227,7 @@ class MerchantShipmentSyncSettingsTest extends TestCase
 
         Livewire::actingAs($this->orderUser(true))
             ->test(ViewOrder::class, ['record' => $order->id])
-            ->assertActionHidden('pushMerchantShipment')
-            ->call('mountAction', 'pushMerchantShipment')
+            ->assertDontSee(__('admin.merchant_shipment_sync.push'))
             ->assertNotNotified();
 
         $this->assertDatabaseCount('order_shipment_syncs', 0);

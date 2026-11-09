@@ -12,15 +12,18 @@ use App\Filament\Resources\OrderResource\RelationManagers\OrderEventsRelationMan
 use App\Filament\Resources\OrderResource\RelationManagers\OrderItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderMatchedItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttemptsRelationManager;
+use App\Filament\Resources\OrderResource\RelationManagers\OrderShipmentSyncsRelationManager;
 use App\Filament\Support\FinanceSecurity;
 use App\Jobs\SendPaymentLinkJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
+use App\Models\OrderSettlement;
 use App\Models\OrderShipping;
 use App\Models\User;
 use App\Services\BalanceService;
+use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\MerchantShipmentSyncService;
 use App\Services\OrderDisputeService;
@@ -36,17 +39,17 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\IconEntry;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Filament\Support\Enums\FontWeight;
 use Filament\Support\Enums\Size;
-use Filament\Support\Enums\TextSize;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Js;
 
 class ViewOrder extends ViewRecord
@@ -56,59 +59,88 @@ class ViewOrder extends ViewRecord
     public function infolist(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make(__('admin.order.sections.order_info'))->schema([
-                Grid::make(3)->schema([
-                    TextEntry::make('order_no')->label(__('admin.order.fields.order_no'))->copyable(),
-                    TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no')),
-                    TextEntry::make('wp_order_id')->label(__('admin.order.fields.wp_order_id'))
-                        ->copyable()
+            Section::make(__('admin.order.sections.order_info'))
+                ->schema([
+                    Grid::make(4)->schema([
+                        TextEntry::make('order_no')
+                            ->label(__('admin.order.fields.order_no'))
+                            ->copyable()
+                            ->copyableState(fn (?string $state): ?string => $state)
+                            ->suffix(fn (Order $record): HtmlString => self::orderStatusSuffix($record)),
+                        TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no'))->copyable(),
+                        TextEntry::make('wp_order_id')->label(__('admin.order.fields.wp_order_id'))
+                            ->copyable()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('transaction_id')->label(__('admin.order.fields.transaction_id'))
+                            ->copyable()
+                            ->placeholder(__('admin.order.placeholders.none')),
+
+                        TextEntry::make('platform')->label(__('admin.order.fields.platform'))->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('paymentMethod.method_name')->label(__('admin.order.fields.payment_method'))
+                            ->formatStateUsing(fn (?string $state, $record) => $state ?? $record->payment_method),
+
+                        TextEntry::make('created_at')->label(__('admin.order.fields.created_at'))->dateTime(),
+                        // 支付成功时间：网关首次把订单推进到已收款状态族时落的快照
+                        // （见 OrderPaymentStatusService::applyStatus()），历史订单为空。
+                        TextEntry::make('paid_at')->label(__('admin.order.fields.paid_at'))->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+
+                        IconEntry::make('send_mail')
+                            ->label(__('admin.order.fields.send_mail'))
+                            ->boolean()
+                            ->columnSpan(fn (Order $record): int => $this->canResendPaymentLinkMail($record) ? 2 : 1)
+                            ->extraEntryWrapperAttributes(['class' => 'order-send-mail-entry'])
+                            ->afterContent(fn (Order $record): array => $this->canResendPaymentLinkMail($record)
+                                ? [$this->resendPaymentLinkMailAction()->button()]
+                                : []),
+                        TextEntry::make('payment_link_sent_at')->label(__('admin.order.fields.payment_link_sent_at'))->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('payment_link_mail_failed_reason')
+                            ->label(__('admin.order.fields.payment_link_mail_failed_reason'))
+                            ->visible(fn ($record) => filled($record->payment_link_mail_failed_reason))
+                            ->badge()
+                            ->color('danger'),
+                    ]),
+                ])
+                ->columnSpanFull(),
+
+            Section::make(__('admin.order.sections.amount_info'))->schema([
+                Grid::make(4)->schema([
+                    TextEntry::make('amount')
+                        ->label(__('admin.order.fields.original_transaction_amount'))
+                        ->money(fn (Order $record) => $record->currency)
+                        ->weight(FontWeight::Bold)
+                        ->color('primary'),
+                    TextEntry::make('settlement_amount')
+                        ->label(__('admin.order.fields.settlement_amount'))
+                        ->money('usd')
+                        ->weight(FontWeight::Bold)
+                        ->color('success'),
+                    TextEntry::make('settlement_mode')
+                        ->label(__('settlement.fields.mode'))
+                        ->formatStateUsing(fn (?string $state): ?string => match ($state) {
+                            'immediate' => __('admin.order.settlement_modes.immediate'),
+                            'shipped' => __('admin.order.settlement_modes.shipped'),
+                            default => null,
+                        })
                         ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
-                        ->formatStateUsing(fn (string $state) => __('admin.order.statuses.'.$state))
-                        ->color(fn (string $state): string => OrderStatusColor::get($state)),
                     TextEntry::make('settlement.status')
                         ->label(__('admin.order.columns.settlement_status'))
                         ->badge()
                         ->formatStateUsing(fn (?string $state): ?string => $state ? __('settlement.statuses.'.$state) : null)
-                        ->placeholder(__('settlement.no_record')),
-                    TextEntry::make('settlement.due_at')->label(__('settlement.fields.due_at'))->dateTime()
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('settlement.settled_at')->label(__('settlement.fields.settled_at'))->dateTime()
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('source')->label(__('admin.order.fields.source')),
-                    TextEntry::make('platform')->label(__('admin.order.fields.platform'))->placeholder(__('admin.order.placeholders.none')),
-                    IconEntry::make('logistics_tracking_enabled')
-                        ->label(__('admin.order.fields.logistics_tracking_snapshot'))
-                        ->boolean()
-                        ->tooltip(__('admin.order.help.logistics_tracking_snapshot')),
-                    TextEntry::make('paymentMethod.method_name')->label(__('admin.order.fields.payment_method'))
-                        ->formatStateUsing(fn (?string $state, $record) => $state ?? $record->payment_method),
-                    TextEntry::make('transaction_id')->label(__('admin.order.fields.transaction_id'))
-                        ->copyable()
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('created_at')->label(__('admin.order.fields.created_at'))->dateTime(),
-                    // 支付成功时间：网关首次把订单推进到已收款状态族时落的快照
-                    // （见 OrderPaymentStatusService::applyStatus()），历史订单为空。
-                    TextEntry::make('paid_at')->label(__('admin.order.fields.paid_at'))->dateTime()
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    IconEntry::make('send_mail')->label(__('admin.order.fields.send_mail'))->boolean(),
-                    TextEntry::make('payment_link_sent_at')->label(__('admin.order.fields.payment_link_sent_at'))->dateTime()
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('payment_link_mail_failed_reason')
-                        ->label(__('admin.order.fields.payment_link_mail_failed_reason'))
-                        ->visible(fn ($record) => filled($record->payment_link_mail_failed_reason))
-                        ->badge()
-                        ->color('danger'),
-                ]),
-            ])->headerActions([$this->copyPaymentLinkAction()]),
+                        ->placeholder(__('settlement.no_record'))
+                        ->color(fn (?string $state): string => match ($state) {
+                            OrderSettlement::STATUS_SETTLED => 'success',
+                            OrderSettlement::STATUS_CANCELLED => 'danger',
+                            OrderSettlement::STATUS_PENDING => 'warning',
+                            default => 'gray',
+                        }),
 
-            Section::make(__('admin.order.sections.amount_info'))->schema([
-                Grid::make(4)->schema([
-                    TextEntry::make('currency')->label(__('admin.order.fields.currency')),
-                    TextEntry::make('amount')->label(__('admin.order.fields.amount'))->money(fn ($record) => $record->currency),
+                    // 折算、汇率、汇损和手续费属于平台财务信息。
+                    // 商户只看上面的结算模式、结算状态、原始交易金额和实际到账金额。
                     TextEntry::make('converted_amount')
                         ->label(__('admin.order.fields.converted_amount'))
-                        ->formatStateUsing(function ($state, $record): string {
+                        ->formatStateUsing(function ($state, Order $record): string {
                             $raw = (string) ($state ?? '0');
                             if ($record->isCryptoCheckout()) {
                                 return number_format((float) $raw, 3, '.', ',');
@@ -116,152 +148,139 @@ class ViewOrder extends ViewRecord
 
                             return number_format((float) $raw, 2, '.', ',');
                         })
-                        ->prefix('$'),
-                    TextEntry::make('exchange_rate')->label(__('admin.order.fields.exchange_rate')),
-                    // 原始汇率 / 汇损百分比 / 汇损费用属于平台内部财务信息，仅超级管理员可见，
-                    // 商户用户看到的金额信息到实际汇率为止。
-                    TextEntry::make('original_exchange_rate')->label(__('admin.order.fields.original_exchange_rate'))
-                        ->visible(fn () => (bool) auth()->user()?->is_super_admin),
+                        ->prefix('$')
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                    TextEntry::make('exchange_rate')
+                        ->label(__('admin.order.fields.exchange_rate'))
+                        ->state(fn (Order $record): HtmlString => self::exchangeRateState($record))
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                     TextEntry::make('surcharge_percent')->label(__('admin.order.fields.surcharge_percent'))->suffix('%')
-                        ->visible(fn () => (bool) auth()->user()?->is_super_admin),
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                     TextEntry::make('surcharge_fee')->label(__('admin.order.fields.surcharge_fee'))->money('usd')
-                        ->visible(fn () => (bool) auth()->user()?->is_super_admin),
-                    TextEntry::make('fee_percent_amount')->label(__('admin.order.fields.fee_percent_amount'))->money('usd'),
-                    TextEntry::make('fee_fixed_amount')->label(__('admin.order.fields.fee_fixed_amount'))->money('usd'),
-                    TextEntry::make('settlement_amount')->label(__('admin.order.fields.settlement_amount'))->money('usd'),
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                    TextEntry::make('fee_percent_amount')->label(__('admin.order.fields.fee_percent_amount'))->money('usd')
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                    TextEntry::make('fee_fixed_amount')->label(__('admin.order.fields.fee_fixed_amount'))->money('usd')
+                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                 ]),
-            ]),
-
-            Section::make(__('admin.order.sections.crypto_payment'))
-                ->visible(fn ($record) => $record->isCryptoCheckout())
-                ->schema([
-                    Grid::make(2)->schema([
-                        TextEntry::make('crypto_receive_address')
-                            ->label(__('admin.order.fields.crypto_receive_address'))
-                            ->copyable()
-                            ->columnSpanFull(),
-                        TextEntry::make('converted_amount')
-                            ->label(__('admin.order.fields.crypto_amount_expected'))
-                            ->formatStateUsing(fn ($state): string => number_format((float) ($state ?? '0'), 3, '.', '')),
-                        TextEntry::make('crypto_amount_received')
-                            ->label(__('admin.order.fields.crypto_amount_received'))
-                            ->formatStateUsing(fn ($state): string => number_format((float) ($state ?? '0'), 3, '.', '')),
-                        TextEntry::make('crypto_expires_at')
-                            ->label(__('admin.order.fields.crypto_expires_at'))
-                            ->dateTime(),
-                        TextEntry::make('transaction_id')
-                            ->label(__('admin.order.fields.crypto_txid'))
-                            ->copyable()
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('crypto_txids')
-                            ->label(__('admin.order.fields.crypto_txids'))
-                            ->formatStateUsing(fn ($state) => is_array($state) ? implode(', ', $state) : (string) $state)
-                            ->columnSpanFull()
-                            ->placeholder(__('admin.order.placeholders.none')),
+                Section::make(__('admin.order.sections.settlement_summary'))
+                    ->schema([
+                        TextEntry::make('settlement_summary')
+                            ->hiddenLabel()
+                            ->state(fn (Order $record): HtmlString => self::settlementSummaryTable($record)),
                     ]),
-                ]),
+            ])->columnSpanFull(),
 
-            Section::make(__('admin.order.sections.customer_info'))->schema([
-                Grid::make(2)->schema([
-                    // 字段集与列表页「客户邮箱」列点开的弹窗（OrderResource::viewCustomerInfoAction()）
-                    // 保持一致：收货地址要完整（含地址行2 / 州省 / 邮编），
-                    // 缺一项客服就得回头翻订单 API 原始报文。
-                    TextEntry::make('customer_first_name')->label(__('admin.order.fields.customer_first_name'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('customer_last_name')->label(__('admin.order.fields.customer_last_name'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email'))->copyable(),
-                    TextEntry::make('customer_phone')->label(__('admin.order.fields.customer_phone'))
-                        ->placeholder(__('admin.order.placeholders.none'))
-                        ->copyable(),
-                    TextEntry::make('shipping_address_line1')->label(__('admin.order.fields.address'))
-                        ->placeholder(__('admin.order.placeholders.none'))
-                        ->copyable()
-                        ->columnSpanFull(),
-                    TextEntry::make('shipping_address_line2')->label(__('admin.order.fields.address_line2'))
-                        ->placeholder(__('admin.order.placeholders.none'))
-                        ->columnSpanFull(),
-                    TextEntry::make('shipping_city')->label(__('admin.order.fields.city'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping_state')->label(__('admin.order.fields.state'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping_zip')->label(__('admin.order.fields.zip'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('shipping_country')->label(__('admin.order.fields.country'))
-                        ->placeholder(__('admin.order.placeholders.none')),
-                ]),
-            ]),
-
-            Section::make(__('admin.order.sections.shipping_info'))
-                ->compact()
+            Section::make(__('admin.order.sections.customer_shipping'))
                 ->schema([
-                    // 四列紧凑排布，贴近改造前体量；长文案仍占满行。
+                    self::fulfillmentHeadingEntry('customer_block_heading', __('admin.order.sections.customer')),
                     Grid::make(4)->schema([
-                        TextEntry::make('shipping.logistics_company')->label(__('admin.order.fields.logistics_company'))
-                            ->size(TextSize::Small)
-                            ->placeholder(__('admin.order.placeholders.not_shipped')),
-                        TextEntry::make('shipping.tracking_number')->label(__('admin.order.fields.tracking_number'))
-                            ->size(TextSize::Small)
+                        TextEntry::make('customer_last_name')->label(__('admin.order.fields.customer_last_name'))
                             ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))
-                            ->size(TextSize::Small)
-                            ->dateTime()
+                        TextEntry::make('customer_first_name')->label(__('admin.order.fields.customer_first_name'))
                             ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.tracking_status')->label(__('admin.order.fields.tracking_status'))
-                            ->size(TextSize::Small)
-                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatTrackingStatus($state))
-                            ->placeholder(__('admin.order.placeholders.no_tracking_status')),
-                        TextEntry::make('shipping.tracking_sub_status')->label(__('admin.order.fields.tracking_sub_status'))
-                            ->size(TextSize::Small)
-                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatTrackingSubStatus($state))
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.tracking_last_event_at')->label(__('admin.order.fields.tracking_last_event_at'))
-                            ->size(TextSize::Small)
-                            ->dateTime()
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.logistics_anomaly')->label(__('admin.order.fields.logistics_anomaly'))
-                            ->size(TextSize::Small)
-                            ->formatStateUsing(fn (?bool $state): ?string => match ($state) {
-                                true => __('admin.order.filters.logistics_anomaly_yes'),
-                                false => __('admin.order.filters.logistics_anomaly_no'),
-                                default => null,
-                            })
-                            ->badge()
-                            ->color(fn (?bool $state): string => $state ? 'danger' : 'success')
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.logistics_anomaly_at')->label(__('admin.order.fields.logistics_anomaly_at'))
-                            ->size(TextSize::Small)
-                            ->dateTime()
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.logistics_anomaly_reason')->label(__('admin.order.fields.logistics_anomaly_reason'))
-                            ->size(TextSize::Small)
-                            ->formatStateUsing(fn (?string $state): ?string => OrderResource::formatLogisticsAnomalyReason($state))
+                        TextEntry::make('customer_phone')->label(__('admin.order.fields.customer_phone'))
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->copyable(),
+                        TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email'))
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->copyable(),
+                    ]),
+                    self::fulfillmentRuleEntry('customer_block_rule'),
+                    self::fulfillmentHeadingEntry('address_block_heading', __('admin.order.sections.shipping_address')),
+                    Grid::make(4)->schema([
+                        TextEntry::make('shipping_address_line1')->label(__('admin.order.fields.address'))
+                            ->placeholder(__('admin.order.placeholders.none'))
+                            ->copyable()
+                            ->columnSpan(2),
+                        TextEntry::make('shipping_address_line2')->label(__('admin.order.fields.address_line2'))
                             ->placeholder(__('admin.order.placeholders.none'))
                             ->columnSpan(2),
+                        TextEntry::make('shipping_city')->label(__('admin.order.fields.city'))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping_state')->label(__('admin.order.fields.state'))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping_country')->label(__('admin.order.fields.country'))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipping_zip')->label(__('admin.order.fields.zip'))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                    ]),
+                    self::fulfillmentRuleEntry('address_block_rule'),
+                    self::fulfillmentHeadingEntry('shipping_block_heading', __('admin.order.sections.shipping_info')),
+                    Grid::make(4)->schema([
+                        TextEntry::make('shipment_number')
+                            ->label(__('admin.order.fields.tracking_number'))
+                            ->state(fn (Order $record): HtmlString => self::trackingNumberState($record)),
+                        TextEntry::make('shipping.shipped_at')->label(__('admin.order.fields.shipped_at'))
+                            ->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
                         TextEntry::make('shipping.sync_status')->label(__('admin.order.fields.sync_status'))
-                            ->size(TextSize::Small)
                             ->badge()
-                            ->formatStateUsing(fn (?string $state) => $state ? __('admin.order.sync_statuses.'.$state) : null)
-                            ->color(fn (?string $state) => match ($state) {
+                            ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.order.sync_statuses.'.$state) : null)
+                            ->color(fn (?string $state): string => match ($state) {
                                 OrderShipping::SYNC_STATUS_SYNCED => 'success',
                                 OrderShipping::SYNC_STATUS_FAILED => 'danger',
                                 default => 'gray',
                             })
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.operator.name')->label(__('admin.order.fields.operator'))
-                            ->size(TextSize::Small)
-                            ->state(fn ($record) => $record->shipping?->operator_id === OrderShippingService::API_OPERATOR_ID
-                                ? 'API'
-                                : $record->shipping?->operator?->name)
-                            ->placeholder(__('admin.order.placeholders.none')),
-                        TextEntry::make('shipping.tracking_last_event_desc')->label(__('admin.order.fields.tracking_last_event_desc'))
-                            ->size(TextSize::Small)
                             ->placeholder(__('admin.order.placeholders.none'))
-                            ->columnSpanFull(),
-                        TextEntry::make('shipping.sync_message')->label(__('admin.order.fields.sync_message'))
-                            ->size(TextSize::Small)
-                            ->placeholder(__('admin.order.placeholders.none'))
-                            ->columnSpanFull(),
+                            ->hintAction(
+                                Action::make('viewSyncMessage')
+                                    ->icon('heroicon-o-question-mark-circle')
+                                    ->label(__('admin.order.fields.sync_message'))
+                                    ->visible(fn (Order $record): bool => filled($record->shipping?->sync_message))
+                                    ->modalHeading(__('admin.order.fields.sync_message'))
+                                    ->modalContent(fn (Order $record): HtmlString => new HtmlString(
+                                        '<div class="whitespace-pre-wrap">'.e((string) $record->shipping?->sync_message).'</div>'
+                                    ))
+                                    ->modalSubmitAction(false)
+                                    ->modalCancelAction(fn (Action $action): Action => $action->label(__('admin.order.modals.close')))
+                            ),
+                        TextEntry::make('shipping_operator')->label(__('admin.order.fields.operator'))
+                            ->state(fn (Order $record): ?string => self::shippingOperator($record))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                    ]),
+                    self::fulfillmentHeadingEntry('tracking_block_heading', __('admin.order.sections.tracking_info')),
+                    Grid::make(4)->schema([
+                        TextEntry::make('tracking_provider_label')->label(__('admin.order.fields.tracking_provider'))
+                            ->state(fn (Order $record): ?string => self::trackingProviderLabel($record->shipping?->tracking_provider))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('tracking_status_label')->label(__('admin.order.fields.tracking_status'))
+                            ->state(fn (Order $record): ?string => self::trackingStatusLabel($record->shipping))
+                            ->placeholder(__('admin.order.placeholders.no_tracking_status')),
+                        TextEntry::make('tracking_last_event_label')->label(__('admin.order.fields.tracking_last_event_at'))
+                            ->state(fn (Order $record): ?string => self::trackingLastEventLabel($record->shipping))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('tracking_anomaly_label')->label(__('admin.order.fields.logistics_anomaly'))
+                            ->state(fn (Order $record): ?string => self::trackingAnomalyLabel($record->shipping))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('tracking_delivery_label')->label(__('admin.order.fields.delivery_status'))
+                            ->state(fn (Order $record): ?string => self::trackingDeliveryLabel($record->shipping))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                    ]),
+                    self::fulfillmentHeadingEntry('merchant_sync_block_heading', __('admin.order.sections.merchant_shipment_sync')),
+                    Grid::make(4)->schema([
+                        TextEntry::make('latestShipmentSync.status')
+                            ->label(__('admin.merchant_shipment_sync.fields.status'))
+                            ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.merchant_shipment_sync.statuses.'.$state) : null)
+                            ->badge()
+                            ->color(fn (?string $state): string => match ($state) {
+                                'success' => 'success',
+                                'failed' => 'danger',
+                                'retrying', 'processing' => 'warning',
+                                default => 'gray',
+                            })
+                            ->placeholder(__('admin.merchant_shipment_sync.no_records')),
+                        TextEntry::make('latestShipmentSync.attempt_count')
+                            ->label(__('admin.merchant_shipment_sync.fields.attempt_count'))
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('shipment_returned_at')
+                            ->label(__('admin.merchant_shipment_sync.fields.returned_at'))
+                            ->state(fn (Order $record) => self::shipmentReturnedAt($record))
+                            ->dateTime()
+                            ->placeholder(__('admin.order.placeholders.none')),
+                        TextEntry::make('latestShipmentSync.last_error')
+                            ->label(__('admin.merchant_shipment_sync.fields.last_error'))
+                            ->placeholder(__('admin.order.placeholders.none')),
                     ]),
                 ])
                 ->headerActions([
@@ -293,7 +312,7 @@ class ViewOrder extends ViewRecord
                         ->icon('heroicon-o-magnifying-glass')
                         ->color('gray')
                         ->size(Size::ExtraSmall)
-                        ->visible(function (Order $record): bool {
+                        /*->visible(function (Order $record): bool {
                             if (! auth()->user()?->can(Permissions::ORDERS_SHIP) || ! $record->shipping) {
                                 return false;
                             }
@@ -303,7 +322,7 @@ class ViewOrder extends ViewRecord
                             }
 
                             return app(LogisticsTrackingSyncService::class)->gatesAllow($record->shipping);
-                        })
+                        })*/
                         ->action(function (Order $record, LogisticsTrackingSyncService $sync): void {
                             $ok = $sync->pollTrackInfo($record->shipping);
                             $this->record->refresh();
@@ -317,10 +336,12 @@ class ViewOrder extends ViewRecord
                                 ->send();
                         }),
                     Action::make('recordShipment')
-                        ->label(fn ($record) => $record->shipping ? __('admin.order.actions_shipping.update') : __('admin.order.actions_shipping.record'))
+                        ->label(fn ($record
+                        ) => $record->shipping ? __('admin.order.actions_shipping.update') : __('admin.order.actions_shipping.record'))
                         ->icon('heroicon-o-truck')
                         ->size(Size::ExtraSmall)
-                        ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_SHIP))
+                        ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record,
+                            Permissions::ORDERS_SHIP))
                         ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_SHIP)
                             && in_array($record->status, OrderShippingService::RECORDABLE_STATUSES, true))
                         // shipped_at 必须一起回填：补发/改单时 fillForm() 给了值的表单
@@ -374,80 +395,280 @@ class ViewOrder extends ViewRecord
                             // 页面上的物流信息区块也保证拿到最新数据。
                             $this->redirect(static::getUrl(['record' => $this->record]));
                         }),
-                ]),
-            $this->merchantShipmentSyncSection(),
+                    $this->pushMerchantShipmentAction()->size(Size::ExtraSmall),
+                ])
+                ->columnSpanFull(),
         ]);
     }
 
-    private function merchantShipmentSyncSection(): Section
+    private static function fulfillmentHeadingEntry(string $name, string $label): TextEntry
     {
-        return Section::make(__('admin.merchant_shipment_sync.section'))
-            ->description(__('admin.merchant_shipment_sync.description'))
-            ->columnSpanFull()
-            ->schema([
-                Grid::make(3)->schema([
-                    TextEntry::make('latestShipmentSync.status')
-                        ->label(__('admin.merchant_shipment_sync.fields.status'))
-                        ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.merchant_shipment_sync.statuses.'.$state) : null)
-                        ->badge()
-                        ->color(fn (?string $state): string => match ($state) {
-                            'success' => 'success',
-                            'failed' => 'danger',
-                            'retrying', 'processing' => 'warning',
-                            default => 'gray',
-                        })
-                        ->placeholder(__('admin.merchant_shipment_sync.no_records')),
-                    TextEntry::make('latestShipmentSync.attempt_count')
-                        ->label(__('admin.merchant_shipment_sync.fields.attempt_count'))
-                        ->placeholder('—'),
-                    TextEntry::make('latestShipmentSync.synced_at')
-                        ->label(__('admin.merchant_shipment_sync.fields.synced_at'))
-                        ->dateTime()
-                        ->placeholder('—'),
-                    TextEntry::make('latestShipmentSync.next_attempt_at')
-                        ->label(__('admin.merchant_shipment_sync.fields.next_attempt_at'))
-                        ->dateTime()
-                        ->placeholder('—'),
-                    TextEntry::make('latestShipmentSync.alert_status')
-                        ->label(__('admin.merchant_shipment_sync.fields.alert_status'))
-                        ->formatStateUsing(fn (?string $state): ?string => $state ? __('admin.merchant_shipment_sync.alert_statuses.'.$state) : null)
-                        ->placeholder('—'),
-                    TextEntry::make('latestShipmentSync.last_error')
-                        ->label(__('admin.merchant_shipment_sync.fields.last_error'))
-                        ->placeholder('—')
-                        ->columnSpanFull(),
-                ])->columnSpanFull(),
-                RepeatableEntry::make('merchantShipmentSyncHistory')
-                    ->label(__('admin.merchant_shipment_sync.history'))
-                    ->state(fn (Order $record) => $record->shipmentSyncs()
-                        ->where('merchant_id', $record->merchant_id)
-                        ->with(['attempts' => fn ($query) => $query->orderBy('attempt_number')])
-                        ->latest('id')
-                        ->limit(10)
-                        ->get())
-                    ->schema([
-                        TextEntry::make('created_at')->label(__('admin.merchant_shipment_sync.fields.created_at'))->dateTime(),
-                        TextEntry::make('payload.tracking_number')->label(__('admin.order.fields.tracking_number')),
-                        TextEntry::make('status')
-                            ->label(__('admin.merchant_shipment_sync.fields.status'))
-                            ->formatStateUsing(fn (string $state): string => __('admin.merchant_shipment_sync.statuses.'.$state)),
-                        TextEntry::make('last_error')->label(__('admin.merchant_shipment_sync.fields.last_error'))->placeholder('—')->columnSpanFull(),
-                        RepeatableEntry::make('attempts')
-                            ->label(__('admin.merchant_shipment_sync.fields.attempts'))
-                            ->schema([
-                                TextEntry::make('attempt_number')->label(__('admin.merchant_shipment_sync.fields.attempt_number')),
-                                TextEntry::make('attempted_at')->label(__('admin.merchant_shipment_sync.fields.attempted_at'))->dateTime(),
-                                TextEntry::make('response_status')->label(__('admin.merchant_shipment_sync.fields.response_status'))->placeholder('—'),
-                                TextEntry::make('request_url')->label(__('admin.merchant_shipment_sync.fields.request_url'))->columnSpanFull(),
-                                TextEntry::make('response_body')->label(__('admin.merchant_shipment_sync.fields.response_body'))->placeholder('—')->limit(2000)->columnSpanFull(),
-                                TextEntry::make('error_message')->label(__('admin.merchant_shipment_sync.fields.last_error'))->placeholder('—')->columnSpanFull(),
-                            ])
-                            ->columns(3)
-                            ->columnSpanFull(),
-                    ])
-                    ->columns(3)
-                    ->columnSpanFull(),
-            ]);
+        return TextEntry::make($name)
+            ->hiddenLabel()
+            ->state(fn (): HtmlString => new HtmlString('<div class="order-fulfillment-heading">'.e($label).'</div>'));
+    }
+
+    private static function fulfillmentRuleEntry(string $name): TextEntry
+    {
+        return TextEntry::make($name)
+            ->hiddenLabel()
+            ->state(fn (): HtmlString => new HtmlString('<hr class="order-fulfillment-rule">'));
+    }
+
+    private static function trackingNumberState(Order $record): HtmlString
+    {
+        $shipping = $record->shipping;
+        $number = trim((string) $shipping?->tracking_number);
+
+        if ($shipping === null || $number === '') {
+            return new HtmlString(e(__('admin.order.placeholders.not_shipped')));
+        }
+
+        $html = '<strong class="fi-color-primary fi-text-color-600" style="font-weight:700;color:var(--text)">'.e($number).'</strong>';
+        $company = self::carrierLabel($shipping->logistics_company);
+
+        if ($company !== '') {
+            $html .= ' <a class="order-fulfillment-link" href="'.e(self::trackingQueryUrl($shipping)).'" target="_blank" rel="noopener noreferrer">'.'（'.e($company).'）'.'</a>';
+
+        } else {
+            $html .= ' <a class="order-fulfillment-link" href="'.e(self::trackingQueryUrl($shipping)).'" target="_blank" rel="noopener noreferrer">'.'（'.e($company).'）'.'</a>';
+        }
+
+        return new HtmlString($html);
+    }
+
+    private static function shippingOperator(Order $record): ?string
+    {
+        $shipping = $record->shipping;
+
+        if ($shipping === null) {
+            return null;
+        }
+
+        if ($shipping->operator_id === OrderShippingService::API_OPERATOR_ID) {
+            return 'API';
+        }
+
+        return $shipping->operator?->name;
+    }
+
+    private static function trackingProviderLabel(?string $provider): ?string
+    {
+        $provider = trim((string) $provider);
+
+        if ($provider === '') {
+            return null;
+        }
+
+        return match ($provider) {
+            SeventeenTrackDriver::NAME => '17TRACK',
+            default => $provider,
+        };
+    }
+
+    private static function trackingStatusLabel(?OrderShipping $shipping): ?string
+    {
+        if ($shipping === null || blank($shipping->tracking_status)) {
+            return null;
+        }
+
+        $status = OrderResource::formatTrackingStatus($shipping->tracking_status) ?? $shipping->tracking_status;
+        $subStatus = OrderResource::formatTrackingSubStatus($shipping->tracking_sub_status);
+
+        return filled($subStatus) ? $status.'（'.$subStatus.'）' : $status;
+    }
+
+    private static function trackingLastEventLabel(?OrderShipping $shipping): ?string
+    {
+        if ($shipping === null) {
+            return null;
+        }
+
+        $time = $shipping->tracking_last_event_at
+            ?->timezone(config('app.timezone'))
+            ->format('Y/m/d H:i:s');
+        $description = trim((string) $shipping->tracking_last_event_desc);
+
+        if ($time === null && $description === '') {
+            return null;
+        }
+
+        if ($time !== null && $description !== '') {
+            return $time.'（'.$description.'）';
+        }
+
+        return $time ?? $description;
+    }
+
+    private static function trackingAnomalyLabel(?OrderShipping $shipping): ?string
+    {
+        if ($shipping === null || $shipping->logistics_anomaly === null) {
+            return null;
+        }
+
+        if (! $shipping->logistics_anomaly) {
+            return __('admin.order.filters.logistics_anomaly_no');
+        }
+
+        $details = array_values(array_filter([
+            OrderResource::formatLogisticsAnomalyReason($shipping->logistics_anomaly_reason),
+            $shipping->logistics_anomaly_at
+                ?->timezone(config('app.timezone'))
+                ->format('Y/m/d H:i:s'),
+        ]));
+        $label = __('admin.order.filters.logistics_anomaly_yes');
+
+        return $details === [] ? $label : $label.'（'.implode('，', $details).'）';
+    }
+
+    private static function trackingDeliveryLabel(?OrderShipping $shipping): ?string
+    {
+        if ($shipping === null) {
+            return null;
+        }
+
+        $delivered = $shipping->tracking_status === 'Delivered' || filled($shipping->tracking_delivered_at);
+
+        if (! $delivered) {
+            return __('admin.order.delivery.pending');
+        }
+
+        $label = __('admin.order.delivery.delivered');
+        $time = $shipping->tracking_delivered_at
+            ?->timezone(config('app.timezone'))
+            ->format('Y/m/d H:i:s');
+
+        return $time === null ? $label : $label.'（'.$time.'）';
+    }
+
+    private static function shipmentReturnedAt(Order $record): mixed
+    {
+        $sync = $record->latestShipmentSync;
+
+        if ($sync === null) {
+            return null;
+        }
+
+        if ($sync->synced_at !== null) {
+            return $sync->synced_at;
+        }
+
+        return $sync->attempts()->reorder()->orderByDesc('attempt_number')->first()?->attempted_at;
+    }
+
+    private static function trackingQueryUrl(OrderShipping $shipping): string
+    {
+        $stored = trim((string) $shipping->tracking_url);
+
+        if (self::isPublicHttpUrl($stored)) {
+            return $stored;
+        }
+
+        return 'https://t.17track.net/zh-cn#nums='.rawurlencode(trim((string) $shipping->tracking_number));
+    }
+
+    private static function isPublicHttpUrl(string $url): bool
+    {
+        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+
+        $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+
+        return in_array($scheme, ['http', 'https'], true);
+    }
+
+    private static function carrierLabel(?string $code): string
+    {
+        $code = trim((string) $code);
+
+        if ($code === '') {
+            return '';
+        }
+
+        $name = Carrier::query()
+            ->whereRaw('UPPER(carrier_code) = ?', [mb_strtoupper($code)])
+            ->value('carrier_name');
+
+        return filled($name) ? (string) $name : $code;
+    }
+
+    private static function canSeeAmountBreakdown(): bool
+    {
+        $user = auth()->user();
+
+        return $user instanceof User && $user->isPlatformStaff();
+    }
+
+    /**
+     * 实际汇率红色、四位小数；原始汇率灰色删除线跟在同一行。
+     */
+    private static function exchangeRateState(Order $record): HtmlString
+    {
+        $actual = e(number_format((float) $record->exchange_rate, 4, '.', ''));
+        $html = '<span style="white-space:nowrap"><span style="color:#dc2626;font-weight:700">'.$actual.'</span>';
+
+        if (filled($record->original_exchange_rate)) {
+            $original = e(number_format((float) $record->original_exchange_rate, 4, '.', ''));
+            $html .= ' <span style="color:#9ca3af;text-decoration:line-through">'.$original.'</span>';
+        }
+
+        return new HtmlString($html.'</span>');
+    }
+
+    /**
+     * 一笔订单一行：保证金、结算到可提现、结算时间、保证金释放时间。
+     * 已释放时用实际释放时间，否则用计划释放时间。
+     */
+    private static function settlementSummaryTable(Order $record): HtmlString
+    {
+        $settlement = $record->settlement;
+        $freeze = $record->fundFreezes->sortByDesc('id')->first();
+        $releaseAt = $freeze?->released_at ?? $freeze?->release_at;
+        $placeholder = e(__('admin.order.placeholders.none'));
+        $cells = [
+            __('admin.order.settlement_summary.reserve') => self::usdCell($settlement?->reserve_amount, $placeholder),
+            __('admin.order.settlement_summary.available') => self::usdCell($settlement?->available_amount, $placeholder),
+            __('admin.order.settlement_summary.settled_at') => filled($settlement?->settled_at)
+                ? e($settlement->settled_at->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
+                : $placeholder,
+            __('admin.order.settlement_summary.release_at') => filled($releaseAt)
+                ? e($releaseAt->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
+                : $placeholder,
+        ];
+        $headers = '';
+        $values = '';
+
+        foreach ($cells as $label => $value) {
+            $headers .= '<th style="text-align:left;padding:0.5rem 0.75rem;font-weight:500;color:#6b7280;border-bottom:1px solid #e5e7eb">'.e($label).'</th>';
+            $values .= '<td style="padding:0.75rem;font-weight:600">'.$value.'</td>';
+        }
+
+        return new HtmlString(
+            '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.875rem"><thead><tr>'.$headers.'</tr></thead><tbody><tr>'.$values.'</tr></tbody></table></div>'
+        );
+    }
+
+    private static function usdCell(mixed $amount, string $placeholder): string
+    {
+        if (! filled($amount)) {
+            return $placeholder;
+        }
+
+        return e('$'.number_format((float) $amount, 2, '.', ','));
+    }
+
+    /**
+     * 紧跟在系统订单号后面，括号、粗体，并用状态色着重。
+     */
+    private static function orderStatusSuffix(Order $record): HtmlString
+    {
+        $color = OrderStatusColor::get((string) $record->status);
+        $label = e(__('admin.order.statuses.'.$record->status));
+
+        return new HtmlString(
+            ' <strong class="fi-color-'.$color.' fi-text-color-600" style="font-weight:700;color:var(--text)">（'.$label.'）</strong>'
+        );
     }
 
     protected function getHeaderActions(): array
@@ -455,8 +676,6 @@ class ViewOrder extends ViewRecord
         return [
             OrderResource::queryStatusAction(),
             $this->syncOrderEventsAction(),
-            $this->pushMerchantShipmentAction(),
-            $this->resendPaymentLinkMailAction(),
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
@@ -658,10 +877,20 @@ class ViewOrder extends ViewRecord
     }
 
     /**
-     * 立即重发付款链接邮件：只有下单时选择了发送（$record->send_mail 为真，
-     * 见 OrderController::store()/ManualOrderService）的订单才展示这个入口。
-     * 只读操作（不改订单状态、不涉及金额），复用 SendPaymentLinkJob，权限对齐
-     * "能看订单详情就能重发"，不需要 2FA。
+     * 下单时请求过发信、已经记下客户邮箱，并且当前用户能看订单详情时，
+     * 才在「下单时请求发送邮件」后面放重发按钮。
+     */
+    private function canResendPaymentLinkMail(Order $record): bool
+    {
+        return (bool) auth()->user()?->can(Permissions::ORDERS_VIEW)
+            && $record->send_mail
+            && filled($record->customer_email);
+    }
+
+    /**
+     * 立即重发付款链接邮件。按钮跟在「下单时请求发送邮件」后面。只读操作
+     * （不改订单状态、不涉及金额），复用 SendPaymentLinkJob，权限对齐
+     * 「能看订单详情就能重发」，不需要 2FA。
      */
     private function resendPaymentLinkMailAction(): Action
     {
@@ -670,9 +899,7 @@ class ViewOrder extends ViewRecord
             ->icon('heroicon-o-envelope')
             ->color('gray')
             ->requiresConfirmation()
-            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDERS_VIEW)
-                && $record->send_mail
-                && filled($record->customer_email))
+            ->visible(fn (Order $record): bool => $this->canResendPaymentLinkMail($record))
             ->action(function (Order $record) {
                 SendPaymentLinkJob::dispatch($record->id);
 
@@ -696,9 +923,11 @@ class ViewOrder extends ViewRecord
             ->label(__('admin.order_dispute_event.actions.open'))
             ->icon('heroicon-o-exclamation-triangle')
             ->color('danger')
-            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDER_DISPUTES_OPEN))
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record,
+                Permissions::ORDER_DISPUTES_OPEN))
             ->visible(fn (Order $record) => $this->canPerformOrderAction($record, Permissions::ORDER_DISPUTES_OPEN)
-                && in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing'], true)
+                && in_array($record->status,
+                    ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing'], true)
                 && ! $record->activeDisputeEvent)
             ->schema([
                 TextInput::make('event_no')
@@ -764,8 +993,10 @@ class ViewOrder extends ViewRecord
         return Action::make('viewActiveDisputeEvent')
             ->label(__('admin.order_dispute_event.actions.view_active'))
             ->icon('heroicon-o-eye')
-            ->visible(fn (Order $record) => auth()->user()->can(Permissions::ORDER_DISPUTES_VIEW) && $record->activeDisputeEvent)
-            ->url(fn (Order $record) => OrderDisputeEventResource::getUrl('view', ['record' => $record->activeDisputeEvent]));
+            ->visible(fn (Order $record
+            ) => auth()->user()->can(Permissions::ORDER_DISPUTES_VIEW) && $record->activeDisputeEvent)
+            ->url(fn (Order $record) => OrderDisputeEventResource::getUrl('view',
+                ['record' => $record->activeDisputeEvent]));
     }
 
     /**
@@ -782,7 +1013,8 @@ class ViewOrder extends ViewRecord
             // 必须还能补录把账扣平（放行条件与 BalanceService::assertRefundable() 一致）。
             ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND))
             ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND)
-                && in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded'], true)
+                && in_array($record->status,
+                    ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded'], true)
                 && bccomp((string) $record->refundableAmount(), '0', 2) > 0
                 && ! BalanceService::hasChargebackLedger($record))
             ->modalHeading(__('admin.finance.refund.action'))
@@ -832,7 +1064,8 @@ class ViewOrder extends ViewRecord
             ->requiresConfirmation()
             // status=chargeback 且没落过拒付流水的也放行：网关标记了拒付但钱还没扣的
             // 历史订单需要补录（放行条件与 BalanceService::assertChargebackable() 一致）。
-            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_CHARGEBACK))
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record,
+                Permissions::ORDERS_CHARGEBACK))
             ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_CHARGEBACK)
                 && bccomp((string) $record->refunded_amount, '0', 2) === 0
                 && ! BalanceService::hasChargebackLedger($record)
@@ -873,6 +1106,7 @@ class ViewOrder extends ViewRecord
             OrderDisputeEventsRelationManager::class,
             OrderNotificationAttemptsRelationManager::class,
             AdConversionAttemptsRelationManager::class,
+            OrderShipmentSyncsRelationManager::class,
         ];
     }
 
@@ -890,7 +1124,8 @@ class ViewOrder extends ViewRecord
             ->orderBy('carrier_name')
             ->limit(50)
             ->get()
-            ->mapWithKeys(fn (Carrier $carrier) => [$carrier->carrier_code => "{$carrier->carrier_name} ({$carrier->carrier_code})"])
+            ->mapWithKeys(fn (Carrier $carrier
+            ) => [$carrier->carrier_code => "{$carrier->carrier_name} ({$carrier->carrier_code})"])
             ->all();
     }
 }

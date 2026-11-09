@@ -86,7 +86,7 @@ trait ConfiguresSharedPanelSettings
             ])
             ->renderHook(
                 PanelsRenderHook::HEAD_END,
-                fn (): string => "
+                fn (): string => '
                 <style>
                 /* 未选中时的菜单文字与图标颜色 */
 .fi-sidebar-item-button {
@@ -119,8 +119,37 @@ body, .fi-main, .fi-layout {
 .dark body, .dark .fi-main, .dark .fi-layout {
     background-color: #0b0f19 !important; /* 这里改成你想要的暗黑主背景色 */
 }
+/* 订单详情「下单时请求发送邮件」的勾选图标默认撑满格子，重发按钮会被挤出去 */
+.order-send-mail-entry .fi-in-entry-content {
+    width: auto;
+    flex: none;
+}
+.order-send-mail-entry .fi-in-entry-content-ctn {
+    flex-wrap: wrap;
+}
+.order-fulfillment-heading {
+    font-weight: 700;
+    font-size: 1rem;
+    line-height: 1.4;
+}
+.order-fulfillment-rule {
+    border: 0;
+    border-top: 1px dashed #d1d5db;
+    margin: 0.9rem 0;
+}
+.dark .order-fulfillment-rule {
+    border-top-color: #4b5563;
+}
+.order-fulfillment-link {
+    color: #2563eb;
+    font-weight: 600;
+    text-decoration: underline;
+}
+.dark .order-fulfillment-link {
+    color: #93c5fd;
+}
                 </style>
-                "
+                '
             )
             // 订单列表页"本次查询统计"：TablesRenderHook::TOOLBAR_AFTER 在表格 Blade 模板里
             // 调用时不带 scopes（见 vendor/filament/tables/resources/views/index.blade.php），

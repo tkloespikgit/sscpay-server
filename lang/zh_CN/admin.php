@@ -211,6 +211,7 @@ return [
 
     'merchant_shipment_sync' => [
         'section' => '商户网站物流回传',
+        'tab' => '物流回传记录',
         'description' => '推送当前物流到订单所属应用配置的商户网站。修改物流后旧版本停止重试；客户通知由商户网站处理。',
         'push' => '推送物流到商户网站',
         'queued' => '物流回传已加入队列',
@@ -223,6 +224,7 @@ return [
             'status' => '回传状态',
             'attempt_count' => '已尝试次数',
             'synced_at' => '回传成功时间',
+            'returned_at' => '回传时间',
             'next_attempt_at' => '下次尝试时间',
             'alert_status' => 'Telegram 提醒',
             'last_error' => '失败原因',
@@ -859,6 +861,16 @@ return [
             'refunded' => '已退款',
             'chargeback' => '已拒付',
         ],
+        'settlement_modes' => [
+            'immediate' => '立即结算',
+            'shipped' => '发货结算',
+        ],
+        'settlement_summary' => [
+            'reserve' => '保证金',
+            'available' => '结算到可提现',
+            'settled_at' => '结算时间',
+            'release_at' => '保证金释放时间',
+        ],
         'sync_statuses' => [
             'pending' => '待同步',
             'synced' => '已同步',
@@ -951,9 +963,15 @@ return [
         'sections' => [
             'order_info' => '订单信息',
             'amount_info' => '金额信息',
+            'settlement_summary' => '结算信息',
             'crypto_payment' => '链上收款',
             'customer_info' => '客户与收货信息',
+            'customer_shipping' => '客户与物流',
+            'customer' => '客户信息',
+            'shipping_address' => '地址信息',
             'shipping_info' => '物流信息',
+            'tracking_info' => '物流追踪信息',
+            'merchant_shipment_sync' => '商户物流回传',
         ],
         'fields' => [
             'order_no' => '系统订单号',
@@ -968,11 +986,12 @@ return [
             'created_at' => '创建时间',
             'paid_at' => '支付成功时间',
             'refunded_amount' => '已退款金额',
-            'send_mail' => '下单时请求发送邮件',
+            'send_mail' => '发送付款邮件',
             'payment_link_sent_at' => '付款链接邮件发送时间',
             'payment_link_mail_failed_reason' => '邮件发送失败原因',
             'currency' => '币种',
             'amount' => '应付总额',
+            'original_transaction_amount' => '原始交易金额',
             'converted_amount' => '折算 USD',
             'exchange_rate' => '实际汇率',
             'original_exchange_rate' => '原始汇率',
@@ -1015,6 +1034,7 @@ return [
             'logistics_anomaly' => '物流异常',
             'logistics_anomaly_reason' => '异常原因',
             'logistics_anomaly_at' => '异常标记时间',
+            'delivery_status' => '物流投递状态',
             'manual_status_target' => '目标状态',
             'manual_status_reason' => '备注原因',
         ],
@@ -1087,6 +1107,11 @@ return [
             'poll_tracking' => '查询最新物流轨迹',
             'poll_tracking_success' => '已更新最新物流轨迹',
             'poll_tracking_failed' => '未获取到新轨迹（请确认门闩、凭证或稍后重试）',
+            'view_tracking' => '查看',
+        ],
+        'delivery' => [
+            'delivered' => '已投递',
+            'pending' => '未投递',
         ],
         'modals' => [
             'customer_info_heading' => '客户信息',

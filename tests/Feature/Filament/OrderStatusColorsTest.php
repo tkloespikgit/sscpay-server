@@ -44,6 +44,27 @@ class OrderStatusColorsTest extends TestCase
         'chargeback' => 'warning',
     ];
 
+    public function test_order_details_show_status_in_bold_parentheses_after_the_system_order_number(): void
+    {
+        $this->createMerchantAndApplication();
+        $this->actingAs(User::factory()->create(['is_super_admin' => true]));
+        Filament::setCurrentPanel('admin');
+        $order = $this->makeOrder('HEADER-STATUS', 'M-HEADER-STATUS', ['status' => 'paid']);
+
+        $html = Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])->html();
+        $status = '（'.__('admin.order.statuses.paid').'）';
+
+        $this->assertGreaterThan(strpos($html, $order->order_no), strpos($html, $status));
+        $this->assertStringContainsString('font-weight:700', $html);
+        $this->assertStringContainsString('fi-color-info', $html);
+        $this->assertSame(1, preg_match(
+            '/'.preg_quote(__('admin.order.sections.order_info'), '/').'.*?<\/header>/s',
+            $html,
+            $header,
+        ));
+        $this->assertStringNotContainsString($status, $header[0]);
+    }
+
     public function test_order_list_and_details_use_configured_colors_for_every_order_status(): void
     {
         $this->createMerchantAndApplication();
@@ -60,8 +81,11 @@ class OrderStatusColorsTest extends TestCase
         foreach ($orders as $order) {
             $column->record($order);
             $this->assertSame(self::CUSTOM_COLORS[$order->status], $column->getColor($column->getState()), $order->status);
-            $entry = $this->statusEntry(new ViewOrder, $order);
-            $this->assertSame(self::CUSTOM_COLORS[$order->status], $entry->getColor($entry->getState()), $order->status);
+            $entry = $this->orderNumberEntry(new ViewOrder, $order);
+            $detail = (string) $entry->formatState($entry->getState());
+            $this->assertStringContainsString('fi-color-'.self::CUSTOM_COLORS[$order->status], $detail, $order->status);
+            $this->assertStringContainsString('（'.__('admin.order.statuses.'.$order->status).'）', $detail);
+            $this->assertSame($order->order_no, $entry->getCopyableState($entry->getState()));
         }
     }
 
@@ -157,6 +181,14 @@ class OrderStatusColorsTest extends TestCase
             'status' => $status,
             'payment_method_id' => $paymentMethodId,
         ]), $statuses);
+    }
+
+    private function orderNumberEntry(ViewRecord $page, Order $order): TextEntry
+    {
+        $entry = $page->infolist(Schema::make($page)->record($order))->getComponentByStatePath('order_no');
+        $this->assertInstanceOf(TextEntry::class, $entry);
+
+        return $entry;
     }
 
     private function statusEntry(ViewRecord $page, Order $order): TextEntry

@@ -212,6 +212,7 @@ return [
 
     'merchant_shipment_sync' => [
         'section' => 'Merchant Website Shipment Sync',
+        'tab' => 'Shipment Sync Records',
         'description' => 'Send the current shipment to the merchant website configured for this order\'s application. Shipment edits stop retries for older versions; the merchant website handles customer notifications.',
         'push' => 'Push Shipment to Merchant Website',
         'queued' => 'Shipment sync queued',
@@ -224,6 +225,7 @@ return [
             'status' => 'Sync Status',
             'attempt_count' => 'Attempts',
             'synced_at' => 'Synced At',
+            'returned_at' => 'Sync Time',
             'next_attempt_at' => 'Next Attempt',
             'alert_status' => 'Telegram Alert',
             'last_error' => 'Failure Reason',
@@ -861,6 +863,16 @@ return [
             'refunded' => 'Refunded',
             'chargeback' => 'Charged Back',
         ],
+        'settlement_modes' => [
+            'immediate' => 'Immediate Settlement',
+            'shipped' => 'Shipment Settlement',
+        ],
+        'settlement_summary' => [
+            'reserve' => 'Reserve',
+            'available' => 'Settled to Withdrawable',
+            'settled_at' => 'Settled At',
+            'release_at' => 'Reserve Release At',
+        ],
         'sync_statuses' => [
             'pending' => 'Pending Sync',
             'synced' => 'Synced',
@@ -951,9 +963,15 @@ return [
         'sections' => [
             'order_info' => 'Order Information',
             'amount_info' => 'Amount Information',
+            'settlement_summary' => 'Settlement',
             'crypto_payment' => 'Crypto Payment',
             'customer_info' => 'Customer & Shipping Information',
+            'customer_shipping' => 'Customer & Shipping',
+            'customer' => 'Customer',
+            'shipping_address' => 'Address',
             'shipping_info' => 'Shipping Information',
+            'tracking_info' => 'Tracking',
+            'merchant_shipment_sync' => 'Merchant Website Shipment Sync',
         ],
         'fields' => [
             'order_no' => 'Order No.',
@@ -973,6 +991,7 @@ return [
             'payment_link_mail_failed_reason' => 'Mail Send Failure Reason',
             'currency' => 'Currency',
             'amount' => 'Amount Due',
+            'original_transaction_amount' => 'Original Transaction Amount',
             'converted_amount' => 'Converted (USD)',
             'exchange_rate' => 'Exchange Rate',
             'original_exchange_rate' => 'Original Rate',
@@ -1015,6 +1034,7 @@ return [
             'logistics_anomaly' => 'Logistics Anomaly',
             'logistics_anomaly_reason' => 'Anomaly Reason',
             'logistics_anomaly_at' => 'Anomaly Flagged At',
+            'delivery_status' => 'Delivery Status',
             'manual_status_target' => 'Target Status',
             'manual_status_reason' => 'Reason',
         ],
@@ -1087,6 +1107,11 @@ return [
             'poll_tracking' => 'Refresh Tracking',
             'poll_tracking_success' => 'Tracking status updated',
             'poll_tracking_failed' => 'No new tracking data (check gates, credentials, or try again later)',
+            'view_tracking' => 'View',
+        ],
+        'delivery' => [
+            'delivered' => 'Delivered',
+            'pending' => 'Not delivered',
         ],
         'modals' => [
             'customer_info_heading' => 'Customer Information',
