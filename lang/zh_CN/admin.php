@@ -867,9 +867,9 @@ return [
         ],
         'settlement_summary' => [
             'reserve' => '保证金',
-            'available' => '结算到可提现',
+            'available' => '可用余额',
             'settled_at' => '结算时间',
-            'release_at' => '保证金释放时间',
+            'release_at' => '释放时间',
         ],
         'sync_statuses' => [
             'pending' => '待同步',

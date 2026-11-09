@@ -627,11 +627,12 @@ class ViewOrder extends ViewRecord
         $releaseAt = $freeze?->released_at ?? $freeze?->release_at;
         $placeholder = e(__('admin.order.placeholders.none'));
         $cells = [
-            __('admin.order.settlement_summary.reserve') => self::usdCell($settlement?->reserve_amount, $placeholder),
             __('admin.order.settlement_summary.available') => self::usdCell($settlement?->available_amount, $placeholder),
             __('admin.order.settlement_summary.settled_at') => filled($settlement?->settled_at)
                 ? e($settlement->settled_at->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
                 : $placeholder,
+
+            __('admin.order.settlement_summary.reserve') => self::usdCell($settlement?->reserve_amount, $placeholder),
             __('admin.order.settlement_summary.release_at') => filled($releaseAt)
                 ? e($releaseAt->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
                 : $placeholder,
