@@ -482,6 +482,7 @@ return [
             'allow_returned_source' => 'Allow Return to Source',
             'system_level' => 'System-level (Admin)',
             'assigned_merchants_count' => 'Assigned Merchants',
+            'deleted_at' => 'Deleted At',
         ],
         'sync_statuses' => [
             'synced' => 'Synced',
@@ -518,6 +519,9 @@ return [
             'detach_all_groups_heading' => 'Detach from All Payment Groups',
             'detach_all_groups_desc' => 'Removes this payment method from every merchant\'s payment groups. After this, no payment group will route to it anymore. Use this to fully take a payment method offline. This action cannot be undone.',
             'detach_all_groups_success' => 'Detached from :count payment group(s)',
+            'restore_code_recovered_title' => 'Payment method restored',
+            'restore_code_recovered_body' => 'The original code is already in use. It has been changed to :code.',
+            'restore_failed' => 'Restore failed. Refresh and try again.',
         ],
     ],
 

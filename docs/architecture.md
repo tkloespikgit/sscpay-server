@@ -80,6 +80,8 @@ flowchart TD
 
 支付方式列表在商户端固定使用当前商户的生效手续费、保证金及结算配置；平台端未选商户时显示渠道默认值，使用“查看商户生效配置”筛选后，通过 `forMerchant()` 展示该商户自有和已分配渠道，并加载仅限该商户的独立配置。筛选值须属于当前平台用户可管理的启用商户，非法或越权选择返回空表；商户账号伪造此筛选不会切换财务上下文。列表显示与下单保持相同空值回退规则，未初始化的存量分配仍回退渠道费率，不能仅改变显示值伪装配置已生效。
 
+超级管理员可以在同一列表用「已删除记录」筛选查看软删除的支付方式并恢复。默认仍不显示已删除记录。恢复只清除删除时间，启用状态、商户分配和支付组引用保持删除前的样子。`method_code` 在未删除记录之间全局唯一；原代码已被占用时，恢复改为仍未被未删除记录占用的 `_recover`、`_recover2`……后缀（总长度不超过 50，过长时保留后缀、从原代码前面截断），并提示新代码。只存在于其他已删除记录上的代码可以继续使用。商户级管理员和商户用户没有这个筛选，列表查询也不会带上已删除记录，因此不能恢复。
+
 加密网关不单独建资产模型，也不在渠道上存 `gateway_driver`：与 Stripe/PayPal 一样靠配置模板的 `payment_config_tag` 区分——`crypto` 或 `crypto_*`（如 `crypto_tron_usdt`）走本站链上编排，其余走 WP 插件。链/币/合约/收款地址及 Tatum 凭证写在 `payment_methods.config`（缺省可回退 `config/tatum.php`）；归属仍走渠道自有或系统级分配。建单快照链/币/合约/地址；`tatum_subscription_id` 可回填渠道 config。**稳定决策**见 [D-29](decisions.md#d-29-crypto-payment-amount-mutex)；**实现方案**见 [crypto-payment.md](../doc/crypto-payment.md)。现行口径：固定址 + 金额互斥——无汇损折算 → 盐写入 `converted_amount`（千分位）→ 按盐后额算费；webhook / 付款页匹配同字段。**P0 仅 USDT**（须 `token_contract`）；Registry **当前仅挂载 Tron**。
 
 **代码地图（`app/Services/Crypto/`）**

@@ -10,6 +10,7 @@ use App\Models\MerchantPaymentSetting;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
+use App\Models\Scopes\MerchantScope;
 use App\Models\User;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
@@ -17,6 +18,7 @@ use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
+use Filament\Actions\RestoreAction;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -33,10 +35,13 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TrashedFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Unique;
@@ -48,6 +53,11 @@ use Illuminate\Validation\Rules\Unique;
 class PaymentMethodResource extends Resource
 {
     protected static ?string $model = PaymentMethod::class;
+
+    /**
+     * 本次恢复因代码冲突而改写的 method_code。成功通知在动作返回后才发送，用它把新代码带过去。
+     */
+    private static ?string $recoveredMethodCode = null;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-credit-card';
 
@@ -481,6 +491,19 @@ class PaymentMethodResource extends Resource
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),
+                TextColumn::make('deleted_at')
+                    ->label(__('admin.payment_method.columns.deleted_at'))
+                    ->dateTime()
+                    ->placeholder('—')
+                    ->visible(function (Pages\ListPaymentMethods $livewire): bool {
+                        if (! static::viewerIsSuperAdmin()) {
+                            return false;
+                        }
+
+                        $state = $livewire->getTableFilterState('trashed');
+
+                        return filled(is_array($state) ? ($state['value'] ?? null) : null);
+                    }),
             ]))
             ->filters([
                 SelectFilter::make('merchant_id')
@@ -512,12 +535,15 @@ class PaymentMethodResource extends Resource
                             ? $query->forMerchant($merchant->id)
                             : $query;
                     }),
+                TrashedFilter::make()
+                    ->visible(fn (): bool => static::viewerIsSuperAdmin()),
             ])
             ->recordActions([
                 static::syncProductsAction(),
                 static::duplicateAction(),
-                EditAction::make()->visible(fn (PaymentMethod $record) => static::canManageRecord($record)),
-                DeleteAction::make()->visible(fn (PaymentMethod $record) => static::canManageRecord($record)),
+                EditAction::make()->visible(fn (PaymentMethod $record): bool => ! $record->trashed() && static::canManageRecord($record)),
+                DeleteAction::make()->visible(fn (PaymentMethod $record): bool => ! $record->trashed() && static::canManageRecord($record)),
+                static::restoreAction(),
             ])
             ->defaultSort('sort_order');
     }
@@ -666,7 +692,7 @@ class PaymentMethodResource extends Resource
         return Action::make('syncProducts')
             ->label(__('admin.payment_method.actions.sync_products'))
             ->icon('heroicon-o-arrow-path')
-            ->visible(fn (PaymentMethod $record) => static::canManageRecord($record))
+            ->visible(fn (PaymentMethod $record): bool => ! $record->trashed() && static::canManageRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.sync_products_heading'))
             ->modalDescription(__('admin.payment_method.actions.sync_products_desc'))
@@ -739,7 +765,7 @@ class PaymentMethodResource extends Resource
         return Action::make('duplicate')
             ->label(__('admin.payment_method.actions.duplicate'))
             ->icon('heroicon-o-square-2-stack')
-            ->visible(fn (PaymentMethod $record) => static::canDuplicateRecord($record))
+            ->visible(fn (PaymentMethod $record): bool => ! $record->trashed() && static::canDuplicateRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.duplicate_heading'))
             ->modalDescription(__('admin.payment_method.actions.duplicate_desc'))
@@ -854,6 +880,124 @@ class PaymentMethodResource extends Resource
     public static function canDelete($record): bool
     {
         return static::canEdit($record);
+    }
+
+    public static function restoreAction(): RestoreAction
+    {
+        return RestoreAction::make()
+            ->visible(fn (PaymentMethod $record): bool => static::canRestoreRecord($record))
+            ->authorize(fn (PaymentMethod $record): bool => static::canRestoreRecord($record))
+            ->failureNotificationTitle(__('admin.payment_method.actions.restore_failed'))
+            ->successNotification(function (): Notification {
+                $code = static::$recoveredMethodCode;
+                static::$recoveredMethodCode = null;
+
+                if (! is_string($code)) {
+                    return Notification::make()
+                        ->success()
+                        ->title(__('filament-actions::restore.single.notifications.restored.title'));
+                }
+
+                return Notification::make()
+                    ->success()
+                    ->title(__('admin.payment_method.actions.restore_code_recovered_title'))
+                    ->body(__('admin.payment_method.actions.restore_code_recovered_body', ['code' => $code]));
+            })
+            ->using(function (PaymentMethod $record): bool {
+                static::$recoveredMethodCode = null;
+                $renamedTo = static::recoverAndRestore($record);
+
+                if ($renamedTo === false) {
+                    return false;
+                }
+
+                if (is_string($renamedTo)) {
+                    static::$recoveredMethodCode = $renamedTo;
+                }
+
+                return true;
+            });
+    }
+
+    public static function canRestoreRecord(PaymentMethod $record): bool
+    {
+        return static::viewerIsSuperAdmin() && $record->trashed();
+    }
+
+    protected static function viewerIsSuperAdmin(): bool
+    {
+        $viewer = auth()->user();
+
+        return $viewer instanceof User && $viewer->is_super_admin;
+    }
+
+    /**
+     * 恢复软删除的支付方式。未删除记录之间 method_code 全局唯一；
+     * 原代码已被占用时改成仍可用的 `_recover` / `_recover2`…，并返回新代码。
+     * 代码未改时返回 true，记录已经不在删除状态时返回 false。
+     */
+    protected static function recoverAndRestore(PaymentMethod $record): string|bool
+    {
+        if (! static::canRestoreRecord($record)) {
+            return false;
+        }
+
+        try {
+            return DB::transaction(function () use ($record): string|bool {
+                $locked = PaymentMethod::query()
+                    ->withoutGlobalScopes()
+                    ->lockForUpdate()
+                    ->find($record->getKey());
+
+                if (! $locked instanceof PaymentMethod || ! $locked->trashed()) {
+                    return false;
+                }
+
+                $renamedTo = null;
+
+                if (static::methodCodeIsTaken($locked->method_code, $locked->id)) {
+                    $locked->method_code = static::nextRecoverCode($locked->method_code);
+                    $renamedTo = $locked->method_code;
+                }
+
+                if (! $locked->restore()) {
+                    return false;
+                }
+
+                return $renamedTo ?? true;
+            });
+        } catch (UniqueConstraintViolationException) {
+            return false;
+        }
+    }
+
+    /**
+     * 生成不超过 50 个字符、且未被未删除记录占用的恢复代码。
+     * 后缀始终保留；原代码过长时从前面截断。
+     */
+    protected static function nextRecoverCode(string $baseCode): string
+    {
+        $code = $baseCode;
+
+        for ($attempt = 1; $attempt <= 20; $attempt++) {
+            $suffix = $attempt === 1 ? '_recover' : '_recover'.$attempt;
+            $code = mb_substr($baseCode, 0, 50 - mb_strlen($suffix)).$suffix;
+
+            if (! static::methodCodeIsTaken($code)) {
+                return $code;
+            }
+        }
+
+        return $code;
+    }
+
+    protected static function methodCodeIsTaken(string $code, ?int $ignoreId = null): bool
+    {
+        return PaymentMethod::query()
+            ->withoutGlobalScope(MerchantScope::class)
+            ->where('method_code', $code)
+            ->when($ignoreId !== null, fn (Builder $query): Builder => $query->whereKeyNot($ignoreId))
+            ->exists();
     }
 
     /**

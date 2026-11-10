@@ -478,6 +478,7 @@ return [
             'allow_returned_source' => '允许返回源站',
             'system_level' => '系统级（管理员）',
             'assigned_merchants_count' => '已分配商户数',
+            'deleted_at' => '删除时间',
         ],
         'sync_statuses' => [
             'synced' => '已同步',
@@ -514,6 +515,9 @@ return [
             'detach_all_groups_heading' => '脱离全部支付组',
             'detach_all_groups_desc' => '将把这条支付方式从所有商户的支付组里摘除，摘除后所有支付组都不会再路由到这条支付方式，用于整体下线该支付方式，此操作不可撤销。',
             'detach_all_groups_success' => '已从 :count 个支付组中脱离',
+            'restore_code_recovered_title' => '支付方式已恢复',
+            'restore_code_recovered_body' => '原代码已被占用，已自动改为 :code。',
+            'restore_failed' => '恢复失败，请刷新后重试',
         ],
     ],
 
