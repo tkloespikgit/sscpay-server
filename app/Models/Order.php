@@ -3,7 +3,6 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
-use App\Services\Crypto\CryptoPaymentService;
 use App\Support\MailerCredentials;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -130,13 +129,6 @@ class Order extends Model
         'shipping_zip',
         'payment_method',
         'payment_method_id',
-        'crypto_chain',
-        'crypto_symbol',
-        'crypto_token_contract',
-        'crypto_receive_address',
-        'crypto_amount_received',
-        'crypto_expires_at',
-        'crypto_txids',
         'designated_payment_method_key',
         'refunded_amount',
         'customer_ip',
@@ -168,9 +160,6 @@ class Order extends Model
             'gateway_status_updated_at' => 'datetime',
             'gateway_status_version' => 'integer',
             'failed_at' => 'datetime',
-            'crypto_expires_at' => 'datetime',
-            'crypto_txids' => 'array',
-            'crypto_amount_received' => 'decimal:8',
             'pending_status_query_count' => 'integer',
             'pending_status_last_queried_at' => 'datetime',
             'payment_link_sent_at' => 'datetime',
@@ -186,7 +175,7 @@ class Order extends Model
             'tax' => 'decimal:2',
             'amount' => 'decimal:2',
             'refunded_amount' => 'decimal:2',
-            'converted_amount' => 'decimal:3',
+            'converted_amount' => 'decimal:2',
             'subtotal_converted' => 'decimal:2',
             'shipping_fee_converted' => 'decimal:2',
             'discount_converted' => 'decimal:2',
@@ -285,20 +274,6 @@ class Order extends Model
         }
 
         return bccomp((string) $this->original_amount, (string) $this->amount, 2) !== 0;
-    }
-
-    /** 是否走本站加密付款页（已绑定收款地址与过期时间）。 */
-    public function isCryptoCheckout(): bool
-    {
-        return filled($this->crypto_receive_address) && $this->crypto_expires_at !== null;
-    }
-
-    /**
-     * 加密匹配/展示小数位：与 converted_amount 千分位一致（P0 固定 3）。
-     */
-    public function cryptoAmountScale(): int
-    {
-        return CryptoPaymentService::CONVERTED_SCALE;
     }
 
     public function items(): HasMany

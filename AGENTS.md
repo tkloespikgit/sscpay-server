@@ -19,7 +19,6 @@
 | [docs/development-log.md](docs/development-log.md) | 重要变更、验证记录及交接时已知差异 |
 | [README.md](README.md) | 功能概览、安装和运维说明；部分叙述滞后，已知差异见开发记录 |
 | [doc/api.md](doc/api.md) | 商户 API 对接协议 |
-| [doc/crypto-payment.md](doc/crypto-payment.md) | 加密支付实现方案（USDT / Tron listen-only） |
 | [doc/checkout-link.md](doc/checkout-link.md) / [Cloudflare SaaS](doc/checkout-link-cloudflare-saas.md) | 公开收款页与商户自有域名 |
 | [doc/deployment.md](doc/deployment.md) / [doc/i18n.md](doc/i18n.md) | 生产部署、多语言 |
 | [支付状态协议](doc/wordpress/s-system-payment-status-notify.md) / [物流协议](doc/wordpress/s-system-sync-tracking.md) | WordPress 支付插件集成 |

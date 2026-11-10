@@ -1,6 +1,6 @@
 # 系统架构
 
-核对日期：2026-11-06。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
+核对日期：2026-11-10。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
 
 ## 1. 系统职责与技术栈
 
@@ -47,7 +47,6 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
-| `/api/webhooks/tatum/address` | `TatumWebhookController` | POST，Tatum 链上入账通知；当前不做验签，直接匹配入账 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
@@ -81,22 +80,6 @@ flowchart TD
 支付方式列表在商户端固定使用当前商户的生效手续费、保证金及结算配置；平台端未选商户时显示渠道默认值，使用“查看商户生效配置”筛选后，通过 `forMerchant()` 展示该商户自有和已分配渠道，并加载仅限该商户的独立配置。筛选值须属于当前平台用户可管理的启用商户，非法或越权选择返回空表；商户账号伪造此筛选不会切换财务上下文。列表显示与下单保持相同空值回退规则，未初始化的存量分配仍回退渠道费率，不能仅改变显示值伪装配置已生效。
 
 超级管理员可以在同一列表用「已删除记录」筛选查看软删除的支付方式并恢复。默认仍不显示已删除记录。恢复只清除删除时间，启用状态、商户分配和支付组引用保持删除前的样子。`method_code` 在未删除记录之间全局唯一；原代码已被占用时，恢复改为仍未被未删除记录占用的 `_recover`、`_recover2`……后缀（总长度不超过 50，过长时保留后缀、从原代码前面截断），并提示新代码。只存在于其他已删除记录上的代码可以继续使用。商户级管理员和商户用户没有这个筛选，列表查询也不会带上已删除记录，因此不能恢复。
-
-加密网关不单独建资产模型，也不在渠道上存 `gateway_driver`：与 Stripe/PayPal 一样靠配置模板的 `payment_config_tag` 区分——`crypto` 或 `crypto_*`（如 `crypto_tron_usdt`）走本站链上编排，其余走 WP 插件。链/币/合约/收款地址及 Tatum 凭证写在 `payment_methods.config`（缺省可回退 `config/tatum.php`）；归属仍走渠道自有或系统级分配。建单快照链/币/合约/地址；`tatum_subscription_id` 可回填渠道 config。**稳定决策**见 [D-29](decisions.md#d-29-crypto-payment-amount-mutex)；**实现方案**见 [crypto-payment.md](../doc/crypto-payment.md)。现行口径：固定址 + 金额互斥——无汇损折算 → 盐写入 `converted_amount`（千分位）→ 按盐后额算费；webhook / 付款页匹配同字段。**P0 仅 USDT**（须 `token_contract`）；Registry **当前仅挂载 Tron**。
-
-**代码地图（`app/Services/Crypto/`）**
-
-| 类 | 职责 |
-|---|---|
-| `CryptoPaymentService` | 编排：`converted_amount` 金额互斥、订阅、webhook 匹配入账、过期 |
-| `CryptoQuoteService` + `CryptoQuote` | 报价服务（稳定币 peg / Tatum）；P0 建单不写入订单 |
-| `CryptoChainRegistry` + `Chains/*Adapter` | 按链：Tatum chain、深链、合约别名、占位地址（当前挂载 Tron） |
-| `TatumClient` | HTTP：地址订阅与汇率（凭证 using 渠道 config） |
-| `CryptoCheckoutLinkBuilder` | 付款页深链（金额取 `converted_amount`）；QR 用纯地址 |
-| 入口 | `OrderCreationService` 加密分支；`TatumWebhookController`；`PaymentPageController`；`crypto:expire-payments` |
-| 容器 | `CryptoServiceProvider`（`bootstrap/providers.php`）单例绑定 `CryptoChainRegistry` |
-
-Tatum 订阅：有 `token_contract` → `INCOMING_FUNGIBLE_TX`，空合约 → `INCOMING_NATIVE_TX`（P0 建单要求 USDT 必填合约，故实际走 FUNGIBLE）。入账以 webhook payload 为准。新链：实现 `CryptoChainAdapter` 并挂进 `CryptoServiceProvider`。
 
 商品同步 `WooCommerceProductSyncService` 只拉取原商品及变体，不调用翻译 API；原名称未变时保留 `site_products.name_translated`，原名称变化则清除旧译名。`PurchaseOrderService` 在选品后、进货单写入事务前调用 `ProductNameTranslationService`，只为选中且缺少译名的商品请求百度翻译并保存，下次复用；未配置或翻译失败时使用原名称，后续生成可重试，不改已有进货单名称快照。
 

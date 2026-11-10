@@ -50,22 +50,6 @@ class OrderPaymentStatusService
     ) {}
 
     /**
-     * 链上收款确认后置 paid（不经 PGA）。复用 applyStatus 的入账/通知副作用。
-     */
-    public function applyCryptoPaid(Order $order, string $txid): void
-    {
-        $this->applyStatus(
-            $order,
-            'paid',
-            [
-                'transaction_id' => $txid,
-                's_order_id' => $order->gatewayOrderReference(),
-            ],
-            $order->gatewayOrderReference(),
-        );
-    }
-
-    /**
      * @param  array  $payload  已通过签名验证的 payment_status 回调 body（字段见文档第二节）
      */
     public function handle(array $payload): void

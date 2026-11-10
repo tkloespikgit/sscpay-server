@@ -338,12 +338,4 @@
 
 ## D-31 crypto-payment-amount-mutex
 
-加密收款金额互斥（listen-only；匹配键 `converted_amount`）。
-
-**状态：已实现（`dev_cryto`，2026-11-05）。** 加密渠道由配置模板 `payment_config_tag` 为 `crypto` / `crypto_*` 识别；链上参数与 Tatum 凭证落在 `payment_methods.config`（可回退 `config/tatum.php`）。模式为固定收款地址 + Tatum 订阅（listen-only，本站不持私钥）。P0 **仅 USDT** 且须 `token_contract`；当前 Registry **仅注册 Tron**（Ethereum / Bitcoin 适配器已入库未挂载，见 `f553f47`）。
-
-**金额与匹配：** 加密建单用 `original_rate`（汇损为 0）折算后，在地址锁内对 `orders.converted_amount`（列 `decimal(15,3)`，常量精度 3）向下加盐（步长 0.001，总偏移 ≤ 1）；再按盐后额重算手续费与 `settlement_amount`。同址、未过期 `pending` 窗口内 `(crypto_receive_address, converted_amount)` 至多一单。付款页、深链、webhook 与成交额统计均以该字段为应付/匹配键；**禁止拆笔**（入账须与应付精确相等）。不写 `crypto_amount_expected` / scale / quote 列。
-
-**原因与影响：** 听链事件无本站订单号，须在业务上构造可反查不变量；USDT peg≈1 时用 `converted_amount` 双职可避免第二套应付字段。代价是成交额可被盐压低至多 1 USD；过期释放金额槽后迟到同额款可能误配新单（P1 可加冷却）。过期由 `crypto:expire-payments` 调度；入账入口 `TatumWebhookController`。
-
-**依据：** [crypto-payment.md](../doc/crypto-payment.md)、[OrderCreationService](../app/Services/OrderCreationService.php)、[CryptoPaymentService](../app/Services/Crypto/CryptoPaymentService.php)、[database.md](database.md) 订单 crypto 字段说明、[CryptoPaymentTest](../tests/Feature/CryptoPaymentTest.php)。
+**状态：已撤销（2026-11-10，当前工作区，按用户要求移除并重新设计）。** 原固定地址、金额互斥和 Tatum 监听方案已移除；对应迁移回滚后删除，订单折算金额恢复为 `decimal(15,2)`。新工作流尚未确定，不沿用原方案约束。原实现可查 Git 历史。

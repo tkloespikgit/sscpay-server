@@ -267,7 +267,7 @@ class OrderResource extends Resource
                         ->mapWithKeys(fn ($app) => [$app->id => $app->app_id.' - '.$app->name]))
                     ->searchable(),
 
-                // 多选：同一笔查询里经常要把几条同类通道（如多个 USDT 通道）一起看。
+                // 多选：同一笔查询里可以查看多条支付通道。
                 SelectFilter::make('payment_method')
                     ->label(__('admin.order.filters.payment_method'))
                     ->multiple()
@@ -715,7 +715,7 @@ class OrderResource extends Resource
     }
 
     /**
-     * 列表「成交额 USD」：加密订单千分位（与详情/链上匹配一致），普通订单两位；观察者可传入折算。
+     * 列表「成交额 USD」保留两位小数；观察者可传入折算。
      *
      * @param  (callable(string): string)|null  $scaleAmount
      */
@@ -727,9 +727,8 @@ class OrderResource extends Resource
         $raw = $scaleAmount !== null
             ? (string) $scaleAmount((string) ($amountState ?? '0'))
             : (string) ($amountState ?? '0');
-        $decimals = $record->isCryptoCheckout() ? $record->cryptoAmountScale() : 2;
 
-        return '$'.number_format((float) $raw, $decimals, '.', ',');
+        return '$'.number_format((float) $raw, 2, '.', ',');
     }
 
     /**

@@ -4,7 +4,6 @@ namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
 use App\Models\Scopes\MerchantScope;
-use App\Services\Crypto\Chains\CryptoChainRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -20,134 +19,9 @@ class PaymentMethod extends Model
     use HasFactory;
     use SoftDeletes;
 
-    /** 配置模板 payment_config_tag 以此前缀（或整段为 crypto）表示本站链上监听，不走 WP 插件。 */
-    public const CRYPTO_CONFIG_TAG_PREFIX = 'crypto_';
-
     public function purchaseOrders(): HasMany
     {
         return $this->hasMany(PurchaseOrder::class);
-    }
-
-    public static function isCryptoConfigTag(?string $tag): bool
-    {
-        $tag = strtolower(trim((string) $tag));
-
-        return $tag === 'crypto' || str_starts_with($tag, self::CRYPTO_CONFIG_TAG_PREFIX);
-    }
-
-    /**
-     * 是否加密网关：由关联配置模板的 payment_config_tag 约定（crypto / crypto_*），
-     * 与 Stripe/PayPal 一样靠模板 tag 区分，不在渠道上单独存驱动字段。
-     */
-    public function isCryptoGateway(): bool
-    {
-        $this->loadMissing('configMap');
-
-        return self::isCryptoConfigTag($this->configMap?->payment_config_tag);
-    }
-
-    /**
-     * 加密网关配置取自 payment_methods.config（字段由 PaymentMethodConfigMap 模板驱动）。
-     * 常用键：chain / symbol / token_contract / receive_address / tatum_* ；
-     * 可选 amount_scale（默认 3）不进种子模板。
-     */
-    public function cryptoConfigValue(string $key, mixed $default = null): mixed
-    {
-        $config = is_array($this->config) ? $this->config : [];
-
-        return $config[$key] ?? $default;
-    }
-
-    public function cryptoReceiveAddress(): string
-    {
-        return trim((string) $this->cryptoConfigValue('receive_address', ''));
-    }
-
-    public function cryptoChain(): string
-    {
-        return strtolower(trim((string) $this->cryptoConfigValue('chain', '')));
-    }
-
-    public function cryptoSymbol(): string
-    {
-        return trim((string) $this->cryptoConfigValue('symbol', ''));
-    }
-
-    public function cryptoTokenContract(): string
-    {
-        return trim((string) $this->cryptoConfigValue('token_contract', ''));
-    }
-
-    /**
-     * 渠道可选 amount_scale；P0 订单匹配固定用 CryptoPaymentService::CONVERTED_SCALE，本方法仅供渠道侧读取。
-     */
-    public function cryptoAmountScale(): int
-    {
-        $raw = $this->cryptoConfigValue('amount_scale', null);
-
-        if (filled($raw) || $raw === 0 || $raw === '0') {
-            return max(0, (int) $raw);
-        }
-
-        $adapter = app(CryptoChainRegistry::class)->resolve($this->cryptoChain());
-
-        return max(0, $adapter?->defaultAmountScale() ?? 3);
-    }
-
-    public function cryptoTatumSubscriptionId(): ?string
-    {
-        $id = trim((string) $this->cryptoConfigValue('tatum_subscription_id', ''));
-
-        return $id !== '' ? $id : null;
-    }
-
-    public function cryptoTatumApiKey(): string
-    {
-        $key = trim((string) $this->cryptoConfigValue('tatum_api_key', ''));
-
-        return $key !== '' ? $key : (string) config('tatum.api_key', '');
-    }
-
-    public function cryptoTatumBaseUrl(): string
-    {
-        $url = trim((string) $this->cryptoConfigValue('tatum_base_url', ''));
-
-        return rtrim($url !== '' ? $url : (string) config('tatum.base_url', 'https://api.tatum.io'), '/');
-    }
-
-    public function cryptoTatumWebhookUrl(): string
-    {
-        $url = trim((string) $this->cryptoConfigValue('tatum_webhook_url', ''));
-        if ($url !== '') {
-            return $url;
-        }
-
-        $fromEnv = trim((string) config('tatum.webhook_url', ''));
-        if ($fromEnv !== '') {
-            return $fromEnv;
-        }
-
-        return url('/api/webhooks/tatum/address');
-    }
-
-    /**
-     * @return array{api_key: string, base_url: string}
-     */
-    public function cryptoTatumHttpCredentials(): array
-    {
-        return [
-            'api_key' => $this->cryptoTatumApiKey(),
-            'base_url' => $this->cryptoTatumBaseUrl(),
-        ];
-    }
-
-    /**
-     * @param  array<string, mixed>  $values
-     */
-    public function mergeCryptoConfig(array $values): void
-    {
-        $config = is_array($this->config) ? $this->config : [];
-        $this->forceFill(['config' => array_merge($config, $values)])->save();
     }
 
     /**

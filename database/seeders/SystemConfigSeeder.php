@@ -142,13 +142,6 @@ class SystemConfigSeeder extends Seeder
                 'description' => '记录商户响应内容时的最大字符数（超出截断，避免异常大响应撑爆表）',
             ],
             [
-                'config_key' => 'crypto.stablecoin_symbols',
-                'config_value' => json_encode(['USDT'], JSON_UNESCAPED_UNICODE),
-                'value_type' => 'json',
-                'group' => 'crypto',
-                'description' => '稳定币符号白名单（JSON 数组）。P0 仅 USDT；命中则 USD→代币按 peg=1，不拉 Tatum 实时价。',
-            ],
-            [
                 'config_key' => 'logistics_tracking.available_drivers',
                 'config_value' => json_encode(['seventeen_track'], JSON_UNESCAPED_UNICODE),
                 'value_type' => 'json',

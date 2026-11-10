@@ -60,6 +60,19 @@ class PaymentGatewayWebhookRoutingTest extends TestCase
         }
     }
 
+    public function test_removed_blockchain_webhook_returns_not_found(): void
+    {
+        $this->mock(OrderPaymentStatusService::class, function (MockInterface $mock) {
+            $mock->shouldNotReceive('handle');
+        });
+
+        $this->postJson('/api/webhooks/tatum/address', [
+            'address' => 'old-receive-address',
+            'amount' => '100',
+            'txId' => 'old-transfer',
+        ])->assertNotFound();
+    }
+
     public function test_merchant_order_routes_remain_limited_to_api_domain_and_authenticated(): void
     {
         foreach (['create', 'query', 'ship'] as $action) {

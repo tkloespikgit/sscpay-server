@@ -181,15 +181,15 @@ class OrderListFiltersTest extends TestCase
     public function test_payment_method_filter_accepts_multiple_values(): void
     {
         $alipay = $this->makePaymentMethod('alipay');
-        $usdt = $this->makePaymentMethod('usdt');
+        $stripe = $this->makePaymentMethod('stripe');
         $paypal = $this->makePaymentMethod('paypal');
 
         $a = $this->makeOrder('SSC-1', 'M-1', ['payment_method' => $alipay->method_code, 'payment_method_id' => $alipay->id]);
-        $b = $this->makeOrder('SSC-2', 'M-2', ['payment_method' => $usdt->method_code, 'payment_method_id' => $usdt->id]);
+        $b = $this->makeOrder('SSC-2', 'M-2', ['payment_method' => $stripe->method_code, 'payment_method_id' => $stripe->id]);
         $c = $this->makeOrder('SSC-3', 'M-3', ['payment_method' => $paypal->method_code, 'payment_method_id' => $paypal->id]);
 
         Livewire::test(ListOrders::class)
-            ->filterTable('payment_method', ['alipay', 'usdt'])
+            ->filterTable('payment_method', ['alipay', 'stripe'])
             ->assertCanSeeTableRecords([$a, $b])
             ->assertCanNotSeeTableRecords([$c]);
     }

@@ -57,6 +57,3 @@ Schedule::command('logistics-tracking:reflag-anomalies')->dailyAt('06:00')->with
 
 // 支付超 10 天仍未发货：按商户汇总 Telegram 提醒。
 Schedule::command('orders:notify-unshipped-overdue')->dailyAt('10:00')->withoutOverlapping();
-
-// 链上收款：超过 crypto_expires_at（默认 8 小时）未付清则标记 expired。
-Schedule::command('crypto:expire-payments')->everyMinute()->withoutOverlapping();

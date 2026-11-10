@@ -140,11 +140,8 @@ class ViewOrder extends ViewRecord
                     // 商户只看上面的结算模式、结算状态、原始交易金额和实际到账金额。
                     TextEntry::make('converted_amount')
                         ->label(__('admin.order.fields.converted_amount'))
-                        ->formatStateUsing(function ($state, Order $record): string {
+                        ->formatStateUsing(function ($state): string {
                             $raw = (string) ($state ?? '0');
-                            if ($record->isCryptoCheckout()) {
-                                return number_format((float) $raw, 3, '.', ',');
-                            }
 
                             return number_format((float) $raw, 2, '.', ',');
                         })

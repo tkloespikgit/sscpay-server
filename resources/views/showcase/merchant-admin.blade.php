@@ -1152,7 +1152,7 @@
                                                 <option>Stripe</option>
                                                 <option>PayPal</option>
                                             </select>
-                                            <span class="hint">选择支付类型模板，下方出现对应配置项。加密渠道选 payment_config_tag 为 crypto / crypto_* 的模板（如 TRON USDT），本站听链不入 WP</span>
+                                            <span class="hint">选择支付类型模板，下方出现对应配置项。</span>
                                         </label>
                                         <div class="field span-2">
                                             <span class="label">Webhook 地址</span>

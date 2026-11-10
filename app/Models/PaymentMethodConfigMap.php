@@ -34,9 +34,4 @@ class PaymentMethodConfigMap extends Model
     {
         return $this->hasMany(PaymentMethod::class, 'config_map_id');
     }
-
-    public function isCrypto(): bool
-    {
-        return PaymentMethod::isCryptoConfigTag($this->payment_config_tag);
-    }
 }
