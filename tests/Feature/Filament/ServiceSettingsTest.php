@@ -167,6 +167,87 @@ class ServiceSettingsTest extends TestCase
         $this->assertFalse(ServiceSettings::canAccess());
     }
 
+    public function test_timezone_can_be_saved_without_changing_other_services(): void
+    {
+        $merchant = $this->createMerchant();
+        $merchant->update(['timezone' => 'UTC']);
+        $setting = $this->createLogisticsSetting($merchant);
+        $bot = $this->createBot($merchant);
+        $this->actingAs($this->merchantUser($merchant, [Permissions::TELEGRAM_MANAGE]));
+
+        Livewire::test(ServiceSettings::class)
+            ->assertSee(__('admin.merchant.fields.timezone'))
+            ->assertSet('timezoneData.timezone', 'UTC')
+            ->fillForm(['timezone' => 'America/New_York'], 'timezoneForm')
+            ->call('saveTimezone')
+            ->assertHasNoErrors()
+            ->assertNotified(__('admin.service_settings.notifications.timezone_saved'));
+
+        $this->assertSame('America/New_York', $merchant->fresh()->timezone);
+        $this->assertSame('original-tracking-token', $setting->fresh()->api_token);
+        $this->assertSame('original-bot-token', $bot->fresh()->bot_token);
+    }
+
+    public function test_clearing_timezone_uses_the_system_default(): void
+    {
+        $merchant = $this->createMerchant();
+        $merchant->update(['timezone' => 'America/New_York']);
+        $this->actingAs($this->merchantUser($merchant, [Permissions::LOGISTICS_TRACKING_MANAGE]));
+
+        Livewire::test(ServiceSettings::class)
+            ->fillForm(['timezone' => null], 'timezoneForm')
+            ->call('saveTimezone')
+            ->assertHasNoErrors();
+
+        $this->assertNull($merchant->fresh()->timezone);
+    }
+
+    public function test_invalid_timezone_is_not_saved(): void
+    {
+        $merchant = $this->createMerchant();
+        $merchant->update(['timezone' => 'UTC']);
+        $this->actingAs($this->merchantUser($merchant));
+
+        Livewire::test(ServiceSettings::class)
+            ->fillForm(['timezone' => 'Not/A/Timezone'], 'timezoneForm')
+            ->call('saveTimezone')
+            ->assertHasErrors();
+
+        $this->assertSame('UTC', $merchant->fresh()->timezone);
+    }
+
+    public function test_timezone_cannot_be_saved_for_another_merchant(): void
+    {
+        $merchant = $this->createMerchant();
+        $other = $this->createMerchant('Other Merchant');
+        $other->update(['timezone' => 'UTC']);
+        $this->actingAs($this->merchantUser($merchant));
+
+        Livewire::test(ServiceSettings::class)
+            ->set('merchantData', ['merchant_id' => $other->id])
+            ->fillForm(['timezone' => 'Asia/Tokyo'], 'timezoneForm')
+            ->call('saveTimezone')
+            ->assertHasFormErrors(['merchant_id'], 'merchantForm');
+
+        $this->assertSame('UTC', $other->fresh()->timezone);
+    }
+
+    public function test_switching_merchant_loads_its_timezone(): void
+    {
+        $manager = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $manager->givePermissionTo(Permissions::TELEGRAM_MANAGE);
+        $shanghai = $this->createMerchant('Shanghai Merchant', $manager);
+        $shanghai->update(['timezone' => 'Asia/Shanghai']);
+        $empty = $this->createMerchant('Empty Timezone', $manager);
+        $this->actingAs($manager);
+
+        Livewire::test(ServiceSettings::class)
+            ->set('merchantData.merchant_id', $shanghai->id)
+            ->assertSet('timezoneData.timezone', 'Asia/Shanghai')
+            ->set('merchantData.merchant_id', $empty->id)
+            ->assertSet('timezoneData.timezone', null);
+    }
+
     public function test_telegram_cannot_be_saved_for_another_merchant(): void
     {
         $merchant = $this->createMerchant();

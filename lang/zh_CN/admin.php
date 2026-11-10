@@ -1644,8 +1644,15 @@ return [
         'fields' => [
             'merchant' => '商户',
         ],
+        'actions' => [
+            'save' => '保存',
+        ],
+        'notifications' => [
+            'timezone_saved' => '时区已保存',
+        ],
         'validation' => [
             'merchant_forbidden' => '无权配置该商户的服务。',
+            'timezone' => '请选择有效时区。',
         ],
     ],
 

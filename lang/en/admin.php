@@ -1643,8 +1643,15 @@ return [
         'fields' => [
             'merchant' => 'Merchant',
         ],
+        'actions' => [
+            'save' => 'Save',
+        ],
+        'notifications' => [
+            'timezone_saved' => 'Timezone saved',
+        ],
         'validation' => [
             'merchant_forbidden' => 'You are not allowed to configure services for this merchant.',
+            'timezone' => 'Choose a valid timezone.',
         ],
     ],
 

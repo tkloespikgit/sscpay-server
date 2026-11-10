@@ -32,6 +32,8 @@ class ServiceSettings extends Page
 
     public ?array $merchantData = [];
 
+    public ?array $timezoneData = [];
+
     public ?array $logisticsData = [];
 
     public ?array $telegramData = [];
@@ -87,6 +89,28 @@ class ServiceSettings extends Page
                     ->afterStateUpdated(fn () => $this->loadSettings()),
             ])
             ->statePath('merchantData');
+    }
+
+    public function timezoneForm(Schema $schema): Schema
+    {
+        return $schema
+            ->components([
+                Section::make(__('admin.merchant.fields.timezone'))
+                    ->schema([
+                        Select::make('timezone')
+                            ->label(__('admin.merchant.fields.timezone'))
+                            ->options(fn (): array => collect(\DateTimeZone::listIdentifiers())->mapWithKeys(fn (string $tz): array => [$tz => $tz])->all())
+                            ->searchable()
+                            ->helperText(__('admin.merchant.help.timezone')),
+                    ])
+                    ->footerActions([
+                        Action::make('saveTimezone')
+                            ->label(__('admin.service_settings.actions.save'))
+                            ->submit('saveTimezone'),
+                    ])
+                    ->columnSpanFull(),
+            ])
+            ->statePath('timezoneData');
     }
 
     public function logisticsForm(Schema $schema): Schema
@@ -181,6 +205,23 @@ class ServiceSettings extends Page
             ->statePath('telegramData');
     }
 
+    public function saveTimezone(): void
+    {
+        $merchantId = $this->selectedMerchantId();
+        $timezone = $this->timezoneForm->getState()['timezone'] ?? null;
+        $timezone = filled($timezone) ? (string) $timezone : null;
+
+        if ($timezone !== null && ! in_array($timezone, \DateTimeZone::listIdentifiers(), true)) {
+            throw ValidationException::withMessages([
+                'timezoneData.timezone' => __('admin.service_settings.validation.timezone'),
+            ]);
+        }
+
+        Merchant::query()->whereKey($merchantId)->update(['timezone' => $timezone]);
+
+        Notification::make()->title(__('admin.service_settings.notifications.timezone_saved'))->success()->send();
+    }
+
     public function saveLogisticsTracking(): void
     {
         abort_unless(static::canManageLogisticsTracking(), 403);
@@ -266,6 +307,9 @@ class ServiceSettings extends Page
         }
 
         $this->resetValidation();
+        $this->timezoneForm->fill([
+            'timezone' => $merchantId === null ? null : Merchant::query()->whereKey($merchantId)->value('timezone'),
+        ]);
 
         if (static::canManageLogisticsTracking()) {
             $this->fillLogisticsForm($merchantId ? $this->settingForMerchant($merchantId) : null);
