@@ -5,10 +5,12 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\CheckoutLinkResource\Pages\CreateCheckoutLink;
 use App\Filament\Resources\CheckoutLinkResource\Pages\EditCheckoutLink;
 use App\Models\CheckoutLink;
+use App\Models\Merchant;
 use App\Models\PaymentGroup;
 use App\Models\User;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
 use Spatie\Permission\Models\Role;
 use Tests\Concerns\CreatesTestOrders;
@@ -228,12 +230,217 @@ class CheckoutLinkFormTest extends TestCase
         $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
     }
 
+    public function test_one_selected_group_is_stored_as_the_default_without_customer_choices(): void
+    {
+        Livewire::test(CreateCheckoutLink::class)
+            ->assertSee(__('admin.checkout_link.group_panel.title'))
+            ->fillForm($this->formData())
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $link = CheckoutLink::withoutGlobalScopes()->firstOrFail();
+
+        $this->assertSame($this->group->id, $link->payment_group_id);
+        $this->assertNull($link->payment_group_ids);
+    }
+
+    public function test_extra_groups_are_stored_apart_from_the_default(): void
+    {
+        $second = $this->makeGroup('group_card', 'Card Group');
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData([
+                'paymentGroups' => [
+                    ['id' => $this->group->id, 'is_default' => false],
+                    ['id' => $second->id, 'is_default' => true],
+                ],
+            ]))
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $link = CheckoutLink::withoutGlobalScopes()->firstOrFail();
+
+        $this->assertSame($second->id, $link->payment_group_id);
+        $this->assertSame([$this->group->id], $link->payment_group_ids);
+    }
+
+    public function test_edit_form_keeps_the_saved_default_group(): void
+    {
+        $second = $this->makeGroup('group_card', 'Card Group');
+        $link = $this->createLink([
+            'payment_group_id' => $second->id,
+            'payment_group_ids' => [$this->group->id],
+        ]);
+
+        Livewire::test(EditCheckoutLink::class, ['record' => $link->id])
+            ->assertFormSet([
+                'paymentGroups' => [
+                    ['id' => $second->id, 'is_default' => true],
+                    ['id' => $this->group->id, 'is_default' => false],
+                ],
+            ])
+            ->assertSee(__('admin.checkout_link.help.merchant_immutable'))
+            ->fillForm([
+                'paymentGroups' => [
+                    ['id' => $this->group->id, 'is_default' => true],
+                ],
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $link->refresh();
+
+        $this->assertSame($this->group->id, $link->payment_group_id);
+        $this->assertNull($link->payment_group_ids);
+    }
+
+    public function test_saving_requires_exactly_one_default_group(): void
+    {
+        $second = $this->makeGroup('group_card', 'Card Group');
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData(['paymentGroups' => []]))
+            ->call('create')
+            ->assertHasFormErrors(['paymentGroups']);
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData([
+                'paymentGroups' => [
+                    ['id' => $this->group->id, 'is_default' => true],
+                    ['id' => $second->id, 'is_default' => true],
+                ],
+            ]))
+            ->call('create')
+            ->assertHasFormErrors(['paymentGroups']);
+
+        $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
+    }
+
+    public function test_an_inactive_group_cannot_be_the_default(): void
+    {
+        $this->group->update(['is_active' => false]);
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData())
+            ->call('create')
+            ->assertHasFormErrors(['paymentGroups']);
+
+        $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
+    }
+
+    public function test_another_merchants_payment_group_is_rejected(): void
+    {
+        $other = $this->makeMerchant('Other Merchant');
+        $foreign = PaymentGroup::create([
+            'merchant_id' => $other->id,
+            'group_key' => 'foreign_group',
+            'group_name' => 'Foreign Group',
+            'is_active' => true,
+        ]);
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData([
+                'paymentGroups' => [
+                    ['id' => $foreign->id, 'is_default' => true],
+                ],
+            ]))
+            ->call('create')
+            ->assertHasFormErrors(['paymentGroups']);
+
+        $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
+    }
+
+    public function test_a_merchant_user_cannot_create_a_link_for_another_merchant(): void
+    {
+        $other = $this->makeMerchant('Other Merchant');
+
+        Livewire::test(CreateCheckoutLink::class)
+            ->fillForm($this->formData(['merchant_id' => $other->id]))
+            ->call('create')
+            ->assertHasFormErrors(['merchant_id']);
+
+        $this->assertSame(0, CheckoutLink::withoutGlobalScopes()->count());
+    }
+
+    public function test_editing_cannot_move_the_link_to_another_merchant(): void
+    {
+        $link = $this->createLink();
+        $other = $this->makeMerchant('Other Merchant');
+        $this->actingAs(User::factory()->create([
+            'is_super_admin' => true,
+            'merchant_id' => null,
+            'status' => true,
+        ]));
+
+        Livewire::test(EditCheckoutLink::class, ['record' => $link->id])
+            ->fillForm([
+                'merchant_id' => $other->id,
+                'title' => 'Renamed checkout',
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $link->refresh();
+
+        $this->assertSame($this->merchant->id, $link->merchant_id);
+        $this->assertSame('Renamed checkout', $link->title);
+    }
+
+    public function test_a_deleted_group_remains_selected_until_it_is_removed(): void
+    {
+        $deleted = $this->makeGroup('group_old', 'Old Group');
+        $deleted->delete();
+        $link = $this->createLink([
+            'payment_group_ids' => [$deleted->id],
+        ]);
+
+        Livewire::test(EditCheckoutLink::class, ['record' => $link->id])
+            ->assertSee('Old Group')
+            ->assertSee(__('admin.checkout_link.group_panel.deleted'))
+            ->fillForm([
+                'paymentGroups' => [
+                    ['id' => $this->group->id, 'is_default' => true],
+                    ['id' => $deleted->id, 'is_default' => false],
+                ],
+            ])
+            ->call('save')
+            ->assertHasFormErrors(['paymentGroups']);
+
+        $this->assertSame([$deleted->id], $link->fresh()->payment_group_ids);
+
+        Livewire::test(EditCheckoutLink::class, ['record' => $link->id])
+            ->fillForm([
+                'paymentGroups' => [
+                    ['id' => $this->group->id, 'is_default' => true],
+                ],
+            ])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $this->assertNull($link->fresh()->payment_group_ids);
+    }
+
+    public function test_the_model_rejects_moving_a_checkout_link_to_another_merchant(): void
+    {
+        $link = $this->createLink();
+        $other = $this->makeMerchant('Other Merchant');
+
+        try {
+            $link->update(['merchant_id' => $other->id]);
+            $this->fail('Moving a checkout link to another merchant was accepted.');
+        } catch (ValidationException) {
+            $this->assertSame($this->merchant->id, $link->fresh()->merchant_id);
+        }
+    }
+
     private function formData(array $overrides = []): array
     {
         return array_merge([
             'merchant_id' => $this->merchant->id,
             'application_id' => $this->application->id,
-            'payment_group_id' => $this->group->id,
+            'paymentGroups' => [
+                ['id' => $this->group->id, 'is_default' => true],
+            ],
             'link_name' => 'TV Box Link',
             'title' => 'TV box - model 209343 checkout',
             'currency' => 'EUR',
@@ -259,5 +466,46 @@ class CheckoutLinkFormTest extends TestCase
         $user->assignRole(Role::where('merchant_id', $this->merchant->id)->where('name', '订单管理员')->firstOrFail());
 
         return $user->fresh();
+    }
+
+    private function makeMerchant(string $name): Merchant
+    {
+        return Merchant::create([
+            'name' => $name,
+            'contact_person' => 'Owner',
+            'contact_phone' => '123456',
+            'contact_email' => strtolower(str_replace(' ', '-', $name)).'@example.com',
+        ]);
+    }
+
+    private function makeGroup(string $key, string $name): PaymentGroup
+    {
+        return PaymentGroup::create([
+            'merchant_id' => $this->merchant->id,
+            'group_key' => $key,
+            'group_name' => $name,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function createLink(array $overrides = []): CheckoutLink
+    {
+        return CheckoutLink::create(array_merge([
+            'merchant_id' => $this->merchant->id,
+            'application_id' => $this->application->id,
+            'payment_group_id' => $this->group->id,
+            'link_name' => 'TV Box Link',
+            'title' => 'TV box - model 209343 checkout',
+            'currency' => 'EUR',
+            'amount_mode' => CheckoutLink::MODE_FIXED,
+            'fixed_amount' => '100.00',
+            'shipping_fee' => '0.00',
+            'tax' => '0.00',
+            'discount' => '0.00',
+            'is_active' => true,
+        ], $overrides));
     }
 }

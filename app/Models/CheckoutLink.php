@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 /**
  * 收款链接。商户建一条链接 → 客户打开落地页填信息 → 当场建单 → 跳支付网关。
@@ -93,6 +94,14 @@ class CheckoutLink extends Model
         static::creating(function (self $link) {
             if (blank($link->slug)) {
                 $link->slug = static::generateSlug();
+            }
+        });
+
+        static::updating(function (self $link): void {
+            if ($link->isDirty('merchant_id')) {
+                throw ValidationException::withMessages([
+                    'merchant_id' => __('admin.checkout_link.validation.merchant_immutable'),
+                ]);
             }
         });
     }

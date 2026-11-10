@@ -3,11 +3,13 @@
 namespace App\Filament\Resources\CheckoutLinkResource\Pages;
 
 use App\Filament\Resources\CheckoutLinkResource;
+use App\Filament\Resources\CheckoutLinkResource\Concerns\SyncsCheckoutLinkPaymentGroups;
 use App\Filament\Resources\CheckoutLinkResource\Concerns\ValidatesCheckoutLinkAmounts;
 use Filament\Resources\Pages\CreateRecord;
 
 class CreateCheckoutLink extends CreateRecord
 {
+    use SyncsCheckoutLinkPaymentGroups;
     use ValidatesCheckoutLinkAmounts;
 
     protected static string $resource = CheckoutLinkResource::class;
@@ -19,5 +21,14 @@ class CreateCheckoutLink extends CreateRecord
     protected function getRedirectUrl(): string
     {
         return $this->getResource()::getUrl('edit', ['record' => $this->getRecord()]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateFormDataBeforeCreate(array $data): array
+    {
+        return $this->storePaymentGroups($data, (int) ($data['merchant_id'] ?? 0));
     }
 }

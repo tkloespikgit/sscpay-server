@@ -7,10 +7,12 @@ use App\Models\Application;
 use App\Models\CheckoutLink;
 use App\Models\Merchant;
 use App\Models\MerchantDomain;
-use App\Models\PaymentGroup;
 use App\Models\SystemConfig;
+use App\Models\User;
+use App\Services\Checkout\CheckoutLinkGroupSelection;
 use App\Support\Countries;
 use App\Support\Permissions;
+use Closure;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
@@ -19,8 +21,10 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\ViewField;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Group;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -73,236 +77,236 @@ class CheckoutLinkResource extends Resource
         // 兜底值必须与 SystemConfigSeeder 保持一致并包含 USD（基准币种）。
         $currencies = SystemConfig::getArray('exchange.supported_currencies', ['USD', 'EUR', 'JPY', 'GBP']);
 
-        return $schema->components([
+        $record = $schema->getRecord();
+        $existingMerchantId = $record instanceof CheckoutLink ? (int) $record->merchant_id : null;
+
+        return $schema->columns(['default' => 1, 'xl' => 12])->components([
             Section::make(__('admin.checkout_link.sections.basic_info'))->schema([
-                // 3 列：所属商户 / 内部名称 / 对客标题。三者都在回答"这条链接是谁的、叫什么"，
-                // 并排放便于对照，也能一眼看出内部名称与对客标题是两回事。
-                Grid::make(3)->schema([
-                    Select::make('merchant_id')
-                        ->label(__('admin.checkout_link.fields.merchant'))
-                        ->options(function () use ($isViewerMerchantManager, $viewer) {
-                            if ($isViewerMerchantManager) {
-                                return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
-                            }
+                Select::make('merchant_id')
+                    ->label(__('admin.checkout_link.fields.merchant'))
+                    ->options(function () use ($isViewerMerchantManager, $viewer) {
+                        if ($isViewerMerchantManager) {
+                            return $viewer->ownedMerchants()->where('status', true)->pluck('name', 'id');
+                        }
 
-                            return Merchant::query()->where('status', true)->pluck('name', 'id');
-                        })
-                        ->required()
-                        ->searchable()
-                        ->live()
-                        ->disabled(! $canPickMerchant)
-                        ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
-                        ->dehydrated()
-                        ->columnSpanFull()
-                        // 换商户后，上一个商户的应用/支付组/域名全部失效，
-                        // 不清掉会把别家商户的资源挂到这条链接上。
-                        ->afterStateUpdated(function (Set $set) {
-                            $set('application_id', null);
-                            $set('payment_group_id', null);
-                            $set('payment_group_ids', []);
-                            $set('merchant_domain_id', null);
-                        }),
-
-                    // 内部名称（需求 F2.2）：只给后台看，落地页不渲染它。
-                    // 和右边的 title 是两件事——那条是给客户看的标题。
-                    TextInput::make('link_name')
-                        ->label(__('admin.checkout_link.fields.link_name'))
-                        ->required()
-                        ->maxLength(255)
-                        ->placeholder('DE-TVBox-test')
-                        ->helperText(__('admin.checkout_link.help.link_name')),
-
-                    TextInput::make('title')
-                        ->label(__('admin.checkout_link.fields.title'))
-                        ->required()
-                        ->maxLength(255)
-                        ->placeholder('TV box - model 209343 checkout')
-                        ->helperText(__('admin.checkout_link.help.title')),
-                ]),
-
-                Grid::make(2)->schema([
-                    // application 只提供下单身份（订单归属 + 邮件/广告凭证）；
-                    // payment_group 决定走哪条通道。两者都直属商户、彼此无关联，
-                    // 所以是两个独立的选择，不存在级联过滤。
-                    Select::make('application_id')
-                        ->label(__('admin.checkout_link.fields.application'))
-                        ->options(fn (Get $get) => static::scopedOptions(Application::class, $get, 'name'))
-                        ->required()
-                        ->searchable()
-                        ->helperText(__('admin.checkout_link.help.application')),
-
-                    Select::make('payment_group_id')
-                        ->label(__('admin.checkout_link.fields.payment_group'))
-                        ->options(fn (Get $get) => static::scopedOptions(PaymentGroup::class, $get, 'group_name', 'is_active'))
-                        ->required()
-                        ->searchable()
-                        ->helperText(__('admin.checkout_link.help.payment_group')),
-                ]),
-
-                // 需求 2：一条链接可以挂多个支付组，落地页把它们展示给客户挑。
-                // 只列「启用中」的组（scopedOptions 的 activeColumn 参数）——给客户挂一个
-                // 停用的组，等于给了一个点进去必然失败的选项。
-                // ⚠️ 这里选的是「组」而不是「支付方式」：组内走哪条通道仍由
-                // PaymentService 的加权算法 + 风控决定，不受本字段影响。
-                Select::make('payment_group_ids')
-                    ->label(__('admin.checkout_link.fields.payment_groups'))
-                    ->options(fn (Get $get) => static::scopedOptions(PaymentGroup::class, $get, 'group_name', 'is_active'))
-                    ->multiple()
+                        return Merchant::query()->where('status', true)->pluck('name', 'id');
+                    })
+                    ->required()
                     ->searchable()
-                    ->helperText(__('admin.checkout_link.help.payment_groups'))
-                    ->columnSpanFull(),
+                    ->live()
+                    ->disabled($existingMerchantId !== null || ! $canPickMerchant)
+                    ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
+                    ->dehydrated()
+                    ->helperText($existingMerchantId !== null ? __('admin.checkout_link.help.merchant_immutable') : null)
+                    ->rule(function () {
+                        return function (string $attribute, mixed $value, Closure $fail): void {
+                            $actor = auth()->user();
+                            $message = app(CheckoutLinkGroupSelection::class)->merchantMessage(
+                                $actor instanceof User ? $actor : null,
+                                (int) $value,
+                            );
 
-                Grid::make(2)->schema([
-                    Select::make('merchant_domain_id')
-                        ->label(__('admin.checkout_link.fields.domain'))
-                        ->options(fn (Get $get) => static::domainOptions($get))
-                        ->searchable()
-                        ->placeholder(__('admin.checkout_link.placeholders.platform_domain'))
-                        ->helperText(__('admin.checkout_link.help.domain')),
+                            if ($message !== null) {
+                                $fail($message);
+                            }
+                        };
+                    }, $existingMerchantId === null)
+                    ->afterStateUpdated(function (Set $set) use ($existingMerchantId) {
+                        if ($existingMerchantId !== null) {
+                            return;
+                        }
 
-                    FileUpload::make('logo_path')
-                        ->label(__('admin.checkout_link.fields.logo'))
-                        ->image()
-                        // 必须是公开可读的盘：落地页的访问者是未登录的终端客户，
-                        // 用不了争议附件那套 temporaryUrl 签名地址。
-                        ->disk(config('checkout.media_disk', 'public'))
-                        ->directory(config('checkout.logo_directory'))
-                        ->visibility('public')
-                        ->maxSize(2048)
-                        ->helperText(__('admin.checkout_link.help.logo')),
-                ]),
-
+                        $set('application_id', null);
+                        $set('paymentGroups', []);
+                        $set('merchant_domain_id', null);
+                    }),
+                TextInput::make('link_name')
+                    ->label(__('admin.checkout_link.fields.link_name'))
+                    ->required()
+                    ->maxLength(255)
+                    ->placeholder('DE-TVBox-test'),
+                TextInput::make('title')
+                    ->label(__('admin.checkout_link.fields.title'))
+                    ->required()
+                    ->maxLength(255)
+                    ->placeholder('TV box - model 209343 checkout'),
+                Select::make('application_id')
+                    ->label(__('admin.checkout_link.fields.application'))
+                    ->options(fn (Get $get) => static::scopedOptions(Application::class, $get, 'name', null, $existingMerchantId))
+                    ->required()
+                    ->searchable(),
+                Select::make('merchant_domain_id')
+                    ->label(__('admin.checkout_link.fields.domain'))
+                    ->options(fn (Get $get) => static::domainOptions($get, $existingMerchantId))
+                    ->searchable()
+                    ->placeholder(__('admin.checkout_link.placeholders.platform_domain'))
+                    ->helperText(__('admin.checkout_link.help.domain')),
+                FileUpload::make('logo_path')
+                    ->label(__('admin.checkout_link.fields.logo'))
+                    ->image()
+                    ->disk(config('checkout.media_disk', 'public'))
+                    ->directory(config('checkout.logo_directory'))
+                    ->visibility('public')
+                    ->maxSize(2048),
                 TextInput::make('google_maps_browser_key')
                     ->label(__('admin.checkout_link.fields.google_maps_browser_key'))
                     ->maxLength(255)
                     ->helperText(__('admin.checkout_link.help.google_maps_browser_key')),
-
                 Select::make('supported_countries')
                     ->label(__('admin.checkout_link.fields.supported_countries'))
                     ->options(Countries::withPhoneCodes())
                     ->multiple()
                     ->searchable()
                     ->helperText(__('admin.checkout_link.help.supported_countries')),
-
                 Textarea::make('customer_notice')
                     ->label(__('admin.checkout_link.fields.customer_notice'))
                     ->rows(4)
-                    ->maxLength(2000)
-                    ->helperText(__('admin.checkout_link.help.customer_notice')),
-
+                    ->maxLength(2000),
                 Toggle::make('auto_redirect')
                     ->label(__('admin.checkout_link.fields.auto_redirect'))
-                    ->default(true)
-                    ->helperText(__('admin.checkout_link.help.auto_redirect')),
+                    ->default(true),
                 Toggle::make('is_active')
                     ->label(__('admin.checkout_link.fields.is_active'))
                     ->default(true)
-                    ->inline(false)
-                    ->helperText(__('admin.checkout_link.help.is_active')),
-            ]),
+                    ->inline(false),
+            ])->columns(1)->columnSpan(['default' => 1, 'xl' => 5]),
 
-            Section::make(__('admin.checkout_link.sections.amount'))->schema([
-                Grid::make(3)->schema([
-                    // 币种单值、不可多选（需求 1）。客户不能在落地页上切币种，
-                    // 否则同一条链接会产生多币种订单，对账口径全乱。
-                    Select::make('currency')
-                        ->label(__('admin.checkout_link.fields.currency'))
-                        ->options(array_combine($currencies, $currencies))
-                        ->required()
-                        ->searchable()
-                        ->helperText(__('admin.checkout_link.help.currency')),
+            Group::make([
+                ViewField::make('paymentGroups')
+                    ->hiddenLabel()
+                    ->view('filament.resources.checkout-link-resource.payment-group-panel')
+                    ->viewData(function (Get $get) use ($existingMerchantId): array {
+                        $merchantId = $existingMerchantId ?? (filled($get('merchant_id')) ? (int) $get('merchant_id') : null);
+                        $actor = auth()->user();
+                        $selectedIds = collect(is_array($get('paymentGroups')) ? $get('paymentGroups') : [])
+                            ->pluck('id')
+                            ->map(fn (mixed $id): int => (int) $id)
+                            ->all();
 
-                    Select::make('amount_mode')
-                        ->label(__('admin.checkout_link.fields.amount_mode'))
-                        ->options([
-                            CheckoutLink::MODE_FIXED => __('admin.checkout_link.amount_modes.fixed'),
-                            CheckoutLink::MODE_RANGE => __('admin.checkout_link.amount_modes.range'),
-                        ])
-                        ->default(CheckoutLink::MODE_FIXED)
-                        ->required()
-                        ->live()
-                        ->helperText(__('admin.checkout_link.help.amount_mode')),
+                        return [
+                            'merchantId' => $merchantId,
+                            'groups' => app(CheckoutLinkGroupSelection::class)->panelGroups(
+                                $actor instanceof User ? $actor : null,
+                                $merchantId,
+                                $selectedIds,
+                            ),
+                        ];
+                    })
+                    ->default([])
+                    ->rule(function (Get $get) use ($existingMerchantId) {
+                        return function (string $attribute, mixed $value, Closure $fail) use ($get, $existingMerchantId): void {
+                            $merchantId = $existingMerchantId ?? (int) $get('merchant_id');
+                            $actor = auth()->user();
+                            $message = app(CheckoutLinkGroupSelection::class)->message(
+                                $actor instanceof User ? $actor : null,
+                                $merchantId,
+                                $value,
+                            );
 
-                    TextInput::make('fixed_amount')
-                        ->label(__('admin.checkout_link.fields.fixed_amount'))
-                        ->numeric()
-                        ->minValue(0.01)
-                        ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_FIXED)
-                        ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_FIXED),
+                            if ($message !== null) {
+                                $fail($message);
+                            }
+                        };
+                    })
+                    ->columnSpanFull(),
+
+                Section::make(__('admin.checkout_link.sections.amount'))->schema([
+                    Grid::make(3)->schema([
+                        // 币种单值、不可多选（需求 1）。客户不能在落地页上切币种，
+                        // 否则同一条链接会产生多币种订单，对账口径全乱。
+                        Select::make('currency')
+                            ->label(__('admin.checkout_link.fields.currency'))
+                            ->options(array_combine($currencies, $currencies))
+                            ->required()
+                            ->searchable(),
+
+                        Select::make('amount_mode')
+                            ->label(__('admin.checkout_link.fields.amount_mode'))
+                            ->options([
+                                CheckoutLink::MODE_FIXED => __('admin.checkout_link.amount_modes.fixed'),
+                                CheckoutLink::MODE_RANGE => __('admin.checkout_link.amount_modes.range'),
+                            ])
+                            ->default(CheckoutLink::MODE_FIXED)
+                            ->required()
+                            ->live(),
+
+                        TextInput::make('fixed_amount')
+                            ->label(__('admin.checkout_link.fields.fixed_amount'))
+                            ->numeric()
+                            ->minValue(0.01)
+                            ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_FIXED)
+                            ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_FIXED),
+                    ]),
+
+                    Grid::make(2)->schema([
+                        TextInput::make('min_amount')
+                            ->label(__('admin.checkout_link.fields.min_amount'))
+                            ->numeric()
+                            ->minValue(0.01)
+                            ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
+                            ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE),
+
+                        TextInput::make('max_amount')
+                            ->label(__('admin.checkout_link.fields.max_amount'))
+                            ->numeric()
+                            ->minValue(0.01)
+                            ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
+                            ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
+                            ->gte('min_amount'),
+                    ]),
+
+                    Grid::make(3)->schema([
+                        TextInput::make('shipping_fee')
+                            ->label(__('admin.checkout_link.fields.shipping_fee'))
+                            ->numeric()->minValue(0)->default(0)->required(),
+                        TextInput::make('tax')
+                            ->label(__('admin.checkout_link.fields.tax'))
+                            ->numeric()->minValue(0)->default(0)->required(),
+                        TextInput::make('discount')
+                            ->label(__('admin.checkout_link.fields.discount'))
+                            ->numeric()->minValue(0)->default(0)->required(),
+                    ]),
                 ]),
 
-                Grid::make(2)->schema([
-                    TextInput::make('min_amount')
-                        ->label(__('admin.checkout_link.fields.min_amount'))
-                        ->numeric()
-                        ->minValue(0.01)
-                        ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
-                        ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE),
-
-                    TextInput::make('max_amount')
-                        ->label(__('admin.checkout_link.fields.max_amount'))
-                        ->numeric()
-                        ->minValue(0.01)
-                        ->visible(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
-                        ->required(fn (Get $get) => $get('amount_mode') === CheckoutLink::MODE_RANGE)
-                        ->gte('min_amount'),
-                ]),
-
-                Grid::make(3)->schema([
-                    TextInput::make('shipping_fee')
-                        ->label(__('admin.checkout_link.fields.shipping_fee'))
-                        ->numeric()->minValue(0)->default(0)->required(),
-                    TextInput::make('tax')
-                        ->label(__('admin.checkout_link.fields.tax'))
-                        ->numeric()->minValue(0)->default(0)->required(),
-                    TextInput::make('discount')
-                        ->label(__('admin.checkout_link.fields.discount'))
-                        ->numeric()->minValue(0)->default(0)->required()
-                        ->helperText(__('admin.checkout_link.help.discount')),
-                ]),
-            ]),
-
-            Section::make(__('admin.checkout_link.sections.items'))
-                ->description(__('admin.checkout_link.help.items_section'))
-                ->schema([
-                    Repeater::make('items')
-                        ->relationship()
-                        ->label('')
-                        ->schema([
-                            TextInput::make('product_name')
-                                ->label(__('admin.checkout_link.fields.product_name'))
-                                ->required()->maxLength(255)->columnSpan(2),
-                            TextInput::make('unit_price')
-                                ->label(__('admin.checkout_link.fields.unit_price'))
-                                ->numeric()->minValue(0)->required(),
-                            TextInput::make('quantity')
-                                ->label(__('admin.checkout_link.fields.quantity'))
-                                ->numeric()->minValue(1)->default(1)->required(),
-                            FileUpload::make('image_path')
-                                ->label(__('admin.checkout_link.fields.product_image'))
-                                ->image()
-                                ->disk(config('checkout.media_disk', 'public'))
-                                ->directory(config('checkout.item_image_directory'))
-                                ->visibility('public')
-                                ->maxSize(2048)
-                                ->columnSpan(2),
-                            TextInput::make('product_sku')
-                                ->label(__('admin.checkout_link.fields.product_sku'))
-                                ->maxLength(64),
-                            TextInput::make('product_url')
-                                ->label(__('admin.checkout_link.fields.product_url'))
-                                ->url()->maxLength(500)
-                                ->helperText(__('admin.checkout_link.help.product_url')),
-                        ])
-                        ->columns(4)
-                        ->addActionLabel(__('admin.checkout_link.actions.add_item'))
-                        ->reorderable()
-                        ->orderColumn('sort_order')
-                        ->defaultItems(0)
-                        ->collapsible()
-                        ->itemLabel(fn (array $state) => $state['product_name'] ?? null),
-                ]),
-
+                Section::make(__('admin.checkout_link.sections.items'))
+                    ->schema([
+                        Repeater::make('items')
+                            ->relationship()
+                            ->label('')
+                            ->schema([
+                                TextInput::make('product_name')
+                                    ->label(__('admin.checkout_link.fields.product_name'))
+                                    ->required()->maxLength(255)->columnSpan(2),
+                                TextInput::make('unit_price')
+                                    ->label(__('admin.checkout_link.fields.unit_price'))
+                                    ->numeric()->minValue(0)->required(),
+                                TextInput::make('quantity')
+                                    ->label(__('admin.checkout_link.fields.quantity'))
+                                    ->numeric()->minValue(1)->default(1)->required(),
+                                FileUpload::make('image_path')
+                                    ->label(__('admin.checkout_link.fields.product_image'))
+                                    ->image()
+                                    ->disk(config('checkout.media_disk', 'public'))
+                                    ->directory(config('checkout.item_image_directory'))
+                                    ->visibility('public')
+                                    ->maxSize(2048)
+                                    ->columnSpan(2),
+                                TextInput::make('product_sku')
+                                    ->label(__('admin.checkout_link.fields.product_sku'))
+                                    ->maxLength(64),
+                                TextInput::make('product_url')
+                                    ->label(__('admin.checkout_link.fields.product_url'))
+                                    ->url()->maxLength(500),
+                            ])
+                            ->columns(4)
+                            ->addActionLabel(__('admin.checkout_link.actions.add_item'))
+                            ->reorderable()
+                            ->orderColumn('sort_order')
+                            ->defaultItems(0)
+                            ->collapsible()
+                            ->itemLabel(fn (array $state) => $state['product_name'] ?? null),
+                    ]),
+            ])->columns(1)->columnSpan(['default' => 1, 'xl' => 7]),
         ]);
     }
 
@@ -313,18 +317,20 @@ class CheckoutLinkResource extends Resource
      * 对他们不生效，必须显式用 forMerchant() 过滤，否则会把别家商户的应用/支付组
      * 列出来；商户用户则已被全局 Scope 过滤，直接查即可。
      */
-    private static function scopedOptions(string $modelClass, Get $get, string $labelColumn, ?string $activeColumn = null)
+    private static function scopedOptions(string $modelClass, Get $get, string $labelColumn, ?string $activeColumn = null, ?int $lockedMerchantId = null)
     {
         $query = $modelClass::query();
 
         if ((bool) auth()->user()?->isPlatformStaff()) {
-            if (blank($get('merchant_id'))) {
+            $merchantId = $lockedMerchantId ?? $get('merchant_id');
+
+            if (blank($merchantId)) {
                 // 还没选商户时不给任何选项，逼操作者先选商户——
                 // 否则很容易在没选商户的情况下挑到别家的资源。
                 return [];
             }
 
-            $query->forMerchant((int) $get('merchant_id'));
+            $query->forMerchant((int) $merchantId);
         }
 
         if ($activeColumn) {
@@ -340,7 +346,7 @@ class CheckoutLinkResource extends Resource
      * 只列出「已就绪」的域名：DNS 归属已验证 + CF 证书已生效。
      * 让商户选一个还没签出证书的域名，等于给客户一个打不开的链接。
      */
-    private static function domainOptions(Get $get)
+    private static function domainOptions(Get $get, ?int $lockedMerchantId = null)
     {
         $query = MerchantDomain::query()
             ->where('is_active', true)
@@ -348,11 +354,13 @@ class CheckoutLinkResource extends Resource
             ->where('cf_ssl_status', MerchantDomain::CF_STATUS_ACTIVE);
 
         if ((bool) auth()->user()?->isPlatformStaff()) {
-            if (blank($get('merchant_id'))) {
+            $merchantId = $lockedMerchantId ?? $get('merchant_id');
+
+            if (blank($merchantId)) {
                 return [];
             }
 
-            $query->forMerchant((int) $get('merchant_id'));
+            $query->forMerchant((int) $merchantId);
         }
 
         return $query->pluck('host', 'id');
