@@ -81,6 +81,10 @@ class OnboardMerchant extends Page
                         ->label(__('admin.onboard_merchant.steps.merchant.label'))
                         ->description(__('admin.onboard_merchant.steps.merchant.description'))
                         ->schema([
+                            TextInput::make('merchant_name')
+                                ->label(__('admin.merchant.fields.name'))
+                                ->required()
+                                ->maxLength(100),
                             Select::make('merchant_owner_id')
                                 ->label(__('admin.merchant.fields.owner'))
                                 ->helperText(__('admin.merchant.help.owner'))
@@ -155,11 +159,9 @@ class OnboardMerchant extends Page
         $merchant = DB::transaction(function () use ($data) {
             $user = auth()->user();
 
-            $merchantName = now()->format('Ymd').str_pad((string) random_int(0, 9999), 4, '0', STR_PAD_LEFT);
-
             $merchant = Merchant::create([
                 'owner_id' => $user->isMerchantManager() ? $user->id : ($data['merchant_owner_id'] ?? null),
-                'name' => $merchantName,
+                'name' => $data['merchant_name'],
                 'status' => true,
                 'timezone' => $data['merchant_timezone'],
                 'remark' => $data['merchant_remark'],

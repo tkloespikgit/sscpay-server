@@ -101,6 +101,7 @@ class MerchantCreationDefaultsTest extends TestCase
 
         $page = Livewire::test(OnboardMerchant::class)
             ->fillForm([
+                'merchant_name' => 'Northwind Outfitters',
                 'admin_name' => 'New Merchant Administrator',
                 'admin_account' => 'new-merchant-admin',
                 'admin_password' => 'merchant-test-password',
@@ -113,6 +114,7 @@ class MerchantCreationDefaultsTest extends TestCase
 
         $merchant = Merchant::query()->sole();
         $this->assertSame($manager->id, $merchant->owner_id);
+        $this->assertSame('Northwind Outfitters', $merchant->name);
         $this->assertEmptyContactInformation($merchant);
         $page->assertRedirect(MerchantResource::getUrl('edit', ['record' => $merchant]));
 
@@ -127,6 +129,26 @@ class MerchantCreationDefaultsTest extends TestCase
         $this->assertSame('https://shop.example.com', $application->website);
         $this->assertNotEmpty($application->app_id);
         $this->assertNotEmpty($application->api_key);
+        Http::assertNothingSent();
+    }
+
+    public function test_onboarding_requires_a_merchant_name(): void
+    {
+        $this->actingAs($this->administrator());
+        Http::preventStrayRequests();
+
+        Livewire::test(OnboardMerchant::class)
+            ->fillForm([
+                'admin_name' => 'New Merchant Administrator',
+                'admin_account' => 'new-merchant-admin',
+                'admin_password' => 'merchant-test-password',
+                'app_name' => 'New Merchant Application',
+                'app_website' => 'https://shop.example.com',
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['merchant_name' => 'required']);
+
+        $this->assertDatabaseCount('merchants', 0);
         Http::assertNothingSent();
     }
 
@@ -179,6 +201,7 @@ class MerchantCreationDefaultsTest extends TestCase
 
         Livewire::test(OnboardMerchant::class)
             ->fillForm([
+                'merchant_name' => 'Merchant With Financial Defaults',
                 'admin_name' => 'Administrator With Financial Defaults',
                 'admin_account' => 'financial-default-admin',
                 'admin_password' => 'merchant-test-password',
@@ -191,6 +214,7 @@ class MerchantCreationDefaultsTest extends TestCase
             ->assertNotified(__('admin.onboard_merchant.notifications.created'));
 
         $merchant = Merchant::query()->sole();
+        $this->assertSame('Merchant With Financial Defaults', $merchant->name);
         $this->assertSame($defaults, $merchant->only(array_keys($defaults)));
         $this->assertDatabaseCount('merchant_payment_settings', 0);
         Http::assertNothingSent();
