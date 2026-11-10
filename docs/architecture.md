@@ -162,6 +162,8 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，负责网关事实、接收审计、重复/乱序保护、首次 `paid_at`/`failed_at`、可靠记账及首次支付通知。[OrderLifecycleService](../app/Services/OrderLifecycleService.php) 根据网关、真实结算、有效物流、退款/拒付及活动审核事件推导本地主状态；后台入口不自行拼装状态机。
 
+当前网关尝试的 webhook 被状态机拦截（保护、冲突、过期等）时，在状态事务释放行锁后主动调用一次 `queryAndApply()`，按查询结果走相同的状态、账务与通知流程。查询结果仍保留时间、版本和网关尝试引用校验，不递归补查；旧尝试回调和正常重复回调不触发补查。查询失败向上传播，webhook 返回失败以便插件重试。
+
 `PendingOrderStatusSyncService` 每分钟扫描全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单，按创建满 30 分钟、90 分钟两个时点逐笔调用 `queryAndApply()`，每单最多自动补查两次。次数与最近领取时间持久化到订单，查询前用符合到期条件与原次数的原子更新领取；缺凭证、远端失败或未知状态也消耗一次，单轮每单最多一次。第一次已离开待支付状态时不再二查；停机错过时点则在 48 小时内分轮补查，实际执行顺延到下一次扫描，不承诺秒级触发。
 
 查询窗口包含 48 小时及 30/90 分钟边界，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔失败继续，命令最终返回非零并记录调度失败日志；手工查询不占用自动补查次数，网关客户端内部连接重试沿用原配置。日志归档仍由 `OrderEventSyncService` 单独负责。

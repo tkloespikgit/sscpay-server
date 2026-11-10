@@ -13,6 +13,7 @@ use App\Models\OrderShipping;
 use App\Models\User;
 use App\Services\BalanceService;
 use App\Services\OrderPaymentStatusService;
+use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
@@ -400,7 +401,7 @@ class OrderPaymentStatusQueryTest extends TestCase
         $order = $this->queryableOrder($status);
         Event::fake([OrderStatusChanged::class]);
         Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
-        Http::preventStrayRequests();
+        $this->fakeQuery('unknown');
 
         app(OrderPaymentStatusService::class)->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
 
@@ -412,7 +413,94 @@ class OrderPaymentStatusQueryTest extends TestCase
         Event::assertNotDispatched(OrderStatusChanged::class);
         Bus::assertNotDispatched(SendOrderNotificationJob::class);
         Bus::assertNotDispatched(NotifyAdConversionJob::class);
-        Http::assertNothingSent();
+        Http::assertSentCount(in_array($status, ['failed', 'cancelled', 'expired'], true) ? 1 : 0);
+    }
+
+    #[DataProvider('unpaidTerminalStatuses')]
+    public function test_unpaid_terminal_then_paid_webhooks_query_and_credit_only_once(string $terminalStatus): void
+    {
+        $this->freezeTime();
+        $order = $this->queryableOrder('pending', ['gateway_order_no' => 'GW-RECOVERY']);
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        $this->fakeQuery('paid');
+        $service = app(OrderPaymentStatusService::class);
+        $service->handle(['s_order_id' => 'GW-RECOVERY', 'status' => $terminalStatus]);
+        $failedAt = $order->refresh()->failed_at;
+
+        $service->handle(['s_order_id' => 'GW-RECOVERY', 'status' => 'paid', 'transaction_id' => 'webhook-txn']);
+        $service->handle(['s_order_id' => 'GW-RECOVERY', 'status' => 'paid']);
+
+        $this->assertSame('paid', $order->refresh()->status);
+        $this->assertSame($failedAt?->toIso8601String(), $order->failed_at?->toIso8601String());
+        $this->assertSame('txn-queried-paid', $order->transaction_id);
+        $this->assertSame('121.50', (string) $this->merchant->refresh()->balance);
+        $this->assertDatabaseCount('merchant_balance_transactions', 1);
+        $this->assertDatabaseCount('order_notification_attempts', 1);
+        $this->assertDatabaseCount('ad_conversion_attempts', 1);
+        $this->assertDatabaseHas('order_gateway_status_events', [
+            'order_id' => $order->id, 'source' => 'webhook', 'status' => 'paid', 'outcome' => 'protected',
+        ]);
+        $this->assertDatabaseHas('order_gateway_status_events', [
+            'order_id' => $order->id, 'source' => 'query', 'status' => 'paid', 'outcome' => 'accepted',
+        ]);
+        Event::assertDispatched(OrderStatusChanged::class, fn (OrderStatusChanged $event): bool => $event->firstPayment
+            && $event->oldStatus === $terminalStatus && $event->newStatus === 'paid');
+        Http::assertSent(fn ($request): bool => $request['s_order_id'] === 'GW-RECOVERY');
+        Http::assertSentCount(1);
+        Bus::assertDispatchedTimes(SendOrderNotificationJob::class, 1);
+        Bus::assertDispatchedTimes(NotifyAdConversionJob::class, 1);
+    }
+
+    public function test_rejected_webhook_uses_query_result_and_does_not_query_recursively(): void
+    {
+        $order = $this->queryableOrder('failed');
+        Event::fake([OrderStatusChanged::class]);
+        Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
+        $this->fakeQuery('pending');
+
+        app(OrderPaymentStatusService::class)->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
+
+        $this->assertSame('failed', $order->refresh()->status);
+        $this->assertNull($order->paid_at);
+        $this->assertSame('25.00', (string) $this->merchant->refresh()->balance);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        $this->assertDatabaseHas('order_gateway_status_events', [
+            'order_id' => $order->id, 'source' => 'query', 'status' => 'pending', 'outcome' => 'protected',
+        ]);
+        Http::assertSentCount(1);
+        Bus::assertNotDispatched(SendOrderNotificationJob::class);
+        Bus::assertNotDispatched(NotifyAdConversionJob::class);
+        Event::assertNotDispatched(OrderStatusChanged::class);
+    }
+
+    public function test_reconciliation_query_failure_is_propagated_for_webhook_retry(): void
+    {
+        $order = $this->queryableOrder('failed');
+        Http::preventStrayRequests();
+        Http::fake([self::QUERY_URL.'*' => Http::response(['code' => 500, 'message' => 'unavailable'], 503)]);
+
+        try {
+            app(OrderPaymentStatusService::class)->handle(['s_order_id' => $order->order_no, 'status' => 'paid']);
+            $this->fail('Expected query failure to trigger webhook retry.');
+        } catch (PaymentGatewayException $exception) {
+            $this->assertSame(503, $exception->httpStatus);
+        }
+
+        $this->assertSame('failed', $order->refresh()->status);
+        $this->assertNull($order->paid_at);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        Http::assertSentCount(1);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function unpaidTerminalStatuses(): array
+    {
+        return [
+            'failed' => ['failed'],
+            'cancelled' => ['cancelled'],
+            'expired' => ['expired'],
+        ];
     }
 
     /** @return array<string, array{string}> */

@@ -43,6 +43,7 @@ class OrderLifecycleTest extends TestCase
         $this->assertSame('disputing', $order->refresh()->status);
         $this->assertSame('settled', $order->settlement->status);
 
+        $this->fakeQuery(['status' => 'disputing', 'updated_at' => '2026-11-06 10:01:00']);
         $this->push($order, 'paid', '2026-11-06 10:00:00');
         $this->assertSame('disputing', $order->refresh()->status);
         $this->assertDatabaseHas('order_gateway_status_events', ['order_id' => $order->id, 'outcome' => 'stale']);
@@ -67,19 +68,21 @@ class OrderLifecycleTest extends TestCase
         $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'status' => 'completed', 'type' => $expected === 'refunded' ? 'refund' : 'chargeback']);
     }
 
-    public function test_equal_timestamp_conflict_is_audited_and_a_fresh_query_can_resolve_it(): void
+    public function test_equal_timestamp_conflict_is_audited_and_automatically_resolved_by_query(): void
     {
         $order = $this->completedOrder();
+        $this->fakeQuery(['status' => 'disputing', 'updated_at' => '2026-11-06 10:00:00']);
+
         $this->push($order, 'disputing', '2026-11-06 10:00:00');
-        $this->assertSame('completed', $order->refresh()->status);
+
+        $this->assertSame('disputing', $order->refresh()->status);
         $this->assertDatabaseHas('order_gateway_status_events', ['outcome' => 'conflict']);
 
-        $this->fakeQuery(['status' => 'disputing', 'updated_at' => '2026-11-06 10:00:00']);
-        app(OrderPaymentStatusService::class)->queryAndApply($order);
-        $this->assertSame('disputing', $order->refresh()->status);
+        $this->assertDatabaseHas('order_gateway_status_events', ['source' => 'query', 'outcome' => 'accepted']);
+        Http::assertSentCount(2);
     }
 
-    public function test_old_query_response_cannot_overwrite_a_callback_received_during_the_query(): void
+    public function test_fallback_query_cannot_overwrite_a_callback_received_during_the_query(): void
     {
         $order = $this->completedOrder();
         Http::fake(['*order-query*' => function () use ($order) {
@@ -87,7 +90,7 @@ class OrderLifecycleTest extends TestCase
 
             return Http::response(['code' => 0, 'data' => ['status' => 'paid', 'updated_at' => '2026-11-06 10:00:00']]);
         }, '*' => Http::response(['code' => 0, 'data' => []])]);
-        app(OrderPaymentStatusService::class)->queryAndApply($order);
+        $this->push($order, 'paid', '2026-11-06 09:59:00');
         $this->assertSame('refunded', $order->refresh()->status);
         $this->assertSame('-5.00', $this->merchant->refresh()->balance);
         $this->assertDatabaseHas('order_gateway_status_events', ['outcome' => 'query_race']);

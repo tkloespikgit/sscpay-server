@@ -90,7 +90,7 @@ class OrderPaymentStatusService
             return;
         }
 
-        $this->applyStatus($order, self::STATUS_MAP[$pluginStatus], $payload, $sOrderId, checkForbiddenAccount: true);
+        $this->applyStatus($order, self::STATUS_MAP[$pluginStatus], $payload, $sOrderId, checkForbiddenAccount: true, queryOnRejection: true);
     }
 
     /**
@@ -230,6 +230,7 @@ class OrderPaymentStatusService
      * 状态落库 + 副作用（入账/通知/日志重拉/Telegram），handle() 与
      * queryAndApply() 共用。事务内加行锁读取最新状态并落库，避免并发下的竞态；
      * 成功后把 $order 刷新为最新数据，方便调用方直接用同一个实例继续操作。
+     * webhook 被状态机拒绝时，释放行锁后仅主动查询一次；查询失败向上传播以便回调重试。
      *
      * @return string|null 实际发生变化时返回变化前的状态，被幂等/回退保护跳过时返回 null
      */
@@ -241,6 +242,7 @@ class OrderPaymentStatusService
         bool $allowPaidOverride = false,
         bool $checkForbiddenAccount = false,
         ?int $expectedVersion = null,
+        bool $queryOnRejection = false,
     ): ?string {
         $disabledMethod = null;
         $source = $allowPaidOverride ? 'query' : 'webhook';
@@ -278,7 +280,7 @@ class OrderPaymentStatusService
             ]);
 
             if ($outcome === 'obsolete_reference') {
-                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false];
+                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false, 'outcome' => $outcome];
             }
 
             if ($checkForbiddenAccount) {
@@ -290,7 +292,7 @@ class OrderPaymentStatusService
                     'order_id' => $locked->id, 'target_status' => $targetStatus, 'outcome' => $outcome,
                 ]);
 
-                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false];
+                return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false, 'outcome' => $outcome];
             }
 
             $firstPayment = $targetStatus === 'paid' && $locked->paid_at === null
@@ -334,6 +336,12 @@ class OrderPaymentStatusService
             $this->notifyForbiddenPaymentMethod($order, $disabledMethod);
         }
         if (! $result['accepted']) {
+            if ($queryOnRejection && $result['outcome'] !== 'obsolete_reference') {
+                $queryResult = $this->queryAndApply($order);
+
+                return $queryResult['changed'] ? $queryResult['old_status'] : null;
+            }
+
             return null;
         }
 

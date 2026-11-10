@@ -2,6 +2,13 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-10：支付回调被状态机拦截后主动补查（当前工作区，未提交）
+
+- 修复先收到 `failed`、再收到 `paid` 回调时支付成功事实被终态保护拦截的问题。当前网关尝试的回调被保护、冲突或过期校验拒绝后，在事务释放行锁后主动查询一次，复用 `queryAndApply()` 落地查询结果及记账、通知。查询仍被拦截时不递归，查询失败向上传播，让插件重试回调。
+- 保留旧网关尝试过滤、查询版本竞争校验、时间顺序保护和首次入账/通知幂等。正常重复回调不补查；不自动扫描修复历史已遗漏订单。
+- 影响 `OrderPaymentStatusService`、`OrderPaymentStatusQueryTest`、`OrderLifecycleTest` 和 [architecture.md](architecture.md)。无需数据库迁移。
+- 验证：SQLite 内存库联跑 `OrderPaymentStatusQueryTest`、`OrderLifecycleTest`、`GatewayOrderReferenceTest`、`GatewayRefundChargebackTest`、`PaymentGatewayWebhookRoutingTest`、`SyncPendingOrderStatusesTest`，86 项、709 断言通过；Pint 和 `git diff --check` 通过。外部请求使用 HTTP fake，未调用真实网关或修改业务库。
+
 ## 2026-11-10：收款链接表单改为双栏并锁定商户
 
 - 创建/编辑页去掉展示型字段说明。宽屏左栏是基本信息，右栏是支付组点选、金额币种和商品明细。
