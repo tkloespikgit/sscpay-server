@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\CheckoutLink;
+use App\Rules\CheckoutEmail;
 use App\Rules\InternationalPhone;
 use App\Services\Checkout\TurnstileService;
 use App\Support\CheckoutAddress;
@@ -53,7 +54,7 @@ class CreateCheckoutOrderRequest extends FormRequest
         return [
             'first_name' => ['required', 'string', 'max:100'],
             'last_name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'email:rfc', 'max:255'],
+            'email' => ['required', 'string', 'max:255', new CheckoutEmail],
             'phone' => ['required', 'string', 'max:30', new InternationalPhone($link->supported_countries)],
 
             'address_line1' => ['required', 'string', 'max:255'],

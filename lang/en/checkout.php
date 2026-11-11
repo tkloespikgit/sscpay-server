@@ -62,7 +62,7 @@ return [
     'help' => [
         'phone' => 'Include your country code, for example +49 151 1234 5678.',
         'amount_range' => 'Enter an amount between :min and :max.',
-        'address_autocomplete' => 'Select your address from the suggestions to fill in the fields automatically.',
+        'address_autocomplete' => 'You can choose a suggestion to fill in the address. We check that it can be found before payment.',
         'payment_method' => 'Choose how you would like to pay. The exact payment channel is selected automatically.',
     ],
 
@@ -91,6 +91,8 @@ return [
         'too_many_attempts' => 'Too many attempts. Please wait a while before trying again.',
         'link_unavailable' => 'This payment link is temporarily unavailable. Please contact the merchant.',
         'payment_method_required' => 'Please choose a payment method to continue.',
+        'address_unconfirmed' => 'We could not confirm this address. Check the street, city, state, and postal code, then try again.',
+        'email_invalid' => 'Enter an email address like name@example.com. Use standard letters and numbers, and include a dot in the domain.',
     ],
 
     'errors' => [
