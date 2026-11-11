@@ -161,7 +161,7 @@ php artisan checkout:sync-domains
 - [ ] Cloudflare Fallback Origin 已设置并为 Active
 - [ ] `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ZONE_ID` / `CLOUDFLARE_FALLBACK_ORIGIN` 已配置
 - [ ] `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` 已配置（**不配等于没开人机验证**，见下方警告）
-- [ ] 需要 Google 地址建议的商户在收款链接中填写自己的 Google Maps 浏览器 Key，并按 HTTP referrer 限制可用域名；留空使用国家、省州、城市联动选择
+- [ ] 需要 Google 地址建议的商户在收款链接中填写自己的 Google Maps 浏览器 Key，按 HTTP referrer 限制可用域名，并在同一项目启用 Maps JavaScript API、Places API 和 Geocoding API；留空使用国家、省州、城市联动选择
 - [ ] `CHECKOUT_MEDIA_DISK` 指向公开可读的盘（生产建议 `oss`，对应目录设为公共读）
 - [ ] `php artisan migrate --force` 已执行
 - [ ] `php artisan permissions:rollout-checkout-links` 已执行
