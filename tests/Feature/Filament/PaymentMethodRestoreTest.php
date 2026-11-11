@@ -3,6 +3,7 @@
 namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
+use App\Models\MerchantPaymentMethod;
 use App\Models\PaymentMethod;
 use App\Models\User;
 use App\Support\Permissions;
@@ -35,7 +36,7 @@ class PaymentMethodRestoreTest extends TestCase
         $admin = User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]);
         $active = $this->makePaymentMethod('still-open');
         $deleted = $this->deletedPaymentMethod('open-code', false);
-        $deleted->assignedMerchants()->attach($this->merchant->id);
+        MerchantPaymentMethod::withoutEvents(fn () => $deleted->assignedMerchants()->attach($this->merchant->id));
         $this->actingAs($admin);
 
         $page = Livewire::test(ListPaymentMethods::class)

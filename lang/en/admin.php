@@ -377,6 +377,24 @@ return [
     'payment_method' => [
         'model_label' => 'Payment Method',
         'model_label_plural' => 'Payment Methods',
+        'authorization' => [
+            'action' => 'Authorize merchants',
+            'description' => 'Click a merchant to grant or revoke access immediately. Only active merchants under the same administrator are listed. Revoking removes group references and financial overrides.',
+            'unassigned' => 'Available merchants',
+            'assigned' => 'Authorized merchants',
+            'search' => 'Search merchant name or ID',
+            'search_unassigned' => 'Search available merchants',
+            'search_assigned' => 'Search authorized merchants',
+            'authorize' => 'Authorize →',
+            'revoke' => '← Revoke',
+            'authorize_named' => 'Authorize merchant: :name',
+            'revoke_named' => 'Revoke merchant: :name',
+            'empty_unassigned' => 'No available merchants',
+            'empty_assigned' => 'No authorized merchants',
+            'no_results' => 'No matching merchants',
+            'unowned' => 'Unassigned administrator (legacy record)',
+            'platform' => 'Platform managed',
+        ],
         'sections' => [
             'basic_info' => 'Basic Information',
             'gateway_config' => 'Gateway Configuration',
@@ -387,6 +405,7 @@ return [
             'fees' => 'Fees (USD)',
         ],
         'fields' => [
+            'remark' => 'Remarks',
             'merchant' => 'Merchant',
             'assigned_merchants' => 'Assigned to Merchants',
             'merchant_or_owner' => 'Merchant / Administrator',

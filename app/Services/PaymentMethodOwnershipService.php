@@ -41,6 +41,13 @@ class PaymentMethodOwnershipService
             }
 
             $record->owner()->associate($owner);
+
+            foreach ($record->assignedMerchants()->get() as $merchant) {
+                if (! $record->canAssignToMerchant($merchant)) {
+                    throw new AuthorizationException;
+                }
+            }
+
             $record->save();
 
             return $record;

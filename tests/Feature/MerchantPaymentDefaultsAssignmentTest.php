@@ -244,7 +244,7 @@ class MerchantPaymentDefaultsAssignmentTest extends TestCase
         $unassigned = $this->systemMethod('unassigned');
         $foreign = $this->systemMethod('foreign', ['merchant_id' => $other->id]);
 
-        $foreign->assignedMerchants()->attach($merchant);
+        $this->assignWithoutConfiguration($merchant, $foreign);
         $setting = app(MerchantPaymentSettingsService::class)->initializeForAssignment($merchant->id, $unassigned->id);
 
         $this->assertNull($setting);
@@ -259,7 +259,13 @@ class MerchantPaymentDefaultsAssignmentTest extends TestCase
         $method = $this->systemMethod('deleted-assignment');
         ($deleteMerchant ? $merchant : $method)->delete();
 
-        $method->assignedMerchants()->attach($merchant);
+        try {
+            $method->assignedMerchants()->attach($merchant);
+            $this->fail('Deleted records must not receive new assignments.');
+        } catch (AuthorizationException) {
+            $this->assertDatabaseCount('merchant_payment_methods', 0);
+        }
+        $this->assertNull(app(MerchantPaymentSettingsService::class)->initializeForAssignment($merchant->id, $method->id));
 
         $this->assertDatabaseCount('merchant_payment_settings', 0);
     }
@@ -373,19 +379,18 @@ class MerchantPaymentDefaultsAssignmentTest extends TestCase
         Http::preventStrayRequests();
 
         $page = Livewire::test(EditPaymentMethod::class, ['record' => $method->id])
-            ->fillForm(['assignedMerchants' => [$first->id, $second->id]])
-            ->call('save')->assertHasNoFormErrors();
+            ->call('setMerchantAuthorization', $second->id, true)->assertOk();
 
         $this->assertDatabaseHas('merchant_payment_settings', ['merchant_id' => $first->id, 'fee_percent' => '5']);
         $this->assertDatabaseHas('merchant_payment_settings', ['merchant_id' => $second->id, 'fee_percent' => '2', 'settlement_days' => 14]);
         $group = PaymentGroup::create(['merchant_id' => $first->id, 'group_key' => 'detach', 'group_name' => 'Detach']);
         $group->paymentMethods()->attach($method);
 
-        $page->fillForm(['assignedMerchants' => [$second->id]])->call('save')->assertHasNoFormErrors();
+        $page->call('setMerchantAuthorization', $first->id, false)->assertOk();
 
         $this->assertDatabaseMissing('merchant_payment_methods', ['merchant_id' => $first->id, 'payment_method_id' => $method->id]);
         $this->assertDatabaseMissing('payment_group_methods', ['group_id' => $group->id, 'method_id' => $method->id]);
-        $this->assertDatabaseHas('merchant_payment_settings', ['merchant_id' => $first->id, 'fee_percent' => '5']);
+        $this->assertDatabaseMissing('merchant_payment_settings', ['merchant_id' => $first->id, 'payment_method_id' => $method->id]);
         Http::assertNothingSent();
     }
 

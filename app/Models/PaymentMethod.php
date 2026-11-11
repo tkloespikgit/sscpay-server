@@ -34,21 +34,7 @@ class PaymentMethod extends Model
     }
 
     /**
-     * BelongsToMerchant 默认的 MerchantScope 只会严格按 merchant_id 过滤，看不到
-     * "被分配的系统级支付方式"。这里用同一个 Scope 标识（MerchantScope::class）重新
-     * 注册一份闭包实现，覆盖掉 trait 在 bootBelongsToMerchant() 里注册的那份——
-     * Eloquent 全局 Scope 按标识存放在按 Model 类分组的数组里，同标识后注册的会
-     * 覆盖先注册的，且只影响 PaymentMethod 自己，不影响其它同样用了这个 trait 的
-     * Model（Order、PaymentGroup 等）。booted() 保证在 boot()（会跑完 bootTraits()）
-     * 之后执行，顺序上一定能覆盖成功。
-     *
-     * 覆盖后的规则：非平台超管时，只能看到"merchant_id 属于自己可管理范围"、
-     * "被分配（assignedMerchants）给自己可管理范围内某个商户"，或者"自己创建的
-     * 系统级支付方式（owner_id 是自己）"这三类之一的记录。最后一条是必须的：
-     * 商户级管理员刚创建一条系统级支付方式、还没来得及分配给任何商户时，
-     * merchant_id 是 NULL、assignedMerchants 也是空，前两个条件都不成立，
-     * 如果不认 owner_id，创建人保存后立刻看不到自己刚建的记录，编辑页
-     * 路由绑定 firstOrFail() 直接 404（曾经真实踩过）。
+     * 平台商户级管理员仅能维护自己名下的渠道；普通商户用户仍可使用已授权系统渠道。
      */
     protected static function booted(): void
     {
@@ -66,10 +52,16 @@ class PaymentMethod extends Model
 
             $builder->where(function (Builder $query) use ($merchantIds, $viewer) {
                 $query->whereIn('payment_methods.merchant_id', $merchantIds)
-                    ->orWhere(fn (Builder $shared) => $shared->whereNull('payment_methods.merchant_id')
-                        ->where(fn (Builder $access) => $access
-                            ->whereHas('assignedMerchants', fn (Builder $assigned) => $assigned->whereIn('merchants.id', $merchantIds))
-                            ->orWhere('payment_methods.owner_id', $viewer->id)));
+                    ->orWhere(function (Builder $shared) use ($merchantIds, $viewer): void {
+                        $shared->whereNull('payment_methods.merchant_id')
+                            ->where(function (Builder $access) use ($merchantIds, $viewer): void {
+                                $access->where('payment_methods.owner_id', $viewer->id);
+
+                                if (! $viewer->isMerchantManager()) {
+                                    $access->orWhereHas('assignedMerchants', fn (Builder $assigned) => $assigned->whereIn('merchants.id', $merchantIds));
+                                }
+                            });
+                    });
             });
         });
 
@@ -95,6 +87,20 @@ class PaymentMethod extends Model
                 $model->consecutive_failed_times = 0;
             }
         });
+    }
+
+    /** 平台直管商户只能使用超级管理员或历史未归属的系统渠道。 */
+    public function canAssignToMerchant(Merchant $merchant): bool
+    {
+        if (! $this->isSystemLevel()) {
+            return false;
+        }
+
+        if ($merchant->owner_id !== null) {
+            return $this->owner_id !== null && (int) $this->owner_id === (int) $merchant->owner_id;
+        }
+
+        return $this->owner_id === null || User::query()->whereKey($this->owner_id)->where('is_super_admin', true)->exists();
     }
 
     /**
@@ -145,6 +151,7 @@ class PaymentMethod extends Model
         'method_code',
         'method_name',
         'display_name',
+        'remark',
         'is_active',
         'sort_order',
         'config_map_id',

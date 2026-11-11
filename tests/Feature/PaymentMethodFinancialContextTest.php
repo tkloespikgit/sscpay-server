@@ -82,6 +82,8 @@ class PaymentMethodFinancialContextTest extends TestCase
         [$other, $method] = $this->sharedMethodWithMerchantConfigurations();
         $manager = $this->platformStaff();
         $this->merchant->update(['owner_id' => $manager->id]);
+        $method->owner_id = $manager->id;
+        $method->save();
         $this->actingAs($manager);
         Http::preventStrayRequests();
 

@@ -10,6 +10,8 @@ class CreatePaymentMethod extends CreateRecord
 {
     protected static string $resource = PaymentMethodResource::class;
 
+    protected ?bool $hasDatabaseTransactions = true;
+
     protected function mutateFormDataBeforeCreate(array $data): array
     {
         return PaymentMethodResource::authorizedFinancialData($data);

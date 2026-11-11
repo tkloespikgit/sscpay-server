@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Models\Scopes\MerchantScope;
 use App\Services\MerchantPaymentSettingsService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 
 class MerchantPaymentMethod extends Pivot
@@ -13,6 +15,16 @@ class MerchantPaymentMethod extends Pivot
 
     protected static function booted(): void
     {
+        static::saving(function (self $assignment): void {
+            $merchant = Merchant::query()->find((int) $assignment->merchant_id);
+            $method = PaymentMethod::query()->withoutGlobalScope(MerchantScope::class)
+                ->find((int) $assignment->payment_method_id);
+
+            if ($merchant === null || $method === null || ! $method->canAssignToMerchant($merchant)) {
+                throw new AuthorizationException;
+            }
+        });
+
         static::created(function (self $assignment): void {
             app(MerchantPaymentSettingsService::class)->initializeForAssignment(
                 (int) $assignment->merchant_id,
@@ -28,6 +40,8 @@ class MerchantPaymentMethod extends Pivot
     {
         return $this->getConnection()->transaction(function () use ($options): bool {
             Merchant::query()->whereKey((int) $this->merchant_id)->lockForUpdate()->first();
+            PaymentMethod::query()->withoutGlobalScope(MerchantScope::class)
+                ->whereKey((int) $this->payment_method_id)->lockForUpdate()->first();
 
             return parent::save($options);
         });

@@ -27,6 +27,8 @@ erDiagram
 
 图为核心关系摘要；具体外键、可空与删除策略以迁移为准。`payment_methods.merchant_id` 还支持商户直接拥有渠道（系统级渠道该字段为 NULL）。
 
+支付方式备注：迁移 `2026_11_11_120955_add_remark_to_payment_methods_table` 新增 `payment_methods.remark`（可空 `TEXT`），后台限制 5,000 字符；不回填历史记录、不修改订单和资金数据。渠道新增分配由 `MerchantPaymentMethod` 检查管理员边界，已有跨管理员分配不在本次批量清理。
+
 ## 2. 租户、身份和渠道
 
 | 表 / 模型 | 关键语义 |

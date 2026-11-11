@@ -8,6 +8,7 @@ use App\Filament\Resources\PaymentMethodResource\Pages\CreatePaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\EditPaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
 use App\Models\Merchant;
+use App\Models\MerchantPaymentMethod;
 use App\Models\MerchantPaymentSetting;
 use App\Models\Order;
 use App\Models\PaymentGroup;
@@ -79,7 +80,7 @@ class MerchantPaymentSettingsTest extends TestCase
         $this->createMerchantAndApplication();
         $method = $this->makePaymentMethod('foreign');
         $method->update(['merchant_id' => $this->otherMerchant()->id]);
-        $method->assignedMerchants()->attach($this->merchant->id);
+        MerchantPaymentMethod::withoutEvents(fn () => $method->assignedMerchants()->attach($this->merchant->id));
         $this->assertFalse(PaymentMethod::query()->forMerchant($this->merchant->id)->whereKey($method->id)->exists());
 
         $this->expectException(ValidationException::class);
@@ -236,7 +237,7 @@ class MerchantPaymentSettingsTest extends TestCase
         $this->createMerchantAndApplication();
         $foreign = $this->makePaymentMethod('foreign_group');
         $foreign->update(['merchant_id' => $this->otherMerchant()->id]);
-        $foreign->assignedMerchants()->attach($this->merchant->id);
+        MerchantPaymentMethod::withoutEvents(fn () => $foreign->assignedMerchants()->attach($this->merchant->id));
         $revoked = $this->makePaymentMethod('revoked_group');
         $revoked->update(['merchant_id' => null]);
         $allowed = $this->makePaymentMethod('allowed_group');
