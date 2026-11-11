@@ -12,6 +12,7 @@ use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
 use App\Models\SiteProduct;
 use App\Models\SiteProductVariation;
+use App\Rules\CheckoutEmail;
 use App\Services\Checkout\CheckoutLinkOrderService;
 use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -174,6 +175,7 @@ class CheckoutLinkTest extends TestCase
             ->assertSee('id="state-options" role="listbox" hidden', false)
             ->assertSee('id="city-options" role="listbox" hidden', false)
             ->assertDontSee('maps.googleapis.com')
+            ->assertDontSee('verifyCheckoutAddress')
             ->assertDontSee('system-key-must-not-be-used');
     }
 
@@ -184,6 +186,8 @@ class CheckoutLinkTest extends TestCase
         $this->get('/c/'.$link->slug)
             ->assertOk()
             ->assertSee('key=merchant-test-key')
+            ->assertSee('verifyCheckoutAddress')
+            ->assertSee('id="checkout-address-error"', false)
             ->assertDontSee('state-select');
     }
 
@@ -231,6 +235,21 @@ class CheckoutLinkTest extends TestCase
                 && $request['shipping_address']['city'] === $city
                 && $request['billing_address'] === $request['shipping_address']);
         }
+    }
+
+    public function test_checkout_rejects_emails_the_payment_plugin_would_refuse_before_creating_orders(): void
+    {
+        $link = $this->createLink();
+
+        foreach (['name@gmail', 'a@b.c', '用户@gmail.com', '"john"@gmail.com'] as $email) {
+            $this->assertFalse(CheckoutEmail::accepts($email));
+            $this->post('/c/'.$link->slug, $this->validPayload(['email' => $email]))
+                ->assertSessionHasErrors('email');
+        }
+
+        $this->assertSame(0, Order::withoutGlobalScopes()->count());
+        $this->assertTrue(CheckoutEmail::accepts('john+tag@gmail.com'));
+        Http::assertNothingSent();
     }
 
     public function test_checkout_rejects_invalid_missing_or_cross_country_states_before_creating_orders(): void
