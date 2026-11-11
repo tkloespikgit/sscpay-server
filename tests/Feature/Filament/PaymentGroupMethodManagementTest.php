@@ -43,7 +43,7 @@ class PaymentGroupMethodManagementTest extends TestCase
         $otherGroup = $this->group($merchant, 'other-group');
         $owned = $this->method('owned-channel', $merchant);
         $shared = $this->method('shared-channel');
-        $shared->owner_id = $this->manager()->id;
+        $shared->owner_id = $admin->id;
         $shared->save();
         $shared->assignedMerchants()->attach($merchant);
         $setting = MerchantPaymentSetting::query()->sole();
@@ -380,7 +380,7 @@ class PaymentGroupMethodManagementTest extends TestCase
         $merchant = $this->merchant();
         $method = $this->method('initial-channel', $merchant);
         $shared = $this->method('initial-shared-channel');
-        $shared->owner_id = $this->manager()->id;
+        $shared->owner_id = $admin->id;
         $shared->save();
         $shared->assignedMerchants()->attach($merchant);
         $inactive = $this->method('initial-inactive-channel', $merchant, ['is_active' => false]);

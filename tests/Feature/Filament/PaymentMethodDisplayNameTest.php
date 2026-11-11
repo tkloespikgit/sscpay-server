@@ -37,6 +37,7 @@ class PaymentMethodDisplayNameTest extends TestCase
         $method = $this->makePaymentMethod('named-channel');
         $method->update(['method_name' => 'Internal channel', 'display_name' => 'Customer channel']);
         if ($systemLevel) {
+            $method->owner_id = $viewer->id;
             $method->update(['merchant_id' => null]);
             $method->assignedMerchants()->attach($this->merchant);
         }

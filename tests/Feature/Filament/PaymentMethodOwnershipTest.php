@@ -5,6 +5,7 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Resources\PaymentMethodResource\Pages\EditPaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
+use App\Models\MerchantPaymentMethod;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\User;
@@ -38,31 +39,35 @@ class PaymentMethodOwnershipTest extends TestCase
     public function test_platform_staff_see_the_administrator_name_for_system_payment_methods_and_the_merchant_name_for_merchant_methods(bool $isSuperAdmin): void
     {
         $viewer = User::factory()->create(['merchant_id' => null, 'is_super_admin' => $isSuperAdmin, 'status' => true]);
-        $owner = User::factory()->create(['name' => 'Channel Administrator', 'merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $owner = $isSuperAdmin ? User::factory()->create(['name' => 'Channel Administrator', 'merchant_id' => null, 'is_super_admin' => false, 'status' => true]) : $viewer;
         $systemMethod = $this->systemPaymentMethod($owner);
         $viewer->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
         $this->merchant->update(['owner_id' => $viewer->id]);
-        $systemMethod->assignedMerchants()->attach($this->merchant);
+        MerchantPaymentMethod::withoutEvents(fn () => $systemMethod->assignedMerchants()->attach($this->merchant));
         $merchantMethod = $this->makePaymentMethod('merchant-owned-list');
         $unownedMethod = $this->makePaymentMethod('unowned-system-list');
         $unownedMethod->merchant_id = null;
         $unownedMethod->save();
-        $unownedMethod->assignedMerchants()->attach($this->merchant);
+        MerchantPaymentMethod::withoutEvents(fn () => $unownedMethod->assignedMerchants()->attach($this->merchant));
 
         $page = Livewire::actingAs($viewer)
             ->test(ListPaymentMethods::class)
             ->assertOk()
-            ->assertCanSeeTableRecords([$systemMethod, $merchantMethod, $unownedMethod])
-            ->assertTableColumnStateSet('merchant.name', 'Channel Administrator', $systemMethod)
-            ->assertTableColumnStateSet('merchant.name', $this->merchant->name, $merchantMethod)
-            ->assertTableColumnStateSet('merchant.name', null, $unownedMethod)
-            ->assertSee(__('admin.payment_method.columns.system_level'));
+            ->assertCanSeeTableRecords([$systemMethod, $merchantMethod])
+            ->assertTableColumnStateSet('merchant.name', $owner->name, $systemMethod)
+            ->assertTableColumnStateSet('merchant.name', $this->merchant->name, $merchantMethod);
+
+        if ($isSuperAdmin) {
+            $page->assertCanSeeTableRecords([$unownedMethod]);
+        } else {
+            $page->assertCanNotSeeTableRecords([$unownedMethod]);
+        }
 
         $listedSystemMethod = $page->instance()->getFilteredTableQuery()->findOrFail($systemMethod->id);
         $this->assertTrue($listedSystemMethod->relationLoaded('owner'));
     }
 
-    public function test_super_admin_can_transfer_a_system_payment_method_without_changing_its_configuration_or_assignments(): void
+    public function test_super_admin_has_no_transfer_action_and_cannot_change_configuration_or_assignments_through_it(): void
     {
         Http::preventStrayRequests();
         $admin = User::factory()->create(['is_super_admin' => true, 'status' => true]);
@@ -84,14 +89,14 @@ class PaymentMethodOwnershipTest extends TestCase
 
         Livewire::actingAs($admin)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
-            ->assertActionVisible('changeOwner')
+            ->assertActionDoesNotExist('changeOwner')
             ->fillForm(['method_name' => 'Unsaved configuration'])
-            ->callAction('changeOwner', ['owner_id' => $newOwner->id])
-            ->assertHasNoActionErrors()
-            ->assertNotified();
+            ->mountAction('changeOwner')
+            ->assertActionNotMounted()
+            ->call('callMountedAction');
 
         $paymentMethod->refresh();
-        $this->assertSame($newOwner->id, $paymentMethod->owner_id);
+        $this->assertSame($previousOwner->id, $paymentMethod->owner_id);
         $this->assertSame($originalConfiguration, Arr::except($paymentMethod->getAttributes(), ['owner_id', 'updated_at']));
         $this->assertSame([$this->merchant->id], $paymentMethod->assignedMerchants()->pluck('merchants.id')->all());
         $this->assertDatabaseHas('payment_group_methods', ['group_id' => $group->id, 'method_id' => $paymentMethod->id, 'priority' => 8]);
@@ -99,12 +104,12 @@ class PaymentMethodOwnershipTest extends TestCase
 
         $this->actingAs($previousOwner);
         $this->assertTrue(PaymentMethod::query()->whereKey($paymentMethod)->exists());
-        $this->assertFalse(PaymentMethodResource::canEdit($paymentMethod));
+        $this->assertTrue(PaymentMethodResource::canEdit($paymentMethod));
         $this->assertTrue(PaymentMethod::forMerchant($this->merchant->id)->whereKey($paymentMethod)->exists());
 
         $this->actingAs($newOwner);
-        $this->assertTrue(PaymentMethod::query()->whereKey($paymentMethod)->exists());
-        $this->assertTrue(PaymentMethodResource::canEdit($paymentMethod));
+        $this->assertFalse(PaymentMethod::query()->whereKey($paymentMethod)->exists());
+        $this->assertFalse(PaymentMethodResource::canEdit($paymentMethod));
     }
 
     public function test_previous_owner_loses_visibility_of_an_unassigned_system_payment_method_after_transfer(): void
@@ -130,7 +135,7 @@ class PaymentMethodOwnershipTest extends TestCase
         Livewire::actingAs($owner)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
             ->assertOk()
-            ->assertActionHidden('changeOwner')
+            ->assertActionDoesNotExist('changeOwner')
             ->mountAction('changeOwner')
             ->assertActionNotMounted()
             ->call('callMountedAction');
@@ -146,7 +151,7 @@ class PaymentMethodOwnershipTest extends TestCase
 
         Livewire::actingAs($admin)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
-            ->assertActionHidden('changeOwner')
+            ->assertActionDoesNotExist('changeOwner')
             ->mountAction('changeOwner')
             ->assertActionNotMounted();
 
@@ -160,8 +165,8 @@ class PaymentMethodOwnershipTest extends TestCase
 
         Livewire::actingAs($admin)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
-            ->callAction('changeOwner', ['owner_id' => null])
-            ->assertHasActionErrors(['owner_id' => 'required']);
+            ->assertActionDoesNotExist('changeOwner')
+            ->mountAction('changeOwner')->assertActionNotMounted();
 
         $this->assertSame($admin->id, $paymentMethod->fresh()->owner_id);
     }
@@ -174,8 +179,8 @@ class PaymentMethodOwnershipTest extends TestCase
 
         Livewire::actingAs($admin)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
-            ->callAction('changeOwner', ['owner_id' => $merchantUser->id])
-            ->assertHasActionErrors(['owner_id']);
+            ->assertActionDoesNotExist('changeOwner')
+            ->mountAction('changeOwner')->assertActionNotMounted();
 
         $this->assertSame($admin->id, $paymentMethod->fresh()->owner_id);
     }
@@ -194,8 +199,7 @@ class PaymentMethodOwnershipTest extends TestCase
         $page = Livewire::actingAs($admin)
             ->test(EditPaymentMethod::class, ['record' => $paymentMethod->id])
             ->mountAction('changeOwner')
-            ->assertActionMounted('changeOwner')
-            ->setActionData(['owner_id' => $newOwner->id]);
+            ->assertActionNotMounted();
 
         User::query()->whereKey($admin)->update($changes);
         $this->actingAs($admin->fresh());

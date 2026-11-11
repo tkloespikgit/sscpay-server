@@ -5,17 +5,13 @@ namespace App\Filament\Resources\PaymentMethodResource\Pages;
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Support\GeneratePurchaseOrderAction;
 use App\Filament\Support\PaymentMethodProfileAction;
-use App\Models\User;
-use App\Services\PaymentMethodOwnershipService;
+use App\Services\PaymentMethodMerchantAssignmentService;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
-use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
-use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Locked;
 
 class EditPaymentMethod extends EditRecord
@@ -24,15 +20,6 @@ class EditPaymentMethod extends EditRecord
 
     #[Locked]
     public bool $initialIsActive = false;
-
-    /**
-     * 保存前先记下当前分配的商户 ID，保存后跟最新分配名单比对，把"被移除的商户"
-     * 名下支付组里对这条支付方式的引用一并摘除——否则取消分配后，那些商户已经
-     * 建好的支付组还是会继续路由到这条支付方式收单，跟"取消分配"的预期不符。
-     *
-     * @var array<int>
-     */
-    protected array $previousAssignedMerchantIds = [];
 
     protected function afterFill(): void
     {
@@ -57,15 +44,9 @@ class EditPaymentMethod extends EditRecord
         }, 3);
     }
 
-    protected function beforeSave(): void
-    {
-        $this->previousAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();
-    }
-
     protected function getHeaderActions(): array
     {
         return [
-            $this->getChangeOwnerAction(),
             GeneratePurchaseOrderAction::make(),
             PaymentMethodProfileAction::make(),
             $this->getDetachFromAllPaymentGroupsAction(),
@@ -73,48 +54,9 @@ class EditPaymentMethod extends EditRecord
         ];
     }
 
-    protected function getChangeOwnerAction(): Action
+    public function setMerchantAuthorization(int $merchantId, bool $authorized, PaymentMethodMerchantAssignmentService $service): void
     {
-        $canChangeOwner = fn (): bool => auth()->user() instanceof User
-            && auth()->user()->is_super_admin
-            && auth()->user()->status
-            && $this->record->isSystemLevel();
-
-        return Action::make('changeOwner')
-            ->label(__('admin.payment_method.actions.change_owner'))
-            ->icon('heroicon-o-user-circle')
-            ->visible($canChangeOwner)
-            ->authorize($canChangeOwner)
-            ->modalDescription(__('admin.payment_method.actions.change_owner_desc'))
-            ->fillForm(fn (): array => ['owner_id' => $this->record->owner_id])
-            ->schema([
-                Select::make('owner_id')
-                    ->label(__('admin.payment_method.fields.owner'))
-                    ->options(fn () => User::query()
-                        ->whereNull('merchant_id')
-                        ->where('status', true)
-                        ->orderBy('name')
-                        ->orderBy('id')
-                        ->pluck('name', 'id'))
-                    ->searchable()
-                    ->required(),
-            ])
-            ->action(function (array $data, PaymentMethodOwnershipService $service, Schema $schema) use ($canChangeOwner): void {
-                abort_unless($canChangeOwner(), 403);
-
-                try {
-                    $service->changeOwner($this->record, auth()->user(), (int) $data['owner_id']);
-                } catch (ValidationException $exception) {
-                    GeneratePurchaseOrderAction::throwSchemaValidationException($exception, $schema);
-                }
-
-                $this->record->refresh();
-
-                Notification::make()
-                    ->success()
-                    ->title(__('admin.payment_method.actions.change_owner_success'))
-                    ->send();
-            });
+        $service->setAssignment(auth()->user(), $this->record, $merchantId, $authorized);
     }
 
     /**
@@ -158,28 +100,6 @@ class EditPaymentMethod extends EditRecord
 
         PaymentMethodResource::syncGatewayConfigAndNotify($this->record);
 
-        // 系统级改成商户自有：表单里的"分配商户"字段这时不会提交（visible/dehydrated 都关了），
-        // 中间表里的旧分配会原样残留，其它商户依旧能通过 assignedMerchants 看到、并在支付组里
-        // 路由到这条支付方式。这里把分配整体清掉，并视同"全部取消分配"处理支付组引用
-        // （新归属商户自己的支付组除外——它现在是这条支付方式的主人）。
-        if (! $this->record->isSystemLevel() && ! empty($this->previousAssignedMerchantIds)) {
-            $this->record->assignedMerchants()->detach();
-
-            $removedMerchantIds = array_diff($this->previousAssignedMerchantIds, [$this->record->merchant_id]);
-
-            if (! empty($removedMerchantIds)) {
-                PaymentMethodResource::detachFromGroupsOfMerchants($this->record, $removedMerchantIds);
-            }
-
-            return;
-        }
-
-        $currentAssignedMerchantIds = $this->record->assignedMerchants()->pluck('merchants.id')->all();
-        $removedMerchantIds = array_diff($this->previousAssignedMerchantIds, $currentAssignedMerchantIds);
-
-        if (! empty($removedMerchantIds)) {
-            PaymentMethodResource::detachFromGroupsOfMerchants($this->record, $removedMerchantIds);
-        }
     }
 
     protected function getSavedNotification(): ?Notification

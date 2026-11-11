@@ -14,6 +14,7 @@ use App\Models\Scopes\MerchantScope;
 use App\Models\User;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Services\PaymentMethodMerchantAssignmentService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -21,6 +22,7 @@ use Filament\Actions\EditAction;
 use Filament\Actions\RestoreAction;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Infolists\Components\TextEntry;
@@ -30,6 +32,7 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
@@ -93,6 +96,15 @@ class PaymentMethodResource extends Resource
                     // 不选就直接建，会导致 merchant_id 外键列为空。见 BelongsToMerchant：
                     // 自动回填 merchant_id 只对非超管用户生效，超管必须在这里显式选。
 
+                    TextEntry::make('administrator_name')
+                        ->label(__('admin.payment_method.fields.owner'))
+                        ->state(fn (?PaymentMethod $record): string => $record === null
+                            ? ($viewer?->name ?? '—')
+                            : ($record->isSystemLevel() ? ($record->owner?->name ?? __('admin.payment_method.authorization.unowned'))
+                                : ($record->merchant?->owner?->name ?? __('admin.payment_method.authorization.platform'))))
+                        ->badge()
+                        ->color('primary')
+                        ->columnSpanFull(),
                     TextEntry::make('sub_title')
                         ->hiddenLabel()
                         ->state(new HtmlString('<h3 class="fi-section-header-heading">基本信息</h3>'))
@@ -114,9 +126,27 @@ class PaymentMethodResource extends Resource
                         ->helperText($canPickMerchant ? __('admin.payment_method.help.merchant_blank_for_system_level') : null)
                         ->searchable()
                         ->live()
-                        ->disabled(! $canPickMerchant)
+                        ->disabled(fn (?PaymentMethod $record): bool => ! $canPickMerchant || $record !== null)
                         ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
+                        ->columnSpanFull(),
+                    Section::make(__('admin.payment_method.authorization.action'))
+                        ->description(__('admin.payment_method.authorization.description'))
+                        ->visible(fn (Get $get, ?PaymentMethod $record): bool => $record !== null
+                            && blank($get('merchant_id'))
+                            && PaymentMethodMerchantAssignmentService::canManage(auth()->user(), $record))
+                        ->schema([
+                            View::make('filament.resources.payment-method-resource.merchant-authorization')
+                                ->viewData(function (?PaymentMethod $record, PaymentMethodMerchantAssignmentService $service): array {
+                                    $merchants = $record === null ? collect() : $service->merchants(auth()->user(), $record);
+
+                                    return ['columns' => [
+                                        'unassigned' => $merchants->where('is_assigned', false),
+                                        'assigned' => $merchants->where('is_assigned', true),
+                                    ]];
+                                })
+                                ->columnSpanFull(),
+                        ])
                         ->columnSpanFull(),
                     Select::make('assignedMerchants')
                         ->label(__('admin.payment_method.fields.assigned_merchants'))
@@ -127,15 +157,20 @@ class PaymentMethodResource extends Resource
                             // relationship() 的选项查询会 left join 中间表 merchant_payment_methods
                             // 做去重/排除已选，中间表自己也有 id 主键列，不加 merchants. 前缀会导致
                             // "Column 'id' in where clause is ambiguous"。
-                            modifyQueryUsing: fn ($query) => $isViewerMerchantManager
-                                ? $query->whereIn('merchants.id', $viewer->ownedMerchants()->pluck('id'))
-                                : $query->where('merchants.status', true),
+                            modifyQueryUsing: fn ($query) => $query->where('merchants.status', true)
+                                ->where(fn (Builder $merchants): Builder => $merchants->where('merchants.owner_id', $viewer->id)
+                                    ->when($isViewerSuperAdmin, fn (Builder $direct): Builder => $direct->orWhereNull('merchants.owner_id'))),
                         )
                         ->multiple()
                         ->searchable()
                         ->preload()
-                        ->visible(fn (Get $get) => $canPickMerchant && blank($get('merchant_id')))
-                        ->dehydrated(fn (Get $get) => $canPickMerchant && blank($get('merchant_id')))
+                        ->visible(fn (Get $get, string $operation): bool => $operation === 'create' && $canPickMerchant && blank($get('merchant_id')))
+                        ->dehydrated(fn (Get $get, string $operation): bool => $operation === 'create' && $canPickMerchant && blank($get('merchant_id')))
+                        ->columnSpanFull(),
+                    Textarea::make('remark')
+                        ->label(__('admin.payment_method.fields.remark'))
+                        ->maxLength(5000)
+                        ->rows(3)
                         ->columnSpanFull(),
                     TextInput::make('method_code')
                         ->label(__('admin.payment_method.fields.method_code'))
@@ -408,6 +443,13 @@ class PaymentMethodResource extends Resource
                 : __('payment_finance.platform_default_description'))
             ->modifyQueryUsing(function (Builder $query, Pages\ListPaymentMethods $livewire): Builder {
                 $query->with('owner');
+                $actor = auth()->user();
+
+                if ($actor instanceof User && $actor->isMerchantManager()) {
+                    $query->where(fn (Builder $visible): Builder => $visible
+                        ->whereIn('payment_methods.merchant_id', $actor->manageableMerchantIds())
+                        ->orWhere(fn (Builder $system): Builder => $system->whereNull('payment_methods.merchant_id')->where('payment_methods.owner_id', $actor->id)));
+                }
 
                 if ($livewire->hasInvalidFinancialMerchantFilter()) {
                     return $query->whereRaw('1 = 0');
@@ -829,6 +871,11 @@ class PaymentMethodResource extends Resource
     public static function authorizedFinancialData(array $data, ?PaymentMethod $record = null): array
     {
         $actor = auth()->user();
+        $data = Arr::except($data, ['owner_id']);
+
+        if ($record !== null) {
+            $data['merchant_id'] = $record->merchant_id;
+        }
 
         if ($actor instanceof User && ! $actor->isPlatformStaff()) {
             $data['merchant_id'] = $actor->merchant_id;
@@ -991,19 +1038,7 @@ class PaymentMethodResource extends Resource
     }
 
     /**
-     * 「复制」的判断比 canManageRecord() 宽：复制不改动原记录，只是照着建一条
-     * 归自己名下的新记录，所以平台侧账号（超管 / 商户级管理员）只要在列表里
-     * 看得见就允许复制。
-     *
-     * 为什么必须放宽：商户级管理员能看见的记录无非三类（见 PaymentMethod::booted()
-     * 里的全局 Scope）——名下商户自有的、分配给名下商户的系统级支付方式、自己建的。
-     * 第二类过去被 canManageRecord() 挡住，导致一个真实场景走不通：某商户原本是
-     * 平台直管，超管给它建了系统级支付方式并分配过去（owner_id 是超管、甚至是
-     * 存量数据里的 NULL），之后超管把这个商户整体指派给某个商户级管理员，
-     * 该管理员接手后看得到这条支付方式却复制不了，没法拿一份自己维护的副本。
-     *
-     * 普通商户用户不在放宽范围内，仍旧走 canManageRecord()：被分配的系统级支付方式
-     * 里带着网关/站点密钥，不能让租户侧账号复制出一份自己能随意改的记录。
+     * 平台账号可复制查询范围内的渠道；商户用户只能复制自己可管理的渠道。
      */
     public static function canDuplicateRecord(PaymentMethod $record): bool
     {

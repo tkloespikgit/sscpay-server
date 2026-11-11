@@ -373,6 +373,24 @@ return [
     'payment_method' => [
         'model_label' => '支付方式',
         'model_label_plural' => '支付方式',
+        'authorization' => [
+            'action' => '授权商户',
+            'description' => '点击商户即可即时授权或撤销，无需保存主表单。仅列出同一管理员名下的启用商户；撤销将清理支付组引用与独立财务配置。',
+            'unassigned' => '未授权商户',
+            'assigned' => '已授权商户',
+            'search' => '搜索商户名称或 ID',
+            'search_unassigned' => '搜索未授权商户',
+            'search_assigned' => '搜索已授权商户',
+            'authorize' => '授权 →',
+            'revoke' => '← 撤销',
+            'authorize_named' => '授权商户：:name',
+            'revoke_named' => '撤销商户授权：:name',
+            'empty_unassigned' => '暂无可授权商户',
+            'empty_assigned' => '暂无已授权商户',
+            'no_results' => '没有匹配的商户',
+            'unowned' => '未设置归属管理员（历史记录）',
+            'platform' => '平台直管',
+        ],
         'sections' => [
             'basic_info' => '基本信息',
             'gateway_config' => '网关配置',
@@ -383,6 +401,7 @@ return [
             'fees' => '手续费（USD）',
         ],
         'fields' => [
+            'remark' => '备注',
             'merchant' => '所属商户',
             'assigned_merchants' => '分配给以下商户使用',
             'merchant_or_owner' => '所属商户 / 管理员',

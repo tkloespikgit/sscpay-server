@@ -5,6 +5,7 @@ namespace Tests\Feature\Filament;
 use App\Filament\Resources\MerchantResource\Pages\EditMerchant;
 use App\Filament\Resources\MerchantResource\RelationManagers\PaymentSettingsRelationManager;
 use App\Models\Merchant;
+use App\Models\MerchantPaymentMethod;
 use App\Models\MerchantPaymentSetting;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
@@ -193,7 +194,7 @@ class MerchantPaymentMethodAssignmentTest extends TestCase
         $ownAssigned = $this->method('own-assigned-channel', $owner);
         $ownAssigned->assignedMerchants()->attach($merchant);
         $externalAssigned = $this->method('external-assigned-channel', $otherOwner);
-        $externalAssigned->assignedMerchants()->attach($merchant);
+        MerchantPaymentMethod::withoutEvents(fn () => $externalAssigned->assignedMerchants()->attach($merchant));
         $externalHidden = $this->method('external-hidden-channel', $otherOwner);
         $unowned = $this->method('unowned-channel', $owner);
         PaymentMethod::query()->whereKey($unowned)->update(['owner_id' => null]);
@@ -238,7 +239,7 @@ class MerchantPaymentMethodAssignmentTest extends TestCase
         $actor = $isSuperAdmin ? $this->administrator() : $owner;
         $merchant = $this->merchant(['owner_id' => $owner->id]);
         $method = $this->method('external-channel', $isSuperAdmin ? $actor : $this->administrator());
-        $method->assignedMerchants()->attach($merchant);
+        MerchantPaymentMethod::withoutEvents(fn () => $method->assignedMerchants()->attach($merchant));
 
         Livewire::actingAs($actor)
             ->test(EditMerchant::class, ['record' => $merchant->id])
