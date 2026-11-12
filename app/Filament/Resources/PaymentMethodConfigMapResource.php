@@ -61,10 +61,6 @@ class PaymentMethodConfigMapResource extends Resource
     {
         return $schema->components([
             Section::make()->schema([
-                Radio::make('payment_type')->label(__('crypto.payment_type'))
-                    ->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')])
-                    ->default('fiat')->required()->in(['fiat', 'crypto'])->inline()->live()
-                    ->disabled(fn (?PaymentMethodConfigMap $record): bool => $record !== null)->dehydrated(),
                 TextInput::make('name')
                     ->label(__('admin.payment_method_config_map.fields.name'))
                     ->required()
@@ -76,9 +72,14 @@ class PaymentMethodConfigMapResource extends Resource
                     ->required()
                     ->maxLength(100)
                     ->helperText(__('admin.payment_method_config_map.help.payment_config_tag')),
+                Radio::make('payment_type')->label(__('crypto.payment_type'))
+                    ->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')])
+                    ->default('fiat')->required()->in(['fiat', 'crypto'])->inline()->live()
+                    ->disabled(fn(?PaymentMethodConfigMap $record): bool => $record !== null)->dehydrated(),
                 Toggle::make('is_active')
                     ->label(__('admin.payment_method_config_map.fields.is_active'))
-                    ->default(true),
+                    ->default(true)
+                    ->inline(false)
             ])->columns(2),
 
             Section::make(__('admin.payment_method_config_map.sections.fields'))
@@ -100,8 +101,8 @@ class PaymentMethodConfigMapResource extends Resource
                                 ->options(['text' => __('crypto.text'), 'select' => __('crypto.select')])
                                 ->default('text')->required()->live(),
                             KeyValue::make('options')->label(__('crypto.field_options'))
-                                ->visible(fn (Get $get): bool => $get('type') === 'select')
-                                ->required(fn (Get $get): bool => $get('type') === 'select'),
+                                ->visible(fn(Get $get): bool => $get('type') === 'select')
+                                ->required(fn(Get $get): bool => $get('type') === 'select'),
                             TextInput::make('default')->label(__('crypto.field_default'))->maxLength(1000),
                             Toggle::make('required')
                                 ->label(__('admin.payment_method_config_map.fields.field_required'))
@@ -133,9 +134,9 @@ class PaymentMethodConfigMapResource extends Resource
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListPaymentMethodConfigMaps::route('/'),
+            'index'  => Pages\ListPaymentMethodConfigMaps::route('/'),
             'create' => Pages\CreatePaymentMethodConfigMap::route('/create'),
-            'edit' => Pages\EditPaymentMethodConfigMap::route('/{record}/edit'),
+            'edit'   => Pages\EditPaymentMethodConfigMap::route('/{record}/edit'),
         ];
     }
 

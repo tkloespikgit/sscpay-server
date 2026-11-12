@@ -383,7 +383,7 @@
 
 HMAC 校验仅证明回调来源，不能证明交易最终到账。回调先校验请求大小、环境密钥、原始 body 签名及限定的 JSON 空白兼容签名，再按本地监控绑定商户，保存摘要与白名单线索到可靠收件箱；不信任回调商户 ID，不保存任意原始数据，不直接写余额或订单已支付事实。已取消／旧代次的有效线索仍接受。第三批未实现核验与消费；第四批以太坊进展见 [D-36](#d-36-以太坊规范链核验与冻结确认策略)，其他链和订单通知编排仍待实现。
 
-即时订阅到期不等于可以安全退订：必须有新鲜连续历史扫描及补查覆盖证明，并无待核验收件或未确认事件。缺少任一条件就保留订阅，避免为节约 Credits 失去迟到款发现能力。重新订阅只在有效报价、恢复次数和补查条件满足时创建新代次。当前无真实历史扫描器，不能手工伪造检查点来启用收款或退订。后台必要参数以补缺 Seeder 初始化，默认留空／关闭，HMAC 配置使用专用 API Key 并与其已有回调约定一致。
+即时订阅到期不等于可以安全退订：必须有新鲜连续历史扫描及补查覆盖证明，并无待核验收件或未确认事件。缺少任一条件就保留订阅，避免为节约 Credits 失去迟到款发现能力。重新订阅只在有效报价、恢复次数和补查条件满足时创建新代次。第三批当时无真实历史扫描器，不能手工伪造检查点来启用收款或退订。后台必要参数当时以补缺 Seeder 留空／关闭初始化；该初值策略已由 [D-42](#d-42-区块链系统配置随部署迁移初始化) 替代，收款开关仍关闭。HMAC 配置使用专用 API Key 并与其已有回调约定一致。
 
 **依据：** [监控服务](../app/Services/CryptoAddressMonitorService.php)、[订阅客户端](../app/Services/TatumSubscriptionClient.php)、[验签](../app/Support/TatumWebhookSignature.php)、[回调收件](../app/Services/TatumWebhookService.php)、[维护命令](../app/Console/Commands/MaintainCryptoSubscriptions.php)、[监控测试](../tests/Feature/CryptoAddressMonitorTest.php)、[回调测试](../tests/Feature/TatumWebhookTest.php)、[配置测试](../tests/Feature/CryptoSettingsTest.php)。具体设置与未完成项见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。
 
@@ -472,3 +472,13 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 `crypto_payments.reconcile` 与查看权限独立，还要求平台身份、当前商户归属、TOTP、原因及明示确认；商户仅查看。补查操作同样留审计，并保持待复核直至人工确认。不在服务器签名、归集、发退款或验证线下出款；已完成取款的凭证纠错仍与本次收入调整分开。
 
 **依据：** [账务服务](../app/Services/CryptoBalanceService.php)、[证据核对](../app/Services/CryptoPaymentEvidenceService.php)、[后台入口](../app/Filament/Resources/CryptoPaymentReviewResource.php)、[展示](../app/Filament/Support/CryptoOrderDisplay.php)、[汇总](../app/Services/CryptoOrderStatisticsService.php)、[迁移](../database/migrations/2026_11_12_001838_add_crypto_payment_reconciliation.php)、[资金回归测试](../tests/Feature/CryptoPaymentReconciliationTest.php)、[后台与统计测试](../tests/Feature/Filament/CryptoOrderPresentationTest.php)。
+
+## D-42 区块链系统配置随部署迁移初始化
+
+**状态：当前工作区实现，未提交（2026-11-12）。** 用户要求上线执行迁移时一并初始化后台区块链配置，避免仅依赖手工运行 Seeder。本条替代 D-35 的空初值初始化方式，不改变订阅、补查、核验和入账条件。
+
+实现采用七项初始化基线：报价上浮 `0`、报价有效期 `3600` 秒、行情最大年龄 `300` 秒、订阅时长 `7200` 秒、订阅覆盖 `{}`、恢复订阅上限 `3`、扫描健康门槛 `300` 秒。上浮默认 0，不把此前举例的 2% 自动作为商户报价政策；这些数值是本次实现选择，正式启用前仍需按业务和链验证。
+
+新迁移冻结本次初值，通过查询构造器在事务内补缺，并仅填充旧记录的 `NULL`／空字符串，保留非空值、`0` 和已有元数据；提交后逐项清配置缓存。Seeder 使用一致初值，只补缺。迁移不调用可变 Seeder、不持有钱包密钥或 Tatum 凭证、不启用收款，也不重算历史报价和账本。回滚保留配置，避免误删迁移前已有或管理员之后修改的数据。
+
+**依据：** [数据迁移](../database/migrations/2026_11_12_163459_add_crypto_defaults_to_system_configs.php)、[配置 Seeder](../database/seeders/CryptoSettingsSeeder.php)、[迁移测试](../tests/Feature/CryptoSettingsMigrationTest.php)。部署步骤与参数见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。

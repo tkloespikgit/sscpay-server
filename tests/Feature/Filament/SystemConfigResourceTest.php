@@ -36,6 +36,7 @@ class SystemConfigResourceTest extends TestCase
         $this->actingAs($this->superAdmin());
 
         $component = Livewire::test(ListSystemConfigs::class)
+            ->set('tableRecordsPerPage', 50)
             ->assertOk()
             ->assertCanSeeTableRecords([$exchange, $custom, $ungrouped, $reservedGroup])
             ->set('activeTab', 'group:exchange')
@@ -114,7 +115,8 @@ class SystemConfigResourceTest extends TestCase
         $this->actingAs($this->superAdmin());
         $action = TestAction::make('edit')->table($config);
 
-        $component = Livewire::test(ListSystemConfigs::class);
+        $component = Livewire::test(ListSystemConfigs::class)
+            ->set('tableRecordsPerPage', 50);
         $table = $component->instance()->getTable();
         $this->assertNull($table->getRecordUrl($config));
         $this->assertNull($table->getAction('edit')->record($config)->getUrl());
@@ -199,6 +201,7 @@ class SystemConfigResourceTest extends TestCase
         $this->actingAs($this->superAdmin());
 
         Livewire::test(ListSystemConfigs::class)
+            ->set('tableRecordsPerPage', 50)
             ->assertCanSeeTableRecords([$ordinary])
             ->assertCanNotSeeTableRecords([$template]);
     }

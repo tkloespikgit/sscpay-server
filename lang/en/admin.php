@@ -20,6 +20,7 @@ return [
         'order_management' => 'Order Management',
         'payment_settings' => 'Payment Settings',
         'finance' => 'Finance',
+        'crypto_finance' => 'Crypto Funds',
         'observer' => 'Observer Accounts',
     ],
 

@@ -21,16 +21,19 @@ class CryptoSettingsTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_seed_leaves_required_production_values_unconfigured_and_preserves_existing_values(): void
+    public function test_seed_supplies_missing_defaults_and_preserves_existing_values(): void
     {
+        SystemConfig::query()->where('config_key', 'like', 'crypto.%')->delete();
         SystemConfig::set('crypto.subscription_ttl_seconds', '1800');
         $this->seed(CryptoSettingsSeeder::class);
         $this->seed(CryptoSettingsSeeder::class);
 
         $this->assertSame('1800', SystemConfig::get('crypto.subscription_ttl_seconds'));
-        $this->assertSame('', SystemConfig::get('crypto.quote_markup_percent'));
-        $this->assertSame('', SystemConfig::get('crypto.quote_ttl_seconds'));
-        $this->assertSame('0', SystemConfig::get('crypto.subscription_reopen_max_renewals'));
+        $this->assertSame('0', SystemConfig::get('crypto.quote_markup_percent'));
+        $this->assertSame('3600', SystemConfig::get('crypto.quote_ttl_seconds'));
+        $this->assertSame('300', SystemConfig::get('crypto.max_market_price_age_seconds'));
+        $this->assertSame('300', SystemConfig::get('crypto.history_scan_interval_seconds'));
+        $this->assertSame('3', SystemConfig::get('crypto.subscription_reopen_max_renewals'));
         $this->assertSame('{}', SystemConfig::get(CryptoSettings::SUBSCRIPTION_OVERRIDES));
         $this->assertSame(7, SystemConfig::query()->where('config_key', 'like', 'crypto.%')->count());
         $this->assertNull(SystemConfig::query()->where('config_key', 'crypto.subscription_ttl_seconds')->sole()->group);

@@ -323,7 +323,7 @@ Tatum Webhook 按 API Key 开启 HMAC，读取 `x-payload-hash`，按官方协�
 
 #### 6.6.1 三类时间分别配置
 
-订阅时长由本系统维护，通过后台调度调用 Tatum 取消接口实现；不依赖未经核实的 Tatum 原生 TTL，也不依赖客户浏览器打开才能执行退订。下列键名为拟定配置，默认时长尚未确定。
+订阅时长由本系统维护，通过后台调度调用 Tatum 取消接口实现；不依赖未经核实的 Tatum 原生 TTL，也不依赖客户浏览器打开才能执行退订。下列为原设计配置，当前已实现键与部署初值见第 6.8 节。
 
 | 配置 | 用途与规则 |
 | --- | --- |
@@ -420,16 +420,25 @@ Tatum Webhook 按 API Key 开启 HMAC，读取 `x-payload-hash`，按官方协�
 
 回调路由为 `POST /api/webhooks/tatum/{environment}/{monitor}`，独立验签、限流且限制请求大小。验签算法参照 [Tatum 官方说明](https://docs.tatum.io/docs/authenticating-notification-webhooks)：先验原始 body，再允许只移除 JSON 字符串外空白的兼容方式，记录使用的模式；不改键顺序、字符串转义或数字表示。已用官方固定样例测试，仍须用实际账号回调联调。只记录 body 摘要及白名单交易线索，按监控代次与摘要去重；交易哈希不等于最终链上经济事件身份。旧代次、已退订地址的迟到回调仍可接收，但不会直接改余额。
 
-`TATUM_SUBSCRIPTIONS_ENABLED` 默认关闭；启用还需独立 HTTPS 的 `TATUM_WEBHOOK_BASE_URL` 及对应环境 HMAC 密钥。后台系统配置增加以下键，由 `CryptoSettingsSeeder` 补缺，不覆盖已有值：
+`TATUM_SUBSCRIPTIONS_ENABLED` 默认关闭；启用还需独立 HTTPS 的 `TATUM_WEBHOOK_BASE_URL` 及对应环境 HMAC 密钥。2026-11-12 新增[配置数据迁移](../database/migrations/2026_11_12_163459_add_crypto_defaults_to_system_configs.php)，普通 `migrate` 即可补齐以下七项，并填充旧 Seeder 留下的 `NULL`／空字符串；已有非空值（包括 `0`）及管理员元数据保留。`CryptoSettingsSeeder` 使用相同初值补缺，仍不覆盖已有记录：
 
 | 配置键（均以 `crypto.` 开头） | 保存规则／初值 |
 | --- | --- |
-| `quote_markup_percent` | 0–100，最多四位小数，保留十进制字符串；初始空，需明确配置 |
-| `quote_ttl_seconds`、`max_market_price_age_seconds` | 正整数秒，最大 9,999,999；初始空 |
-| `subscription_ttl_seconds` | 同上；初始空，实际订阅期限覆盖报价截止时间 |
+| `quote_markup_percent` | 0–100，最多四位小数，保留十进制字符串；默认 `0`，不上浮，不自动采用联调示例的 2% |
+| `quote_ttl_seconds` | 正整数秒，最大 9,999,999；默认 `3600`（1 小时） |
+| `max_market_price_age_seconds` | 同上；默认 `300`（5 分钟） |
+| `subscription_ttl_seconds` | 同上；默认 `7200`（2 小时），实际订阅期限覆盖报价截止时间 |
 | `subscription_ttl_overrides` | 初始 `{}`，按受支持的 `网络:资产` 配正整数秒；独立 JSON 对象编辑器，不转成列表 |
-| `subscription_reopen_max_renewals` | 0–999,999，初始 0；设置大于零也不跳过补查和有效期检查 |
-| `history_scan_interval_seconds` | 正整数秒，最大 9,999,999；初始空，用于历史扫描健康门槛 |
+| `subscription_reopen_max_renewals` | 0–999,999，默认 `3`；已有 `0` 保留，需在后台改大才能恢复订阅；不跳过补查和有效期检查 |
+| `history_scan_interval_seconds` | 正整数秒，最大 9,999,999；默认 `300`，用于历史扫描健康门槛，不改变每分钟扫描调度 |
+
+部署新代码并核对目标数据库后执行：
+
+```bash
+php artisan migrate --force --no-interaction
+```
+
+不需要为这七项再执行总 `DatabaseSeeder`／`SystemConfigSeeder`。首次部署仍需按部署步骤初始化区块链权限及支付模板；迁移不创建支付方式、不调用 Tatum、不修改环境变量或既有报价／账务，不自动打开收款开关。Tatum Key、HMAC、回调域名、确认数、创世区块哈希和测试代币合约仍由部署者单独提供并联调。迁移提交后逐项清除配置缓存；回滚本迁移保留配置数据，不删除管理员后续修改的参数。上述默认值是初始化基线，正式收款前仍须按真实链及业务需求验收。
 
 `crypto:maintain-subscriptions --limit=5` 每分钟后台调度，处理有界批次与失败重试。到期退订必须先有新鲜的连续历史扫描检查点、补查覆盖证明，且无待处理回调或未核验／确认事件；条件不满足时保留订阅并记录原因。恢复新代次仍需原报价有效、补查完成及次数许可。第三批当时没有扫描器写入这些证明；第六批已补入扫描器和关闭扫描时禁止退订的保护，实际链上交接仍需联调，见第 6.11 节。
 
@@ -629,7 +638,8 @@ php artisan crypto:maintain-subscriptions --limit=5 --no-interaction
 
 **入口与权限**
 
-- “资金管理 → 加密资产余额”：按商户、网络、资产列出总额／当前取款占用／可申请数量；可跳转该账户入账凭证并发起取款。币数量完整展示到资产精度，不转浮点或统一显示为 USD。
+- 平台后台与商户后台的加密资产页面统一归入“虚拟币资金”，法币页面继续归入“资金管理”。
+- “虚拟币资金 → 加密资产余额”：按商户、网络、资产列出总额／当前取款占用／可申请数量；可跳转该账户入账凭证并发起取款。币数量完整展示到资产精度，不转浮点或统一显示为 USD。
 - “加密入账凭证”：实收、交易服务费、净额、前后总余额、关联订单／付款请求；详情列出原法币、原始汇率、币价、上浮比例和服务费快照。仍保留每单唯一收入凭证。
 - “链上交易明细”：交易哈希、事件／输出位置、订单地址、网络与资产、数量、区块、核验／确认／失效时间、付款请求状态及异常原因；只读，不以“链上确认”代替“已入账”。
 - “加密资产取款”：查看申请、平台审核与人工核销、全部操作记录。各项权限独立：`crypto_finance.view`、`crypto_withdrawals.request`、`crypto_withdrawals.review`、`crypto_withdrawals.confirm`。后两项还要求平台侧身份；普通商户即使获授对应权限也不能审核／核销。商户级管理员只处理当前归属自己的商户，超管跨商户。
@@ -667,7 +677,7 @@ php artisan crypto:maintain-subscriptions --limit=5 --no-interaction
 
 订单列表新增入账资产／网络，净入账显示完整币精度；未记账显示“尚未入账”，不再把法币占位零显示成链上净额。汇率列可展开，详情展示原法币→USD、币价 USD 和付款数量上浮快照。服务费列与筛选汇总按原收入及最新人工处理后的值计算，同资产不同网络分别合计。原币金额、原始汇率 USD 成交额和曾支付笔数保留历史含义，重组后的净额另列；观察者入口不新增真实加密财务明细。
 
-“财务 → 区块链异常款处理”按订单查看历史报价、永久地址、有效期、补查时间和处理审计，支持筛选待复核／少付记录。平台侧操作者必须同时具有 `crypto_finance.view` 和 `crypto_payments.reconcile`，商户级管理员仅处理当前名下商户。提交再查当前身份／权限，要求 TOTP、原因和确认勾选；商户只读。
+“虚拟币资金 → 区块链异常款处理”按订单查看历史报价、永久地址、有效期、补查时间和处理审计，支持筛选待复核／少付记录。平台侧操作者必须同时具有 `crypto_finance.view` 和 `crypto_payments.reconcile`，商户级管理员仅处理当前名下商户。提交再查当前身份／权限，要求 TOTP、原因和确认勾选；商户只读。
 
 处理流程：
 

@@ -18,6 +18,7 @@ return [
         'order_management' => '订单管理',
         'payment_settings' => '支付配置',
         'finance' => '资金管理',
+        'crypto_finance' => '虚拟币资金',
         'observer' => '观察者账户',
     ],
 

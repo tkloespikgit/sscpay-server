@@ -17,7 +17,7 @@ abstract class CryptoFinanceResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return __('admin.nav.finance');
+        return __('admin.nav.crypto_finance');
     }
 
     public static function getModelLabel(): string

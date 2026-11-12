@@ -296,7 +296,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 模型禁止删除监控与回调证据，禁止改写代次身份、已有远端订阅 ID、激活期限和回调证据，外键采用 RESTRICT；当前请求指针不使旧代次失效。过期退订需历史扫描接管且无未处理收件／核验事项，默认缺少扫描证明时不删除远端订阅。API Key 与 HMAC 密钥仅从环境配置读取，不存渠道 JSON 或表内；指纹用于阻止换 Key 后误认远端状态。
 
-`CryptoSettingsSeeder` 补缺七个 `crypto.*` 系统配置，只有空 JSON 对象和恢复次数 0 有初始值，其余必要参数留空，未配置时拒绝相关操作。后台保持上浮比例的十进制字符串，订阅覆盖规则使用 JSON 对象校验。专用命令为 `php artisan db:seed --class=CryptoSettingsSeeder --no-interaction`，具体键与范围见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。总 `SystemConfigSeeder` 已接入这两个补缺 Seeder；已有环境不应为初始化区块链参数而运行可能重设其他配置的总 Seeder。
+[配置数据迁移](../database/migrations/2026_11_12_163459_add_crypto_defaults_to_system_configs.php) 随普通 `migrate` 补齐七个 `crypto.*` 配置，并填充旧 Seeder 留下的 `NULL`／空字符串。初值为上浮 `0`、报价 `3600` 秒、行情最大年龄 `300` 秒、订阅 `7200` 秒、覆盖对象 `{}`、恢复次数 `3`、历史扫描健康门槛 `300` 秒。已有非空值（包括恢复次数 `0`）和元数据保留，更新在同一事务内提交并逐项失效缓存；回滚保留所有配置。`CryptoSettingsSeeder` 同步采用这些初值，仅补缺。后台保持上浮比例的十进制字符串和订阅覆盖对象校验；缺失／非法参数仍拒绝相关操作，不增加运行时兜底。具体键与部署步骤见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。已有环境不需为这七项执行可能重设其他配置的总 Seeder；权限与支付模板仍单独初始化。
 
 第四批 [核验跟踪迁移](../database/migrations/2026_11_11_193729_add_verification_tracking_to_crypto_webhook_receipts.php) 只为收件表增加 `verification_attempts`（默认 0）、`last_checked_at`、`next_attempt_at`、`last_error_code`（均可空）和状态＋下次时间索引。原始投递证据继续不可变；状态为 pending／confirming／verified／ignored／review，最后三者不由正常调度持续轮询，review 留待审核入口实现。迁移 down 会丢失核验重试审计字段，生产优先向前修复。
 
