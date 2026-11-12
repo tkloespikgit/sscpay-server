@@ -135,6 +135,15 @@ class ViewOrder extends ViewRecord
                             OrderSettlement::STATUS_PENDING => 'warning',
                             default => 'gray',
                         }),
+                    TextEntry::make('settlement_due_at')
+                        ->label(__('admin.order.settlement_summary.due_at'))
+                        ->state(function (Order $record): ?string {
+                            $dueAt = $record->settlement?->due_at;
+
+                            return $dueAt?->timezone(config('app.timezone'))->format('Y-m-d H:i:s');
+                        })
+                        ->placeholder(__('admin.order.placeholders.none'))
+                        ->visible(fn (Order $record): bool => $record->settlement?->status === OrderSettlement::STATUS_PENDING),
 
                     // 折算、汇率、汇损和手续费属于平台财务信息。
                     // 商户只看上面的结算模式、结算状态、原始交易金额和实际到账金额。
@@ -161,6 +170,7 @@ class ViewOrder extends ViewRecord
                         ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                 ]),
                 Section::make(__('admin.order.sections.settlement_summary'))
+                    ->visible(fn (Order $record): bool => $record->settlement?->status === OrderSettlement::STATUS_SETTLED)
                     ->schema([
                         TextEntry::make('settlement_summary')
                             ->hiddenLabel()
@@ -614,26 +624,28 @@ class ViewOrder extends ViewRecord
     }
 
     /**
-     * 一笔订单一行：保证金、结算到可提现、结算时间、保证金释放时间。
-     * 已释放时用实际释放时间，否则用计划释放时间。
+     * 已结算订单一行：划入可提现、保证金、实际结算时间。
+     * 有保证金冻结记录时追加释放时间；已释放用实际时间，否则用计划时间。
      */
     private static function settlementSummaryTable(Order $record): HtmlString
     {
         $settlement = $record->settlement;
         $freeze = $record->fundFreezes->sortByDesc('id')->first();
-        $releaseAt = $freeze?->released_at ?? $freeze?->release_at;
         $placeholder = e(__('admin.order.placeholders.none'));
         $cells = [
             __('admin.order.settlement_summary.available') => self::usdCell($settlement?->available_amount, $placeholder),
+            __('admin.order.settlement_summary.reserve') => self::usdCell($settlement?->reserve_amount, $placeholder),
             __('admin.order.settlement_summary.settled_at') => filled($settlement?->settled_at)
                 ? e($settlement->settled_at->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
                 : $placeholder,
-
-            __('admin.order.settlement_summary.reserve') => self::usdCell($settlement?->reserve_amount, $placeholder),
-            __('admin.order.settlement_summary.release_at') => filled($releaseAt)
-                ? e($releaseAt->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
-                : $placeholder,
         ];
+
+        if ($freeze) {
+            $releaseAt = $freeze->released_at ?? $freeze->release_at;
+            $cells[__('admin.order.settlement_summary.release_at')] = filled($releaseAt)
+                ? e($releaseAt->timezone(config('app.timezone'))->format('Y-m-d H:i:s'))
+                : $placeholder;
+        }
         $headers = '';
         $values = '';
 

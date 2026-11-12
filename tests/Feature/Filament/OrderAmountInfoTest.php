@@ -13,6 +13,7 @@ use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\FontWeight;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\Concerns\CreatesTestOrders;
@@ -88,6 +89,59 @@ class OrderAmountInfoTest extends TestCase
         $this->assertStringContainsString(__('admin.order.settlement_summary.release_at'), $html);
     }
 
+    public function test_pending_settlement_shows_due_time_without_settled_amounts(): void
+    {
+        $dueAt = Carbon::parse('2026-11-20 15:30:00', (string) config('app.timezone'));
+        $order = $this->amountOrder('immediate', OrderSettlement::STATUS_PENDING);
+        $user = User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]);
+
+        $html = Livewire::actingAs($user)
+            ->test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->html();
+
+        $this->assertStringContainsString(__('settlement.statuses.pending'), $html);
+        $this->assertStringContainsString(__('admin.order.settlement_summary.due_at'), $html);
+        $this->assertStringContainsString($dueAt->format('Y-m-d H:i:s'), $html);
+        $this->assertStringNotContainsString(__('admin.order.sections.settlement_summary'), $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.available'), $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.reserve'), $html);
+        $this->assertStringNotContainsString('$87.20', $html);
+        $this->assertStringNotContainsString('$10.00', $html);
+    }
+
+    public function test_unsettled_order_hides_settlement_time_and_summary(): void
+    {
+        $order = $this->amountOrder('shipped', OrderSettlement::STATUS_WAITING_SHIPMENT);
+        $user = User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]);
+
+        $html = Livewire::actingAs($user)
+            ->test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->html();
+
+        $this->assertStringContainsString(__('settlement.statuses.waiting_shipment'), $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.due_at'), $html);
+        $this->assertStringNotContainsString(__('admin.order.sections.settlement_summary'), $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.available'), $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.reserve'), $html);
+    }
+
+    public function test_settled_order_without_reserve_hides_release_time(): void
+    {
+        $order = $this->amountOrder('immediate', withFreeze: false);
+        $user = User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]);
+
+        $html = Livewire::actingAs($user)
+            ->test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->html();
+
+        $this->assertStringContainsString(__('admin.order.sections.settlement_summary'), $html);
+        $this->assertStringContainsString(__('admin.order.settlement_summary.available'), $html);
+        $this->assertStringContainsString(__('admin.order.settlement_summary.reserve'), $html);
+        $this->assertStringContainsString('$87.20', $html);
+        $this->assertStringContainsString('$10.00', $html);
+        $this->assertStringNotContainsString(__('admin.order.settlement_summary.release_at'), $html);
+    }
+
     public function test_missing_settlement_mode_has_no_mode_label(): void
     {
         $order = $this->amountOrder(null);
@@ -104,9 +158,12 @@ class OrderAmountInfoTest extends TestCase
         $this->assertStringNotContainsString(__('admin.order.settlement_modes.shipped'), $page->html());
     }
 
-    private function amountOrder(?string $mode): Order
-    {
-        $order = $this->makeOrder('AMOUNT-'.($mode ?? 'none'), 'M-AMOUNT-'.($mode ?? 'none'), [
+    private function amountOrder(
+        ?string $mode,
+        string $status = OrderSettlement::STATUS_SETTLED,
+        bool $withFreeze = true,
+    ): Order {
+        $order = $this->makeOrder('AMOUNT-'.($mode ?? 'none').'-'.$status.($withFreeze ? '' : '-nofreeze'), 'M-AMOUNT-'.($mode ?? 'none').'-'.$status.($withFreeze ? '' : '-nofreeze'), [
             'settlement_mode' => $mode,
             'settlement_amount' => '97.20',
             'fee_percent_amount' => '2.50',
@@ -116,32 +173,36 @@ class OrderAmountInfoTest extends TestCase
             'surcharge_percent' => '2.0000',
             'surcharge_fee' => '2.00',
         ]);
+        $settled = $status === OrderSettlement::STATUS_SETTLED;
+        $waiting = $status === OrderSettlement::STATUS_WAITING_SHIPMENT;
         OrderSettlement::create([
             'merchant_id' => $order->merchant_id,
             'order_id' => $order->id,
             'amount' => '97.20',
-            'remaining_amount' => '0.00',
-            'mode' => 'immediate',
-            'cycle_days' => 0,
+            'remaining_amount' => $settled ? '0.00' : '97.20',
+            'mode' => $mode ?? 'immediate',
+            'cycle_days' => $waiting ? 7 : 0,
             'reserve_percent' => '0',
             'reserve_days' => 0,
-            'status' => OrderSettlement::STATUS_SETTLED,
-            'reserve_amount' => '10.00',
-            'available_amount' => '87.20',
-            'started_at' => now(),
-            'due_at' => now(),
-            'settled_at' => now(),
+            'status' => $status,
+            'reserve_amount' => $settled ? '10.00' : '0.00',
+            'available_amount' => $settled ? '87.20' : '0.00',
+            'started_at' => $waiting ? null : Carbon::parse('2026-11-13 15:30:00', (string) config('app.timezone')),
+            'due_at' => $waiting ? null : Carbon::parse('2026-11-20 15:30:00', (string) config('app.timezone')),
+            'settled_at' => $settled ? Carbon::parse('2026-11-18 09:00:00', (string) config('app.timezone')) : null,
         ]);
-        MerchantFundFreeze::create([
-            'merchant_id' => $order->merchant_id,
-            'order_id' => $order->id,
-            'amount' => '10.00',
-            'remaining_amount' => '10.00',
-            'status' => MerchantFundFreeze::STATUS_FROZEN,
-            'reason' => 'rolling reserve',
-            'frozen_at' => now(),
-            'release_at' => now()->addDays(30),
-        ]);
+        if ($withFreeze && $settled) {
+            MerchantFundFreeze::create([
+                'merchant_id' => $order->merchant_id,
+                'order_id' => $order->id,
+                'amount' => '10.00',
+                'remaining_amount' => '10.00',
+                'status' => MerchantFundFreeze::STATUS_FROZEN,
+                'reason' => 'rolling reserve',
+                'frozen_at' => now(),
+                'release_at' => now()->addDays(30),
+            ]);
+        }
 
         return $order;
     }

@@ -905,6 +905,7 @@ return [
         'settlement_summary' => [
             'reserve' => 'Reserve',
             'available' => 'Settled to Withdrawable',
+            'due_at' => 'Settlement Time',
             'settled_at' => 'Settled At',
             'release_at' => 'Reserve Release At',
         ],
