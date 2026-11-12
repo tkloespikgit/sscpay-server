@@ -87,6 +87,7 @@ auto_redirect 关闭：302 跳转到 /c/{slug}/payment，展示 orders.pay_url �
 ```
 
 - **手机号**用 libphonenumber 按国家规则校验，必须带 `+` 国家码，落库前归一化成 E.164。
+- **邮箱**与支付插件的 WordPress `is_email()` 使用同一套格式：整段至少 6 个字符，域名必须有点，本地部分和域名只允许插件接受的字符。收款页点付款时先拦住；服务端在写入订单前再查一次。不查询域名能否收信。
 - **收货地址**接了 Google Places 自动填充，国家取 `short_name`（ISO alpha-2）；`state` 按 PayPal `admin_area_1` 的国家规则转换，`city` 按 `admin_area_2` 的城镇语义回填，详见下方地址规则。
 - **页面固定英文**，不跟随 `APP_LOCALE`（面向海外买家）。文案在 `lang/en/checkout.php`。
 
@@ -144,7 +145,7 @@ auto_redirect 关闭：302 跳转到 /c/{slug}/payment，展示 orders.pay_url �
 
 没绑域名的商户，链接会跑在平台默认域名（`APP_URL`）上，功能完全可用。
 
-收款链接还可以单独填写商户自己的 Google Maps 浏览器 Key。填写后收款页使用 Google Places 地址建议；不填写时使用国家、省州、城市联动选择。联动地区数据由本站向 CountriesNow 查询并缓存一天，服务不可用或地区缺失时客户仍可手动填写省州和城市。浏览器 Key 会公开在页面源码中，商户应在 Google Cloud 按实际收款页域名限制 HTTP referrer。
+收款链接还可以单独填写商户自己的 Google Maps 浏览器 Key。填写后收款页使用 Google Places 地址建议，客户仍可手填；点付款前由浏览器里的 Google 地理编码核对地址，结果须落到街道且国家与所选国家一致，否则停在当前页。不填写时使用国家、省州、城市联动选择。联动地区数据由本站向 CountriesNow 查询并缓存一天，服务不可用或地区缺失时客户仍可手动填写省州和城市。浏览器 Key 会公开在页面源码中，商户应在 Google Cloud 按实际收款页域名限制 HTTP referrer。同一项目需启用 Maps JavaScript API、Places API 和 Geocoding API，并在这把 Key 的 API 限制里包含这三项。Geocoding API 供付款前的街道核对使用；只启用前两项时地址建议仍可用，付款会被拦住。服务端不调用 Google，绕过页面的请求仍只做必填和省州格式校验。
 
 Google 地址检索限定于国家下拉框当前选中的国家，切换国家后同步更新检索范围并清空旧省州、城市、邮编；尚未选择时使用第一个可选国家。这样配置超过 5 个国家时也不会突破 Google 旧版组件的限制。选中结果还会核对国家白名单与当前检索国家。Google 请求固定使用英文，以减少地区名称语言差异；缺少城镇、省州或邮编的结果会清空对应旧值。
 
@@ -155,7 +156,7 @@ Google 地址检索限定于国家下拉框当前选中的国家，切换国家�
 - [CheckoutAddress](../app/Support/CheckoutAddress.php) 与 Google 前端共用 [省州映射数据](../resources/data/paypal-address-states.json)。数据按 2026-10-13 查阅的 PayPal 官方表整理，涵盖 AR、BR、CA、CN、IN、ID、IT、JP、MX、TH、US；澳大利亚另按[澳邮州代码](https://developers.auspost.com.au/content/apis/shipping-and-tracking/partials/request-address-intl.html)处理。官方表未覆盖的国家保留客户输入，不声称有完整地区白名单。
 - 已有映射表的国家必须填写可识别的省州。FormRequest 将合法名称归一化为 PayPal 值并校验；`CheckoutLinkOrderService` 再检查一次，手动填写和直接调用 Service 同样适用。无法匹配的省州需客户纠正，不能猜测简写或绕过校验。该行为覆盖收款链接，不修改商户 API 的原有协议。
 - 未配置 Google Key 时，下拉选项仍来自 CountriesNow，并非 PayPal 省州表：可识别的名称会在提交时转换，但行政层级或名称不一致的选项仍可能被拒绝（例如意大利 region 并非所需 province），需改用手动输入有效省份。城市列表也来自该第三方，当前仅有必填、类型和长度校验，不代表经过 PayPal 地址真实性验证。
-- 本仓库向 WordPress 插件仍发送原有 `state`、`city` 字段，账单与收货地址相同；PayPal 请求由远端插件构造。此处是字段整理和格式校验，不是邮政地址真实性验证，也不保证任意输入地址会通过 PayPal 交易风控。新增/变更省州应核对官方表，更新数据并执行地址测试，不在请求过程中依赖外部地区 API。
+- 本仓库向 WordPress 插件仍发送原有 `state`、`city` 字段，账单与收货地址相同；PayPal 请求由远端插件构造。服务端做字段整理和格式校验。配了 Google Maps 浏览器 Key 时，收款页另在浏览器里核对地址能否被 Google 定位到街道；这不保证地址通过 PayPal 交易风控。新增/变更省州应核对官方表，更新数据并执行地址测试，不在请求过程中依赖外部地区 API。
 
 ---
 

@@ -153,6 +153,91 @@ test('白名单以外、缺失国家及切换国家后的旧结果均不回填',
     }
 });
 
+function verificationContext(geocode) {
+    const elements = Object.fromEntries(['address_line1', 'city', 'state', 'zip', 'country'].map(id => [id, { value: '' }]));
+    elements.address_line1.value = '1600 Amphitheatre Parkway';
+    elements.city.value = 'Mountain View';
+    elements.state.value = 'CA';
+    elements.zip.value = '94043';
+    elements.country.value = 'US';
+    const error = { hidden: true, textContent: '', dataset: { message: 'Address was not confirmed' } };
+    const button = { disabled: false, textContent: 'Pay', dataset: { payLabel: 'Pay', submittingLabel: 'Processing' } };
+    const form = {
+        dataset: {},
+        listeners: {},
+        submitted: 0,
+        addEventListener(name, callback) { this.listeners[name] = callback; },
+        submit() { this.submitted += 1; },
+    };
+    class Geocoder {
+        geocode(request, callback) {
+            geocode.request = request;
+            callback(geocode.results, geocode.status);
+        }
+    }
+    const context = vm.createContext({
+        document: {
+            getElementById: id => ({ 'checkout-form': form, 'checkout-submit': button, 'checkout-address-error': error })[id] || elements[id],
+        },
+        window: { google: { maps: { places: { Autocomplete: class {} }, Geocoder } } },
+        google: { maps: { places: { Autocomplete: class {} }, Geocoder } },
+        Event: class { constructor(type) { this.type = type; } },
+        Promise,
+    });
+    vm.runInContext(script, context);
+    return { form, button, error, geocode, context };
+}
+
+const streetResult = {
+    address_components: [
+        { types: ['street_number'], short_name: '1600' },
+        { types: ['route'], long_name: 'Amphitheatre Parkway' },
+        { types: ['country'], short_name: 'US' },
+    ],
+};
+
+test('手填地址能定位到同一国家的街道时通过核对', async () => {
+    const geocode = { status: 'OK', results: [streetResult] };
+    const { context, geocode: recorded } = verificationContext(geocode);
+    const confirmed = await vm.runInContext('verifyCheckoutAddress()', context);
+    assert.equal(confirmed, true);
+    assert.equal(recorded.request.componentRestrictions.country, 'US');
+    assert.match(recorded.request.address, /1600 Amphitheatre Parkway/);
+});
+
+test('只有城市、国家不符、模糊匹配或 Google 没有结果时不通过', async () => {
+    const cases = [
+        { status: 'OK', results: [{ address_components: [{ types: ['locality'], long_name: 'Mountain View' }, { types: ['country'], short_name: 'US' }] }] },
+        { status: 'OK', results: [{ ...streetResult, address_components: streetResult.address_components.map(component => component.short_name === 'US' ? { ...component, short_name: 'CA' } : component) }] },
+        { status: 'OK', results: [{ ...streetResult, partial_match: true }] },
+        { status: 'ZERO_RESULTS', results: [] },
+    ];
+    for (const geocode of cases) {
+        const { context } = verificationContext(geocode);
+        assert.equal(await vm.runInContext('verifyCheckoutAddress()', context), false);
+    }
+});
+
+test('地址核对失败时停在页面并恢复付款按钮，成功时只提交一次', async () => {
+    const failed = verificationContext({ status: 'ZERO_RESULTS', results: [] });
+    let prevented = 0;
+    failed.form.listeners.submit({ preventDefault() { prevented += 1; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(prevented, 1);
+    assert.equal(failed.form.submitted, 0);
+    assert.equal(failed.button.disabled, false);
+    assert.equal(failed.button.textContent, 'Pay');
+    assert.equal(failed.error.hidden, false);
+    assert.equal(failed.error.textContent, 'Address was not confirmed');
+
+    const confirmed = verificationContext({ status: 'OK', results: [streetResult] });
+    confirmed.form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(confirmed.form.submitted, 1);
+    assert.equal(confirmed.button.disabled, true);
+    assert.equal(confirmed.error.hidden, true);
+});
+
 test('新地址缺少州或邮编时清空旧值；地址框回车不提交表单', () => {
     const { choose, elements } = setup(['US']);
     elements.state.value = 'CA';

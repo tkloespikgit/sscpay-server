@@ -329,7 +329,12 @@
                 <p class="text-xs text-red-600">{{ $message }}</p>
             @enderror
 
+            @if ($googleMapsKey)
+                <p id="checkout-address-error" class="text-xs text-red-600" data-message="{{ __('checkout.validation.address_unconfirmed') }}" hidden></p>
+            @endif
+
             <button type="submit" id="checkout-submit"
+                    data-pay-label="{{ __('checkout.actions.pay') }}"
                     data-submitting-label="{{ __('checkout.actions.submitting') }}"
                     class="w-full rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
                 {{ __('checkout.actions.pay') }}
@@ -350,6 +355,49 @@
             const button = document.getElementById('checkout-submit');
             button.disabled = true;
             button.textContent = button.dataset.submittingLabel;
+        });
+    </script>
+
+    <script data-checkout-email>
+        function checkoutEmailTrim(value, mask) {
+            let start = 0;
+            let end = value.length;
+            while (start < end && mask.includes(value[start])) start += 1;
+            while (end > start && mask.includes(value[end - 1])) end -= 1;
+            return value.slice(start, end);
+        }
+
+        function checkoutEmailAccepted(email) {
+            const byteLength = typeof TextEncoder === 'function' ? new TextEncoder().encode(email).length : email.length;
+            if (typeof email !== 'string' || byteLength < 6 || email.indexOf('@', 1) === -1) return false;
+            const at = email.indexOf('@');
+            const local = email.slice(0, at);
+            const domain = email.slice(at + 1);
+            if (!/^[a-zA-Z0-9!#$%&'*+\/=?^_`{|}~.\-]+$/.test(local)) return false;
+            if (/\.{2,}/.test(domain) || checkoutEmailTrim(domain, ' \t\n\r\0\v.') !== domain) return false;
+            const labels = domain.split('.');
+            if (labels.length < 2) return false;
+            return labels.every((label) => checkoutEmailTrim(label, ' \t\n\r\0\v-') === label && /^[a-z0-9-]+$/i.test(label));
+        }
+
+        document.getElementById('checkout-form').addEventListener('submit', function (event) {
+            const error = document.getElementById('checkout-email-error');
+            if (checkoutEmailAccepted(document.getElementById('email').value)) {
+                if (error) {
+                    error.hidden = true;
+                    error.textContent = '';
+                }
+                return;
+            }
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const button = document.getElementById('checkout-submit');
+            button.disabled = false;
+            button.textContent = button.dataset.payLabel;
+            if (error) {
+                error.hidden = false;
+                error.textContent = error.dataset.message || '';
+            }
         });
     </script>
 
@@ -445,6 +493,72 @@
                 // 下拉里的建议项——拦掉回车的默认行为。
                 input.addEventListener('keydown', function (event) {
                     if (event.key === 'Enter') event.preventDefault();
+                });
+            }
+
+            function checkoutAddressQuery() {
+                return ['address_line1', 'city', 'state', 'zip', 'country']
+                    .map((id) => document.getElementById(id)?.value?.trim())
+                    .filter(Boolean)
+                    .join(', ');
+            }
+
+            function checkoutAddressIsStreetLevel(result, country) {
+                if (!result || result.partial_match) return false;
+                const components = result.address_components || [];
+                const foundCountry = components.find((component) => component.types?.includes('country'));
+                if (!foundCountry || foundCountry.short_name.toUpperCase() !== country) return false;
+
+                return components.some((component) => component.types?.includes('route')
+                    || component.types?.includes('street_number'));
+            }
+
+            function verifyCheckoutAddress() {
+                const country = document.getElementById('country')?.value?.trim().toUpperCase();
+                const street = document.getElementById('address_line1')?.value?.trim();
+                const Geocoder = window.google?.maps?.Geocoder;
+                if (!country || !street || !Geocoder) return Promise.resolve(false);
+
+                return new Promise((resolve) => {
+                    new Geocoder().geocode({
+                        address: checkoutAddressQuery(),
+                        componentRestrictions: { country },
+                    }, (results, status) => {
+                        resolve(status === 'OK' && (results || []).some((result) => checkoutAddressIsStreetLevel(result, country)));
+                    });
+                });
+            }
+
+            const checkoutForm = document.getElementById('checkout-form');
+            if (checkoutForm) {
+                checkoutForm.addEventListener('submit', function (event) {
+                    if (checkoutForm.dataset.addressChecking === '1') {
+                        event.preventDefault();
+                        return;
+                    }
+                    event.preventDefault();
+                    checkoutForm.dataset.addressChecking = '1';
+                    const button = document.getElementById('checkout-submit');
+                    const error = document.getElementById('checkout-address-error');
+                    button.disabled = true;
+                    button.textContent = button.dataset.submittingLabel;
+                    if (error) {
+                        error.hidden = true;
+                        error.textContent = '';
+                    }
+                    verifyCheckoutAddress().catch(() => false).then((confirmed) => {
+                        checkoutForm.dataset.addressChecking = '';
+                        if (!confirmed) {
+                            button.disabled = false;
+                            button.textContent = button.dataset.payLabel;
+                            if (error) {
+                                error.hidden = false;
+                                error.textContent = error.dataset.message || '';
+                            }
+                            return;
+                        }
+                        checkoutForm.submit();
+                    });
                 });
             }
         </script>

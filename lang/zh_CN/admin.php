@@ -907,7 +907,8 @@ return [
         ],
         'settlement_summary' => [
             'reserve' => '保证金',
-            'available' => '可用余额',
+            'available' => '结算到可提现',
+            'due_at' => '结算时间',
             'settled_at' => '结算时间',
             'release_at' => '释放时间',
         ],

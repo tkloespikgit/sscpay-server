@@ -42,4 +42,7 @@
             <p class="mt-1.5 text-xs text-slate-500">{{ $help }}</p>
         @endif
     @enderror
+    @if ($name === 'email')
+        <p id="checkout-email-error" class="mt-1.5 text-xs text-red-600" data-message="{{ __('checkout.validation.email_invalid') }}" hidden></p>
+    @endif
 </div>
