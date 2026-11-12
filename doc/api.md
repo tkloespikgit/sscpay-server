@@ -259,9 +259,11 @@ POST {BASE_URL}/api/order/create
 |---|---|
 | `order_no` | 系统订单号 |
 | `payment_link_token` / `payment_url` | 托管收银页地址，把用户导向 `payment_url` 即可完成支付引导 |
-| `pay_url` | 支付网关插件返回的收银台地址。新单正常建单成功后返回；幂等请求若命中已离开待支付流程且缺少链接的订单，可能为空，应结合 `status` 处理 |
-| `converted_currency` / `converted_amount` | 折算为 USD 后的金额（含汇损） |
-| `exchange_rate` | 下单时刻锁定的结算汇率（含汇损） |
+| `pay_url` | 法币渠道为支付网关插件返回的收银台地址；链上渠道为平台本地付款页。新单正常建单成功后返回；历史单可能为空，应结合 `status` 处理 |
+| `converted_currency` / `converted_amount` | USD 金额；法币渠道含汇损，链上渠道为原始汇率的 USD 参考值，不代表 USD 余额入账 |
+| `exchange_rate` | 下单时刻锁定的汇率；法币渠道含汇损，链上渠道等于原始汇率 |
+| `payment_type` | `fiat` 或 `crypto`；查询接口同样返回 |
+| `crypto_payment` | 仅链上渠道返回的付款准备状态和当前报价，详见下文；查询接口同样返回 |
 | `payment_method` | **订单锁定的唯一支付方式**，后续重试沿用原渠道，不重新选择；若原订单指定了 `payment_method_key`，这里返回该指定渠道 |
 | `status` | 兼容状态：本地 `pending_settlement` 返回 `paid`，其余状态原样返回；新单通常为 `pending`，幂等请求可能返回已收款或售后状态 |
 | `order_status` | 本地真实订单主状态，包含新增的 `pending_settlement`；见下方状态枚举 |
@@ -271,6 +273,8 @@ POST {BASE_URL}/api/order/create
 应用可在后台开启自动折扣（默认关闭）：按请求 `amount` 的原币种金额，不超过 200 随机减 0.01～0.10，超过 200 随机减 0.01～0.50；极小金额至少保留 0.01，不足减免时跳过。请求仍提交原始金额与原始折扣，服务端首次建单时增加折扣并减少实际应付金额。响应中的折算金额、订单查询及支付通知中的金额反映折扣后的实际付款金额。重试仍提交原始请求金额，服务端复用首次折扣，不重新随机。
 
 ### 幂等性
+
+链上扩展（默认关闭，测试链与生产验收后才启用）：请求金额、签名和商户单号语义不变。由支付组或已授权的 `payment_method_key` 锁定网络／资产；指定链上渠道时，三个回跳 URL 必须与本次应用的 `website` 同域。`crypto_payment` 包括 `state/message/request_id/can_requote/network/asset/due_amount/expires_at/markup_percent/price_usd/price_at/address`，已有报价时另含 `received_amount/confirmed_amount/remaining_amount`。币数量均为十进制字符串，不能转浮点参与账务。仅 `state=ready` 时 `address` 可用，其余状态为 null；初次响应通常为 `checking`，代表后台准备中，不代表付款已成功。其他状态包括 `expired/confirming/partial/review/paid/unavailable`。应始终引导客户使用 `payment_url`，不要永久缓存地址或将过期报价继续显示为可支付；重提建单接口不会自动重新报价。
 
 `merchant_order_no` 是商户内的幂等键。同一 `merchant_order_no` 重复提交时先核对币种和原始请求应付金额；不一致返回 `409 ORDER_DETAILS_CONFLICT`，不修改原订单或请求远端。已有支付链接、已收款或已离开 `pending/failed` 时返回订单当前结果。只有无支付链接、未收款的 `pending/failed` 订单会补建：
 

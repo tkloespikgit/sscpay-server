@@ -12,6 +12,7 @@ use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
 use App\Models\Scopes\MerchantScope;
 use App\Models\User;
+use App\Services\CryptoPaymentConfigurationService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\PaymentMethodMerchantAssignmentService;
@@ -21,6 +22,7 @@ use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\RestoreAction;
 use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -194,6 +196,20 @@ class PaymentMethodResource extends Resource
                             'unique' => __('admin.payment_method.validation.method_code_duplicate'),
                         ]),
                     TextInput::make('method_name')->label(__('admin.payment_method.fields.method_name'))->required()->maxLength(50),
+                    Radio::make('payment_type')
+                        ->label(__('crypto.payment_type'))
+                        ->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')])
+                        ->default('fiat')->required()->in(['fiat', 'crypto'])->inline()->live()
+                        ->disabled(fn (?PaymentMethod $record): bool => $record !== null)
+                        ->dehydrated()
+                        ->afterStateUpdated(function (Set $set): void {
+                            $set('config_map_id', null);
+                            $set('config', []);
+                        })
+                        ->columnSpanFull(),
+                    Placeholder::make('crypto_configuration_help')->hiddenLabel()
+                        ->content(__('crypto.configuration_help').' '.__('crypto.public_derivation_help'))
+                        ->visible(fn (Get $get): bool => $get('payment_type') === 'crypto')->columnSpanFull(),
                     TextInput::make('display_name')
                         ->label(__('admin.payment_method.fields.display_name'))
                         ->helperText(__('admin.payment_method.help.display_name'))
@@ -201,10 +217,12 @@ class PaymentMethodResource extends Resource
 
                     Toggle::make('is_active')->label(__('admin.payment_method.fields.is_active'))->default(true)->inline(false),
                     Toggle::make('sync_logistics')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.sync_logistics'))
                         ->default(true)
                         ->inline(false),
                     Toggle::make('allow_returned_source')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.allow_returned_source'))
                         ->helperText(__('admin.payment_method.help.allow_returned_source'))
                         ->default(true)
@@ -220,6 +238,7 @@ class PaymentMethodResource extends Resource
                         ->columnSpanFull(),
 
                     TextInput::make('domain')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.domain'))
                         ->placeholder('https://example.com')
                         ->required()
@@ -234,11 +253,13 @@ class PaymentMethodResource extends Resource
                         ])->columnSpanFull(),
 
                     TextInput::make('domain_client_id')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.domain_client_id'))
                         ->placeholder('ck_xxxxxxxx')
                         ->required()
                         ->maxLength(255),
                     TextInput::make('domain_client_sk')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.domain_client_sk'))
                         ->placeholder('cs_xxxxxxxx')
                         ->required()
@@ -250,6 +271,7 @@ class PaymentMethodResource extends Resource
                     // 不再作为可编辑字段展示。
 
                     Select::make('product_match_mode')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.product_match_mode'))
                         // 选项来自系统配置 payment.product_match_modes（见 PaymentMethod::supportedProductMatchModes()）
                         ->options(fn () => static::matchModeOptions())
@@ -257,9 +279,11 @@ class PaymentMethodResource extends Resource
                         ->columnSpanFull()
                         ->required(),
                     TextInput::make('invoice_prefix')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.invoice_prefix'))
                         ->maxLength(50),
                     TextInput::make('virtual_product_prefix')
+                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.virtual_product_prefix'))
                         ->maxLength(50),
                     TextInput::make('order_no_prefix')
@@ -291,20 +315,29 @@ class PaymentMethodResource extends Resource
                     ->schema([
                         Select::make('config_map_id')
                             ->label(__('admin.payment_method.fields.config_map'))
-                            ->options(fn () => PaymentMethodConfigMap::query()->where('is_active',
-                                true)->pluck('name',
-                                    'id'))
+                            ->options(fn (Get $get) => PaymentMethodConfigMap::query()->where('is_active', true)
+                                ->where('payment_type', $get('payment_type') ?? 'fiat')->pluck('name', 'id'))
+                            ->required(fn (Get $get): bool => $get('payment_type') === 'crypto')
                             ->searchable()
                             ->live()
                             ->helperText(__('admin.payment_method.help.config_map'))
                             // 换了模板之后，上一个模板残留的 config.* 值没有意义，清掉避免脏数据。
-                            ->afterStateUpdated(fn (Set $set) => $set('config', [])),
+                            ->afterStateUpdated(function (Set $set, Get $get): void {
+                                $map = PaymentMethodConfigMap::find($get('config_map_id'));
+                                $defaults = [];
+                                foreach ($map?->fields ?? [] as $field) {
+                                    if (array_key_exists('default', $field)) {
+                                        $defaults[$field['key']] = $field['default'];
+                                    }
+                                }
+                                $set('config', $defaults);
+                            }),
 
                         // 选完模板后动态展示 webhook 地址：域名取自当前表单的 domain，
                         // 路径尾段 {gateway} 用所选模板的 payment_config_tag 替换。
                         Placeholder::make('webhook_url')
                             ->label(__('admin.payment_method.fields.webhook_url'))
-                            ->visible(fn (Get $get) => filled($get('config_map_id')))
+                            ->visible(fn (Get $get) => $get('payment_type') !== 'crypto' && filled($get('config_map_id')))
                             ->content(function (Get $get) {
                                 $configMap = $get('config_map_id')
                                     ? PaymentMethodConfigMap::find($get('config_map_id'))
@@ -325,14 +358,19 @@ class PaymentMethodResource extends Resource
                                 ? PaymentMethodConfigMap::find($get('config_map_id'))
                                 : null;
 
-                            if (! $configMap) {
+                            if (! $configMap || $configMap->payment_type !== ($get('payment_type') ?? 'fiat')) {
                                 return [];
                             }
 
                             return collect($configMap->fields)
-                                ->map(fn (array $field) => TextInput::make('config.'.$field['key'])
-                                    ->label($field['label'])
-                                    ->required((bool) ($field['required'] ?? false)))
+                                ->map(function (array $field) use ($configMap) {
+                                    $component = ($field['type'] ?? 'text') === 'select'
+                                        ? Select::make('config.'.$field['key'])->options($field['options'] ?? [])
+                                        : TextInput::make('config.'.$field['key'])->maxLength(1000);
+
+                                    return $component->label($configMap->payment_type === 'crypto' ? __('crypto.config.'.$field['key']) : $field['label'])
+                                        ->default($field['default'] ?? null)->required((bool) ($field['required'] ?? false));
+                                })
                                 ->all();
                         }),
                     ]),
@@ -462,6 +500,8 @@ class PaymentMethodResource extends Resource
                 return $query;
             })
             ->columns(array_merge($columns, [
+                TextColumn::make('payment_type')->label(__('crypto.payment_type'))->badge()
+                    ->formatStateUsing(fn (string $state): string => $state === 'crypto' ? __('crypto.crypto') : __('crypto.fiat')),
                 TextColumn::make('method_name')->label(__('admin.payment_method.fields.method_name'))->searchable(),
                 TextColumn::make('display_name')->label(__('admin.payment_method.fields.display_name'))->searchable()
                     ->placeholder('—'),
@@ -480,9 +520,10 @@ class PaymentMethodResource extends Resource
                     ->label(__('admin.payment_method.columns.sync_status'))
                     ->exists('siteProducts')
                     ->badge()
-                    ->formatStateUsing(fn (bool $state) => $state
+                    ->formatStateUsing(fn (bool $state, PaymentMethod $record) => $record->payment_type === 'crypto'
+                        ? '—' : ($state
                         ? __('admin.payment_method.sync_statuses.synced')
-                        : __('admin.payment_method.sync_statuses.not_synced'))
+                        : __('admin.payment_method.sync_statuses.not_synced')))
                     ->color(fn (bool $state) => $state ? 'success' : 'gray')
                     ->action(static::viewSyncStatusAction()),
                 TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
@@ -617,6 +658,10 @@ class PaymentMethodResource extends Resource
             ? PaymentMethodConfigMap::find($data['config_map_id'])
             : null;
 
+        if ($record->payment_type !== 'fiat' || ($data['payment_type'] ?? 'fiat') !== 'fiat' || $configMap?->payment_type === 'crypto') {
+            return ['success' => false, 'reason' => 'not_applicable'];
+        }
+
         if (! $configMap || blank($configMap->payment_config_tag)) {
             return ['success' => false, 'reason' => 'missing_tag'];
         }
@@ -672,6 +717,11 @@ class PaymentMethodResource extends Resource
      */
     public static function syncGatewayConfigAndNotify(PaymentMethod $record): void
     {
+        if ($record->payment_type === 'crypto') {
+            Notification::make()->success()->title(__('crypto.saved'))->send();
+
+            return;
+        }
         $result = static::syncGatewayConfig($record);
 
         if ($result['success']) {
@@ -698,11 +748,12 @@ class PaymentMethodResource extends Resource
         return Action::make('syncProducts')
             ->label(__('admin.payment_method.actions.sync_products'))
             ->icon('heroicon-o-arrow-path')
-            ->visible(fn (PaymentMethod $record): bool => ! $record->trashed() && static::canManageRecord($record))
+            ->visible(fn (PaymentMethod $record): bool => $record->payment_type === 'fiat' && ! $record->trashed() && static::canManageRecord($record))
             ->requiresConfirmation()
             ->modalHeading(__('admin.payment_method.actions.sync_products_heading'))
             ->modalDescription(__('admin.payment_method.actions.sync_products_desc'))
             ->action(function (PaymentMethod $record) {
+                abort_unless($record->payment_type === 'fiat' && static::canManageRecord($record), 403);
                 // 旧记录可能尚未补齐站点配置，缺配置时不允许派发。
                 if (blank($record->domain) || blank($record->domain_client_id) || blank($record->domain_client_sk)) {
                     Notification::make()
@@ -880,6 +931,8 @@ class PaymentMethodResource extends Resource
         if ($actor instanceof User && ! $actor->isPlatformStaff()) {
             $data['merchant_id'] = $actor->merchant_id;
         }
+
+        $data = app(CryptoPaymentConfigurationService::class)->validate($data, $record);
 
         if (! static::canManageFinancialSettings($record)) {
             return Arr::except($data, MerchantPaymentSetting::FINANCIAL_FIELDS);

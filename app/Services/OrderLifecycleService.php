@@ -12,7 +12,7 @@ final class OrderLifecycleService
 {
     public function normalStatus(Order $order): string
     {
-        if ($order->settlement_mode === null) {
+        if ($order->payment_type === 'crypto' || $order->settlement_mode === null) {
             if ($order->status === 'completed' || $order->normal_status === 'completed') {
                 return 'completed';
             }

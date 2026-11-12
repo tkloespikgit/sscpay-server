@@ -4,6 +4,7 @@ namespace App\Filament\Support;
 
 use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
+use App\Support\CryptoSettings;
 use App\Support\OrderStatusColor;
 use Closure;
 use Illuminate\Support\Arr;
@@ -14,7 +15,7 @@ class SystemConfigForm
 {
     public static function fill(array $data, SystemConfig $record): array
     {
-        if ($record->config_key === OrderStatusColor::CONFIG_KEY) {
+        if ($record->config_key === OrderStatusColor::CONFIG_KEY || CryptoSettings::isObjectKey($record->config_key)) {
             $raw = $data['config_value'] ?? '{}';
             $decoded = json_decode($raw);
             $data['value_json_object'] = $decoded instanceof stdClass
@@ -42,6 +43,9 @@ class SystemConfigForm
      */
     public static function save(array $data, SystemConfig $record, string $statePath = 'data'): array
     {
+        if (CryptoSettings::isObjectKey($record->config_key)) {
+            return ['config_value' => CryptoSettings::validatedObject($data['value_json_object'] ?? null, $statePath)];
+        }
         $type = $record->value_type;
         $value = $data['value_'.$type] ?? null;
 
@@ -76,6 +80,10 @@ class SystemConfigForm
      */
     public static function numberRules(?SystemConfig $record): array
     {
+        if (str_starts_with($record?->config_key ?? '', 'crypto.')) {
+            return CryptoSettings::numberRules($record->config_key);
+        }
+
         return match ($record?->config_key) {
             PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY => ['integer', 'min:1', 'max:4294967295'],
             'logistics_tracking.stale_days', 'logistics_tracking.no_delivery_days' => ['integer', 'min:1', 'max:3650'],

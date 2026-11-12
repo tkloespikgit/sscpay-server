@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Validation\ValidationException;
 
 class PaymentMethod extends Model
 {
@@ -83,6 +84,9 @@ class PaymentMethod extends Model
         });
 
         static::updating(function (self $model): void {
+            if ($model->isDirty('payment_type')) {
+                throw ValidationException::withMessages(['payment_type' => __('crypto.validation.type_immutable')]);
+            }
             if ($model->isDirty('is_active') && $model->is_active && $model->getOriginal('is_active') === false) {
                 $model->consecutive_failed_times = 0;
             }
@@ -146,7 +150,10 @@ class PaymentMethod extends Model
         return filled($this->display_name) ? $this->display_name : $this->method_name;
     }
 
+    protected $attributes = ['payment_type' => 'fiat'];
+
     protected $fillable = [
+        'payment_type',
         'merchant_id',
         'method_code',
         'method_name',

@@ -71,6 +71,11 @@ return [
             'finance_view' => 'View balances and transactions',
             'withdrawals_request' => 'Request withdrawals',
             'withdrawals_review' => 'Review withdrawals',
+            'crypto_payments_reconcile' => 'Reconcile crypto payments (platform staff only)',
+            'crypto_finance_view' => 'View crypto balances and chain details',
+            'crypto_withdrawals_request' => 'Request crypto withdrawals',
+            'crypto_withdrawals_review' => 'Review crypto withdrawals (platform staff only)',
+            'crypto_withdrawals_confirm' => 'Confirm manual crypto write-offs (platform staff only)',
             'balance_adjust' => 'Adjust balances',
             'orders_refund' => 'Refund orders',
             'orders_chargeback' => 'Record chargebacks',
@@ -1456,6 +1461,7 @@ return [
             'updated_at' => 'Updated at',
         ],
         'groups' => [
+            'crypto' => 'Blockchain Payments',
             'exchange' => 'Exchange Rate',
             'order' => 'Orders',
             'order_event' => 'Order Events',
@@ -1779,6 +1785,7 @@ return [
     ],
 
     'finance' => [
+        'crypto_order_not_supported' => 'Crypto orders cannot use fiat balance operations.',
         'fields' => [
             'merchant' => 'Merchant',
             'balance' => 'Balance',

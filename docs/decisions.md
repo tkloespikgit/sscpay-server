@@ -350,3 +350,125 @@
 支付方式编辑页移除管理员转交动作并锁定已有商户归属，顶部显示管理员标签；新增最多 5,000 字符的可空备注。原 `PaymentMethodOwnershipService` 保留为无页面入口的内部方法，拒绝会使现有分配跨管理员的转交。按用户后续澄清，编辑页授权放在“所属商户”选择框下的常驻双栏点选面板，不使用弹窗；仅未设置所属商户的系统级支付方式显示，商户自有支付方式隐藏。按名称/ID 搜索并立即保存，主表单不提交已有分配字段。新授权复制商户最新已保存的手续费、保证金和结算默认值，已有独立值不覆盖；明确撤销清理分配、该商户含软删除支付组引用及独立财务配置，重新授权重新初始化。此规则替代 [D-22](#d-22-商户默认财务配置按分配复制) 和 [D-27](#d-27-商户编辑页集中授权系统支付渠道) 中“原支付方式编辑页取消保留配置”的旧约定；直接 Pivot 解除关系仍保留配置。
 
 **依据：** [PaymentMethod](../app/Models/PaymentMethod.php)、[MerchantPaymentMethod](../app/Models/MerchantPaymentMethod.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[PaymentMethodMerchantAssignmentService](../app/Services/PaymentMethodMerchantAssignmentService.php)、[管理员边界测试](../tests/Feature/PaymentMethodAdministratorBoundaryTest.php)。
+
+## D-33 新版区块链基础分阶段接入与精确账务
+
+**状态：当前工作区初始实现，未提交、未开放收款（2026-11-11）。** 用户已从方案讨论进入代码开发。当前仅实现支付类型、永久绑定和独立账务基础，保留法币路由与原订单流程；链上渠道暂不能通过原网关建单。旧 [D-31](#d-31-crypto-payment-amount-mutex) 的金额互斥匹配不恢复。
+
+**口径：** BTC／LTC／ETH／两个网络 USDT 的数量以最小单位整数字符串保存，应用层用 bcmath 校验 uint256 范围并精确计算。v1 报价上浮作用于应付数量并全部归商户；百分比服务费加同价 USD 固定费折币合计后向上取整，形成净额，费用不得耗尽实收。法币两位小数及 D-30 不受影响。比例取值初始限制为服务费 `[0,100)`、报价上浮 `[0,100]`；后续若改舍入规则必须使用新版本，不能回算旧单。
+
+自动账务入口初始仅接受已经由内部核验器确认的事件，累计数量恰好等于应付、事件在请求创建至报价到期内上链且不早于起扫高度；到期后才达到确认条件仍可按冻结报价入账。少付、多付、迟到及重组差异由后续明确处理流程接管，不能用放宽金额或时间匹配来让测试通过。
+
+**边界与影响：** 本条记录第一批基础实现；后续后台配置和只读派生进展见 [D-34](#d-34-链上配置隔离与只读公钥地址分配)。请求仍先为 `preparing`，Tatum 核验器、显式重新报价、可靠记账待办、订单事实／通知编排、取款及本地工具未完成。`CryptoBalanceService` 目前仅记独立账务，不代表完整支付确认服务；未经后续集成不得对外开放。现有法币资金入口对链上订单做服务端拒绝。地址和金融审计不会通过软删除释放唯一性，具体表与 MySQL 待验证项见[数据库第 8 节](database.md#8-新版区块链收款基础当前工作区待集成)。
+
+**依据：** [CryptoQuoteService](../app/Services/CryptoQuoteService.php)、[CryptoPaymentRequestService](../app/Services/CryptoPaymentRequestService.php)、[CryptoBalanceService](../app/Services/CryptoBalanceService.php)、[报价测试](../tests/Feature/CryptoQuoteTest.php)、[基础测试](../tests/Feature/CryptoPaymentFoundationTest.php)。
+
+## D-34 链上配置隔离与只读公钥地址分配
+
+**状态：当前工作区初始实现，未提交、未真实链联调（2026-11-11）。** 按继续开发授权完成后台类型 Radio、文本／下拉模板、配置校验、五类模板补缺、Tatum 行情及公钥地址只读客户端。现有渠道／模板禁止切换类型；链上配置不要求 WordPress 凭证，也不能被自动或手动同步到插件；商户与管理员仍沿用现有管理归属和授权范围。
+
+当前采用 Tatum v3 的公钥地址接口，不增加签名依赖，不调用钱包生成、私钥派生、签名或广播接口。只接收 Base58Check `xpub/tpub`、固定兼容方案及本地独立恢复的索引 0／1 地址；这会向 Tatum 提交扩展公钥，后台已明示。尚未完成实际钱包路径和本地工具的恢复实测，接口响应与两个地址比对不等于本地独立验证了全部派生或网络监听能力。只能使用专用未占用分支；地址历史检查仍是发布付款要求前的必要工作。
+
+技术派生源按链族＋chain code／公钥身份全局去重，多个渠道／商户使用同源时共用计数器，不按钱包归属模式拆账。先在事务中预留索引，再在事务外请求；正常新分配先查恢复索引 0／1，再查目标索引，订单从 2 开始。失败不释放索引，同一分配键重试复用；分配、地址绑定和报价仍独立留审计记录。恢复校验与目标派生的 Credits 均需计入成本，不能沿用只有收款订阅的旧估算。
+
+行情只请求受支持资产的 USD 价格，保留十进制字符串及供应商毫秒时间；按资产共享最多十秒缓存，读缓存时再检查新鲜度，禁止故障时退回旧报价。凭证按正式／测试网络分别从配置环境变量取得，HTTP 超时与安全 GET 重试有界，不跟随重定向；错误不携带凭证、完整公钥 URL 或原始异常链。正式 USDT 合约固定，测试代币需平台白名单，不从名称推断资产身份。
+
+本条记录第二批内部地址／报价准备，未创建真实订阅、不公开可支付页面、不进入法币账务。第三批订阅及 HMAC 的实现边界见 [D-35](#d-35-订阅代次回调线索与保守退订)；链上核验／确认／补查、可靠待办和订单通知仍是后续开放前的必需工作。详见[方案第 3.5 节](blockchain-payment-plan.md#35-当前代码采用的配置与只读派生方式)。
+
+**依据：** [配置校验](../app/Services/CryptoPaymentConfigurationService.php)、[只读客户端](../app/Services/TatumReadClient.php)、[行情缓存](../app/Services/CryptoMarketPriceService.php)、[地址分配](../app/Services/CryptoAddressAllocationService.php)、[后台测试](../tests/Feature/Filament/CryptoPaymentMethodTest.php)、[分配测试](../tests/Feature/CryptoAddressAllocationTest.php)。
+
+## D-35 订阅代次、回调线索与保守退订
+
+**状态：当前工作区第三批实现，未提交、未真实 Tatum 联调（2026-11-11）。** 订阅按请求与代次保存不可变身份，回调 UUID 不跨代次复用；创建前查回、超时再查回，避免盲目重复 POST。远端操作在金融事务外完成，按代次加锁并保留失败与重试状态；API Key 指纹变化阻止继续操作原订阅。
+
+HMAC 校验仅证明回调来源，不能证明交易最终到账。回调先校验请求大小、环境密钥、原始 body 签名及限定的 JSON 空白兼容签名，再按本地监控绑定商户，保存摘要与白名单线索到可靠收件箱；不信任回调商户 ID，不保存任意原始数据，不直接写余额或订单已支付事实。已取消／旧代次的有效线索仍接受。第三批未实现核验与消费；第四批以太坊进展见 [D-36](#d-36-以太坊规范链核验与冻结确认策略)，其他链和订单通知编排仍待实现。
+
+即时订阅到期不等于可以安全退订：必须有新鲜连续历史扫描及补查覆盖证明，并无待核验收件或未确认事件。缺少任一条件就保留订阅，避免为节约 Credits 失去迟到款发现能力。重新订阅只在有效报价、恢复次数和补查条件满足时创建新代次。当前无真实历史扫描器，不能手工伪造检查点来启用收款或退订。后台必要参数以补缺 Seeder 初始化，默认留空／关闭，HMAC 配置使用专用 API Key 并与其已有回调约定一致。
+
+**依据：** [监控服务](../app/Services/CryptoAddressMonitorService.php)、[订阅客户端](../app/Services/TatumSubscriptionClient.php)、[验签](../app/Support/TatumWebhookSignature.php)、[回调收件](../app/Services/TatumWebhookService.php)、[维护命令](../app/Console/Commands/MaintainCryptoSubscriptions.php)、[监控测试](../tests/Feature/CryptoAddressMonitorTest.php)、[回调测试](../tests/Feature/TatumWebhookTest.php)、[配置测试](../tests/Feature/CryptoSettingsTest.php)。具体设置与未完成项见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。
+
+## D-36 以太坊规范链核验与冻结确认策略
+
+**状态：当前工作区第四批实现，未提交，仅模拟 RPC 验证（2026-11-11）。** 核验层先实现 ETH 顶层直接转入及 USDT ERC20，限定 Tatum 正式／Sepolia 固定网关和只读方法。核对 chain ID、交易／收据／规范区块及交易位置，数量由十六进制精确转整数字符串，ERC20 必须匹配冻结合约与正确的 Transfer 事件。ETH 内部转账及 BTC／LTC／TRC20 不由本适配器处理。
+
+确认策略采用 `evm-finalized-v1`：显式配置最小确认数并要求 finalized 覆盖，最后再次查询规范区块防止读取过程中发生切链。请求创建时冻结配置和确认阈值，之后不读取新配置替换旧单标准；缺快照或 finalized 信息就拒绝确认。该策略的等待时长与套餐 RPC 能力仍需真实测试，不默认生产安全阈值。
+
+收件消费独立开关、默认关闭，按请求加锁；HTTP 在事务外，事件和收件状态在商户 → 订单 → 请求 → 收件 → 事件锁序中一起落库。重复线索不重复生成经济事件，错误退避重试；已最终确认的收件不无限轮询。后续冷扫描还须负责持续规范链审计，不能用本阶段的按线索核验代替历史发现或完整重组监控。
+
+规范区块变化会将旧事件标孤块并撤销确认，同身份同金额重新入块可恢复。金额冲突、迟到款及已记账后的规范链异常转审核，不重写金额、不自动反向调整余额；收件核验也不直接更新订单或调用账务。独立入账与安全退订均检查 pending／confirming／review 收件，入账额外拒绝未确认有效事件。完整付款状态／通知和可靠记账编排仍待实现。
+
+**依据：** [只读 RPC 客户端](../app/Services/TatumEvmRpcClient.php)、[以太坊核验](../app/Services/CryptoEvmVerificationService.php)、[消费服务](../app/Services/CryptoReceiptVerificationService.php)、[维护命令](../app/Console/Commands/VerifyCryptoReceipts.php)、[核验测试](../tests/Feature/CryptoEvmVerificationTest.php)、[客户端测试](../tests/Feature/TatumEvmRpcClientTest.php)、[方案第 6.9 节](blockchain-payment-plan.md#69-当前以太坊核验与收件消费第四批未开放收款)。
+
+## D-37 UTXO 原始数量与 TRON 固化收据
+
+**状态：当前工作区第五批实现，未提交，仅模拟接口验证（2026-11-11）。** 延续 [D-36](#d-36-以太坊规范链核验与冻结确认策略) 的只读、冻结策略和收件消费边界，增加 `utxo-canonical-v1` 与 `tron-solidified-v1`。按正式／测试网络冻结确认数和创世区块哈希，默认无值，不在消费时读取当前配置替代旧单网络标准。新适配器只生成核验事件，不发布付款要求或自动记账。
+
+BTC／LTC 金额从原始交易 uint64 字节读取，不从 JSON 小数转换；重算非 witness txid，并核对脚本、规范区块和交易成员，末尾再读链高／区块。输入来源另行核对，订单地址参与花出时，返回该地址的找零不作为新收入。每次最多检查十六个不同历史输入交易；缺少归档权限、coinbase、MWEB、未知序列化和超出预算均保持待核验，不放宽金额或跳过检查。混合自有与外部输入的联合交易不自动拆净额。
+
+TRC20 核对 Base58Check、冻结 USDT 合约、raw_data_hex 对应交易 ID、规范区块／时间／成员及交易执行状态；仅解析合约 Transfer 日志。FullNode 可查不等于最终确认，必须满足冻结深度及 Solidity 同区块／同收据的固化证据，再复查规范块。原生 TRX 燃料补充、其他合约、转出、自转和零额不计入 USDT。
+
+事件继续复用现有唯一约束：UTXO 位置 `vout:{索引}`，TRC20 位置 `log:{交易内索引}`。共享消费锁期限十分钟，覆盖有界历史输入请求；HTTP 仍在金融事务外，失败记录固定错误码并退避。没有新增迁移、依赖或真实钱包数据。历史发现、持续规范链审计、ETH 内部转入和完整付款／账务编排仍待实现；测试通过不等于正式／测试网络已联调。
+
+**依据：** [链查询客户端](../app/Services/TatumChainReadClient.php)、[UTXO 核验](../app/Services/CryptoUtxoVerificationService.php)、[原始解码](../app/Support/CryptoUtxoTransaction.php)、[TRON 核验](../app/Services/CryptoTronVerificationService.php)、[地址校验](../app/Support/CryptoTronAddress.php)、[策略快照](../app/Support/CryptoVerificationPolicy.php)、[UTXO 测试](../tests/Feature/CryptoUtxoVerificationTest.php)、[TRON 测试](../tests/Feature/CryptoTronVerificationTest.php)、[客户端测试](../tests/Feature/TatumChainReadClientTest.php)、[方案第 6.10 节](blockchain-payment-plan.md#610-btcltc-与-trc20-核验第五批未开放收款)。
+
+
+## D-38 连续历史覆盖与订单原子入账
+
+**状态：当前工作区第六批实现，未提交，仅隔离库与模拟接口验证（2026-11-11）。** 承接 D-35 至 D-37 的可靠线索和核验边界。新历史服务读取完整区块，按网络／下一高度合并最多 500 个请求的发现查询，继续扫描过期、冷地址及已入账请求；不依赖付款页打开、不复用旧地址、不按金额配单。请求游标和发现线索一起提交；只有追平新鲜链头才形成退订接管证明。新增扫描和自动记账开关均默认关闭。
+
+ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整，核验另取交易 trace 并匹配顶层交易。撤销子树、委托调用的表面 value、自转和零值不作为收入。调用路径用作事件位置，顶层仍为 native:0，避免重复叠加。冻结 internal_transfers 能力，旧报价不静默重写。节点返回不是独立多源共识，真实 trace／历史权限必须单独验收。
+
+扫描保存最近 64 个规范块哈希，发现分叉回到共同祖先并重新扫描、撤销孤块确认；超出窗口从起扫点补查并转审核。已记账异常保留原流水和付款事实，不自动伪造法币退款或冲正；人工处理界面仍待实现。链上 UTC 时间在数据库落库前转系统时区，避免无时区字段解释偏移。
+
+`CryptoSettlementService` 在历史新鲜、无待核验或审核、所有有效事件均确认且总额恰好付足时，以商户 → 订单 → 请求锁序，在一个事务内提交净额加密余额、唯一收入流水、请求入账标记、订单付款事实与首次商户通知记录。调用现有 `OrderPaymentStatusService` 的独立链上入口，复用通知及事件；原法币网关拒绝链上订单。消息提交后发送，滞留的同一通知记录可重投；通知协议仍要求幂等。部分付款等待，异常款保留审核原因，资金不跨网络／资产或混入法币。
+
+**限制：** 逐请求游标合并仍有长期数据库写入和分批重复查询成本，全年地址规模吞吐未验证；生产前需要容量／Credits 验收，必要时再演进全网络共享游标。统一建单、付款页、重开报价、取款和本地归集不由本批完成。
+
+**依据：** [历史读取](../app/Services/CryptoBlockHistoryService.php)、[扫描服务](../app/Services/CryptoHistoryScanService.php)、[记账编排](../app/Services/CryptoSettlementService.php)、[状态入口](../app/Services/OrderPaymentStatusService.php)、[新增迁移](../database/migrations/2026_11_11_221155_add_history_tracking_to_crypto_payment_requests.php)、[历史测试](../tests/Feature/CryptoHistoryScanTest.php)、[入账测试](../tests/Feature/CryptoSettlementTest.php)、[方案第 6.11 节](blockchain-payment-plan.md#611-历史补查冷地址与自动入账第六批未开放收款)。
+
+
+## D-39 统一链上下单与可恢复付款页
+
+**状态：当前工作区第七批实现，未提交，默认关闭（2026-11-11）。** 承接 D-33 至 D-38 的附表、独立币账、连续补查与订阅代次规则。用户授权先完成统一下单、付款页、重开补查与显式重新报价；统计、取款与本地归集不在本批范围。
+
+三个建单入口继续复用 `OrderCreationService`，以锁定渠道的 `payment_type` 分流。链上原币法币金额保留，USD 参考值与 `exchange_rate` 用原始汇率，汇损为零；法币手续费／净额写零且不创建法币结算。约定服务费在 `crypto_checkouts.fee_snapshot` 冻结，重新报价只更新币价、数量上浮和有效期，不追随渠道后来修改的费率。指定链上渠道用订单应用 website 校验回跳域名，仍要求渠道授权；法币指定渠道规则不变。
+
+付款链接指向本地页面。GET 只读；受 CSRF、Host、token/IP 限流保护的 POST 保存准备意图，后台有界任务执行外部请求。完整旧历史 → 查回或恢复订阅 → 交接窗口再次补查 → 再核对远端健康和全部订单请求 → 发布地址。持续使用已健康的订阅不会延长期限。缺口或异常时保持不可付款，公开响应不带配置、公钥源或凭证。
+
+过期不会因访问自动换价，须显式 requote 且附当前请求 ID；同一旧报价只允许一个直接后继。创建后继与更新当前指针同事务，派生预留可重试，旧地址永久保留。旧请求出现款项或未核验线索时阻止继续发布；不同请求不合并金额，正常收入依旧订单唯一。webhook 落地同样锁商户→订单→请求，避免绕过报价和记账并发边界。
+
+实现选择：每单最多 50 个报价请求、普通重开 30 秒冷却、准备任务每十秒默认最多 5 个订单；这些是当前代码的资源边界，不是已验证的长期容量承诺。真实测试链、生产 MySQL、浏览器操作及长期吞吐仍待验证；`CRYPTO_CHECKOUT_ENABLED` 默认 false。
+
+**依据：** [统一建单](../app/Services/OrderCreationService.php)、[后台准备](../app/Services/CryptoCheckoutService.php)、[公开展示](../app/Services/CryptoCheckoutPresenter.php)、[保护条件](../app/Support/CryptoCheckoutGuard.php)、[附表迁移](../database/migrations/2026_11_11_232321_create_crypto_checkouts_table.php)、[付款页测试](../tests/Feature/CryptoCheckoutTest.php)、[下单测试](../tests/Feature/CryptoOrderCreationTest.php)、[方案第 6.12 节](blockchain-payment-plan.md#612-统一下单付款页与重开第七批默认关闭)。
+
+
+## D-40 独立资产后台与人工取款核销
+
+**状态：当前工作区第八批实现，未提交（2026-11-12）。** 按用户授权增加后台独立余额、链上交易明细和取款审核；取款只做审核与账务确认，不实际出款。
+
+保留 `crypto_ledger_entries.order_id` 收入唯一约束，另建取款申请与不可修改的 `crypto_withdrawal_events`。两类凭证共同记录资产总额变化及占用，不为复用流水表而放松订单幂等约束。全部币账变动仍由 `CryptoBalanceService` 完成，先锁商户，余额／状态／审计同事务。
+
+申请人确定本金及同资产费用上限；审批保留占用，人工核销扣本金与实际费用并释放余款，不把其他资产 Gas 自动折算扣费。申请人可撤销待审单；平台可驳回，已通过审核的申请须确认未在线下支付后才能释放。重复终态处理不再扣账；已入账交易出现复核或链证据异常时暂停该资产支出，保留释放占用的途径。
+
+新的查看、申请、审核、核销权限独立；审核和核销还要求平台身份及当前商户归属。列表与提交均做隔离，资金操作重新读取账号／权限并复用 TOTP。使用独立账页展示精确币数量，订单列表和聚合统计的币种口径仍待单独调整。
+
+本期仅提供明确标注的人工账务核销，线下凭证没有自动链上真实性验证，不把 completed 解释为系统已出款。实际链交易核验、批量输出分配、异常收入处理与反向纠错不由本批实现。迁移已在隔离 SQLite 测试中执行，生产 MySQL 迁移／并发及真实浏览器仍待验证。
+
+**依据：** [账务入口](../app/Services/CryptoBalanceService.php)、[当前权限与租户过滤](../app/Support/CryptoFinanceAccess.php)、[取款 Resource](../app/Filament/Resources/CryptoWithdrawalResource.php)、[迁移](../database/migrations/2026_11_11_234945_create_crypto_withdrawals_and_events_tables.php)、[资金测试](../tests/Feature/CryptoWithdrawalTest.php)、[后台测试](../tests/Feature/Filament/CryptoFinanceTest.php)、[方案第 9.3 节](blockchain-payment-plan.md#93-当前后台实现第八批仅人工账务核销)。
+
+
+## D-41 区块链订单展示、人工对账与重组欠额
+
+**状态：当前工作区第九批实现，未提交（2026-11-12）。** 用户授权补齐订单列表／汇率／服务费汇总与异常款处理；钱包自动化归集推迟到交易测试完成后。
+
+链上订单保留原法币金额及原始汇率 USD 参考成交额，净入账与服务费使用币数量，网络／资产分别汇总。继续保留 `paidEver()` 的历史口径；冲正不抹去曾支付事实。订单当前币账优先取最近人工接受／调整记录，不把原收入和累计处理后金额重复累加。当前汇总是筛选订单的现值口径，不是已完成的月度服务费账单系统。
+
+保留订单收入唯一、不可修改的原凭证，另追加 `crypto_payment_resolutions`。人工处理按整单收集全部历史付款地址，只接受完整且新鲜的历史证明和已核验、已确认的规范链事件。相同网络／资产可以经平台人工确认汇总；这是对 D-39“不同报价不合并”自动处理边界的显式人工例外，不改变自动入账门槛。非零实收可人工接受少付、迟到、多付；过期订单需同样的明确确认，取消等其他终态不自动恢复。
+
+实现选择：以首次收入的冻结报价计算累计实际收款的百分比费和一次固定费；无原收入时选最早有款报价。人工处理费用不超过实收，全部冲正时一并撤销服务费；确认窗口展示处理后的费用及净额。该选择针对异常处理，不改变普通报价净额必须为正的规则。它是本批实现口径，不代表用户已另外确认费用减免政策。
+
+重组冲正先用未占用余额，不够时形成独立欠额；保持取款占用的授权事实，禁止继续支出。新收入、取消／驳回释放的余额优先抵扣，全部保存欠额前后值。不用失败并留旧余额的方式跳过已取款后的损失，也不擅自把已批准取款标为未出款。
+
+`crypto_payments.reconcile` 与查看权限独立，还要求平台身份、当前商户归属、TOTP、原因及明示确认；商户仅查看。补查操作同样留审计，并保持待复核直至人工确认。不在服务器签名、归集、发退款或验证线下出款；已完成取款的凭证纠错仍与本次收入调整分开。
+
+**依据：** [账务服务](../app/Services/CryptoBalanceService.php)、[证据核对](../app/Services/CryptoPaymentEvidenceService.php)、[后台入口](../app/Filament/Resources/CryptoPaymentReviewResource.php)、[展示](../app/Filament/Support/CryptoOrderDisplay.php)、[汇总](../app/Services/CryptoOrderStatisticsService.php)、[迁移](../database/migrations/2026_11_12_001838_add_crypto_payment_reconciliation.php)、[资金回归测试](../tests/Feature/CryptoPaymentReconciliationTest.php)、[后台与统计测试](../tests/Feature/Filament/CryptoOrderPresentationTest.php)。

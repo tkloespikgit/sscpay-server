@@ -6,6 +6,7 @@ use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Support\CryptoCheckoutGuard;
 use App\Support\OrderTelegramSummary;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -51,6 +52,7 @@ class PaymentService
     {
         $candidates = $group->activePaymentMethods()
             ->forMerchant((int) $group->merchant_id)
+            ->whereIn('payment_methods.payment_type', CryptoCheckoutGuard::enabled() ? ['fiat', 'crypto'] : ['fiat'])
             ->whereNotIn('payment_methods.id', $excludedMethodIds)
             ->get();
 
@@ -63,7 +65,8 @@ class PaymentService
         foreach ($candidates as $method) {
             $stats = $dailyStats[$method->id] ?? ['amount' => 0.0, 'count' => 0];
 
-            if ($this->passesRiskControl($method, $amountUsd, $stats)) {
+            $riskAmount = $method->payment_type === 'crypto' ? (float) ($orderDetails['crypto_amount_usd'] ?? $amountUsd) : $amountUsd;
+            if ($this->passesRiskControl($method, $riskAmount, $stats)) {
                 $passing[] = $method;
             }
         }
@@ -102,6 +105,7 @@ class PaymentService
 
         $eligibleIds = $group->activePaymentMethods()
             ->forMerchant((int) $group->merchant_id)
+            ->whereIn('payment_methods.payment_type', CryptoCheckoutGuard::enabled() ? ['fiat', 'crypto'] : ['fiat'])
             ->pluck('payment_methods.id')
             ->all();
 

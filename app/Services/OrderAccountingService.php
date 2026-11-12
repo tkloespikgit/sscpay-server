@@ -18,6 +18,10 @@ class OrderAccountingService
     /** 在订单锁内记录可靠待办；旧单仅记录本次首次收款或新发生的反向待办，不补历史收入。 */
     public function recordForStatus(Order $order, string $targetStatus, bool $firstPayment = false): void
     {
+        if ($order->payment_type !== 'fiat') {
+            return;
+        }
+
         if (in_array($targetStatus, Order::NEVER_PAID_STATUSES, true)) {
             return;
         }

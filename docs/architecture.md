@@ -1,8 +1,16 @@
 # 系统架构
 
-核对日期：2026-11-11。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
+核对日期：2026-11-12。本文按当前仓库实现整理；基线与旧资料差异见 [开发记录](development-log.md)。入口约定见 [AGENTS.md](../AGENTS.md)，数据语义见 [database.md](database.md)。
 
 ## 1. 系统职责与技术栈
+
+新版区块链收款已接入统一下单和付款页，仍由默认关闭的 `CRYPTO_CHECKOUT_ENABLED` 控制。API、手工下单和公开收款链接共用 `OrderCreationService`：法币渠道继续插件流程，链上渠道保存原始汇率 USD 参考值、独立收款附表及本地付款链接，不准备 WooCommerce 商品。`CryptoCheckoutService` 后台推进公钥派生、报价、历史补查、订阅和交接补查；公开页只提交重开／重新报价意图并读取状态。报价有效时复用原地址，失效后须显式重新报价，新地址与旧地址永久分别绑定。
+
+Tatum 回调、逐块历史线索及 EVM／UTXO／TRON 核验复用前六批服务。`CryptoSettlementService` 将净额加密余额、账本、订单付款事实和首次通知一起提交；同单其他请求有款或补查未完成时阻止自动入账。法币余额与网关状态入口保持隔离。真实 Tatum／钱包、MySQL 并发及长期地址规模尚未验收；订单展示与异常款处理已增加，归集工具与教程网页待完成，不能据模拟测试开放生产收款。边界见[方案第 6.12 节](blockchain-payment-plan.md#612-统一下单付款页与重开第七批默认关闭)。
+
+第八批增加四个共享后台入口：`CryptoAssetBalanceResource`（总额／占用／可申请）、`CryptoLedgerEntryResource`（实收／服务费／净额凭证）、`CryptoChainEventResource`（链上事件及确认／重组状态）、`CryptoWithdrawalResource`（申请／审核／人工核销）。`CryptoFinanceAccess` 按当前账号、权限及商户归属显式过滤，观察者和匿名请求不能读取；`CryptoBalanceService` 是全部加密余额变动入口。申请占用本金与同币种费用上限，审批不扣总额，人工核销扣本金与实际费用并释放余款；每次资金操作复用 TOTP，独立追加 `crypto_withdrawal_events`。本期只记录未经链上验证的线下凭证，不签名、不广播、不实际出款；见[方案第 9.3 节](blockchain-payment-plan.md#93-当前后台实现第八批仅人工账务核销)。
+
+第九批增加 `CryptoOrderDisplay` 和 `CryptoOrderStatisticsService`：订单保留原币价格与 USD 参考成交额，链上净入账、资产／网络、报价汇率及服务费读取独立账本和最新人工处理记录。筛选汇总按网络＋资产分别计算，不把币数量合并到美元或法币余额。`CryptoPaymentReviewResource` 是异常处理入口，`CryptoPaymentEvidenceService` 汇总整单所有历史地址的证据，`CryptoBalanceService::reconcileOrder()` 完成人工接受和冲正。原收入凭证保持不变，`crypto_payment_resolutions` 追加证据快照、操作人、理由与账务前后值；已支出或占用造成的冲正差额记 `debt_units`，后续收入／释放占用抵扣。取款与人工处理均检查当前商户归属、独立权限及 TOTP，仍无签名或出款。详细流程见[方案第 9.4 节](blockchain-payment-plan.md#94-订单展示费用汇总与异常款处理第九批)。
 
 系统连接商户应用、WordPress/WooCommerce 支付站点和管理后台，负责下单路由、支付状态、商户账务、物流、通知、统计与公开收款链接。
 
@@ -24,6 +32,9 @@ flowchart TD
     Checkout --> OC
     OC --> Route[PaymentService 路由与风控]
     OC --> DB[(MySQL 订单与快照)]
+    OC --> Crypto[CryptoCheckoutService 链上准备]
+    Crypto --> LocalPage[本地付款页与后台补查]
+    Crypto --> CryptoLedger[独立加密账本]
     OC --> Items[OrderItemService 商品准备]
     OC --> Gateway[PaymentGatewayService]
     Gateway --> WP[WordPress 支付插件]
@@ -47,6 +58,7 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
+| `/api/webhooks/tatum/{environment}/{monitor}` | `TatumWebhookController` | POST，独立主／测试网 HMAC 与代次 UUID，速率及 64 KiB 限制；默认关闭，仅持久化待核验线索 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
@@ -143,6 +155,10 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 锁只覆盖同一商户订单号，不等于对整个支付渠道做额度预占；租期至少为 `payment_gateway.creation_lock_seconds`（默认 600 秒），并按单渠道 HTTP 重试及原始商品条数的同步建品超时预算向上调整；不再读取 `failover_max_attempts`。写入链接时仍以订单行锁核对当前远端引用和渠道。风控当前统计已成交数据，待支付订单不计负载。首次前三候选随机允许连续碰巧选中同一渠道，不保证逐单轮转、固定进单比例或严格串行化所有渠道订单。
 
+链上渠道使用同一选路与幂等入口，只有全部链上运行开关开启时才加入候选。指定链上渠道仍限定商户授权，三个回跳地址改与订单应用 `website` 比对；指定法币渠道继续比对渠道 `domain`。组内不同资产不会在付款页再切换，建议按网络／资产配置独立支付组。链上订单 `exchange_rate = original_exchange_rate`，汇损字段为零，`converted_amount` 为原汇率 USD 参考值；法币手续费／净额字段为零且 `settlement_mode=NULL`，真正费用和净额在链上请求与账本。
+
+`/payment/{token}` 的链上页面验证平台 Host 与链接有效期，已付款仍可显示结果。`GET /payment/{token}/crypto` 只读状态；同路径 POST 经 CSRF 与独立 token/IP 限流提交 `open` 或 `requote`，必须携带当前 `request_id`。`crypto_checkouts` 保存不可改写费率快照、当前请求和可恢复进度；`crypto:prepare-checkouts` 每十秒分批执行。展示地址前需要所有历史请求补查完整、远端订阅健康、交接补查完成且无款项冲突。页面不输出 xpub、配置或提供商凭证。
+
 ## 4. 支付状态与账务
 
 [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，负责网关事实、接收审计、重复/乱序保护、首次 `paid_at`/`failed_at`、可靠记账及首次支付通知。[OrderLifecycleService](../app/Services/OrderLifecycleService.php) 根据网关、真实结算、有效物流、退款/拒付及活动审核事件推导本地主状态；后台入口不自行拼装状态机。
@@ -151,7 +167,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 `PendingOrderStatusSyncService` 每分钟扫描全平台最近 48 小时创建、`status = pending` 且 `paid_at` 为空的订单，按创建满 30 分钟、90 分钟两个时点逐笔调用 `queryAndApply()`，每单最多自动补查两次。次数与最近领取时间持久化到订单，查询前用符合到期条件与原次数的原子更新领取；缺凭证、远端失败或未知状态也消耗一次，单轮每单最多一次。第一次已离开待支付状态时不再二查；停机错过时点则在 48 小时内分轮补查，实际执行顺延到下一次扫描，不承诺秒级触发。
 
-查询窗口包含 48 小时及 30/90 分钟边界，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔失败继续，命令最终返回非零并记录调度失败日志；手工查询不占用自动补查次数，网关客户端内部连接重试沿用原配置。日志归档仍由 `OrderEventSyncService` 单独负责。
+法币补偿查询显式排除链上订单，后者由区块链扫描与核验任务负责。查询窗口包含 48 小时及 30/90 分钟边界，排除未来创建数据与软删除订单；分批按 ID 遍历，沿用订单锁定渠道（含系统共享、已停用或软删除渠道）。单笔失败继续，命令最终返回非零并记录调度失败日志；手工查询不占用自动补查次数，网关客户端内部连接重试沿用原配置。日志归档仍由 `OrderEventSyncService` 单独负责。
 
 | 行为 | 当前实现 |
 |---|---|
@@ -205,6 +221,11 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `order-events:sync` | 每分钟，防重叠 |
 | `orders:sync-pending-status` | 每分钟扫描，防重叠；最近 48 小时待支付订单在创建满 30/90 分钟各补查一次，最多两次 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
+| `crypto:prepare-checkouts --limit=5` | 每十秒后台处理下单准备／页面重开／显式重新报价；默认关闭，商户与订单锁、订单级缓存互斥及持久重试 |
+| `crypto:maintain-subscriptions --limit=5` | 每分钟、后台、防重叠／多调度节点互斥；默认关闭，订阅代次锁和接管条件仍独立校验 |
+| `crypto:verify-receipts --limit=25` | 每分钟后台消费到期 pending／confirming 收件，默认关闭；请求级锁、批次及启动新核验的 45 秒预算，有界 RPC 超时，最终确认后不持续轮询 |
+| `crypto:scan-history {network} --limit=100` | 八个网络分别每分钟后台运行；同高请求合并读块，连续游标、重组回退、冷地址持续扫描，默认关闭 |
+| `crypto:settle-payments --limit=100` | 每分钟后台处理入账待办；完整覆盖＋核验后原子提交余额／订单／通知，默认关闭 |
 | `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |

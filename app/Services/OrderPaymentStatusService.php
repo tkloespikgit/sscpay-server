@@ -4,9 +4,14 @@ namespace App\Services;
 
 use App\Events\OrderStatusChanged;
 use App\Exceptions\BalanceOperationException;
+use App\Jobs\SendOrderNotificationJob;
+use App\Models\CryptoChainEvent;
+use App\Models\CryptoLedgerEntry;
+use App\Models\CryptoPaymentRequest;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderGatewayStatusEvent;
+use App\Models\OrderNotificationAttempt;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
@@ -64,6 +69,7 @@ class OrderPaymentStatusService
         }
 
         $order = Order::query()->withoutGlobalScopes()
+            ->where('payment_type', 'fiat')
             ->where(fn ($query) => $query->where('gateway_order_no', $sOrderId)
                 ->orWhere(fn ($legacy) => $legacy->whereNull('gateway_order_no')->where('order_no', $sOrderId)))
             ->first();
@@ -163,6 +169,9 @@ class OrderPaymentStatusService
     public function queryAndApply(Order $order): array
     {
         $order->refresh();
+        if ($order->payment_type !== 'fiat') {
+            throw new \DomainException('Blockchain payments must use verified chain evidence.');
+        }
         $gatewayReference = $order->gatewayOrderReference();
         $expectedVersion = (int) $order->gateway_status_version;
         $method = $order->paymentMethodConfig();
@@ -208,6 +217,44 @@ class OrderPaymentStatusService
             'new_status' => $order->status,
             'changed' => $oldStatus !== null,
         ];
+    }
+
+    /** Caller holds merchant/order/request locks and has credited the ledger in this same transaction. */
+    public function confirmCryptoPayment(Order $order, CryptoPaymentRequest $request, CryptoLedgerEntry $ledger, CryptoChainEvent $lastTransfer, bool $acceptExpired = false): void
+    {
+        if (DB::transactionLevel() < 1 || $order->payment_type !== 'crypto' || ! in_array($order->status, $acceptExpired ? ['pending', 'expired'] : ['pending'], true) || $order->paid_at !== null
+            || $request->status !== 'credited' || $request->credited_at === null
+            || (int) $request->merchant_id !== (int) $order->merchant_id || (int) $request->order_id !== (int) $order->id
+            || (int) $ledger->merchant_id !== (int) $order->merchant_id || (int) $ledger->order_id !== (int) $order->id
+            || (int) $ledger->crypto_payment_request_id !== (int) $request->id || $ledger->type !== 'order_paid'
+            || (int) $lastTransfer->crypto_payment_request_id !== (int) $request->id || $lastTransfer->confirmed_at === null) {
+            throw new \DomainException('Crypto payment facts require an atomic confirmed ledger credit.');
+        }
+        $old = $order->status;
+        $order->paid_at = $lastTransfer->block_time;
+        $order->transaction_id = $lastTransfer->transaction_hash;
+        $order->normal_status = $this->lifecycle->normalStatus($order);
+        $order->status = $this->lifecycle->resolve($order);
+        $order->save();
+        $this->notificationService->dispatchInitial($order);
+        $this->adConversionService->dispatchInitial($order);
+        $event = new OrderStatusChanged(clone $order, $old, $order->status, true);
+        DB::afterCommit(fn () => event($event));
+    }
+
+    /** Requeue the same durable notification if a worker/queue failed after the payment transaction committed. */
+    public function recoverCryptoNotification(Order $order): void
+    {
+        if (DB::transactionLevel() < 1 || $order->payment_type !== 'crypto' || $order->paid_at === null) {
+            throw new \DomainException('Notification recovery requires a locked paid crypto order.');
+        }
+        $attempts = OrderNotificationAttempt::query()->forMerchant($order->merchant_id)->where('order_id', $order->id)
+            ->where('notify_type', 'trade_result')->where('status', 'pending')->where('scheduled_at', '<=', now()->subMinutes(5))
+            ->orderBy('id')->limit(5)->lockForUpdate()->get();
+        foreach ($attempts as $attempt) {
+            $attempt->update(['scheduled_at' => now()]);
+            SendOrderNotificationJob::dispatch($attempt->id)->afterCommit();
+        }
     }
 
     /**

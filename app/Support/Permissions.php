@@ -57,6 +57,16 @@ final class Permissions
     // 资金管理（商户级，可分配给角色；超级管理员通过 Gate::before 自动拥有）
     public const FINANCE_VIEW = 'finance.view';               // 查看余额与流水台账
 
+    public const CRYPTO_PAYMENTS_RECONCILE = 'crypto_payments.reconcile';
+
+    public const CRYPTO_FINANCE_VIEW = 'crypto_finance.view';
+
+    public const CRYPTO_WITHDRAWALS_REQUEST = 'crypto_withdrawals.request';
+
+    public const CRYPTO_WITHDRAWALS_REVIEW = 'crypto_withdrawals.review';
+
+    public const CRYPTO_WITHDRAWALS_CONFIRM = 'crypto_withdrawals.confirm';
+
     public const WITHDRAWALS_REQUEST = 'withdrawals.request'; // 发起提现申请
 
     public const WITHDRAWALS_REVIEW = 'withdrawals.review';   // 审核放款 / 驳回提现
@@ -116,6 +126,11 @@ final class Permissions
             self::FUND_FREEZES_CREATE,
             self::FUND_FREEZES_RELEASE,
             self::FINANCE_VIEW,
+            self::CRYPTO_FINANCE_VIEW,
+            self::CRYPTO_PAYMENTS_RECONCILE,
+            self::CRYPTO_WITHDRAWALS_REQUEST,
+            self::CRYPTO_WITHDRAWALS_REVIEW,
+            self::CRYPTO_WITHDRAWALS_CONFIRM,
             self::WITHDRAWALS_REQUEST,
             self::WITHDRAWALS_REVIEW,
             self::BALANCE_ADJUST,

@@ -6,17 +6,22 @@ use App\Models\Order;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 
 /**
  * 付款链接落地页。访问控制依赖 token 不可猜测性 + pending + 未过期。
  */
 class PaymentPageController extends Controller
 {
-    public function show(string $token): View|RedirectResponse
+    public function show(Request $request, string $token, CryptoPaymentPageController $crypto): View|RedirectResponse|Response
     {
+        if (Order::query()->withoutGlobalScopes()->where('payment_link_token', $token)->where('payment_type', 'crypto')->exists()) {
+            return $crypto->show($request, $token);
+        }
         $order = Order::query()
             ->withoutGlobalScopes()
             ->validPaymentLink()
+            ->where('payment_type', 'fiat')
             ->where('payment_link_token', $token)
             ->with(['items', 'merchant'])
             ->first();
@@ -40,6 +45,7 @@ class PaymentPageController extends Controller
         $order = Order::query()
             ->withoutGlobalScopes()
             ->validPaymentLink()
+            ->where('payment_type', 'fiat')
             ->where('payment_link_token', $token)
             ->first();
 

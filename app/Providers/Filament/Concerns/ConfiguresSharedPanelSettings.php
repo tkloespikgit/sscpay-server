@@ -7,6 +7,9 @@ use App\Filament\Auth\Login;
 use App\Filament\Pages\AdminDashboard;
 use App\Filament\Resources\OrderResource;
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
+use App\Services\CryptoOrderStatisticsService;
+use App\Support\CryptoFinanceAccess;
+use App\Support\Permissions;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
@@ -167,6 +170,8 @@ body, .fi-main, .fi-layout {
 
                     return view('filament.tables.order-currency-stats', [
                         'stats' => OrderResource::currencyStats($livewire),
+                        'cryptoStats' => CryptoFinanceAccess::allowed(CryptoFinanceAccess::user(), Permissions::CRYPTO_FINANCE_VIEW)
+                            ? app(CryptoOrderStatisticsService::class)->summarize($livewire->getFilteredTableQuery()) : [],
                     ])->render();
                 }
             )

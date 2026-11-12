@@ -69,6 +69,11 @@ return [
             'finance_view' => '查看资金与流水',
             'withdrawals_request' => '申请提现',
             'withdrawals_review' => '审核提现',
+            'crypto_payments_reconcile' => '处理链上异常款与账务纠正（仅平台侧）',
+            'crypto_finance_view' => '查看加密余额与链上明细',
+            'crypto_withdrawals_request' => '申请加密资产取款',
+            'crypto_withdrawals_review' => '审核加密资产取款（仅平台侧）',
+            'crypto_withdrawals_confirm' => '确认加密资产人工核销（仅平台侧）',
             'balance_adjust' => '人工调整余额',
             'orders_refund' => '订单退款',
             'orders_chargeback' => '订单拒付',
@@ -1457,6 +1462,7 @@ return [
             'updated_at' => '更新时间',
         ],
         'groups' => [
+            'crypto' => '区块链收款',
             'exchange' => '汇率',
             'order' => '订单',
             'order_event' => '订单事件',
@@ -1780,6 +1786,7 @@ return [
     ],
 
     'finance' => [
+        'crypto_order_not_supported' => '区块链订单不能使用法币资金操作。',
         'fields' => [
             'merchant' => '商户',
             'balance' => '账户余额',

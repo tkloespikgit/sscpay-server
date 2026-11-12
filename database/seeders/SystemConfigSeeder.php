@@ -174,5 +174,7 @@ class SystemConfigSeeder extends Seeder
 
         $this->call(PaymentFailureSettingsSeeder::class);
         $this->call(LogisticsAnomalySettingsSeeder::class);
+        $this->call(CryptoSettingsSeeder::class);
+        $this->call(CryptoPaymentTemplatesSeeder::class);
     }
 }

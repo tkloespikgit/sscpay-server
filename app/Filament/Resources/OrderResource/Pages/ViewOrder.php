@@ -13,6 +13,7 @@ use App\Filament\Resources\OrderResource\RelationManagers\OrderItemsRelationMana
 use App\Filament\Resources\OrderResource\RelationManagers\OrderMatchedItemsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttemptsRelationManager;
 use App\Filament\Resources\OrderResource\RelationManagers\OrderShipmentSyncsRelationManager;
+use App\Filament\Support\CryptoOrderDisplay;
 use App\Filament\Support\FinanceSecurity;
 use App\Jobs\SendPaymentLinkJob;
 use App\Jobs\SyncOrderTrackingJob;
@@ -113,10 +114,14 @@ class ViewOrder extends ViewRecord
                         ->color('primary'),
                     TextEntry::make('settlement_amount')
                         ->label(__('admin.order.fields.settlement_amount'))
-                        ->money('usd')
+                        ->state(fn (Order $record): ?string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::amount($record) : ($record->settlement_amount === null ? null : '$'.number_format((float) $record->settlement_amount, 2)))
                         ->weight(FontWeight::Bold)
                         ->color('success'),
-                    TextEntry::make('settlement_mode')
+                    TextEntry::make('crypto_denomination')->label(__('crypto.order.denomination'))
+                        ->state(fn (Order $record): string => CryptoOrderDisplay::denomination($record))->visible(fn (Order $record): bool => $record->payment_type === 'crypto'),
+                    TextEntry::make('crypto_accounting_state')->label(__('crypto.review.accounting_state'))
+                        ->state(fn (Order $record): string => CryptoOrderDisplay::state($record))->visible(fn (Order $record): bool => $record->payment_type === 'crypto'),
+                    TextEntry::make('settlement_mode')->visible(fn (Order $record): bool => $record->payment_type !== 'crypto')
                         ->label(__('settlement.fields.mode'))
                         ->formatStateUsing(fn (?string $state): ?string => match ($state) {
                             'immediate' => __('admin.order.settlement_modes.immediate'),
@@ -124,7 +129,7 @@ class ViewOrder extends ViewRecord
                             default => null,
                         })
                         ->placeholder(__('admin.order.placeholders.none')),
-                    TextEntry::make('settlement.status')
+                    TextEntry::make('settlement.status')->visible(fn (Order $record): bool => $record->payment_type !== 'crypto')
                         ->label(__('admin.order.columns.settlement_status'))
                         ->badge()
                         ->formatStateUsing(fn (?string $state): ?string => $state ? __('settlement.statuses.'.$state) : null)
@@ -149,18 +154,20 @@ class ViewOrder extends ViewRecord
                         ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                     TextEntry::make('exchange_rate')
                         ->label(__('admin.order.fields.exchange_rate'))
-                        ->state(fn (Order $record): HtmlString => self::exchangeRateState($record))
+                        ->state(fn (Order $record): HtmlString|string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::rate($record) : self::exchangeRateState($record))
                         ->visible(fn (): bool => self::canSeeAmountBreakdown()),
                     TextEntry::make('surcharge_percent')->label(__('admin.order.fields.surcharge_percent'))->suffix('%')
-                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                        ->visible(fn (Order $record): bool => self::canSeeAmountBreakdown() && $record->payment_type !== 'crypto'),
                     TextEntry::make('surcharge_fee')->label(__('admin.order.fields.surcharge_fee'))->money('usd')
-                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                        ->visible(fn (Order $record): bool => self::canSeeAmountBreakdown() && $record->payment_type !== 'crypto'),
                     TextEntry::make('fee_percent_amount')->label(__('admin.order.fields.fee_percent_amount'))->money('usd')
-                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                        ->visible(fn (Order $record): bool => self::canSeeAmountBreakdown() && $record->payment_type !== 'crypto'),
                     TextEntry::make('fee_fixed_amount')->label(__('admin.order.fields.fee_fixed_amount'))->money('usd')
-                        ->visible(fn (): bool => self::canSeeAmountBreakdown()),
+                        ->visible(fn (Order $record): bool => self::canSeeAmountBreakdown() && $record->payment_type !== 'crypto'),
+                    TextEntry::make('crypto_fee')->label(__('crypto.order.fee'))->state(fn (Order $record): string => CryptoOrderDisplay::amount($record, 'fee'))
+                        ->visible(fn (Order $record): bool => self::canSeeAmountBreakdown() && $record->payment_type === 'crypto'),
                 ]),
-                Section::make(__('admin.order.sections.settlement_summary'))
+                Section::make(__('admin.order.sections.settlement_summary'))->visible(fn (Order $record): bool => $record->payment_type !== 'crypto')
                     ->schema([
                         TextEntry::make('settlement_summary')
                             ->hiddenLabel()

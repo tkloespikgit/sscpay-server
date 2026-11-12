@@ -2,6 +2,114 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-12：订单币种展示、服务费汇总与异常款人工纠正（当前工作区，第九批，未提交）
+
+- 按用户指定先完成订单展示及异常款处理，钱包自动化归集与教程网页留到真实交易测试完成后；未改业务环境凭证或开启收款开关。
+- 订单列表／详情展示网络、入账币种、完整精度净币额、冻结报价汇率和服务费；法币成交额仍是原始汇率 USD 参考值。`CryptoOrderStatisticsService` 对当前筛选订单使用原收入或最新接受／调整后的累计数，按网络＋资产精确汇总，流式读取避免载入全部订单和 JSON 快照。商户隔离沿用列表查询，观察者不增加真实加密财务数据。
+- 新增“区块链异常款处理”及 `crypto_payments.reconcile` 平台侧权限。重新补查保留审核状态；明确接受迟到／少付／多付或冲正重组时，核对整单全部历史地址的完整新鲜覆盖、确认状态和经济证据指纹。支持过期单明确确认；取消等终态不自动恢复。首次入账仍走同一付款状态与通知事务，后续变化追加调整，不重发首次支付通知。
+- `crypto_payment_resolutions` 保存不可修改的操作、原因、费用／经济证据快照和账务前后值；一单一条原始收入约束不变。操作内重新查账号权限、商户归属，复用 TOTP；重复提交键幂等，过时弹窗拒绝。相同已核验线索的重复收件不反复触发经济变化；事件金额身份冲突单列为 `economic_event_changed`，不能用接受迟到款的动作绕过。
+- 重组损失超过未占用余额时新增 `debt_units`，保留进行中取款的占用并暂停继续申请、批准或核销；后续收入或释放占用优先抵扣欠额。原收入与取款日志增加欠额前后值。当前人工费用采用冻结合同、累计实际收款及一次固定费，上限为实收，窗口展示拟确认费用／净额；完整口径见 D-41。没有自动出款、退款或任意金额调账。
+- 关联文件：`CryptoBalanceService`、`CryptoPaymentEvidenceService`、`CryptoQuoteService`、`CryptoSettlementService`、`CryptoReceiptVerificationService`、订单展示／统计与新增 Resource、权限／双语文案，以及 `2026_11_12_001838_add_crypto_payment_reconciliation.php`。同步更新架构、数据库、D-41 和开发方案第 9.4 节的操作／验收流程。
+- 验证：最终关联回归 **1031 项测试／9190 条断言通过**（74.456 秒，159 MB），范围含 Crypto／Tatum、下单／资金／权限、订单统计／看板／观察者。此前针对链核验、人工纠正和后台的 96 项测试／1041 条断言也已通过。`vendor/bin/pint --dirty --format agent`、前端生产构建、`git diff --check` 和文档相对链接检查通过，两个面板的新增异常款路由已确认。
+- 仍未执行业务库迁移／权限 seeder，未使用真实 Tatum API 或链上资金；MySQL DDL、跨进程锁竞争、真实测试链与真实浏览器操作、长期地址规模未验收。当前只能称这两项的实现及隔离回归完成，不能据此直接开放生产收款。
+
+
+## 2026-11-12：独立资产后台、链上明细与人工取款核销（当前工作区，第八批，未提交）
+
+- 新增四个 Filament 入口：加密资产余额、加密入账凭证、链上交易明细、加密资产取款。展示网络／资产、总额／占用／可申请、实收／交易服务费／净额和报价快照、交易位置及区块确认／失效状态；数量以完整十进制字符串呈现。后台共用中英文文案，不显示 Tatum 凭证、公钥源或可签名资料。
+- 新迁移 `2026_11_11_234945_create_crypto_withdrawals_and_events_tables.php` 只新增申请和不可修改的取款操作表；保留订单收入唯一约束。所有加密资金变动继续通过 `CryptoBalanceService`，采用商户锁、账户／申请行锁和事务，申请幂等，审计失败全部回滚。
+- 申请占用本金＋申请人确认的同币种费用上限；审核通过继续占用；人工核销扣本金＋实际费用、释放未用费用。待审单仅申请人可撤销；平台驳回已审批单须明确确认未在线下支付。终态不可改写／删除或重复扣账。不存在自动签名、广播或实际出款调用，也不把 ETH／TRX 燃料费自动换算成 USDT。
+- 新增独立查看／申请／审核／核销权限。审核和核销仅平台身份可操作，商户级管理员按当前商户归属限制；列表、详情与提交均服务端校验。提交重新读取账号和权限，复用 `FinanceSecurity` TOTP。默认财务角色新增查看／申请，已有自定义角色或配置模板不被静默覆盖。已入账收入待复核或链证据失效／未确认时，阻止该资产新申请、审批和核销，仍允许释放占用。
+- 本期完成类型明确为“人工账务核销”，保存“线下凭证编号（未经链上验证）”和原因；不是系统验证的链上出款。链上凭证核验、批量输出分配、异常收入人工纠正及反向调整仍待后续实现。
+- 新增 `CryptoWithdrawalTest`、`Filament/CryptoFinanceTest` 及共同夹具，合计 68 个用例；覆盖五类资产主／测试网最小单位、超额／精度／费用上限、完整状态流转、重复申请与核销、权限撤销／商户转交／Observer、TOTP、隔离、异常收入、日志失败回滚及 HTML 转义。TOTP 测试只替换第三方时间读取为测试时钟，保留真实验证码算法和重放保护。
+- 验证：`vendor/bin/pint --dirty --format agent` 通过；关联 PHPUnit **863 项、8324 个断言全部通过**（63.650 秒、149 MB），覆盖 Crypto/Tatum、渠道／配置、下单／付款、网关退款拒付、账务／余额、租户、角色和现有提现。命令：
+
+```bash
+php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|Tatum|PaymentMethod|SystemConfigResourceTest|PaymentFailureSettingsTest|LogisticsAnomalySettingsTest|OrderStatusColorConfigTest|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|SyncPendingOrderStatusesTest|PaymentRiskPaidAtTest|CheckoutLinkTest|PaymentGatewayWebhookRoutingTest|MerchantRole|MerchantWithdrawal|Finance|BalanceService|MerchantScope|MerchantResource|PlatformRole'
+```
+
+- `php artisan route:list --path=crypto --no-interaction` 确认两个后台各有四个新入口；文档链接／代码块及 `git diff --check` 检查通过。未改前端构建资源，本批未重复构建。
+- 未执行：业务库迁移／seed、真实链交易或外部 Tatum 调用、MySQL DDL／多进程锁竞争、真实浏览器测试、全仓测试、长期容量验收。部署须前向迁移、补齐权限并分配既有商户角色，详见[方案第 9.3 节](blockchain-payment-plan.md#93-当前后台实现第八批仅人工账务核销)。订单列表原法币列与统计的币种分流、本地归集工具／教程网页仍待完成；未把本批标为生产验收通过。
+
+## 2026-11-11：统一链上下单、付款页与链接重开（当前工作区，第七批，未提交）
+
+- 保留前六批及用户原有修改。API、手工下单、公开收款链接继续使用 `OrderCreationService`；开启全部链上开关后可选链上渠道，创建本地付款链接与持久准备任务，不调 WooCommerce 商品或 `/pay`。链上 USD 参考值按原始汇率，汇损为零；指定渠道回跳域名采用订单应用 website，商户授权与法币域名规则保留。
+- 新迁移 `2026_11_11_232321_create_crypto_checkouts_table.php`：独立附表保存当前请求、不可变合同费率和重开进度；请求新增唯一可空后继关联。初次派生、重新报价与当前指针提交保持幂等，历史地址不回收。报价过期由客户显式 requote，旧标签页携带旧请求 ID 被拒绝；每单最多 50 个报价，普通重开 30 秒冷却。
+- `CryptoCheckoutService` / `crypto:prepare-checkouts --limit=5` 每十秒有界后台执行：全部历史补查 → 健康订阅查回／恢复 → 再补交接窗口 → 重查远端与订单／全部请求 → 发布 ready。历史或订阅失败隐藏付款地址、持久重试；存在部分款、待核验或迟到／审核款时阻止新付款展示。重开不滑动延长已有订阅 TTL。
+- `CryptoPaymentPageController`、`CryptoCheckoutPresenter`、Blade 与独立 JS 入口提供法币原价、网络、资产、精确币数量、二维码、有效期和已收／已确认／剩余状态。二维码仅地址。平台 Host、付款 token、CSRF、独立 token/IP 限流、no-store 与 no-referrer 控制公开面；异常或失联时隐藏付款信息。创建／查询 API 追加支付类型和公开链上报价字段，不暴露公钥源或提供商配置。公开收款链接来源沿用英文。
+- webhook 收件持久化加入商户→订单→请求行锁，与报价、地址发布和入账共用并发边界；自动币账入账增加同单其他请求款项／补查检查，不合并不同报价的付款。
+- 新增 `CryptoCheckoutTest`、`CryptoOrderCreationTest` 共 19 个用例及复用模拟链／订阅夹具，覆盖签名 API、手工与收款链接下单、原始汇率、合同费率冻结、共享渠道、完整派生到自动入账、退订空档付款、双阶段补查、显式重新报价、新旧地址竞争、订阅暂停／丢失、断点重试、旧标签页、商户隔离、CSRF 和独立限流。
+- 验证：`vendor/bin/pint --dirty --format agent` 完成；关联 PHPUnit 运行 **774 项、7895 个断言全部通过**（53.423 秒、145 MB），覆盖 Crypto/Tatum、支付渠道／配置、下单重试、路由、网关退款拒付、账务恢复、生命周期、付款风控与收款链接。不是全仓测试。`npm run build` 通过；系统 Node 20 缺 `libicui18n.72.dylib`，改用本机现有 Codex runtime Node 24.22.1 构建，未安装依赖或改动系统。路由与调度列表、文档相对链接／代码块、`git diff --check` 通过。
+- 未执行：业务库迁移／seed、真实 Tatum 调用、测试链转账、真实浏览器操作、MySQL 迁移及锁竞争、全量测试、全年规模容量或收费验证。未更改真实 `.env`，新增 `CRYPTO_CHECKOUT_ENABLED=false`。后台独立资产／净额展示、异常款处理、独立取款、本地归集工具和教程网页仍待后续开发；本批不视为生产验收完成。
+
+## 2026-11-11：历史补查、冷地址扫描与订单原子入账（当前工作区，第六批，未提交）
+
+- 保留之前全部修改。新增 `CryptoBlockHistoryService`、`CryptoHistoryScanService`、`CryptoSettlementService`、`CryptoEvmTrace` 与扫描／记账命令。BTC／LTC 读取完整 verbose 区块，TRON 读取整块交易收据，Ethereum 读取完整交易、日志和 callTracer；完整性／规范链／父哈希校验后，按网络与同一下一高度合并最多 500 个请求，逐请求事务保存线索及游标。已退订、已过期、已入账地址持续补查，不靠付款页触发。
+- 新迁移 `2026_11_11_221155_add_history_tracking_to_crypto_payment_requests.php` 保存连续高度／哈希／时间、最近 64 块、健康检查、重试、审核原因及记账调度字段。追平新鲜链头才更新监控接管证明，关闭历史扫描时拒绝退订。重组退回共同祖先、撤销孤块确认并重新核验；超出窗口从起扫点补查并转审核，已入账后异常保留原流水、不自动冲正。
+- 新 EVM 请求冻结 `internal_transfers=true`，消费通过独立交易 trace 识别成功的内部 CALL／CREATE／SELFDESTRUCT 转入，排除撤销子树和委托调用表面金额，保持 native:0／trace 路径身份；旧请求不静默改写报价。补查线索使用 `signature_mode=history_rpc`，与 HMAC 回调来源区分，不把历史发现当成最终资金证据。
+- 自动记账在历史健康、全部有效事件已确认、没有待核验／审核收件、准确付足和报价时窗满足时，把独立净额余额、唯一流水、请求 credited 标记、订单付款事实和首次通知记录一并提交。通知及事件提交后派发，同一滞留通知记录可重投；通知创建失败会回滚全部资金和订单改变。部分付款等待，迟到／超额／到期不足额／已入账后变化进入审核。法币网关回调、主动查询及 30/90 分钟待支付补偿查询均排除链上订单，链上订单不进入法币结算流程。
+- 端到端测试发现并修正链上 UTC 对象直接写入无时区字段导致后续按系统时区误读的问题；事件及历史区块时间落库前统一转系统时区，付款时间按最后付足交易保存。HTTP 始终位于资金事务外，商户／订单／请求绑定与唯一账本约束继续保留。
+- 新环境示例 `CRYPTO_HISTORY_ENABLED=false`、`CRYPTO_SETTLEMENT_ENABLED=false`，`CRYPTO_HISTORY_MAX_HEAD_AGE_SECONDS` 留空，启用前须明确配置 1–86400 秒；原有核验开关、网络确认数、创世哈希和 System Config 扫描间隔仍必需。按八个网络分别每分钟调度，45 秒仅限制启动新批次，正在进行的有界请求仍允许完成。没有修改实际 `.env`、新增依赖、提交 Git、执行业务库迁移／Seeder或调用真实 Tatum／发送交易。
+- 验证：新增整块历史、冷地址、ETH trace、自动入账与异常／恢复测试，覆盖缺回调到自动入账、实际扫描证明到退订后再转入原地址、重复处理、跨商户、缺失／错误数据、重组、分次付款、五种资产账本、通知存储失败回滚、通知重投及法币补偿隔离。执行 `vendor/bin/pint --dirty --format agent` 后，最终运行下述关联集合，SQLite 内存库 **755 项、6,966 断言通过**（52.628 秒，测试进程上限 512 MB）。`CACHE_STORE=array php artisan schedule:list --no-ansi` 确认调度；仅该只读命令使用进程级缓存覆盖。文档相对文件链接、代码围栏及 `git diff --check` 通过。
+
+```bash
+php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|Tatum|PaymentMethod|SystemConfigResourceTest|PaymentFailureSettingsTest|LogisticsAnomalySettingsTest|OrderStatusColorConfigTest|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|SyncPendingOrderStatusesTest|PaymentRiskPaidAtTest|CheckoutLinkTest|PaymentGatewayWebhookRoutingTest'
+```
+
+- 未跑完整测试集、前端构建或静态分析；本批无前端资源修改。未验证 MySQL DDL／锁竞争、实际测试链与 Tatum 套餐、钱包恢复、归档／trace 响应及 Credits。当前按请求游标合并仍有长期地址增长后的写入和重复读块成本，全年规模须压测，必要时演进共享网络游标。统一建单、付款页、重开报价、独立余额展示、异常款人工处理、取款、本地工具与教程网页尚未完成，整个收款功能不能据本批测试直接上线。更新[方案第 6.11 节](blockchain-payment-plan.md#611-历史补查冷地址与自动入账第六批未开放收款)、架构、数据库及 [D-38](decisions.md#d-38-连续历史覆盖与订单原子入账)。
+
+## 2026-11-11：BTC／LTC 原始交易与 USDT TRC20 核验（当前工作区，未提交）
+
+- 保留此前全部工作区修改。新增 `TatumChainReadClient`、UTXO／TRON 核验器、原始 UTXO 解码、TRON Base58Check 地址及三类冻结策略分派。只允许固定网络主机和查询方法，主测凭证分开、超时／重试有界、不跟随重定向；没有新增依赖或迁移。
+- BTC／LTC 从 uint64 字节读取输出数量，解析 legacy／SegWit 并重算 txid；核对节点网络／同步、地址脚本、规范区块／成员和前后链高。检查历史输入 prevout 排除订单地址花出后回流的找零，每次最多十六个不同来源交易；coinbase、MWEB／未知编码、超预算或归档数据缺失不会自动放行。
+- TRC20 核对 Base58Check、正式 USDT 合约、交易字节哈希、区块／时间／成员及执行结果，从白名单合约 Transfer 解析 uint256；同时满足确认深度、Solidity 固化区块／收据及末尾规范块复查才确认。TRX 燃料补充、转出、自转、零额和其他合约不算 USDT 入账。
+- 请求创建时冻结 `utxo-canonical-v1`／`tron-solidified-v1`、确认数和创世区块标识。新增六网确认数与创世标识环境示例，全部留空；未修改实际 `.env`。消费沿用商户绑定、事务落库、去重、迟到／重组保护，锁期限改为十分钟以覆盖有界 prevout 请求；仍不更改订单付款事实或调用余额服务。
+- 验证：新增三类测试 **82 项通过**；针对性集合逐步通过后，执行 `vendor/bin/pint --dirty --format agent`，再运行 `php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|Tatum|PaymentMethod|SystemConfigResourceTest|PaymentFailureSettingsTest|LogisticsAnomalySettingsTest|OrderStatusColorConfigTest|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|PaymentRiskPaidAtTest|CheckoutLinkTest|PaymentGatewayWebhookRoutingTest'`，SQLite 内存库 **667 项、4,766 断言通过**。仅测试进程使用 512 MB，不改变应用内存配置。覆盖四种 UTXO 网络、Tron 两网、SegWit、精确输出、找零、伪数据、固化不足、重组、归档缺失、查询预算及只读客户端边界。
+- 更新架构、数据库、方案第 6.10 节与 [D-37](decisions.md#d-37-utxo-原始数量与-tron-固化收据)。未调用真实 Tatum／发送交易，未执行任何业务库迁移／Seeder，未跑完整测试集、MySQL DDL／并发测试、静态分析或前端构建。真实归档套餐权限、测试链数据格式、币种／钱包恢复与吞吐仍待验收；历史补查／冷扫描、ETH 内部转入、订单与自动入账编排、付款页、取款和本地归集／教程网页尚未完成，不能上线完整收款。
+
+## 2026-11-11：以太坊交易核验、最终确认与可靠收件消费（当前工作区，未提交）
+
+- 保留前三批修改。新增 `TatumEvmRpcClient`、`CryptoEvmVerificationService`、`CryptoReceiptVerificationService`、严格十六进制数量工具与 `crypto:verify-receipts --limit=25`。固定主网／Sepolia 网关，只读 RPC；核对网络、交易执行、规范区块和位置，ETH 仅顶层直接转入、ERC20 仅冻结合约的合规 Transfer 日志。使用 bcmath 保留大于浮点精度及 uint256 上限数量。
+- 新增收件核验次数／时间／下次重试／错误码迁移及模型字段，事件和收件状态事务落库、请求级锁、远端 HTTP 不占金融事务。冻结请求配置与 `evm-finalized-v1` 阈值，同时要求确认数及 finalized 覆盖，最后复查规范区块；缺少策略不补写历史快照。规范链变化撤销事件确认，迟到／金额冲突／已记账重组转审核，不直接改订单付款事实或余额。
+- 新增独立环境核验开关，默认关闭，两网确认数默认留空；调度按待办时间、批次和 45 秒启动预算处理，RPC 有界超时，等待确认／失败退避。最终确认收件不持续轮询；后续真实冷扫描仍需接管历史发现与最终确认后的规范链审计。此阶段尚无完整链上监控闭环。
+- 强化 `CryptoBalanceService`：有待核验／确认／审核收件或未完成确认的有效事件时禁止入账，防止仅累计已确认部分而忽略其他转入；退订也拦截 confirming／review 收件。修复三个 Tatum 客户端在 HTTP 302 时 Laravel 重试回调可收到 null 而抛 TypeError 的问题，继续拒绝重定向、不泄露凭证。
+- 验证：新增核验与客户端测试，覆盖两种确认门槛、重复投递、多日志／伪代币、执行失败、空收据、规范链变化／查询中切链／重新入块、迟到、冻结配置、租户、请求锁、退避及只读接口边界。`vendor/bin/pint --dirty --format agent` 完成；使用 `php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|Tatum|PaymentMethod|SystemConfigResourceTest|PaymentFailureSettingsTest|LogisticsAnomalySettingsTest|OrderStatusColorConfigTest|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|PaymentRiskPaidAtTest|CheckoutLinkTest|PaymentGatewayWebhookRoutingTest'`，SQLite 内存库 **585 项、3,840 断言通过**。仅测试进程提高内存限制，应用配置未改；`CACHE_STORE=array php artisan schedule:list --no-ansi` 成功列出新任务。
+- 更新架构、数据库、方案第 6.9 节和 [D-36](decisions.md#d-36-以太坊规范链核验与冻结确认策略)。未执行真实 Tatum API／交易、业务库迁移／Seeder、完整测试集、MySQL DDL／并发测试、静态分析或前端构建；当前未安装项目 PHPStan 命令。BTC／LTC／TRC20 核验、ETH 内部转入、历史补查／冷扫描、订单／付款页／通知与可靠账务编排、取款及本地工具／教程网页仍待实现，不可上线完整收款。
+
+## 2026-11-11：Tatum 订阅代次、验签收件与系统参数（当前工作区，未提交）
+
+- 保留前两批修改。新增订阅／回调收件两表迁移、模型和工厂、`TatumSubscriptionClient`、`CryptoAddressMonitorService`、验签器、收件服务及独立 API 路由。创建前和超时后查回、不盲重试 POST；固定代次 UUID、凭证指纹和订阅 ID，远端操作不占金融事务，错误不回显凭证或原始响应。回调只保存摘要和白名单线索，不把验签等同到账。
+- 新增 `crypto:maintain-subscriptions --limit=5` 每分钟后台调度、有界批次／重试；退订必须历史扫描接管、补查覆盖且无待核验记录，否则保留。默认环境开关关闭；尚无真实历史扫描器写入证明，也未接付款页恢复。旧代次迟到回调继续收件。修正内部监控、回调及精确入账的地址查询显式限定商户，避免被浏览器其他用户的全局 scope 干扰。
+- `CryptoSettingsSeeder` 补缺七个系统配置，必要值留空、恢复次数默认 0；总配置 Seeder 接入两类区块链专用 Seeder。系统配置页面／弹窗新增参数范围和 JSON 对象校验，上浮百分比保留十进制字符串。新增中英文配置文案；未运行任何业务库 Seeder。
+- 验证：`vendor/bin/pint --dirty --format agent` 完成；`php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|Tatum|PaymentMethod|SystemConfigResourceTest|PaymentFailureSettingsTest|LogisticsAnomalySettingsTest|OrderStatusColorConfigTest|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|PaymentRiskPaidAtTest|CheckoutLinkTest|PaymentGatewayWebhookRoutingTest'` 在 SQLite 内存库 **513 项、3,119 断言通过**。新增用例覆盖官方 HMAC 固定样例、格式／环境／租户边界、重复及迟到回调、超时查回、分页异常、到期保护、续代次和后台参数。
+- 路由列表检查通过。调度列表直接执行遇本机 Redis 沙箱权限限制；仅对检查进程设置 `CACHE_STORE=array` 后成功列出任务，未改变应用配置。未执行业务库迁移、外部 Tatum 请求、真实交易、完整测试集、MySQL DDL／并发测试或前端构建。HTTP 均模拟，实际账号签名／订阅权限和五类测试链未验收。
+- 更新架构、数据库、方案第 6.8 节与 [D-35](decisions.md#d-35-订阅代次回调线索与保守退订)。本批只接收 `pending` 线索，没有消费核验任务；RPC／Data 核验、确认／重组／历史补查、统一建单与付款页、订单状态／通知、取款审核及本地归集／教程网页仍待后续实现，当前不能作为完整收款功能上线。
+
+## 2026-11-11：链上配置、只读地址分配与 Tatum 行情（当前工作区，未提交）
+
+- 保留上一批全部工作区修改，继续实现后台支付类型 Radio、分类型模板筛选、文本／下拉字段及默认值。新增专用五类模板 Seeder，仅补缺；既有支付方式和模板禁止更换类型。链上保存不要求 WordPress 凭证，自动／手动配置同步和商品同步均有服务端类型保护，仍复用原商户／管理员管理边界。
+- 新增 `CryptoPaymentConfigurationService` 和公钥解析器，校验 Base58Check `xpub/tpub`、受控兼容方案、本地恢复地址、正式 USDT 合约及平台测试合约白名单；拒绝私钥、助记词、API 凭证及未知配置键。Filament 会从提交状态中剔除无表单字段的伪造键；原始配置数组的服务端入口另外拒绝未知键，两种路径均验证不落库。
+- 新增公钥技术源与地址分配两表、地址分配关联外键、模型及工厂。相同链族与公钥／chain code 共用原子计数器，预留后再请求，索引 0／1 核对本地恢复、订单从 2 开始；失败留预留，同键重试复用，复制渠道不重置索引。HTTP 不持有数据库事务；当前没有真实 MySQL 并发锁验证。
+- 新增 `TatumReadClient`，只允许公钥地址及 USD 行情 GET；凭证主测分开、超时与安全重试有界、不跟随重定向、异常不附完整 URL／原始响应。公钥会发送给 Tatum，后台与 [D-34](decisions.md#d-34-链上配置隔离与只读公钥地址分配) 已说明。新增 `CryptoMarketPriceService` 共享最多十秒缓存，按供应商毫秒时间再查新鲜度，故障不退回旧价。修复毫秒行情与微秒当前时间比较造成的边界误拒绝。
+- `CryptoPaymentRequestService::prepareAllocated()` 已接内部派生／行情／报价准备，冻结配置与来源，重试不再分配地址；仍保留 `preparing`，没有订阅就不发布支付要求。旧法币路由继续排除链上渠道。未接真实订阅、回调验签、核验／确认／补查、统一建单分支或订单付款通知；本地工具、独立取款及教程网页继续待实现，不能作为完整功能上线。
+- 验证：最终使用 `php -d memory_limit=512M vendor/bin/phpunit --no-progress --colors=never --filter='Crypto|TatumReadClientTest|PaymentMethod|OrderCreateRetryMailTest|OrderCreationFailoverTest|PaymentRoutingTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|OrderLifecycleTest|PaymentRiskPaidAtTest|CheckoutLinkTest'`，SQLite 内存库 **385 项、2,417 断言通过**。该集合较早一次在默认内存下也通过；最终复跑触及本机 128 MB 上限后，只将测试进程设为 512 MB 重跑通过，不修改应用内存配置。Pint dirty、文档相对链接及 `git diff --check` 通过。
+- 未在业务库执行迁移或 Seeder，未改 `.env` 实际凭证，未增加依赖，未调用真实 Tatum 或发送交易，未跑全量测试／前端构建。当前只有 HTTP 模拟与 Livewire 服务端表单验证；尚无真实浏览器视觉验收、实际钱包恢复与 Tatum 账号权限验证。后续还必须检查专用分支及地址链上历史，不能把公钥格式或两个恢复地址比对当作全部链上能力验证。
+
+## 2026-11-11：开始新版区块链收款基础开发（当前工作区，未提交）
+
+- 用户已授权修改代码。新增两份前向迁移：为渠道／模板／订单增加默认 `fiat` 的支付类型，新增地址、请求、事件、资产余额与收入账本五表；数量采用 uint256 范围的规范整数字符串，不复用法币两位小数。
+- 新增 `CryptoAmount`、资产精度注册表、`CryptoQuoteService`、`CryptoPaymentRequestService`、`CryptoBalanceService` 及模型／测试工厂。支持原始法币汇率、数量上浮、按同价折币的固定费、版本化取整、报价快照、永久地址与派生索引唯一、稳定事件身份、分笔累计与一次净额收入；异常、迟到、多付、未确认和重组转入不能自动入账。
+- 当前为内部基础模块：不生成实际地址，不接原始 Tatum 回调，不发布可支付页面，不更新订单付款事实／通知。法币路由暂排除链上渠道，指定链上渠道及网关补建拒绝；法币资金服务在锁内拒绝链上订单，退款／拒付和争议同样保护，法币待办不为其创建。
+- 更新架构、数据库、方案进度及 [D-33](decisions.md#d-33-新版区块链基础分阶段接入与精确账务)。保留上一轮未提交的测试流程文档。`crypto.quote_markup_percent`、报价时长及行情新鲜度必须显式配置，本次不写生产默认费率／时长，不创建或启用渠道。
+- 验证：PHP 8.3.35，Laravel 12.69.3；SQLite `:memory:` 中新增测试及下单／退款／结算／账务恢复／路由／商户财务配置／生命周期／风控／公开收款页关联测试联跑 **232 项、1,505 断言通过**。命令：`php artisan test --compact --filter='CryptoQuoteTest|CryptoPaymentFoundationTest|OrderCreationFailoverTest|OrderCreateRetryMailTest|GatewayRefundChargebackTest|OrderSettlementBalanceTest|OrderAccountingRecoveryTest|PaymentRoutingTest|PaymentMethodFinancialContextTest|OrderLifecycleTest|PaymentRiskPaidAtTest|CheckoutLinkTest'`。`vendor/bin/pint --dirty --format agent` 和 `git diff --check` 通过。
+- 未执行业务库迁移、真实 MySQL 并发／DDL 验证、全量测试、Tatum 订阅或真实转账；未改依赖或前端资源。后续必须完成公钥派生／计数器、Tatum 验签／核验／确认／补查／订阅生命周期、重新报价、可靠待办与订单编排、后台类型配置／付款页／统计／取款及本地工具，当前不能作为完整功能上线。
+
+## 2026-11-11：补充开发完成后的分阶段测试与验收流程（仅文档）
+
+- 在[区块链方案第 13.4 节](blockchain-payment-plan.md#134-开发完成后的测试与交付流程待执行)补充环境隔离、自动化／MySQL 回归、五类资产与三种法币报价、真实测试链收款、异常及订阅生命周期、人工取款、本地归集／后台教程、容量、主网小额及灰度流程。
+- 明确各步骤的预期结果、脱敏验收记录模板和放行条件；实际测试类名、命令、阈值和结果在开发交付时补齐，未验证或环境阻塞不得标记通过。
+- 本次仅更新方案及交接记录，未修改代码、配置、依赖或数据库，未执行业务测试、创建订阅或发送交易。验证文档相对链接、结构及 `git diff --check`。
+
 ## 2026-11-11：归集教程确定交付后台网页版本（仅需求文档）
 
 - 在[方案第 10.5 节](blockchain-payment-plan.md)明确：管理后台提供独立“资金归集教程”网页，覆盖五类资产、测试／主网步骤、真实截图与版本、工具下载、授权范围内地址导出及异常恢复。

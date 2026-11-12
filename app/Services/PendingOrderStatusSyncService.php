@@ -88,6 +88,7 @@ final readonly class PendingOrderStatusSyncService
     {
         return Order::query()
             ->withoutGlobalScope(MerchantScope::class)
+            ->where('payment_type', 'fiat')
             ->where('status', 'pending')
             ->whereNull('paid_at')
             ->whereBetween('created_at', [$now->copy()->subHours(48), $now->copy()->subMinutes(30)])

@@ -117,6 +117,7 @@ class EditPaymentMethod extends EditRecord
     protected function getSyncGatewayConfigAction(): Action
     {
         return Action::make('syncGatewayConfig')
+            ->visible(fn (): bool => $this->record->payment_type === 'fiat')
             ->label(__('admin.payment_method.actions.sync_gateway_config'))
             ->icon('heroicon-o-cloud-arrow-up')
             ->color('gray')
@@ -124,6 +125,7 @@ class EditPaymentMethod extends EditRecord
             ->modalHeading(__('admin.payment_method.actions.sync_gateway_config_heading'))
             ->modalDescription(__('admin.payment_method.actions.sync_gateway_config_desc'))
             ->action(function () {
+                abort_unless($this->record->payment_type === 'fiat' && PaymentMethodResource::canManageRecord($this->record), 403);
                 // 取当前表单状态（含未保存的修改），同时触发必填项校验。
                 $data = $this->form->getState();
 

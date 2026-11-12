@@ -169,6 +169,8 @@ class MerchantRoleProvisioningService
                 'label' => '财务管理员',
                 'permissions' => [
                     Permissions::FINANCE_VIEW,
+                    Permissions::CRYPTO_FINANCE_VIEW,
+                    Permissions::CRYPTO_WITHDRAWALS_REQUEST,
                     Permissions::WITHDRAWALS_REQUEST,
                     Permissions::WITHDRAWALS_REVIEW,
                     Permissions::BALANCE_ADJUST,

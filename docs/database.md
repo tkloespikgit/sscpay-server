@@ -1,6 +1,6 @@
 # 数据库与重要模型
 
-核对日期：2026-11-10。结构依据是 [database/migrations/](../database/migrations/) 的完整迁移链，运行语义依据是 [app/Models/](../app/Models/) 和 [app/Services/](../app/Services/)。本文不替代字段级迁移定义，也不代表已核验生产库。
+核对日期：2026-11-11。结构依据是 [database/migrations/](../database/migrations/) 的完整迁移链，运行语义依据是 [app/Models/](../app/Models/) 和 [app/Services/](../app/Services/)。本文不替代字段级迁移定义，也不代表已核验生产库。
 
 ## 1. 核心关系
 
@@ -262,3 +262,90 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 新增数据结构同时检查：模型 fillable/casts/关系、权限与租户范围、现有数据回填、索引、删除策略、相关 FormRequest/Resource 和测试。种子顺序见 `DatabaseSeeder`，商户角色创建前必须已存在权限记录。
 
 `Application::api_key` 及部分邮件/广告凭证依赖 Laravel 加密 cast；沿用原 `APP_KEY` 才能读取已有数据。文档与测试样例只用占位凭证。
+
+## 8. 新版区块链收款基础（当前工作区，待集成）
+
+用户已授权开始开发。新增迁移 [支付类型](../database/migrations/2026_11_11_165602_add_blockchain_payment_types.php) 为 `payment_method_config_maps`、`payment_methods`、`orders` 增加 `payment_type`（默认 `fiat`）；订单、支付方式及模板实例保存后禁止修改类型。后台支持类型 Radio 与分类型 JSON 配置；第七批已接统一建单，只有 `CRYPTO_CHECKOUT_ENABLED` 及依赖开关全部开启时才能选择链上渠道，默认关闭。
+
+[基础表迁移](../database/migrations/2026_11_11_165602_create_crypto_payment_foundation_tables.php) 定义以下五张表，未在业务库执行：
+
+| 表 | 当前数据与约束 |
+| --- | --- |
+| `crypto_addresses` | 商户、订单、渠道、网络、已校验地址及派生源指纹／索引、起扫高度；规范化网络地址哈希全局唯一，源指纹＋索引唯一，不按软删除释放 |
+| `crypto_payment_requests` | 一个地址只绑定一个请求；网络／资产／精度、应付／服务费／净额、JSON 报价及有效期；初始 `preparing`，同一订单可保存历史请求，首次请求幂等，显式重新报价创建后继请求；新增可空唯一 `replaces_request_id` 保证一个旧报价只有一个直接后继 |
+| `crypto_chain_events` | 同一网络＋规范化交易哈希＋事件位置生成唯一哈希；记录数量、区块、时间和核验／确认／重组状态，已接 EVM／UTXO／TRON 内部核验器，真实链联调未完成 |
+| `crypto_asset_balances` | 商户＋网络＋资产唯一；总数量、占用数量默认 `0`，与现有商户法币字段隔离 |
+| `crypto_ledger_entries` | 当前仅支持订单净额收入；订单及幂等键唯一，保存实收、费用、净额、前后余额与费用快照；取款另记 `crypto_withdrawal_events`，保留本表订单收入唯一约束；人工调整仍待实现 |
+
+数量用 `VARCHAR(78)` 保存规范化无符号十进制整数字符串，应用层校验不超过 uint256，并使用 bcmath；不能按字符串大小判断金额或直接用数据库数值 SUM 聚合。中间报价使用精确分子／分母，最终取整。`CryptoQuoteService` 的 v1 规则为应付向上取整、百分比和固定 USD 费折币合计向上取整，保存舍入版本，不受全局 `bcscale` 设置影响；见 [D-33](decisions.md#d-33-新版区块链基础分阶段接入与精确账务)。
+
+`CryptoBalanceService` 按商户 → 订单 → 请求 → 事件 → 资产账户顺序加锁并在事务内入账，核对事件归属、确认、时窗、起扫高度及核准数量；异常／多付／迟到款拒绝自动入账。存在待核验／确认／审核收件或未完成核验／确认的有效事件时也拒绝入账，不能只累计已确认部分后忽略其他转入。一单正常收入只允许一次，多请求不能重复增加余额。该服务自身只处理独立账务与请求入账标记；第六批由 `CryptoSettlementService` 在外层同一事务中再写订单付款事实及首次商户通知。真实链联调与 MySQL 竞争验证仍是开放收款前提。
+
+模型实例更新禁止重写地址、请求绑定与报价、已记录事件身份／金额及账务流水，审计关联外键删除采用 RESTRICT。未添加数据库触发器；直接 SQL 或绕过模型事件的批量写入不属于允许的业务入口。迁移 `down()` 会删除新增表和类型列，已有审计数据后属于破坏性回滚，生产优先向前修复。
+
+第二批迁移 [公钥源与地址分配](../database/migrations/2026_11_11_171059_create_crypto_public_accounts_and_allocations.php) 新增 `crypto_public_accounts` 和 `crypto_address_allocations`，并为 `crypto_addresses` 增加可空且唯一的 `crypto_address_allocation_id` 外键。源指纹使用链族＋BIP32 chain code／压缩公钥的规范身份，不按标签、资产、渠道或主测试网络拆独立计数；全局技术表不作为商户 Resource 暴露。计数默认从 2 开始，0／1 留作本地恢复校验，消耗后不可回退。分配记录按商户隔离，分配键及源＋索引唯一，派生地址哈希唯一，保存网络／资产和只读配置快照；HTTP 前提交预留，失败保留预留，不能回收给其他订单。
+
+`PaymentMethodConfigMap.fields` 新增受控 `type`（文本／下拉）、`options` 与 `default` 元数据，旧模板缺类型继续按文本渲染。五类初始模板由专用 `CryptoPaymentTemplatesSeeder` 补缺，不覆盖旧模板、不创建支付方式。本次未在业务库运行 Seeder；在隔离环境完成所需新迁移后，可执行 `php artisan db:seed --class=CryptoPaymentTemplatesSeeder --no-interaction` 准备模板。它不替代 Tatum 凭证、系统报价参数或实际钱包恢复验收。
+
+第三批迁移 [订阅与回调收件箱](../database/migrations/2026_11_11_191318_create_crypto_monitors_and_webhook_receipts.php) 新增两表，并为请求增加可空 `current_monitor_id` 外键：
+
+| 表 | 当前数据与约束 |
+| --- | --- |
+| `crypto_address_monitors` | 请求内代次唯一，回调 UUID 全局唯一，远端订阅 ID 可空且唯一；冻结商户／请求／地址、网络／环境、TTL、API Key 指纹与回调 URL。记录准备、创建、激活、失败、取消、冷地址状态和重试时间，保留补查／冷扫描高度、区块哈希及时间；第六批扫描器写入完整覆盖证明 |
+| `crypto_webhook_receipts` | 按商户、监控代次保存请求绑定、body 摘要、规范化交易哈希、白名单线索、验签模式和处理状态；监控 ID＋摘要唯一。原始 body、签名及任意客户端字段不存库。该去重只针对投递，经济事件仍由链上事件表判定 |
+
+模型禁止删除监控与回调证据，禁止改写代次身份、已有远端订阅 ID、激活期限和回调证据，外键采用 RESTRICT；当前请求指针不使旧代次失效。过期退订需历史扫描接管且无未处理收件／核验事项，默认缺少扫描证明时不删除远端订阅。API Key 与 HMAC 密钥仅从环境配置读取，不存渠道 JSON 或表内；指纹用于阻止换 Key 后误认远端状态。
+
+`CryptoSettingsSeeder` 补缺七个 `crypto.*` 系统配置，只有空 JSON 对象和恢复次数 0 有初始值，其余必要参数留空，未配置时拒绝相关操作。后台保持上浮比例的十进制字符串，订阅覆盖规则使用 JSON 对象校验。专用命令为 `php artisan db:seed --class=CryptoSettingsSeeder --no-interaction`，具体键与范围见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。总 `SystemConfigSeeder` 已接入这两个补缺 Seeder；已有环境不应为初始化区块链参数而运行可能重设其他配置的总 Seeder。
+
+第四批 [核验跟踪迁移](../database/migrations/2026_11_11_193729_add_verification_tracking_to_crypto_webhook_receipts.php) 只为收件表增加 `verification_attempts`（默认 0）、`last_checked_at`、`next_attempt_at`、`last_error_code`（均可空）和状态＋下次时间索引。原始投递证据继续不可变；状态为 pending／confirming／verified／ignored／review，最后三者不由正常调度持续轮询，review 留待审核入口实现。迁移 down 会丢失核验重试审计字段，生产优先向前修复。
+
+新准备请求的报价 JSON 增加公用配置快照与冻结的以太坊核验策略，确认数来自独立环境配置，缺配置不在消费时回填。公钥配置快照不得整体暴露到公开付款页。ETH 直接转入位置为 `native:0`，ERC20 为 `log:{全区块日志索引}`；发现规范链变化时保留原经济事件、撤销确认并标孤块，重新入块时同身份同金额可更新规范区块字段。金额冲突不覆盖原金额，转审核；第六批增加持续规范链检查，资金逆向调整和人工审核界面仍未接通。详见[方案第 6.9 节](blockchain-payment-plan.md#69-当前以太坊核验与收件消费第四批未开放收款)。
+
+第五批未改表结构。`CryptoVerificationPolicy` 为 BTC／LTC 冻结 `utxo-canonical-v1`、TRON 冻结 `tron-solidified-v1`，除确认数外还保存 `genesis_hash`；EVM 继续原版本和字段。BTC／LTC 事件位置为 `vout:{输出索引}`，数量来自原始 uint64 字节；TRC20 为 `log:{交易内日志索引}`，不同网络不会与 ERC20 混同。三种策略继续使用同一商户／请求绑定及经济事件唯一约束，不新增法币流水，也不自动改变请求的 preparing 状态。完整范围、失败限制与归档要求见[方案第 6.10 节](blockchain-payment-plan.md#610-btcltc-与-trc20-核验第五批未开放收款)。
+
+第六批新增[历史与记账调度迁移](../database/migrations/2026_11_11_221155_add_history_tracking_to_crypto_payment_requests.php)，给请求增加可空字段：`history_to_block/hash/time` 保存连续游标，`history_recent_blocks` 保存最近 64 个连续哈希与时间，`history_checked_at` 仅在追平本轮链头时写入，`history_next_attempt_at/error_code` 支持有界补查重试；`review_reason` 保存异常款原因，`settlement_next_attempt_at` 支持可重跑的记账消费。新增网络＋扫描重试、状态＋记账重试索引。`down()` 丢失这些扫描／审核审计与进度，不能把它当作生产数据安全回滚。
+
+历史发现复用 `crypto_webhook_receipts`，用 `signature_mode=history_rpc` 标明扫描来源，摘要由请求、交易哈希、区块哈希生成，不能把此来源当作 HMAC 验签通过。线索与当前请求的完整块游标一起提交，新的区块归属允许重新核验；事件经济身份仍全局唯一。新 EVM 请求增加 `verification_policy.internal_transfers=true`，内部价值转入使用 `trace:{路径}`，顶层仍为 `native:0`。旧报价缺少此能力时不回填不可变 JSON。
+
+自动记账只接受已确认、足额、按时报价内的事件以及新鲜历史证明，并在同一事务提交独立余额、收入流水、请求 credited 标记、订单付款事实和通知待办。`paid_at` 取付足的最后一笔链上时间；事件 `block_time` 和扫描时间在写入数据库前转换为系统时区，避免 UTC 对象写入无时区字段后被误读。请求状态另包含 partial／expired／review；迟到、超额、到期不足额及已入账后证据变化不会自动冲正或创建法币结算。已入账的异常仍保留原账，后续人工调整需独立审计设计。
+
+本阶段只在 SQLite 内存测试库随测试执行迁移。独立 MySQL 的 DDL、锁竞争和并发压测仍待验证，不能将上述描述视为正式库已经部署。独立取款的实际结构见下方第八批；教程网页目标结构继续见[完整方案](blockchain-payment-plan.md)；只读派生边界见 [D-34](decisions.md#d-34-链上配置隔离与只读公钥地址分配)，本批订阅与验签边界见 [D-35](decisions.md#d-35-订阅代次回调线索与保守退订)。
+
+
+第七批新增[收款流程附表迁移](../database/migrations/2026_11_11_232321_create_crypto_checkouts_table.php)：`crypto_checkouts.order_id` 唯一，显式保存 `merchant_id/payment_method_id` 和不可改写的 `fee_snapshot`（约定百分比费率、固定 USD 费）；`current_request_id` 指向当前报价，`action/phase/status` 与 `requested_at/handoff_at/ready_at/next_attempt_at/error_code` 保存重开和交接进度。创建报价及更新当前请求指针同事务提交，中断后沿用已预留的派生索引和请求。请求表新增唯一可空自关联 `replaces_request_id`，旧请求、地址、订阅及收件全部保留。
+
+链上订单继续保存原币种 `amount/original_amount`，折扣幂等不变；`exchange_rate` 等于 `original_exchange_rate`，汇损百分比／每单位汇损／总汇损均为零，`converted_amount` 仅为原始汇率 USD 参考值。现有 `fee_percent_amount/fee_fixed_amount/settlement_amount` 写零，`settlement_mode=NULL`，不表示商户净入账为零；币数量应读当前请求的 `due_units/fee_units/net_units`，已入账读独立账本。第八批提供独立余额、入账凭证和链上明细；第九批订单列表及详情已按资产展示，筛选汇总读取原凭证或最新接受／调整记录。
+
+第七批 webhook 持久化也按商户 → 订单 → 请求锁序执行，与重新报价、地址发布及资金入账串行核对。跨请求正常入账先检查同单其他请求的款项线索与新鲜完整覆盖，不能把两笔请求的数量合并配单。所有新增结构只在隔离 SQLite 测试库验证，生产 MySQL 迁移／锁竞争尚未实测；带审计数据的 `down()` 仍是破坏性操作。
+
+
+第八批新增[取款与操作记录迁移](../database/migrations/2026_11_11_234945_create_crypto_withdrawals_and_events_tables.php)，不改变原订单收入唯一约束，不写法币资金表：
+
+| 表 | 数据与约束 |
+| --- | --- |
+| `crypto_withdrawals` | 商户＋UUID 申请键唯一；资产账户、网络、资产、精度、本金、同币种费用上限、初始占用、目标地址与申请人不可改写。保存审核与核销人／时间／说明、实际同币种费用、未经链上验证的线下凭证编号。外键删除 RESTRICT；模型禁止删除和终态修改 |
+| `crypto_withdrawal_events` | 商户、资产账户、申请、操作者，操作类型及前后状态，前后总额／占用、原因、人工凭证；申请＋操作类型唯一，模型禁止更新／删除，与余额及状态同事务提交 |
+
+取款数量仍为 `VARCHAR(78)` 最小单位字符串，输入先校验币精度和 uint256 范围，运算只用 bcmath。申请占用 `amount_units + fee_limit_units`；审核通过保持总额／占用；完成扣 `amount_units + actual_fee_units`，释放全部本次占用，未用费用恢复可申请余额。驳回／撤销只释放占用。`crypto_withdrawals.reserved_units` 是申请时不可变快照，不是该申请的当前占用；待审核和已审核状态才仍占用账户。
+
+锁顺序：入账沿用商户 → 订单 → 请求 → 事件 → 资产账户；取款先锁商户，再锁申请（处理时）和资产账户。同商户入账与取款以商户锁串行，申请余额判断在锁内执行；操作记录写入失败全部回滚。审核／核销平台账号权限和商户归属重新读取；同一请求键只有内容一致且同申请人时返回原申请，重复终态操作拒绝且不再扣款。已入账付款请求待复核、存在复核原因或事件失效／未核验／未确认时，该资产阻止新申请、审批和核销，仍可安全驳回或撤销。
+
+收入凭证和取款操作日志分别审计，不把占用释放写成新的收入，也不把人工凭证标为链上确认。线下凭证编号不是经济事件唯一键；本期无链上出款核验及输出分配。`down()` 会删除这两张审计表，仅适用于可丢弃环境；有实际取款数据的生产库应保留审计并向前修复。MySQL DDL 和多进程锁竞争仍待独立环境验证。
+
+
+### 第九批：异常款处理、冲正与欠额
+
+[新增迁移](../database/migrations/2026_11_12_001838_add_crypto_payment_reconciliation.php) 不修改旧迁移，不移除原收入的订单唯一约束：
+
+- `crypto_payment_resolutions`：商户、订单、报价基准请求、资产账户、操作人、商户＋UUID 唯一键、网络／资产、`accept/adjust/recheck` 类型、证据指纹及完整快照、费用快照、原收款／服务费／净额以及账户总额／欠额的前后值、当时占用和原因。模型禁止修改／删除，外键 RESTRICT。纯补查可没有资产账户，保存零金额快照，不产生收入。
+- `crypto_asset_balances.debt_units`：最小单位非负字符串，默认零。冲正先消耗未占用余额，余数形成欠额，不破坏正在处理的取款占用。实际账面权益为 `balance_units - debt_units`；存在欠额时可申请金额为零，禁止申请／批准／核销取款。新收入、驳回／撤销释放的金额优先抵扣欠额。
+- `crypto_ledger_entries` 和 `crypto_withdrawal_events` 新增 `debt_before_units/debt_after_units`（默认零），用于追溯收入或释放占用抵扣欠额。全部数量仍是 `VARCHAR(78)` 最小单位字符串和 bcmath，不用负数占用或浮点记账。
+
+每单当前收款／费用／净额优先取最后一条 `accept/adjust`，没有人工处理时取唯一原始收入；`recheck` 不覆盖财务投影。不要把原收入与所有处理后的累计值再次相加。费用报表采用当前筛选订单的这个投影，按网络＋资产汇总；筛选的时间维度仍是订单列表提供的时间条件，并非财务期间发生额报表。原成交额与 `paidEver()` 作为曾支付历史保持不变，重组后不能以它们当作仍可支出的币额。
+
+人工确认在商户 → 订单锁内重新读取全部报价、地址、事件和收件，所有地址均需新鲜完整覆盖，非孤块事件须已核验且确认。界面证据指纹必须匹配，不接受用户自行填写的入账金额。正常自动入账仍不合并不同报价；只有明确人工确认才汇总同一订单、同一网络和资产的历史地址。初次入账仍复用付款状态／可靠通知事务；后续冲正保留原 `paid_at` 和原收入，不伪造退款状态。
+
+服务费按累计实际收款与冻结费率重算、只收一次固定费；有原收入时沿用原报价，否则采用最早有款报价。为保持非负净额，人工处理的费用上限为实收数量，全部收款失效时费用和净额同时归零；此选择在确认窗口展示。复原链证据时追加恢复差额。证据变化或重新补查后恢复待复核，重复指纹不会重复记账，重复 UUID 返回原结果。
+
+生产 MySQL DDL／锁竞争尚未验收；迁移只在隔离测试库验证。含真实账务时不可通过回滚迁移删除上述审计记录。

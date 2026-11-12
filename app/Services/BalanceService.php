@@ -47,6 +47,8 @@ class BalanceService
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $key) {
             $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
                 ->lockForUpdate()->findOrFail($order->id);
+            $this->assertFiatOrder($fresh);
+
             $exists = MerchantBalanceTransaction::query()
                 ->withoutGlobalScopes()
                 ->where('idempotency_key', $key)
@@ -98,6 +100,8 @@ class BalanceService
         $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order): void {
             $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
                 ->lockForUpdate()->findOrFail($order->id);
+            $this->assertFiatOrder($fresh);
+
             $settlement = OrderSettlement::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
                 ->where('order_id', $fresh->id)->lockForUpdate()->first();
 
@@ -156,6 +160,8 @@ class BalanceService
     /** 商户、订单、结算记录已按顺序锁定；只做本地账务，禁止外部副作用。 */
     private function settleLockedOrder(Merchant $merchant, Order $order, OrderSettlement $settlement): bool
     {
+        $this->assertFiatOrder($order);
+
         if ($settlement->status !== OrderSettlement::STATUS_PENDING
             || ! $settlement->due_at || $settlement->due_at->isFuture()
             || ! in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'], true)
@@ -366,16 +372,21 @@ class BalanceService
         });
     }
 
+    /** Crypto balances must never enter the fiat balance ledger. */
+    private function assertFiatOrder(Order $order): void
+    {
+        if ($order->payment_type !== 'fiat') {
+            throw new BalanceOperationException(__('admin.finance.crypto_order_not_supported'));
+        }
+    }
+
     /**
-     * 订单当前是否还能退款。外层（加锁前）与锁内各调一次，规则必须完全一致。
-     *
-     * refunded 状态的订单只有在「还有钱没扣」时才放行，这就是补录网关退款的入口：
-     * 人工退完的订单 refunded_amount == amount，会被这里挡住，不会重复扣款。
-     *
-     * @throws BalanceOperationException
+     * 订单当前是否还能退款。外层与锁内各调一次；历史已退款但未扣足的订单仍允许补录。
      */
     private function assertRefundable(Order $order): void
     {
+        $this->assertFiatOrder($order);
+
         if (! in_array($order->status, self::REFUNDABLE_STATUSES, true)) {
             throw new BalanceOperationException("当前订单状态「{$order->status}」不可退款，只有已收款的订单才能退款。");
         }
@@ -398,6 +409,8 @@ class BalanceService
      */
     private function assertChargebackable(Order $order): void
     {
+        $this->assertFiatOrder($order);
+
         if (! in_array($order->status, self::CHARGEBACKABLE_STATUSES, true)) {
             throw new BalanceOperationException("当前订单状态「{$order->status}」不可拒付。");
         }
@@ -643,6 +656,8 @@ class BalanceService
         return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $operator, $attributes) {
             $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
                 ->lockForUpdate()->findOrFail($order->id);
+
+            $this->assertFiatOrder($fresh);
 
             if (! in_array($fresh->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'disputing'], true)) {
                 throw new BalanceOperationException("当前订单状态「{$fresh->status}」不可开立争议审核事件，只有已收款或争议中的订单才能开立。");

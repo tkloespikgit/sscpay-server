@@ -7,6 +7,7 @@ use App\Filament\Support\SystemConfigForm;
 use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
 use App\Services\MerchantRoleProvisioningService;
+use App\Support\CryptoSettings;
 use App\Support\OrderStatusColor;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
@@ -96,7 +97,8 @@ class SystemConfigResource extends Resource
 
                 TextInput::make('value_number')
                     ->label(__('admin.system_config.fields.config_value'))
-                    ->numeric()
+                    ->numeric(fn (?SystemConfig $record): bool => $record?->config_key !== 'crypto.quote_markup_percent')
+                    ->inputMode('decimal')
                     ->required()
                     ->rules(fn (?SystemConfig $record): array => SystemConfigForm::numberRules($record))
                     ->helperText(fn (?SystemConfig $record): ?string => match ($record?->config_key) {
@@ -112,14 +114,15 @@ class SystemConfigResource extends Resource
                     ->simple(TextInput::make('value')->required())
                     ->addActionLabel(__('admin.system_config.actions.add_item'))
                     ->visible(fn (Get $get, ?SystemConfig $record): bool => $get('value_type') === SystemConfig::TYPE_JSON
-                        && $record?->config_key !== OrderStatusColor::CONFIG_KEY),
+                        && $record?->config_key !== OrderStatusColor::CONFIG_KEY && ! CryptoSettings::isObjectKey($record?->config_key)),
 
                 Textarea::make('value_json_object')
                     ->label(__('admin.system_config.fields.config_value'))
-                    ->helperText(__('admin.system_config.order_status_colors.helper'))
+                    ->helperText(fn (?SystemConfig $record): string => CryptoSettings::isObjectKey($record?->config_key)
+                        ? __('crypto.settings.overrides_help') : __('admin.system_config.order_status_colors.helper'))
                     ->rows(18)
                     ->required()
-                    ->visible(fn (?SystemConfig $record): bool => $record?->config_key === OrderStatusColor::CONFIG_KEY),
+                    ->visible(fn (?SystemConfig $record): bool => $record?->config_key === OrderStatusColor::CONFIG_KEY || CryptoSettings::isObjectKey($record?->config_key)),
 
                 Toggle::make('value_boolean')
                     ->label(__('admin.system_config.fields.config_value'))

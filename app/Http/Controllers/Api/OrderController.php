@@ -16,6 +16,7 @@ use App\Http\Requests\Api\SyncOrderShippingRequest;
 use App\Jobs\SendPaymentLinkJob;
 use App\Models\Merchant;
 use App\Models\Order;
+use App\Services\CryptoCheckoutPresenter;
 use App\Services\OrderCreationService;
 use App\Services\OrderShippingService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
@@ -33,6 +34,7 @@ class OrderController extends Controller
     public function __construct(
         private readonly OrderCreationService $orderCreationService,
         private readonly OrderShippingService $orderShippingService,
+        private readonly CryptoCheckoutPresenter $cryptoPresenter,
     ) {}
 
     public function store(CreateOrderRequest $request): JsonResponse
@@ -82,13 +84,15 @@ class OrderController extends Controller
             'data' => [
                 'order_no' => $order->order_no,
                 'payment_link_token' => $order->payment_link_token,
-                'payment_url' => url("/payment/{$order->payment_link_token}"),
+                'payment_url' => $order->payment_type === 'crypto' ? $order->pay_url : url("/payment/{$order->payment_link_token}"),
                 // 支付网关插件渲染的收银台地址（远程创建支付订单成功后回填）
                 'pay_url' => $order->pay_url,
                 'converted_currency' => $order->converted_currency,
                 'converted_amount' => (string) $order->converted_amount,
                 'exchange_rate' => (string) $order->exchange_rate,
                 'payment_method' => $order->payment_method,
+                'payment_type' => $order->payment_type,
+                ...($order->payment_type === 'crypto' ? ['crypto_payment' => collect($this->cryptoPresenter->data($order))->except('qr')->all()] : []),
                 ...$this->statusData($order),
             ],
         ]);
@@ -125,6 +129,8 @@ class OrderController extends Controller
                 'amount' => (string) $order->amount,
                 'converted_amount' => (string) $order->converted_amount,
                 'payment_method' => $order->payment_method,
+                'payment_type' => $order->payment_type,
+                ...($order->payment_type === 'crypto' ? ['crypto_payment' => collect($this->cryptoPresenter->data($order))->except('qr')->all()] : []),
                 'created_at' => $order->created_at->toIso8601String(),
             ],
         ]);

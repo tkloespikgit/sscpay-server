@@ -43,3 +43,16 @@
         @endif
     </div>
 </div>
+
+@if (!empty($cryptoStats))
+    <div style="padding: 10px 20px" aria-label="{{ __('crypto.order.summary') }}">
+        <strong>{{ __('crypto.order.summary') }}</strong>
+        <p>{{ __('crypto.order.summary_help') }}</p>
+        @foreach ($cryptoStats as $row)
+            <p>{{ __('crypto.finance.networks.'.$row['network']) }} / {{ $row['asset'] }} ·
+                {{ __('crypto.order.gross') }}: {{ $row['gross'] }} ·
+                {{ __('crypto.order.fee') }}: {{ $row['fee'] }} ·
+                {{ __('crypto.order.net') }}: {{ $row['net'] }}</p>
+        @endforeach
+    </div>
+@endif

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\OrderResource\Pages;
+use App\Filament\Support\CryptoOrderDisplay;
 use App\Models\Application;
 use App\Models\Merchant;
 use App\Models\Order;
@@ -14,6 +15,7 @@ use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
+use App\Support\CryptoFinanceAccess;
 use App\Support\OrderStatusColor;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -71,7 +73,7 @@ class OrderResource extends Resource
             // shipping.tracking_number 列会自动触发 shipping 的预加载，这里额外带上
             // shipping.operator，避免点击"物流信息"弹窗时才现查触发懒加载；
             // paymentMethod 用于把 payment_method 列从 method_code 换成 method_name 展示。
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent', 'settlement']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent', 'settlement', 'cryptoRequests', ...CryptoOrderDisplay::RELATIONS]))
             ->columns([
                 // 商户名称列仅平台侧账号（超管、商户级管理员）可见（商户用户本来就只看自己的订单）
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
@@ -130,11 +132,22 @@ class OrderResource extends Resource
                     ->sortable(),
                 TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))
                     ->formatStateUsing(fn ($state, Order $record): string => static::convertedAmountState($record, $state))
+                    ->description(fn (Order $record): ?string => $record->payment_type === 'crypto' ? __('crypto.order.usd_reference') : null)
                     ->sortable(),
                 TextColumn::make('settlement_amount')->label(__('admin.order.columns.amount_settled'))
-                    ->money('usd')
+                    ->state(fn (Order $record): ?string => $record->payment_type === 'crypto'
+                        ? CryptoOrderDisplay::amount($record) : ($record->settlement_amount === null ? null : '$'.number_format((float) $record->settlement_amount, 2)))
                     ->placeholder(__('admin.order.placeholders.none'))
-                    ->sortable(),
+                    ->description(fn (Order $record): ?string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::state($record) : null),
+                TextColumn::make('receipt_currency')->label(__('crypto.order.denomination'))
+                    ->state(fn (Order $record): string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::denomination($record) : 'USD'),
+                TextColumn::make('crypto_rate')->label(__('crypto.order.rate'))
+                    ->state(fn (Order $record): string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::rate($record) : '1 '.$record->currency.' = '.$record->exchange_rate.' USD')
+                    ->visible(fn (): bool => (bool) auth()->user()?->isPlatformStaff())->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('crypto_fee')->label(__('crypto.order.fee'))
+                    ->state(fn (Order $record): ?string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::amount($record, 'fee') : null)
+                    ->visible(fn (): bool => CryptoFinanceAccess::allowed(CryptoFinanceAccess::user(), Permissions::CRYPTO_FINANCE_VIEW))
+                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('customer_email')->label(__('admin.order.columns.customer_email'))
                     ->color('primary')
                     ->action(static::viewCustomerInfoAction()),
@@ -172,6 +185,7 @@ class OrderResource extends Resource
             // "表格 <tfoot>"，没有"搜索栏下方"这个位置。
             // 筛选项按「订单信息 → 归属维度 → 状态维度 → 时间范围」分组排列。
             ->filters([
+                SelectFilter::make('payment_type')->label(__('crypto.order.payment_type'))->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')]),
                 Filter::make('order_no')
                     ->label(__('admin.order.filters.order_no'))
                     ->schema([

@@ -7,7 +7,10 @@ use App\Models\OrderShipping;
 use App\Models\User;
 use App\Observers\MerchantObserver;
 use App\Observers\OrderShippingObserver;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -19,6 +22,14 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        RateLimiter::for('crypto-checkout-read', fn (Request $request) => [
+            Limit::perMinute(240)->by('ip:'.$request->ip()),
+            Limit::perMinute(120)->by('token:'.hash('sha256', (string) $request->route('token'))),
+        ]);
+        RateLimiter::for('crypto-checkout-open', fn (Request $request) => [
+            Limit::perMinute(30)->by('ip:'.$request->ip()),
+            Limit::perMinute(6)->by('token:'.hash('sha256', (string) $request->route('token'))),
+        ]);
         OrderShipping::observe(OrderShippingObserver::class);
         Merchant::observe(MerchantObserver::class);
 

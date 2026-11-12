@@ -22,12 +22,14 @@ use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
+use App\Support\CryptoCheckoutGuard;
 use App\Support\Money;
 use App\Support\OrderTelegramSummary;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）、商户后台手工建单、收款链接落地页下单
@@ -67,6 +69,8 @@ class OrderCreationService
         private readonly PaymentGatewayService $paymentGateway,
         private readonly OrderItemService $orderItemService,
         private readonly PaymentMethodFailureService $paymentMethodFailureService,
+        private readonly CryptoCheckoutService $cryptoCheckout,
+        private readonly CryptoPaymentConfigurationService $cryptoConfiguration,
     ) {}
 
     /**
@@ -225,14 +229,27 @@ class OrderCreationService
         // 没传则在风控通过的渠道中按负载排序，从前三个随机抽取。
         // 7. 按渠道和商户费率保存财务快照；普通路由跳过手续费超过金额的候选。
         if (filled($data['payment_method_key'] ?? null)) {
-            $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data);
-            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
+            $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data, applicationDomain: $application->website);
+            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant,
+                $paymentMethod->payment_type === 'crypto' ? bcmul((string) $data['amount'], (string) $rate['original_rate'], 2) : $convertedAmount);
         } else {
             [$paymentMethod, $financialSnapshot] = $this->resolveGroupPaymentMethod($group, $merchant, $convertedAmount, [
                 'merchant_order_no' => (string) $data['merchant_order_no'],
                 'currency' => (string) $data['currency'],
                 'amount' => (string) $data['amount'],
+                'crypto_amount_usd' => bcmul((string) $data['amount'], (string) $rate['original_rate'], 2),
             ]);
+        }
+
+        if ($paymentMethod->payment_type === 'crypto') {
+            $storedExchangeRate = $itemConvertRate = (string) $rate['original_rate'];
+            $storedSurchargePercent = $storedSurchargeAmount = '0';
+            $surchargeFee = '0.00';
+            $convertedAmount = bcmul((string) $data['amount'], $itemConvertRate, 2);
+            $subtotalConverted = bcmul((string) $data['subtotal'], $itemConvertRate, 2);
+            $shippingFeeConverted = bcmul((string) $data['shipping_fee'], $itemConvertRate, 2);
+            $discountConverted = bcmul((string) $data['discount'], $itemConvertRate, 2);
+            $taxConverted = bcmul((string) $data['tax'], $itemConvertRate, 2);
         }
 
         // 是否要发送付款链接邮件：API 下单传 send_mail=Y 时为真；ManualOrderService
@@ -267,6 +284,7 @@ class OrderCreationService
         ) {
             $order = Order::createWithGeneratedIdentifiers([
                 'merchant_id' => $merchant->id,
+                'payment_type' => $paymentMethod->payment_type,
                 'application_id' => $application->id,
                 'payment_group_id' => $group->id,
                 // 收款链接下单时由 CheckoutLinkOrderService 传入，其余来源为 null
@@ -338,6 +356,10 @@ class OrderCreationService
                 ]);
             }
 
+            if ($order->payment_type === 'crypto') {
+                $this->cryptoCheckout->initialize($order);
+            }
+
             return $order;
         });
 
@@ -365,6 +387,21 @@ class OrderCreationService
 
         if (bccomp($totalFee, $amountUsd, 2) > 0) {
             throw new MinimumAmountNotMetException($method->minTransactionAmount($merchant->id), $amountUsd);
+        }
+
+        if ($method->payment_type === 'crypto') {
+            try {
+                if (! CryptoCheckoutGuard::enabled() || ! $method->configMap?->is_active) {
+                    throw new \DomainException('Crypto checkout is disabled.');
+                }
+                $this->cryptoConfiguration->validate($method->only(['payment_type', 'config_map_id', 'config']), $method);
+            } catch (\DomainException|ValidationException) {
+                throw new PaymentMethodNotAvailableException($method->method_code);
+            }
+
+            return ['fee_percent_amount' => '0.00', 'fee_fixed_amount' => '0.00', 'settlement_amount' => '0.00',
+                'reserve_percent' => '0', 'reserve_days' => 0, 'refund_fee_snapshot' => '0.00', 'chargeback_fee_snapshot' => '0.00',
+                'settlement_mode' => null, 'settlement_days' => 0];
         }
 
         return [
@@ -397,7 +434,8 @@ class OrderCreationService
             }
 
             try {
-                return [$method, $this->financialSnapshot($method, $merchant, $amountUsd)];
+                return [$method, $this->financialSnapshot($method, $merchant,
+                    $method->payment_type === 'crypto' ? ($orderDetails['crypto_amount_usd'] ?? $amountUsd) : $amountUsd)];
             } catch (MinimumAmountNotMetException $error) {
                 $amountError = $error;
                 $excludedMethodIds[] = (int) $method->id;
@@ -420,6 +458,7 @@ class OrderCreationService
                 $order->designated_payment_method_key,
                 $order->only(['notify_url', 'return_url', 'cancel_url']),
                 $order->payment_method_id,
+                $order->application?->website,
             );
         } else {
             $group = PaymentGroup::query()->forMerchant($merchant->id)->withTrashed()->find($order->payment_group_id);
@@ -500,6 +539,13 @@ class OrderCreationService
     /** 网关建单失败后立即停止，不在同一请求内切换渠道。 */
     private function createPayment(Order $order, ?PaymentMethod $method): void
     {
+        if ($order->payment_type === 'crypto' && $method?->payment_type === 'crypto') {
+            return;
+        }
+        if ($order->payment_type !== 'fiat' || ($method && $method->payment_type !== 'fiat')) {
+            throw new PaymentMethodNotAvailableException((string) ($method?->method_code ?? $order->payment_method));
+        }
+
         if (filled($order->pay_url) || $order->paid_at !== null || ! in_array($order->status, ['pending', 'failed'], true)) {
             return;
         }
@@ -548,7 +594,7 @@ class OrderCreationService
      * @throws PaymentMethodNotAvailableException
      * @throws PaymentMethodDomainMismatchException
      */
-    private function resolveDesignatedPaymentMethod(Merchant $merchant, string $methodKey, array $data, ?int $methodId = null): PaymentMethod
+    private function resolveDesignatedPaymentMethod(Merchant $merchant, string $methodKey, array $data, ?int $methodId = null, ?string $applicationDomain = null): PaymentMethod
     {
         // method_code 虽然已是全局唯一、单独就能定位记录，这里依然必须叠加商户过滤：
         // 这是一道授权边界，不能让 A 商户传别家的 payment_method_key 就用上别家的渠道收款。
@@ -564,15 +610,16 @@ class OrderCreationService
             ->where('is_active', true)
             ->first();
 
-        if (! $method) {
+        if (! $method || ($method->payment_type === 'crypto' && ! CryptoCheckoutGuard::enabled())) {
             throw new PaymentMethodNotAvailableException($methodKey);
         }
 
+        $boundDomain = $method->payment_type === 'crypto' ? $applicationDomain : $method->domain;
         foreach (['notify_url', 'return_url', 'cancel_url'] as $field) {
             $url = (string) ($data[$field] ?? '');
 
-            if (! $this->isSameHost($url, $method->domain)) {
-                throw new PaymentMethodDomainMismatchException($field, $url, $methodKey, (string) $method->domain);
+            if (! $this->isSameHost($url, $boundDomain)) {
+                throw new PaymentMethodDomainMismatchException($field, $url, $methodKey, (string) $boundDomain);
             }
         }
 

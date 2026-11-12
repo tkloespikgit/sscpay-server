@@ -5,11 +5,15 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\PaymentMethodConfigMapResource\Pages;
 use App\Models\PaymentMethodConfigMap;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\KeyValue;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Repeater;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -57,6 +61,10 @@ class PaymentMethodConfigMapResource extends Resource
     {
         return $schema->components([
             Section::make()->schema([
+                Radio::make('payment_type')->label(__('crypto.payment_type'))
+                    ->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')])
+                    ->default('fiat')->required()->in(['fiat', 'crypto'])->inline()->live()
+                    ->disabled(fn (?PaymentMethodConfigMap $record): bool => $record !== null)->dehydrated(),
                 TextInput::make('name')
                     ->label(__('admin.payment_method_config_map.fields.name'))
                     ->required()
@@ -88,6 +96,13 @@ class PaymentMethodConfigMapResource extends Resource
                                 ->label(__('admin.payment_method_config_map.fields.field_label'))
                                 ->required()
                                 ->placeholder('Secret Key'),
+                            Select::make('type')->label(__('crypto.field_type'))
+                                ->options(['text' => __('crypto.text'), 'select' => __('crypto.select')])
+                                ->default('text')->required()->live(),
+                            KeyValue::make('options')->label(__('crypto.field_options'))
+                                ->visible(fn (Get $get): bool => $get('type') === 'select')
+                                ->required(fn (Get $get): bool => $get('type') === 'select'),
+                            TextInput::make('default')->label(__('crypto.field_default'))->maxLength(1000),
                             Toggle::make('required')
                                 ->label(__('admin.payment_method_config_map.fields.field_required'))
                                 ->default(true),

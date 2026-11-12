@@ -70,7 +70,10 @@ class Order extends Model
      */
     public const NEVER_PAID_STATUSES = ['pending', 'failed', 'cancelled', 'expired'];
 
+    protected $attributes = ['payment_type' => 'fiat'];
+
     protected $fillable = [
+        'payment_type',
         'merchant_id',
         'application_id',
         'payment_group_id',
@@ -197,6 +200,31 @@ class Order extends Model
         ];
     }
 
+    public function cryptoRequests(): HasMany
+    {
+        return $this->hasMany(CryptoPaymentRequest::class);
+    }
+
+    public function cryptoIncome(): HasOne
+    {
+        return $this->hasOne(CryptoLedgerEntry::class);
+    }
+
+    public function cryptoResolutions(): HasMany
+    {
+        return $this->hasMany(CryptoPaymentResolution::class);
+    }
+
+    public function latestCryptoResolution(): HasOne
+    {
+        return $this->hasOne(CryptoPaymentResolution::class)->ofMany(['id' => 'max'], fn ($query) => $query->whereIn('action', ['accept', 'adjust']));
+    }
+
+    public function latestCryptoRequest(): HasOne
+    {
+        return $this->hasOne(CryptoPaymentRequest::class)->latestOfMany();
+    }
+
     public function settlement(): HasOne
     {
         return $this->hasOne(OrderSettlement::class);
@@ -214,6 +242,12 @@ class Order extends Model
 
     protected static function booted(): void
     {
+        static::updating(function (self $order): void {
+            if ($order->isDirty('payment_type')) {
+                throw new \LogicException('An existing order cannot change its payment type.');
+            }
+        });
+
         // 兜底：如果调用方绕开了 createWithGeneratedIdentifiers() 直接 Order::create()，
         // 仍然保证 order_no / payment_link_token 不为空（两者在迁移里都是必填字段）。
         static::creating(function (self $order) {
