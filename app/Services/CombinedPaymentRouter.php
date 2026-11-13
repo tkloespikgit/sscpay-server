@@ -20,7 +20,7 @@ class CombinedPaymentRouter
         private readonly Randomizer $randomizer = new Randomizer,
     ) {}
 
-    /** 仅单笔限额不足触发组合；其他不可用原因不转换成拆单。 */
+    /** 普通单仍可使用 CREATE/COPY；仅全部渠道单笔限额不足时尝试组合报价。 */
     public function required(PaymentGroup $group, string $totalUsd): bool
     {
         $methods = $this->methods($group);
@@ -39,7 +39,8 @@ class CombinedPaymentRouter
         }
         $merchant = Merchant::query()->withoutGlobalScopes()->findOrFail($parent->merchant_id);
         $methods = $this->methods($group);
-        $full = $methods->filter(fn (PaymentMethod $method): bool => $this->eligible($method, $merchant, $parent->remaining_converted_amount));
+        $supported = $methods->filter(fn (PaymentMethod $method): bool => $this->supportsProductMode($method));
+        $full = $supported->filter(fn (PaymentMethod $method): bool => $this->eligible($method, $merchant, $parent->remaining_converted_amount));
         if ($full->isNotEmpty()) {
             $excluded = $methods->pluck('id')->diff($full->pluck('id'))->all();
             $method = $this->payments->resolvePaymentMethod($group, $parent->remaining_converted_amount, $excluded);
@@ -48,7 +49,7 @@ class CombinedPaymentRouter
         }
 
         $candidates = [];
-        foreach ($methods as $method) {
+        foreach ($supported as $method) {
             $limit = (string) $method->max_amount_per_transaction;
             if ($method->isUnlimited('max_amount_per_transaction') || ! $this->capacity->permits($method, $limit)) {
                 continue;
@@ -68,6 +69,12 @@ class CombinedPaymentRouter
         $amount = bcdiv((string) $this->randomizer->getInt($low, $high), '100', 2);
 
         return $this->result($selected['method'], $amount, $this->convertedAmount($parent, $amount));
+    }
+
+    public function supportsProductMode(PaymentMethod $method): bool
+    {
+        return in_array($method->product_match_mode ?: PaymentMethod::MODE_MATCH,
+            [PaymentMethod::MODE_MATCH, PaymentMethod::MODE_VIRTUAL], true);
     }
 
     public function convertedAmount(CombinedOrder $parent, string $amount): string

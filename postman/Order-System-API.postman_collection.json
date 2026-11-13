@@ -1712,7 +1712,7 @@
               }
             },
             "url": "{{base_url}}/order/create",
-            "description": "应用开启组合付款并接入 V2，组内全部可用渠道单笔限额小于 4000 USD，候选日/月余额足够容纳完整单笔上限时返回 combine。只生成父单；打开 pay_url 逐笔付款。"
+            "description": "应用开启组合付款并接入 V2，组内全部可用渠道单笔限额小于 4000 USD，且存在 MATCH/VIRTUAL 候选、日/月余额足够容纳完整单笔上限时返回 combine。COPY/CREATE 不参与组合付款，包括余额一次付清。只生成父单；打开 pay_url 逐笔付款。"
           },
           "response": [],
           "event": [

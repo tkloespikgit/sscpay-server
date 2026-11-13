@@ -3,7 +3,7 @@
 return [
     'expired_count' => 'Stopped new payments for :count expired combined orders.',
     'enable' => 'Allow combined payments',
-    'enable_help' => 'Use a separate checkout for sequential payments when the total exceeds every available single-payment limit. Enabling this uses V2 webhooks; merchants must handle payment progress.',
+    'enable_help' => 'Use a separate checkout for sequential payments when the total exceeds every available single-payment limit. Only MATCH/VIRTUAL channels participate; COPY/CREATE are excluded. Enabling this uses V2 webhooks; merchants must handle payment progress.',
     'webhook_version' => 'Payment webhook protocol',
     'webhook_v1' => 'V1: Original payment confirmation',
     'webhook_v2' => 'V2: Order type and cumulative payment progress',

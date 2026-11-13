@@ -412,7 +412,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'Each step first attempts to pay the full balance. Otherwise a channel must have daily/monthly capacity for its full transaction cap and an available daily count. Choose uniformly among the three highest eligible caps and charge 70–90% of that cap. Only one unresolved child is allowed; the next step opens after confirmation and selects a channel again. If no channel is available, paid progress is retained for retry. Creation does not reserve capacity for all future payments.',
+                    'text' => 'Combined payments only allow MATCH/VIRTUAL product modes. COPY/CREATE are excluded from every payment, including the final balance; single orders may still use them. Each step first attempts to pay the full balance using an eligible channel. Otherwise a channel must have daily/monthly capacity for its full transaction cap and an available daily count. Choose uniformly among the three highest eligible caps and charge 70–90% of that cap. Only one unresolved child is allowed; the next step opens after confirmation and selects a channel again. If no channel is available, paid progress is retained for retry. Creation does not reserve capacity for all future payments.',
                 ],
                 [
                     'type' => 'table',
@@ -1136,7 +1136,7 @@ curl_close($ch);
                     'rows' => [
                         [
                             'COMBINE_PAYMENT_UNAVAILABLE (409)',
-                            'No split candidate meets the full cap and daily/monthly capacity requirements; retry later.',
+                            'No combined-payment channel meets the product-mode and capacity requirements. Only MATCH/VIRTUAL are supported; COPY/CREATE are excluded. Adjust channel settings or retry later.',
                         ],
                         [
                             'CHILD_NUMBER_CONFLICT (409)',

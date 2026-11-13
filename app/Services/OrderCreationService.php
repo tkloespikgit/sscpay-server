@@ -153,6 +153,12 @@ class OrderCreationService
         Cache::lock("order-create:{$order->merchant_id}:{$order->merchant_order_no}", $lockSeconds)
             ->block(10, function () use ($order): void {
                 $order->refresh();
+                if ($order->combined_order_id) {
+                    $method = PaymentMethod::query()->forMerchant($order->merchant_id)->find($order->payment_method_id);
+                    if (! $method || ! $this->combinedRouter->supportsProductMode($method)) {
+                        throw new CombinedPaymentException('COMBINE_PAYMENT_UNAVAILABLE');
+                    }
+                }
                 $this->retryPayment($order, $order->merchant);
             });
 
@@ -389,6 +395,9 @@ class OrderCreationService
             $this->assertOrderNumberAvailable($merchant->id, (string) $data['merchant_order_no'], $parent);
             $lockedMethod = PaymentMethod::query()->forMerchant($merchant->id)->where('is_active', true)
                 ->lockForUpdate()->find($paymentMethod->id);
+            if ($parent !== null && $lockedMethod && ! $this->combinedRouter->supportsProductMode($lockedMethod)) {
+                throw new CombinedPaymentException('COMBINE_PAYMENT_UNAVAILABLE');
+            }
             if (! $lockedMethod || (! filled($data['payment_method_key'] ?? null)
                 && ! $this->capacity->permits($lockedMethod, $convertedAmount))) {
                 throw new NoAvailablePaymentMethodException($group->group_key);
@@ -718,6 +727,9 @@ class OrderCreationService
     {
         if (! $paymentMethod) {
             throw new PaymentGatewayException('订单锁定的支付方式已不存在，无法远程创建支付订单', -1);
+        }
+        if ($order->combined_order_id && ! $this->combinedRouter->supportsProductMode($paymentMethod)) {
+            throw new CombinedPaymentException('COMBINE_PAYMENT_UNAVAILABLE');
         }
 
         $paymentMethod->loadMissing('configMap');

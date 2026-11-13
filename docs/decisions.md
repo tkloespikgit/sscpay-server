@@ -360,3 +360,11 @@
 应用开启组合同时选择 V2 通知，原 V1 体保持；每笔首次成功通知包含父单进度、真实子单数组、event_id 和付款 version。商户原订单只在全部付清后成功，完整 JSON 参与旧算法签名。查询、物流、邮件、广告和子单结算约束见 [API 协议](../doc/api.md#组合付款与-v2-通知) 与 [数据设计](database.md#组合付款数据演进2026-11-13当前工作区)。父单不参与余额记账。部分付款到期或异常需要核对，不自动退款，不伪造物流号。
 
 **依据：** [CombinedOrderService](../app/Services/CombinedOrderService.php)、[CombinedPaymentRouter](../app/Services/CombinedPaymentRouter.php)、[CombinedPaymentStatusService](../app/Services/CombinedPaymentStatusService.php)、[核心测试](../tests/Feature/CombinedPaymentTest.php)。
+
+## D-34 组合付款排除 COPY/CREATE 商品模式
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 补充 D-33 的渠道资格规则：组合付款仅使用 `MATCH` / `VIRTUAL`，空配置仍按既有 `MATCH` 默认处理；`COPY` / `CREATE` 不参与首笔、后续随机付款或余额一次付清。普通订单仍允许这两种模式，不能因为组合限制把本可普通全额付款的订单改成组合单。
+
+**原因与影响：** 组合子单使用本笔金额的付款明细，未实现父单原商品到子单的分配；直接使用 COPY 会把付款描述当作商品名。按用户选择限制渠道，不改写现有创建/复制商品规则。组合报价和每次付款前均复查模式，已有未决子单的远端补建和付款链接复用同样受限；不自动取消外部支付、不删除原子单或释放未决占用，已发生的真实付款继续登记。无合格渠道时返回原 `COMBINE_PAYMENT_UNAVAILABLE`。无数据库变更。
+
+**依据：** [渠道资格](../app/Services/CombinedPaymentRouter.php)、[报价校验](../app/Services/CombinedOrderService.php)、[真实建单与续付](../app/Services/OrderCreationService.php)、[路由回归](../tests/Feature/CombinedPaymentRoutingTest.php)、[未决子单回归](../tests/Feature/CombinedPaymentTest.php)。

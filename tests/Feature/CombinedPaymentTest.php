@@ -10,6 +10,7 @@ use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
+use App\Models\PaymentMethod;
 use App\Services\AdConversionService;
 use App\Services\BalanceService;
 use App\Services\CombinedOrderService;
@@ -22,6 +23,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesCombinedPayments;
 use Tests\TestCase;
 
@@ -265,6 +267,43 @@ class CombinedPaymentTest extends TestCase
         $this->assertDatabaseCount('orders', 1);
         $this->assertSame($method->id, $child->fresh()->payment_method_id);
         $this->assertSame($sent[0]['s_order_id'], $sent[1]['s_order_id']);
+    }
+
+    #[DataProvider('excludedPendingProductModes')]
+    public function test_pending_children_cannot_continue_with_an_excluded_product_mode(string $mode, ?string $payUrl): void
+    {
+        $method = $this->combinedMethod('original', '800.00', ['product_match_mode' => $mode]);
+        $parent = $this->combinedParent();
+        $child = $this->makeOrder('PENDING-CHILD', $parent->merchant_order_no.'-S001', [
+            'combined_order_id' => $parent->id, 'combined_sequence' => 1,
+            'payment_group_id' => $this->group->id, 'payment_method_id' => $method->id,
+            'payment_method' => $method->method_code, 'status' => 'pending',
+            'risk_reservation_status' => 'held', 'pay_url' => $payUrl,
+        ]);
+        $parent->update(['current_order_id' => $child->id, 'next_sequence' => 2]);
+        $this->combinedMethod('other');
+
+        $this->postJson($parent->pay_url.'/pay', [])->assertStatus(409)
+            ->assertJsonPath('error_code', 'COMBINE_PAYMENT_UNAVAILABLE');
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('order_matched_items', 0);
+        $this->assertSame($child->id, $parent->refresh()->current_order_id);
+        $this->assertSame('0.00', $parent->paid_amount);
+        $this->assertSame('held', $child->refresh()->risk_reservation_status);
+        $this->assertSame($method->id, $child->payment_method_id);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{string, string|null}> */
+    public static function excludedPendingProductModes(): array
+    {
+        return [
+            'create without remote link' => [PaymentMethod::MODE_CREATE, null],
+            'copy without remote link' => [PaymentMethod::MODE_COPY, null],
+            'create with remote link' => [PaymentMethod::MODE_CREATE, 'https://pay.example.com/existing'],
+            'copy with remote link' => [PaymentMethod::MODE_COPY, 'https://pay.example.com/existing'],
+        ];
     }
 
     public function test_parent_reserves_its_child_number_namespace(): void

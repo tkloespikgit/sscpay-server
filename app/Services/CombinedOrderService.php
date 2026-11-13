@@ -131,7 +131,8 @@ class CombinedOrderService
         $group = PaymentGroup::query()->forMerchant($parent->merchant_id)->where('is_active', true)->find($parent->payment_group_id);
         $query = $group?->activePaymentMethods()->forMerchant($parent->merchant_id)->where('payment_methods.id', $quote['payment_method_id']);
         $method = $lock ? $query?->lockForUpdate()->first() : $query?->first();
-        if (! $method || bccomp((string) $quote['amount'], $parent->remaining_amount, 2) > 0
+        if (! $method || ! $this->router->supportsProductMode($method)
+            || bccomp((string) $quote['amount'], $parent->remaining_amount, 2) > 0
             || bccomp($this->router->convertedAmount($parent, (string) $quote['amount']), (string) $quote['converted_amount'], 2) !== 0
             || ! $this->capacity->permits($method, (string) $quote['converted_amount'])) {
             throw new CombinedPaymentException('QUOTE_EXPIRED');

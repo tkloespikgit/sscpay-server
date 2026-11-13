@@ -6,12 +6,15 @@ use App\Exceptions\CombinedPaymentException;
 use App\Models\CombinedOrder;
 use App\Models\ExchangeRate;
 use App\Models\Merchant;
+use App\Models\Order;
+use App\Models\PaymentMethod;
 use App\Services\CombinedOrderService;
 use App\Services\CombinedPaymentRouter;
 use App\Services\OrderPaymentStatusService;
 use App\Services\PaymentCapacityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesCombinedPayments;
 use Tests\TestCase;
 
@@ -29,12 +32,14 @@ class CombinedPaymentRoutingTest extends TestCase
     public function test_only_three_highest_eligible_limits_are_random_candidates(): void
     {
         $a = $this->combinedMethod('first', '800.00');
-        $b = $this->combinedMethod('second', '700.00');
+        $b = $this->combinedMethod('second', '700.00', ['product_match_mode' => PaymentMethod::MODE_VIRTUAL]);
         $c = $this->combinedMethod('third', '600.00');
         $this->combinedMethod('fourth', '500.00');
         $this->combinedMethod('daily-short', '1200.00', ['max_amount_per_day' => '1199.99']);
         $this->combinedMethod('monthly-short', '1300.00', ['max_amount_per_month' => '1299.99']);
         $this->combinedMethod('inactive', '2000.00', ['is_active' => false]);
+        $this->combinedMethod('create', '2100.00', ['product_match_mode' => PaymentMethod::MODE_CREATE]);
+        $this->combinedMethod('copy', '2200.00', ['product_match_mode' => PaymentMethod::MODE_COPY]);
         $parent = $this->combinedParent();
         $router = app(CombinedPaymentRouter::class);
         $seen = [];
@@ -66,6 +71,94 @@ class CombinedPaymentRoutingTest extends TestCase
         $full->update(['max_amount_per_transaction' => '0.00']);
         $quote = app(CombinedPaymentRouter::class)->quote($parent);
         $this->assertSame('900.00', $quote['converted_amount']);
+    }
+
+    public function test_full_balance_routing_excludes_create_and_copy_from_the_normal_channel_selector(): void
+    {
+        $allowed = $this->combinedMethod('allowed', '1000.00');
+        $this->combinedMethod('create', '0.00', ['product_match_mode' => PaymentMethod::MODE_CREATE]);
+        $this->combinedMethod('copy', '0.00', ['product_match_mode' => PaymentMethod::MODE_COPY]);
+        $parent = $this->combinedParent([
+            'paid_amount' => '3100.00', 'paid_converted_amount' => '3100.00',
+            'remaining_amount' => '900.00', 'remaining_converted_amount' => '900.00',
+        ]);
+        for ($i = 0; $i < 10; $i++) {
+            $quote = app(CombinedPaymentRouter::class)->quote($parent);
+            $this->assertSame($allowed->id, $quote['payment_method_id']);
+            $this->assertSame('900.00', $quote['amount']);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_a_balance_is_split_again_when_only_create_or_copy_can_cover_it_in_full(): void
+    {
+        $allowed = $this->combinedMethod('allowed', '800.00');
+        $this->combinedMethod('create', '0.00', ['product_match_mode' => PaymentMethod::MODE_CREATE]);
+        $this->combinedMethod('copy', '0.00', ['product_match_mode' => PaymentMethod::MODE_COPY]);
+        $parent = $this->combinedParent([
+            'paid_amount' => '3100.00', 'paid_converted_amount' => '3100.00',
+            'remaining_amount' => '900.00', 'remaining_converted_amount' => '900.00',
+        ]);
+
+        $quote = app(CombinedPaymentRouter::class)->quote($parent);
+
+        $this->assertSame($allowed->id, $quote['payment_method_id']);
+        $this->assertGreaterThanOrEqual(0, bccomp($quote['amount'], '560.00', 2));
+        $this->assertLessThanOrEqual(0, bccomp($quote['amount'], '720.00', 2));
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('excludedProductModes')]
+    public function test_an_over_limit_order_cannot_create_a_parent_with_only_an_excluded_product_mode(string $mode): void
+    {
+        $this->combinedMethod('excluded', '800.00', ['product_match_mode' => $mode]);
+
+        $this->createCombined()->assertStatus(409)->assertJsonPath('error_code', 'COMBINE_PAYMENT_UNAVAILABLE');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('excludedProductModes')]
+    public function test_create_and_copy_remain_available_for_single_payments(string $mode): void
+    {
+        $this->combinedMethod('small', '800.00');
+        $method = $this->combinedMethod('single', '5000.00', ['product_match_mode' => $mode]);
+        $this->fakeCombinedGateway();
+
+        $this->createCombined()->assertOk()->assertJsonPath('data.order_type', 'single')
+            ->assertJsonPath('data.payment_method', $method->method_code);
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertNull(Order::sole()->combined_order_id);
+        Http::assertSentCount(1);
+    }
+
+    #[DataProvider('excludedProductModes')]
+    public function test_a_quote_cannot_be_paid_or_reused_after_its_channel_switches_to_an_excluded_mode(string $mode): void
+    {
+        $method = $this->combinedMethod();
+        $this->createCombined()->assertOk();
+        $parent = CombinedOrder::sole();
+        $quote = app(CombinedOrderService::class)->quote($parent);
+        $method->update(['product_match_mode' => $mode]);
+        $allowed = $this->combinedMethod('allowed');
+
+        $this->postJson($parent->pay_url.'/pay', ['quote_id' => $quote['id']])
+            ->assertStatus(409)->assertJsonPath('error_code', 'QUOTE_EXPIRED');
+        $response = $this->postJson($parent->pay_url.'/quote')->assertOk()
+            ->assertJsonPath('data.quote.payment_method', $allowed->method_code);
+
+        $this->assertNotSame($quote['id'], $response->json('data.quote.id'));
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{string}> */
+    public static function excludedProductModes(): array
+    {
+        return ['create' => [PaymentMethod::MODE_CREATE], 'copy' => [PaymentMethod::MODE_COPY]];
     }
 
     public function test_shared_channel_pending_reservations_reduce_daily_monthly_and_count_capacity(): void

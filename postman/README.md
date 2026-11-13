@@ -12,7 +12,7 @@
 
 应用启用组合付款前，商户先适配 V2 通知。默认跳过组合文件夹；仅在隔离测试环境设置 enable_combined_examples=true 后单独运行：
 
-1. 为测试应用开启组合付款，配置组内全部渠道单笔限额小于 4000 USD，候选日/月余额需容纳完整单笔上限。
+1. 为测试应用开启组合付款，配置组内全部渠道单笔限额小于 4000 USD，组合候选须为 MATCH/VIRTUAL，且日/月余额需容纳完整单笔上限。COPY/CREATE 不参与组合付款，包括余额一次付清。
 2. 创建组合父单，确认 order_type=combine、children=[]，打开 pay_url 进入独立收银台。
 3. 每次只付款当前子单；第一笔确认后查询应为 status=pending、order_status=partially_paid，累计金额增长。全部付清才为 paid。
 4. 校验 webhook 的完整 JSON（包含 children、null 和累计字段）；按 event_id 去重并按 version 防止旧重试覆盖新进度。不能只用父单号 + pending 去重。

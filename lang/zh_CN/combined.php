@@ -3,7 +3,7 @@
 return [
     'expired_count' => '已停止 :count 笔到期组合订单的新付款。',
     'enable' => '允许组合付款',
-    'enable_help' => '超过所有可用渠道单笔限额时，使用独立收银台逐笔付款。启用后使用新版 webhook，商户须按累计进度处理通知。',
+    'enable_help' => '超过所有可用渠道单笔限额时，使用独立收银台逐笔付款。组合付款仅使用 MATCH/VIRTUAL 渠道，COPY/CREATE 不参与。启用后使用新版 webhook，商户须按累计进度处理通知。',
     'webhook_version' => '付款通知协议',
     'webhook_v1' => 'V1：原有支付成功通知',
     'webhook_v2' => 'V2：订单类型与累计付款进度',
