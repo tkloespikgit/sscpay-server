@@ -187,7 +187,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
 | `order_shippings` | 每订单最多一条未删除物流记录；含 WP 插件 `sync_*`，以及中性轨迹字段（`tracking_*`）与 `logistics_anomaly*`（Webhook / 异常边沿主动查 + 每日本地重算；与 WP sync 无关） |
-| `order_shipment_syncs` | 商户网站物流回传批次；关联商户、订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态 |
+| `order_shipment_syncs` | 商户网站物流回传批次；关联商户、子单或普通订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态；组合单回传用父级原商户号定位，子商户号另存，见 [D-38](decisions.md#d-38-组合物流回传用父级原商户号定位订单) |
 | `order_shipment_sync_attempts` | 每批回传的逐次 HTTP 请求结果；保存地址、鉴权头、HTTP 状态、响应、错误及请求时间，不保存应用 API 密钥；签名在实际发送时现算 |
 | `order_events` | 插件事件归档，按系统订单号与外部日志 ID 去重，不驱动订单状态 |
 | `order_gateway_status_events` | 网关 webhook/主动查询的标准化接收审计，记录商户、订单、网关尝试引用、来源、映射状态、事件时间、处理结果和白名单摘要；不保存凭证或完整客户 body，不等同插件日志 |

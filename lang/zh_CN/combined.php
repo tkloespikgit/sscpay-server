@@ -24,7 +24,6 @@ return [
     'prepare' => '重新获取本笔付款',
     'complete' => '已全部付清',
     'closed' => '当前订单无法继续付款，请联系商户处理已付金额。',
-    'return' => '返回商户',
     'noscript' => '请启用 JavaScript 以使用组合收银台。付款结果以系统确认到账为准。',
     'part' => '第 :number 笔',
     'states' => ['pending' => '待付款', 'paid' => '已付款', 'failed' => '付款未成功', 'cancelled' => '已取消', 'expired' => '已过期', 'review' => '待核对'],

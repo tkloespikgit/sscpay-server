@@ -14,6 +14,7 @@ if (root) {
         element('total').textContent = money(state.amount);
         element('paid').textContent = money(state.paid_amount);
         element('remaining').textContent = money(state.remaining_amount);
+        element('instructions').hidden = state.status === 'paid';
         const current = state.current_payment || state.quote;
         element('current').hidden = !current || !state.payable;
         element('current-amount').textContent = current ? money(current.amount) : '—';
@@ -22,13 +23,8 @@ if (root) {
         element('pay').disabled = busy || !current || (quoteFailed && !state.current_payment);
         element('pay').textContent = busy ? labels.loading : (state.current_payment ? labels.continue : labels.pay);
         element('refresh').hidden = !state.payable || busy || (!quoteFailed && !!current);
-        element('message').textContent = message || (state.status === 'paid' ? labels.complete
-            : (!state.payable ? labels.closed : (state.current_payment ? labels.waiting : '')));
-        const returnLink = element('return');
-        returnLink.hidden = state.status !== 'paid' || !state.return_url;
-        if (!returnLink.hidden) {
-            returnLink.href = state.return_url;
-        }
+        element('message').textContent = state.status === 'paid' ? labels.complete
+            : (message || (!state.payable ? labels.closed : (state.current_payment ? labels.waiting : '')));
         const history = element('history');
         history.replaceChildren();
         for (const child of state.children) {

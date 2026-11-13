@@ -72,6 +72,8 @@ class CombinedPaymentController extends Controller
 
     private function resolve(Request $request, string $token): CombinedOrder
     {
+        app()->setLocale('en');
+
         $parent = CombinedOrder::query()->withoutGlobalScopes()->whereNull('deleted_at')
             ->where('payment_link_token', $token)->with(['merchant', 'application'])->firstOrFail();
         abort_unless(strtolower($parent->checkout_host) === strtolower($request->getHost())
@@ -81,11 +83,6 @@ class CombinedPaymentController extends Controller
             $link = CheckoutLink::query()->withoutGlobalScopes()->whereNull('deleted_at')
                 ->where('merchant_id', $parent->merchant_id)->active()->find($parent->checkout_link_id);
             abort_unless($link && in_array(strtolower($request->getHost()), $link->allowedHosts(), true), 404);
-        }
-        $locale = $request->query('lang', $request->session()->get('combined_locale', app()->getLocale()));
-        if (in_array($locale, ['zh_CN', 'en'], true)) {
-            app()->setLocale($locale);
-            $request->session()->put('combined_locale', $locale);
         }
 
         return $parent;
@@ -108,7 +105,6 @@ class CombinedPaymentController extends Controller
                 'amount' => (string) $current->amount, 'payment_method' => $current->payment_method,
                 'status' => $current->status, 'pay_url' => $current->pay_url,
             ] : null,
-            'return_url' => $parent->status === 'paid' ? $parent->return_url : null,
         ];
     }
 

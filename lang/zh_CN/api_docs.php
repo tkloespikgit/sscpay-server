@@ -408,7 +408,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => '组合付款：必须先接入 V2 通知',
-                    'text' => '应用开启组合付款后，未指定 payment_method_key 且订单 USD 总额超过支付组内所有可用渠道的单笔限额时，返回 order_type=combine。普通订单返回 single。创建组合订单仅保存父单，不创建子单或远端支付。商户必须把客户跳转到返回的组合收银台，不能自行预生成子单。关闭开关只影响新单，现有组合订单可继续付款。',
+                    'text' => '应用开启组合付款后，未指定 payment_method_key 且订单 USD 总额超过支付组内所有可用渠道的单笔限额时，返回 order_type=combine。普通订单返回 single。创建组合订单仅保存父单，不创建子单或远端支付。商户必须把客户跳转到返回的组合收银台，不能自行预生成子单。收银台仅提供英文界面，全部付清后显示付款完成提示，不提供返回商户链接或自动回跳；商户以 webhook 和查询确认订单状态。关闭开关只影响新单，现有组合订单可继续付款。',
                 ],
                 [
                     'type' => 'paragraph',
@@ -805,7 +805,12 @@ curl_close($ch);
                     'caption' => '回传字段',
                     'headers' => ['字段', '类型 / 限制', '必填', '说明'],
                     'rows' => [
-                        ['merchant_order_no', 'string', '是', '与创建订单时完全相同的商户订单号。'],
+                        ['merchant_order_no', 'string', '是', '与创建订单时完全相同的商户订单号；组合付款使用父级原商户订单号，不带子单后缀。'],
+                        ['child_merchant_order_no', 'string', '组合单', '本次回传的子商户订单号，例如 M20261113001-S001；普通单不发送。'],
+                        ['order_type', 'string', '组合单', '组合单固定为 combine；普通单不发送。'],
+                        ['order_no', 'string', '组合单', '本次子单的系统订单号。'],
+                        ['parent_order_no', 'string', '组合单', '父单系统订单号。'],
+                        ['parent_merchant_order_no', 'string', '组合单', '父级原商户订单号，与回传 merchant_order_no 相同。'],
                         ['carrier', 'string', '是', '承运商名称，自由文本，如 DHL、USPS。'],
                         ['carrier_code', 'string', '否', '承运商标准代码；本系统有代码时一并传入。'],
                         ['tracking_number', 'string', '是', '本次运单号，保留前导零。'],
@@ -830,6 +835,28 @@ curl_close($ch);
   "shipped_at": "2026-11-03T13:00:00+00:00",
   "sign": "SIGNATURE_PLACEHOLDER"
 }',
+                ],
+                [
+                    'type' => 'code',
+                    'label' => '组合订单物流回传示例',
+                    'language' => 'json',
+                    'code' => '{
+  "merchant_order_no": "M20261113001",
+  "child_merchant_order_no": "M20261113001-S001",
+  "order_type": "combine",
+  "order_no": "ORD202611130001",
+  "parent_order_no": "CMB202611130001",
+  "parent_merchant_order_no": "M20261113001",
+  "carrier": "DHL",
+  "carrier_code": "DHL",
+  "tracking_number": "REAL-TRACKING-001",
+  "shipped_at": "2026-11-14T12:00:00+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => '组合单仍逐子单回传，merchant_order_no 使用父级原号，商户可直接定位原订单。多个子单使用同一运单时，按父级商户号 + 运单号去重，避免重复发货记录或客户通知；child_merchant_order_no 等新增字段也参与完整请求体验签。上传 /order/ship 仍传子商户号。旧回传快照保持原样，需新格式时在订单详情手动推送生成新快照。',
                 ],
                 [
                     'type' => 'code',

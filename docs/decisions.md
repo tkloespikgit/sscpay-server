@@ -386,3 +386,17 @@
 **读写边界：** 收款链接、自有域名、关键词替换的 `manage` 继续包含查看，`view` 本身不授予任何写权限。列表提供只读详情；创建、编辑、删除、关键词导入与域名验证显式验证管理权限和记录归属。仅隐藏按钮不足以授权，已打开操作提交时仍检查权限；商户用户只看本商户，商户级管理员只看名下商户，启用的超级管理员保留全局访问。
 
 **数据与兼容：** 复用 Spatie 权限表，无迁移。新增权限由现有 Seeder 或角色模板保存补齐；新商户内置订单、物流、财务管理员模板增加组合订单查看，保持这些默认角色原来的组合订单可见能力。存量已保存模板和自建角色不自动扩权，需由超管按需勾选并保存同步。依据见 [权限定义](../app/Support/Permissions.php)、[角色模板](../app/Services/MerchantRoleProvisioningService.php)、[只读边界回归](../tests/Feature/Filament/ResourceViewPermissionsTest.php)、[组合订单回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-37 组合收银台仅英文且完成后不返回商户
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 组合付款的客户收银台只显示英文，移除语言切换入口；旧中文参数和会话语言偏好不再生效，报价及发起付款的错误提示也固定英文。
+
+**完成行为：** 订单付清后显示 “Your order has been paid in full.”，不提供返回商户链接，不自动跳转商户页面。首次加载已付清订单和轮询确认最后一笔均使用该提示，并隐藏付款说明及操作；后续短暂网络错误不覆盖已经确认的付清提示。原币累计金额和付款记录仍可查看。
+
+**接口边界：** 收银台状态接口不再下发 `return_url`，父单保存的商户地址不删除；发送给 WordPress 的子单回跳仍指向组合收银台。商户以原 webhook 和查询协议确认成功。此决定仅调整组合收银台，不修改普通付款流程、后台及 API 文档的语言支持，无数据库迁移。依据见 [入口](../app/Http/Controllers/CombinedPaymentController.php)、[页面](../resources/views/payment/combined.blade.php)、[交互](../resources/js/combined-payment.js)、[页面回归](../tests/Feature/CombinedPaymentTest.php)、[前端状态回归](../tests/JavaScript/combined-payment.test.mjs)。
+
+## D-38 组合物流回传用父级原商户号定位订单
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 商户网站物流接收端通常只认识原商户订单号，因此组合子单的物流回传将 `merchant_order_no` 改为父级原号，另用 `child_merchant_order_no` 保存真实子商户号。子单系统号 `order_no` 及原有父单引用继续保留，完整请求体参与原 HMAC 验签；具体字段与示例见 [API 协议](../doc/api.md#商户物流上传与回传)。
+
+**边界与兼容：** 每个子单仍独立保存物流、生成回传快照和重试；商户可按原商户号 + 真实运单号去重。普通订单回传、商户上传物流的子商户号、支付站点物流同步和支付结果 webhook 不变。无表结构变更，既有审计快照不重写；需要更新旧回传时，通过订单详情手动推送生成新格式快照，同时停止该子单旧待发或重试任务。依据见 [回传服务](../app/Services/MerchantShipmentSyncService.php)、[物流回传回归](../tests/Feature/MerchantShipmentSyncTest.php)。

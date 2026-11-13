@@ -65,6 +65,62 @@ class CombinedPaymentTest extends TestCase
         $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00'])->assertOk()->assertJsonPath('data.order_type', 'single');
     }
 
+    public function test_cashier_stays_english_with_a_chinese_language_query_and_saved_preference(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent();
+        app()->setLocale('zh_CN');
+
+        $this->withSession(['combined_locale' => 'zh_CN'])->get($parent->pay_url.'?lang=zh_CN')
+            ->assertOk()->assertSee('<html lang="en">', false)
+            ->assertSee('Combined payment')->assertSee('Complete each payment in sequence.')
+            ->assertDontSee('中文')->assertDontSee('?lang=')->assertDontSee('aria-label="Language"', false)
+            ->assertDontSee('组合付款');
+        Http::assertNothingSent();
+    }
+
+    public function test_paid_cashier_confirms_completion_without_exposing_a_merchant_return_link(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent([
+            'status' => 'paid', 'paid_at' => now(),
+            'paid_amount' => '4000.00', 'paid_converted_amount' => '4000.00',
+            'remaining_amount' => '0.00', 'remaining_converted_amount' => '0.00',
+            'return_url' => 'https://merchant.example.com/order/combined-finished',
+        ]);
+
+        $this->get($parent->pay_url)->assertOk()
+            ->assertSee('Your order has been paid in full.')
+            ->assertDontSee('data-return', false)->assertDontSee('Return to merchant')
+            ->assertDontSee($parent->return_url, false)
+            ->assertViewHas('state', fn (array $state): bool => $state['status'] === 'paid'
+                && ! $state['payable'] && ! array_key_exists('return_url', $state));
+        $this->getJson($parent->pay_url.'/status')->assertOk()
+            ->assertJsonPath('data.status', 'paid')->assertJsonPath('data.payable', false)
+            ->assertJsonMissingPath('data.return_url');
+        $this->assertSame('https://merchant.example.com/order/combined-finished', $parent->fresh()->return_url);
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('cashierErrorMessages')]
+    public function test_cashier_quote_and_pay_errors_are_english(string $endpoint, string $code, string $message): void
+    {
+        $parent = $this->combinedParent();
+        app()->setLocale('zh_CN');
+
+        $this->withSession(['combined_locale' => 'zh_CN'])->postJson($parent->pay_url.'/'.$endpoint.'?lang=zh_CN')
+            ->assertStatus(409)->assertJsonPath('error_code', $code)->assertJsonPath('msg', $message);
+        Http::assertNothingSent();
+    }
+
+    public static function cashierErrorMessages(): array
+    {
+        return [
+            'quote' => ['quote', 'COMBINE_PAYMENT_UNAVAILABLE', 'No payment method is available right now. Your payments are saved; please try again later.'],
+            'pay' => ['pay', 'QUOTE_EXPIRED', 'This payment offer has expired. Check the updated amount before paying.'],
+        ];
+    }
+
     public function test_cashier_get_and_quote_are_safe_and_do_not_create_remote_payments(): void
     {
         $this->withoutVite();

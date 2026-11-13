@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Jobs\SyncMerchantShipmentJob;
 use App\Models\Application;
 use App\Models\Carrier;
+use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderShipmentSync;
 use App\Models\OrderShipping;
+use App\Models\PaymentGroup;
 use App\Models\TelegramBot;
 use App\Services\MerchantShipmentSyncService;
 use App\Services\OrderShippingService;
@@ -60,6 +62,8 @@ class MerchantShipmentSyncTest extends TestCase
             $this->assertSame(1790910000, strtotime($request['shipped_at']));
             $this->assertArrayNotHasKey('items', $request->data());
             $this->assertArrayNotHasKey('s_order_id', $request->data());
+            $this->assertArrayNotHasKey('child_merchant_order_no', $request->data());
+            $this->assertArrayNotHasKey('order_type', $request->data());
             $this->assertSame(SignatureCanonicalizer::sign(
                 $this->application->app_id,
                 $request->header('Timestamp')[0],
@@ -80,6 +84,77 @@ class MerchantShipmentSyncTest extends TestCase
         $this->assertSame($shipping->id, $sync->order_shipping_id);
         $this->assertSame('pending', $shipping->refresh()->sync_status);
         Http::assertSentCount(1);
+    }
+
+    public function test_combined_shipments_use_the_original_merchant_reference_and_sign_each_child_reference(): void
+    {
+        $first = $this->prepareCombinedOrder();
+        $parent = $first->combinedOrder;
+        $second = $this->makeOrder('SSC-LOGISTICS-2', 'MERCHANT-LOGISTICS-S002', [
+            'status' => 'paid', 'combined_order_id' => $parent->id, 'combined_sequence' => 2,
+        ]);
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake([self::ENDPOINT => Http::response(['code' => 0])]);
+        $service = app(MerchantShipmentSyncService::class);
+
+        foreach ([$first, $second] as $child) {
+            $this->recordShipping($child, 'SHARED-TRACKING');
+            $sync = $this->latestSync($child);
+            $service->attempt($sync->id, $this->merchant->id);
+
+            $this->assertSame('MERCHANT-LOGISTICS', $sync->payload['merchant_order_no']);
+            $this->assertSame($child->merchant_order_no, $sync->payload['child_merchant_order_no']);
+            $this->assertSame('success', $sync->refresh()->status);
+        }
+
+        Queue::assertPushed(SyncMerchantShipmentJob::class, 2);
+        Http::assertSentCount(2);
+        foreach (Http::recorded() as $index => [$request]) {
+            $child = [$first, $second][$index];
+            $this->assertSame('MERCHANT-LOGISTICS', $request['merchant_order_no']);
+            $this->assertSame($child->merchant_order_no, $request['child_merchant_order_no']);
+            $this->assertSame('combine', $request['order_type']);
+            $this->assertSame($child->order_no, $request['order_no']);
+            $this->assertSame($parent->order_no, $request['parent_order_no']);
+            $this->assertSame('MERCHANT-LOGISTICS', $request['parent_merchant_order_no']);
+            $this->assertSame('SHARED-TRACKING', $request['tracking_number']);
+            $this->assertSame(SignatureCanonicalizer::sign(
+                $this->application->app_id,
+                $request->header('Timestamp')[0],
+                $request->header('X-Nonce')[0],
+                $request->data(),
+                $this->application->api_key,
+            ), $request['sign']);
+            $this->assertSame($child->merchant_order_no, $child->fresh()->merchant_order_no);
+        }
+    }
+
+    public function test_manual_push_replaces_an_old_combined_callback_with_the_parent_reference(): void
+    {
+        $order = $this->prepareCombinedOrder();
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake([self::ENDPOINT => Http::response(['code' => 0])]);
+        $this->recordShipping($order);
+        $oldSync = $this->latestSync($order);
+        $oldPayload = $oldSync->payload;
+        $oldPayload['merchant_order_no'] = $order->merchant_order_no;
+        unset($oldPayload['child_merchant_order_no']);
+        $oldSync->update(['payload' => $oldPayload, 'status' => 'retrying']);
+        $service = app(MerchantShipmentSyncService::class);
+
+        $newSync = $service->pushManually($order);
+        $service->attempt($oldSync->id, $this->merchant->id);
+        $service->attempt($newSync->id, $this->merchant->id);
+
+        $this->assertSame('superseded', $oldSync->refresh()->status);
+        $this->assertSame($oldPayload, $oldSync->payload);
+        $this->assertSame('success', $newSync->refresh()->status);
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $request): bool => $request['merchant_order_no'] === 'MERCHANT-LOGISTICS'
+            && $request['child_merchant_order_no'] === 'MERCHANT-LOGISTICS-S001');
+        Queue::assertPushed(SyncMerchantShipmentJob::class, fn (SyncMerchantShipmentJob $job): bool => $job->syncId === $newSync->id);
     }
 
     /** @param array<string, mixed>|string $body */
@@ -186,9 +261,10 @@ class MerchantShipmentSyncTest extends TestCase
         return ['invalid signature' => [401], 'order missing' => [404], 'invalid payload' => [422]];
     }
 
-    public function test_retries_keep_the_payload_but_refresh_timestamp_nonce_and_signature(): void
+    #[DataProvider('shipmentOrderTypes')]
+    public function test_retries_keep_the_payload_but_refresh_timestamp_nonce_and_signature(bool $combined): void
     {
-        $order = $this->prepareOrder();
+        $order = $combined ? $this->prepareCombinedOrder() : $this->prepareOrder();
         $this->travelTo(now()->startOfSecond());
         Queue::fake();
         Http::preventStrayRequests();
@@ -210,11 +286,18 @@ class MerchantShipmentSyncTest extends TestCase
         $secondPayload = $second->data();
         unset($firstPayload['sign'], $secondPayload['sign']);
         $this->assertSame($firstPayload, $secondPayload);
+        $this->assertSame('MERCHANT-LOGISTICS', $secondPayload['merchant_order_no']);
         $this->assertNotSame($first->header('Timestamp'), $second->header('Timestamp'));
         $this->assertNotSame($first->header('X-Nonce'), $second->header('X-Nonce'));
         $this->assertNotSame($first['sign'], $second['sign']);
         $this->assertSame('success', $sync->refresh()->status);
         $this->assertSame(2, $sync->attempts()->count());
+    }
+
+    /** @return array<string, array{bool}> */
+    public static function shipmentOrderTypes(): array
+    {
+        return ['single' => [false], 'combine' => [true]];
     }
 
     public function test_five_unsuccessful_attempts_exhaust_the_retry_budget_at_the_agreed_intervals(): void
@@ -871,6 +954,27 @@ class MerchantShipmentSyncTest extends TestCase
         ]);
 
         return $this->makeOrder('SSC-LOGISTICS', 'MERCHANT-LOGISTICS', ['status' => 'paid']);
+    }
+
+    private function prepareCombinedOrder(): Order
+    {
+        $order = $this->prepareOrder();
+        $group = PaymentGroup::create([
+            'merchant_id' => $this->merchant->id, 'group_key' => 'shipment-combine',
+            'group_name' => 'Combined shipment payments', 'is_active' => true,
+        ]);
+        $parent = CombinedOrder::factory()->forApplicationGroup($this->application, $group)->create([
+            'merchant_order_no' => $order->merchant_order_no, 'status' => 'paid', 'paid_at' => now(),
+            'original_amount' => '200.00', 'amount' => '200.00', 'converted_amount' => '200.00',
+            'paid_amount' => '200.00', 'paid_converted_amount' => '200.00',
+            'remaining_amount' => '0.00', 'remaining_converted_amount' => '0.00',
+        ]);
+        $order->update([
+            'merchant_order_no' => 'MERCHANT-LOGISTICS-S001',
+            'combined_order_id' => $parent->id, 'combined_sequence' => 1,
+        ]);
+
+        return $order;
     }
 
     private function recordShipping(Order $order, string $number = 'TRACK-A'): OrderShipping

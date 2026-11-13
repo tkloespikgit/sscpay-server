@@ -657,7 +657,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | 项目 | 本系统 `/api/order/ship` | 附件 `/api/fulfillment/shipment` |
 |---|---|---|
 | 调用方向 | 商户/ERP → 本系统 | 本系统 → 商户站点 |
-| 订单号 | `merchant_order_no` | 同一建单时的 `merchant_order_no` |
+| 订单号 | `merchant_order_no`，组合单使用子商户号 | 同一建单时的 `merchant_order_no`，组合单使用父级原商户号，子商户号另放 `child_merchant_order_no` |
 | 承运商 | `logistics_company`，系统已启用的承运商代码 | `carrier` 必填自由文本，`carrier_code` 可选 |
 | 发货时间 | `shipped_at` 必填，可解析日期，推荐 ISO 8601 | `shipped_at` 可选 ISO 8601，省略取站点收到时间 |
 | 多次提交 | 覆盖同一订单的物流记录，不保留多批历史 | 按订单号 + 运单号去重；不同运单号记录新批次并通知客户，同号重试不重复通知 |
@@ -719,6 +719,8 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 ```
 
 组合单的 `payment_url` 和 `pay_url` 都是独立收银台，商户只需引导客户进入此地址。收银台保存短期报价，只有点击付款才创建当前真实子单及远端订单；刷新/重复点击沿用同一笔。未来笔数和金额不预定。发送付款邮件时只发送父单收银台。
+
+组合收银台仅提供英文界面，不再提供语言切换。每个子单支付后的回跳仍返回组合收银台；全部付清后显示 “Your order has been paid in full.”，不显示返回商户链接，也不自动跳转到商户 `return_url`。商户通过 webhook 和查询确认原订单状态。
 
 ### 每轮金额与渠道
 
@@ -869,7 +871,27 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 }
 ```
 
-成功响应保留原物流字段并增加 `order_type=combine`、`parent_order_no`、`parent_merchant_order_no` 与 `sync_status`。每个子单通过自己的渠道同步物流；父单不写物流记录。商户网站物流回传同样使用子商户号，并额外带父单引用，接收方需按完整通知体验签。
+成功响应保留原物流字段并增加 `order_type=combine`、`parent_order_no`、`parent_merchant_order_no` 与 `sync_status`。每个子单通过自己的渠道同步物流；父单不写物流记录。
+
+**商户网站物流回传使用父级原商户订单号。** 回传的 `merchant_order_no` 为父单原号，便于商户直接定位原订单；新增 `child_merchant_order_no` 保留本次子商户号。`order_no` 仍为子单系统号，`parent_order_no` / `parent_merchant_order_no` 继续携带父单引用。例如：
+
+```json
+{
+  "merchant_order_no": "M20261113001",
+  "child_merchant_order_no": "M20261113001-S001",
+  "order_type": "combine",
+  "order_no": "ORD202611130001",
+  "parent_order_no": "CMB202611130001",
+  "parent_merchant_order_no": "M20261113001",
+  "carrier": "DHL",
+  "carrier_code": "DHL",
+  "tracking_number": "REAL-TRACKING-001",
+  "shipped_at": "2026-11-14T12:00:00+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}
+```
+
+每个子单仍分别回传；接收方按 `merchant_order_no + tracking_number` 去重，同一父单的多个子单共用真实运单时只记录一次发货、避免重复通知客户。新增字段参与完整通知体验签。普通订单回传保持原格式；商户上传 `/order/ship` 仍使用子商户号。调整前已保存的回传快照保持原样，如需使用新格式，可在订单详情手动推送生成新快照，并停止该子单旧的待发或重试任务。
 
 | HTTP | 错误码 | 处理 |
 |---|---|---|

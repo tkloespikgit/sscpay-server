@@ -408,7 +408,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => 'Combined payments require V2 notification handling',
-                    'text' => 'When enabled on the application, an order without payment_method_key becomes order_type=combine if its USD total exceeds every eligible channel’s transaction limit in its payment group. Other orders return single. Creation stores only the parent, without child or remote orders. Redirect the customer to the returned combined checkout; do not precreate child payments. Disabling the switch affects new orders only.',
+                    'text' => 'When enabled on the application, an order without payment_method_key becomes order_type=combine if its USD total exceeds every eligible channel’s transaction limit in its payment group. Other orders return single. Creation stores only the parent, without child or remote orders. Redirect the customer to the returned combined checkout; do not precreate child payments. The checkout is English only. Once paid in full, it displays a completion message with no return-to-merchant link or automatic redirect; confirm the order through webhooks and queries. Disabling the switch affects new orders only.',
                 ],
                 [
                     'type' => 'paragraph',
@@ -805,7 +805,12 @@ curl_close($ch);
                     'caption' => 'Callback fields',
                     'headers' => ['Field', 'Type / limit', 'Required', 'Description'],
                     'rows' => [
-                        ['merchant_order_no', 'string', 'Yes', 'The exact merchant order reference used when creating the order.'],
+                        ['merchant_order_no', 'string', 'Yes', 'The exact merchant order reference used when creating the order. Combined payments use the original parent reference without a child suffix.'],
+                        ['child_merchant_order_no', 'string', 'Combined only', 'Merchant reference of the child shipment, such as M20261113001-S001; omitted for single orders.'],
+                        ['order_type', 'string', 'Combined only', 'Always combine for combined payments; omitted for single orders.'],
+                        ['order_no', 'string', 'Combined only', 'System order reference of this child.'],
+                        ['parent_order_no', 'string', 'Combined only', 'System order reference of the parent.'],
+                        ['parent_merchant_order_no', 'string', 'Combined only', 'Original parent merchant reference, equal to merchant_order_no in this callback.'],
                         ['carrier', 'string', 'Yes', 'Carrier display name as free text, such as DHL or USPS.'],
                         ['carrier_code', 'string', 'No', 'Standard carrier code, included when available in this system.'],
                         ['tracking_number', 'string', 'Yes', 'Tracking number for this shipment, preserving leading zeros.'],
@@ -830,6 +835,28 @@ curl_close($ch);
   "shipped_at": "2026-11-03T13:00:00+00:00",
   "sign": "SIGNATURE_PLACEHOLDER"
 }',
+                ],
+                [
+                    'type' => 'code',
+                    'label' => 'Combined shipment callback example',
+                    'language' => 'json',
+                    'code' => '{
+  "merchant_order_no": "M20261113001",
+  "child_merchant_order_no": "M20261113001-S001",
+  "order_type": "combine",
+  "order_no": "ORD202611130001",
+  "parent_order_no": "CMB202611130001",
+  "parent_merchant_order_no": "M20261113001",
+  "carrier": "DHL",
+  "carrier_code": "DHL",
+  "tracking_number": "REAL-TRACKING-001",
+  "shipped_at": "2026-11-14T12:00:00+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => 'Each child still sends a separate callback. merchant_order_no identifies the original parent order on the merchant website. When children share a tracking number, deduplicate by parent merchant reference + tracking number to avoid duplicate shipment records or customer notifications. Include child_merchant_order_no and all other added fields in signature verification. Uploads to /order/ship still use child merchant references. Existing callback snapshots remain unchanged; manually push from order details to generate a new snapshot in this format.',
                 ],
                 [
                     'type' => 'code',
