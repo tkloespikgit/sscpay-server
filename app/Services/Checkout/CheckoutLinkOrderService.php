@@ -4,6 +4,7 @@ namespace App\Services\Checkout;
 
 use App\Models\CheckoutLink;
 use App\Models\CheckoutLinkItem;
+use App\Models\CombinedOrder;
 use App\Models\Order;
 use App\Rules\InternationalPhone;
 use App\Services\OrderCreationService;
@@ -34,7 +35,7 @@ class CheckoutLinkOrderService
      *                           payment_group_id（落地页客户选中的支付组，可选），
      *                           以及 customer_ip / user_agent / accept_language
      */
-    public function createOrder(CheckoutLink $link, array $customer): Order
+    public function createOrder(CheckoutLink $link, array $customer): Order|CombinedOrder
     {
         $state = CheckoutAddress::validatedState((string) $customer['country'], $customer['state'] ?? null);
         $link->loadMissing(['merchant', 'application', 'paymentGroup', 'items']);

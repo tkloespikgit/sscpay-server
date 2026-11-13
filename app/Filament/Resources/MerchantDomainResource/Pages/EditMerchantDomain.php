@@ -38,6 +38,7 @@ class EditMerchantDomain extends EditRecord
             Action::make('verify')
                 ->label(__('admin.merchant_domain.actions.verify_refresh'))
                 ->icon('heroicon-o-arrow-path')
+                ->authorize(fn (): bool => MerchantDomainResource::canEdit($this->getRecord()))
                 ->action(function () {
                     abort_unless(MerchantDomainResource::canEdit($this->getRecord()), 403);
 
@@ -51,6 +52,7 @@ class EditMerchantDomain extends EditRecord
                     $this->getRecord()->refresh();
                 }),
             DeleteAction::make()
+                ->authorize(fn (): bool => MerchantDomainResource::canDelete($this->getRecord()))
                 ->before(fn () => app(CloudflareSaasService::class)->delete($this->getRecord())),
         ];
     }

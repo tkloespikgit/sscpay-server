@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CombinedOrder;
 use App\Models\Order;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -30,6 +31,12 @@ class PaymentPageController extends Controller
             return view('payment.expired');
         }
 
+        if ($order->combined_order_id) {
+            $parent = CombinedOrder::query()->forMerchant($order->merchant_id)->find($order->combined_order_id);
+
+            return $parent ? redirect()->away($parent->pay_url) : view('payment.expired');
+        }
+
         if ($order->pay_url) {
             $self = route('payment.show', ['token' => $token], absolute: true);
             if (rtrim((string) $order->pay_url, '/') !== rtrim($self, '/')) {
@@ -50,6 +57,10 @@ class PaymentPageController extends Controller
             ->first();
 
         if (! $order) {
+            return redirect()->route('payment.show', $token);
+        }
+
+        if ($order->combined_order_id) {
             return redirect()->route('payment.show', $token);
         }
 

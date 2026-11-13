@@ -6,16 +6,19 @@ use App\Filament\Imports\ReplaceKeywordImporter;
 use App\Filament\Resources\ReplaceKeywordResource\Pages;
 use App\Models\Merchant;
 use App\Models\ReplaceKeyword;
+use App\Models\User;
 use App\Support\Permissions;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ImportAction;
+use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * 商户关键词替换表（COPY 商品匹配模式配套）：把订单商品名里命中的关键词
@@ -93,11 +96,13 @@ class ReplaceKeywordResource extends Resource
                 TextColumn::make('created_at')->label(__('admin.replace_keyword.fields.created_at'))->dateTime()->sortable(),
             ]))
             ->headerActions([
-                ImportAction::make()->importer(ReplaceKeywordImporter::class),
+                ImportAction::make()->importer(ReplaceKeywordImporter::class)
+                    ->authorize(fn (): bool => static::canCreate()),
             ])
             ->recordActions([
-                EditAction::make(),
-                DeleteAction::make(),
+                ViewAction::make()->authorize(fn (ReplaceKeyword $record): bool => static::canView($record)),
+                EditAction::make()->authorize(fn (ReplaceKeyword $record): bool => static::canEdit($record)),
+                DeleteAction::make()->authorize(fn (ReplaceKeyword $record): bool => static::canDelete($record)),
             ])
             ->defaultSort('created_at', 'desc');
     }
@@ -113,21 +118,31 @@ class ReplaceKeywordResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return (bool) auth()->user()?->can(Permissions::REPLACE_KEYWORDS_MANAGE);
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status
+            && ($user->can(Permissions::REPLACE_KEYWORDS_VIEW) || $user->can(Permissions::REPLACE_KEYWORDS_MANAGE));
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return static::canViewAny() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
     public static function canCreate(): bool
     {
-        return static::canViewAny();
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status && $user->can(Permissions::REPLACE_KEYWORDS_MANAGE);
     }
 
-    public static function canEdit($record): bool
+    public static function canEdit(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canCreate() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
-    public static function canDelete($record): bool
+    public static function canDelete(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canEdit($record);
     }
 }

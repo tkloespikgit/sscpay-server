@@ -3,11 +3,13 @@
 namespace App\Services;
 
 use App\Jobs\SendOrderNotificationJob;
+use App\Models\CombinedOrder;
 use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
 use App\Support\SignatureCanonicalizer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 /**
  * 商户交易结果通知服务（回调 orders.notify_url）。
@@ -29,6 +31,8 @@ use Illuminate\Support\Facades\Http;
 class OrderNotificationService
 {
     private const SUCCESS_STATUS_RANGE = [200, 299];
+
+    public function __construct(private readonly OrderApiPayload $payloads) {}
 
     public function dispatchInitial(Order $order, string $notifyType = 'trade_result'): ?OrderNotificationAttempt
     {
@@ -70,7 +74,18 @@ class OrderNotificationService
      */
     public function attempt(OrderNotificationAttempt $attempt): void
     {
+        $claimed = OrderNotificationAttempt::query()->withoutGlobalScopes()
+            ->where('merchant_id', $attempt->merchant_id)->whereKey($attempt->id)->where('status', 'pending')
+            ->update(['status' => 'processing', 'attempted_at' => now()]);
+        if ($claimed !== 1) {
+            return;
+        }
         [$headers, $body] = $this->sign($attempt);
+        if ($attempt->event_id && $headers === []) {
+            $attempt->markFailed(null, null, 'Application signing credentials unavailable');
+
+            return;
+        }
 
         $attempt->update([
             'request_headers' => $headers,
@@ -108,8 +123,8 @@ class OrderNotificationService
 
     /**
      * 现算本次尝试的签名 Header + 带 sign 的最终 body。如果订单所属 application
-     * 缺失 app_id/api_key（正常情况下不会发生，创建应用时系统会自动生成），
-     * 则不加签直接发送——和签名前的历史行为保持一致，不因为签名缺失而拦截通知。
+     * 缺失 app_id/api_key 时返回空 Header；V1 保留历史发送行为，
+     * 带 event_id 的 V2 通知由 attempt() 拒绝未签名投递并记录失败。
      *
      * @return array{0: array<string,string>, 1: array}
      */
@@ -143,7 +158,23 @@ class OrderNotificationService
      */
     private function buildPayload(Order $order): array
     {
+        if ($order->combined_order_id) {
+            $parent = CombinedOrder::query()->forMerchant($order->merchant_id)->withTrashed()->findOrFail($order->combined_order_id);
+
+            return $this->payloads->parent($parent) + [
+                'event_id' => (string) Str::uuid(), 'paid_order_no' => $order->order_no,
+                'occurred_at' => now()->toIso8601String(),
+            ];
+        }
+        $extra = (int) $order->application?->webhook_version >= 2 ? [
+            'order_type' => 'single', 'paid_amount' => (string) $order->amount,
+            'paid_converted_amount' => (string) $order->converted_amount, 'remaining_amount' => '0.00',
+            'remaining_converted_amount' => '0.00', 'children' => [], 'event_id' => (string) Str::uuid(),
+            'version' => 1, 'paid_order_no' => $order->order_no,
+        ] : [];
+
         return [
+            ...$extra,
             'order_no' => $order->order_no,
             'merchant_order_no' => $order->merchant_order_no,
             'status' => 'paid',

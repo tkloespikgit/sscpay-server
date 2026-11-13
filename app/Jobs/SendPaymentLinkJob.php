@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Mail\PaymentLinkMail;
+use App\Models\CombinedOrder;
 use App\Models\Order;
 use App\Support\MailerCredentials;
 use Illuminate\Bus\Queueable;
@@ -23,14 +24,16 @@ class SendPaymentLinkJob implements ShouldQueue
 
     public array $backoff = [60, 300, 600];
 
-    public function __construct(public readonly int $orderId)
+    public function __construct(public readonly int $orderId, public readonly string $orderType = 'single')
     {
         $this->onQueue('payment-links');
     }
 
     public function handle(): void
     {
-        $order = Order::query()->withoutGlobalScopes()->with('application', 'merchant')->find($this->orderId);
+        $record = (($this->orderType ?? 'single') === 'combine' ? CombinedOrder::query() : Order::query())
+            ->withoutGlobalScopes()->whereNull('deleted_at')->with('application', 'merchant')->find($this->orderId);
+        $order = $record instanceof CombinedOrder ? $record->mailOrder() : $record;
 
         if (! $order) {
             return;
@@ -53,7 +56,7 @@ class SendPaymentLinkJob implements ShouldQueue
         $sender = $order->resolveMailSender();
 
         if (! $sender) {
-            $order->forceFill([
+            $record->forceFill([
                 'payment_link_mail_failed_reason' => __('admin.mail_credentials.send_failed_no_sender'),
             ])->save();
 
@@ -62,7 +65,7 @@ class SendPaymentLinkJob implements ShouldQueue
 
         $this->sendWithSender($order, $sender);
 
-        $order->forceFill([
+        $record->forceFill([
             'payment_link_sent_at' => now(),
             'payment_link_mail_failed_reason' => null,
         ])->save();

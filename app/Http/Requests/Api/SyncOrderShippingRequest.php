@@ -21,7 +21,7 @@ class SyncOrderShippingRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'merchant_order_no' => ['required', 'string', 'max:64'],
+            'merchant_order_no' => ['required', 'string', 'max:80'],
             'logistics_company' => [
                 'required',
                 'string',

@@ -11,7 +11,6 @@ use App\Models\User;
 use App\Services\Checkout\CloudflareSaasService;
 use App\Services\Checkout\MerchantDomainService;
 use Filament\Facades\Filament;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
@@ -323,8 +322,7 @@ class MerchantDomainResourceTest extends TestCase
         $domain = MerchantDomain::create(['merchant_id' => $other->id, 'host' => 'checkout.other.example']);
 
         Livewire::test(ListMerchantDomains::class)->assertCanNotSeeTableRecords([$domain]);
-        $this->expectException(ModelNotFoundException::class);
-        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()]);
+        Livewire::test(EditMerchantDomain::class, ['record' => $domain->getRouteKey()])->assertNotFound();
     }
 
     private function domainUser(): User

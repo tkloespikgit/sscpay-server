@@ -364,6 +364,7 @@ curl_close($ch);
   "msg": "success",
   "data": {
     "order_no": "ORD202611031234561234",
+    "order_type": "single",
     "payment_link_token": "EXAMPLE_PAYMENT_TOKEN",
     "payment_url": "https://api.example.com/payment/EXAMPLE_PAYMENT_TOKEN",
     "pay_url": "https://gateway.example.com/checkout/EXAMPLE",
@@ -402,6 +403,87 @@ curl_close($ch);
                     'title' => '幂等与超时补单',
                     'text' => '幂等键是商户账号 + merchant_order_no。重复请求的币种和原始请求金额一致时复用旧订单；已有付款链接时直接返回，缺少链接时可补建。币种或原始金额不一致返回 HTTP 409 / ORDER_DETAILS_CONFLICT。超时或 GATEWAY_ERROR 后继续使用原单号重试，不要生成新单号。应用自动折扣与汇率只在首次建单时固定，后续幂等请求不会重新抽取折扣；查询金额可能与原始请求金额不同。',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => '组合付款：必须先接入 V2 通知',
+                    'text' => '应用开启组合付款后，未指定 payment_method_key 且订单 USD 总额超过支付组内所有可用渠道的单笔限额时，返回 order_type=combine。普通订单返回 single。创建组合订单仅保存父单，不创建子单或远端支付。商户必须把客户跳转到返回的组合收银台，不能自行预生成子单。关闭开关只影响新单，现有组合订单可继续付款。',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => '组合付款仅允许 MATCH/VIRTUAL 商品模式，COPY/CREATE 不参与任何一笔，余额一次付清也适用；普通订单仍可使用 COPY/CREATE。后续优先沿用已选渠道，没有当前报价时沿用最近已付子单渠道；可一次收清就收清，否则仍按该渠道单笔上限的 70%～90% 随机拆付，不因其他渠道限额更高或能收清而切换。只有首笔未选渠道，或原渠道停用、授权/组关系失效、商品模式或额度/笔数/手续费不合格时，才按原规则重选：优先一次收清，否则从完整单笔上限可被日/月余额容纳的最高三个候选中随机选一。报价过期仍优先原渠道，切换后不因旧渠道恢复而切回。同一时刻只有一笔未决子单，确认成功后才开放下一笔。无渠道时保留已付进度，不预留未来全部额度。',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => '组合建单字段',
+                    'headers' => [
+                        '字段 / 规则',
+                        '说明',
+                    ],
+                    'rows' => [
+                        [
+                            'order_type',
+                            'single / combine',
+                        ],
+                        [
+                            'order_no / merchant_order_no',
+                            '父单系统号 / 商户原订单号。子单仅在客户发起付款时产生，商户子单号依次追加 -S001、-S002；该命名空间由父单保留。',
+                        ],
+                        [
+                            'payment_url / pay_url',
+                            '组合单两个字段都指向独立组合收银台；token 是付款链接凭证，不是 API Key。',
+                        ],
+                        [
+                            'amount / converted_amount',
+                            '原币应付总额 / USD 应付总额；应用自动折扣和汇率只在父单创建时确定，子单不重复折扣。',
+                        ],
+                        [
+                            'paid_amount / paid_converted_amount',
+                            '累计已收原币金额 / 累计已收 USD 金额，均为十进制字符串。USD 按累计折算差额分配尾差，子单之和严格等于父单。',
+                        ],
+                        [
+                            'children',
+                            '仅包含已创建的真实子单，初始为空，不含未来付款占位记录。',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => '组合建单响应示例',
+                    'language' => 'json',
+                    'code' => '{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "pending",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "0.00",
+    "paid_converted_amount": "0.00",
+    "remaining_amount": "4000.00",
+    "remaining_converted_amount": "4000.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 0,
+    "children": [],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null,
+    "payment_link_token": "PUBLIC_PAYMENT_TOKEN",
+    "payment_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN",
+    "pay_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN"
+  }
+}',
                 ],
             ],
         ],
@@ -491,8 +573,98 @@ curl_close($ch);
                 [
                     'type' => 'callout',
                     'title' => '只读本地状态',
-                    'text' => '查询不会向支付网关发起实时请求，也不修改订单状态。响应不包含 pay_url、付款 token 或物流明细，请保存建单响应中的付款链接。跨商户订单和编号不匹配均返回 ORDER_NOT_FOUND。',
+                    'text' => '查询不会向支付网关发起实时请求，也不修改订单状态。响应不包含 pay_url 或付款 token；物流明细在 logistics / children[].logistics 中，请保存建单响应中的付款链接。跨商户订单和编号不匹配均返回 ORDER_NOT_FOUND。',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => '使用父单 order_no 或原 merchant_order_no 查询组合单，返回总额、累计已付、剩余金额、所有真实子单及各自物流数据。使用子单系统号或带 -S001 等后缀的商户号查询子单，额外返回 parent_order_no / parent_merchant_order_no。单次查询仍只匹配当前商户；两个编号同时提供必须指向同一记录。',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => '组合查询状态',
+                    'headers' => [
+                        '字段 / 规则',
+                        '说明',
+                    ],
+                    'rows' => [
+                        [
+                            'status=pending / order_status=partially_paid',
+                            '已经部分付款，但原订单未支付成功，不能发货。',
+                        ],
+                        [
+                            'status=paid',
+                            '原币和 USD 剩余金额都为零，全部付清。',
+                        ],
+                        [
+                            'expired / review',
+                            '付款链接到期 / 需要核对，不可继续付款；已收款数据保留，不自动退款。迟到的有效成功回调仍会记录并通知。',
+                        ],
+                        [
+                            'children[].payment_status',
+                            'paid 表示该子单曾确认收款；退款、争议等看 order_status。未支付真实子单显示 pending 等实际状态。',
+                        ],
+                        [
+                            'children[].logistics',
+                            '未上传为 null；有物流时包含物流公司、单号、链接、发货时间及 sync_status。',
+                        ],
+                        [
+                            'version',
+                            '每新增一笔确认付款递增一次。只统计付款进度；后续售后状态通过查询读取。',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => '组合订单查询：首笔已付',
+                    'language' => 'json',
+                    'code' => '{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "partially_paid",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "640.00",
+    "paid_converted_amount": "640.00",
+    "remaining_amount": "3360.00",
+    "remaining_converted_amount": "3360.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 1,
+    "children": [
+      {
+        "sequence": 1,
+        "order_no": "ORD202611130001",
+        "merchant_order_no": "M20261113001-S001",
+        "status": "paid",
+        "order_status": "pending_settlement",
+        "settlement_status": "pending",
+        "shipping_status": "unshipped",
+        "payment_status": "paid",
+        "currency": "USD",
+        "amount": "640.00",
+        "converted_currency": "USD",
+        "converted_amount": "640.00",
+        "payment_method": "example_channel",
+        "paid_at": "2026-11-13T12:00:00+08:00",
+        "logistics": null
+      }
+    ],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null
+  }
+}',
                 ],
             ],
         ],
@@ -514,7 +686,7 @@ curl_close($ch);
                     'caption' => '请求字段',
                     'headers' => ['字段', '类型 / 限制', '必填', '说明'],
                     'rows' => [
-                        ['merchant_order_no', 'string ≤64', '是', '按该应用所属商户定位订单，不跨商户查询。'],
+                        ['merchant_order_no', 'string ≤80', '是', '按该应用所属商户定位订单，不跨商户查询。'],
                         ['logistics_company', 'string ≤100', '是', '后台已启用的 carrier_code，不是自由填写的公司名称；大小写不敏感。未登记的承运商需先联系管理员添加。'],
                         ['tracking_number', 'string ≤100', '是', '运单号；按字符串传递以保留前导零和长编号。'],
                         ['tracking_url', 'URL ≤255', '否', '客户查件链接。'],
@@ -591,6 +763,16 @@ curl_close($ch);
                 [
                     'type' => 'paragraph',
                     'text' => '上传物流不会向 notify_url 发送支付结果 webhook。应用开启物流回传时，本次保存会另行推送到应用配置的商户网站；当前物流版本和回传尝试结果可在后台订单详情查看。',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => '组合订单逐笔上传真实物流',
+                    'text' => '父单全部付清后，以真实子单 merchant_order_no（例如 M20261113001-S001）逐笔调用本接口。传父单原订单号返回 CHILD_ORDER_REQUIRED；未付清返回 COMBINE_ORDER_NOT_PAID。每笔子单只同步到自己锁定的支付站点，接口成功仅代表本地保存，远端结果看 sync_status。商户订单号上传上限为 80 字符（建单原号仍为 64）。',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => '一个真实包裹可能对应多个支付子单，可逐个提交相同的真实运单号，但现有支付插件协议可能以运单号去重并拒绝跨订单重复。需先让插件支持同号关联多订单；本系统不会虚构 -S001 运单号，也不把一次远端成功当作全部子单成功。',
                 ],
             ],
         ],
@@ -716,7 +898,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => '首次确认支付成功时创建支付结果通知，通知 status 固定为 paid，与订单可能已经进入 pending_settlement 或 0 天周期 completed 无关。退款、拒付、争议、发货和结算等后续变化不创建这个通知，恢复正常状态也不重发首次通知。需要其他状态时使用订单查询。',
+                    'text' => '普通单首次确认支付成功时创建支付结果通知，通知 status 固定为 paid；组合单按下方 V2 规则逐笔通知，与订单可能已经进入 pending_settlement 或 0 天周期 completed 无关。退款、拒付、争议、发货和结算等后续变化不创建这个通知，恢复正常状态也不重发首次通知。需要其他状态时使用订单查询。',
                 ],
                 [
                     'type' => 'links',
@@ -750,7 +932,7 @@ curl_close($ch);
                     'headers' => ['字段', '说明'],
                     'rows' => [
                         ['order_no / merchant_order_no', '系统订单号 / 商户订单号。'],
-                        ['status', '此通知当前为 paid。'],
+                        ['status', '普通单为 paid；组合单未付清为 pending，付清后为 paid，到期或待核对可为 expired / review。'],
                         ['currency / amount', '订单币种和实际应付金额；金额是十进制字符串。'],
                         ['converted_currency / converted_amount', '折算币种与折算金额；当前折算币种为 USD。'],
                         ['payment_method', '实际收款渠道。'],
@@ -761,7 +943,7 @@ curl_close($ch);
                 [
                     'type' => 'callout',
                     'title' => '接收方必须验签并幂等',
-                    'text' => '检查 App-ID、Timestamp、X-Nonce 并按前文算法计算预期签名，使用恒定时间比较（如 PHP hash_equals）验证 sign；保留 nonce 防重放。按 order_no + status 幂等处理，已处理过的重复通知直接返回成功，避免重复入账或发货。',
+                    'text' => '检查 App-ID、Timestamp、X-Nonce 并按前文算法计算预期签名，使用恒定时间比较（如 PHP hash_equals）验证 sign；保留 nonce 防重放。V1 按 order_no + status 幂等处理，V2 按 event_id 去重并按父单 version 更新进度，已处理过的重复通知直接返回成功，避免重复入账或发货。',
                     'tone' => 'warning',
                 ],
                 [
@@ -773,6 +955,94 @@ curl_close($ch);
                     'title' => '两种通知的成功标准不同',
                     'text' => '支付结果通知接受任意 HTTP 2xx；商户物流回传要求严格 HTTP 200 且 JSON code 为整数 0。请分别处理，不要混用。',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => 'V1 / V2 与验签兼容',
+                    'text' => '未开启组合付款且使用 V1 的应用维持原通知体。开启组合付款自动使用 V2；V2 普通订单也带 order_type=single。新增字段会改变签名原文，验签算法不变：去掉 sign 后对收到的完整 JSON 对象递归规范化再签名，包含 children、null、paid_amount 等全部字段，不能用旧字段白名单重建请求体。',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => 'V2 通知规则',
+                    'headers' => [
+                        '字段 / 规则',
+                        '说明',
+                    ],
+                    'rows' => [
+                        [
+                            'order_type=combine',
+                            '每笔子单首次确认成功均发送一次通知。顶层订单号始终是父单 / 商户原号，amount 与 converted_amount 始终为父单总额；payment_method 为 null，实际方式在 children 内。',
+                        ],
+                        [
+                            'paid_order_no / children',
+                            '本次新增付款的子单系统号 / 事件发生时全部真实子单快照。未创建的下一笔不出现在数组内。',
+                        ],
+                        [
+                            'status',
+                            '部分付款为 pending，order_status=partially_paid；只有全部付清才是 paid。不能因为收到支付 webhook 就发货。',
+                        ],
+                        [
+                            'event_id / version',
+                            '按 event_id 去重；按父单和 version 防止旧重试覆盖新进度。重试保留原快照与 event_id，签名、时间戳、nonce 每次刷新。不能再按父单号 + pending 去重每笔事件。',
+                        ],
+                        [
+                            'order_type=single',
+                            '保留普通付款字段并新增 event_id、version=1、paid_order_no、累计金额、余额=0 和 children=[]。',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => 'V2 组合通知：首笔 640 USD 已付',
+                    'language' => 'json',
+                    'code' => '{
+  "order_type": "combine",
+  "order_no": "CMB01JEXAMPLEPARENT00000000000",
+  "merchant_order_no": "M20261113001",
+  "status": "pending",
+  "order_status": "partially_paid",
+  "platform": "wordpress",
+  "currency": "USD",
+  "amount": "4000.00",
+  "converted_currency": "USD",
+  "converted_amount": "4000.00",
+  "exchange_rate": "1.000000",
+  "paid_amount": "640.00",
+  "paid_converted_amount": "640.00",
+  "remaining_amount": "3360.00",
+  "remaining_converted_amount": "3360.00",
+  "payment_method": null,
+  "settlement_status": null,
+  "shipping_status": "unshipped",
+  "current_order_no": null,
+  "version": 1,
+  "children": [
+    {
+      "sequence": 1,
+      "order_no": "ORD202611130001",
+      "merchant_order_no": "M20261113001-S001",
+      "status": "paid",
+      "order_status": "pending_settlement",
+      "settlement_status": null,
+      "shipping_status": "unshipped",
+      "payment_status": "paid",
+      "currency": "USD",
+      "amount": "640.00",
+      "converted_currency": "USD",
+      "converted_amount": "640.00",
+      "payment_method": "example_channel",
+      "paid_at": "2026-11-13T12:00:00+08:00",
+      "logistics": null
+    }
+  ],
+  "created_at": "2026-11-13T11:55:00+08:00",
+  "paid_at": null,
+  "event_id": "bc7c186f-a106-4ec7-ad42-1bea374be103",
+  "paid_order_no": "ORD202611130001",
+  "occurred_at": "2026-11-13T12:00:01+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}',
                 ],
             ],
         ],
@@ -849,6 +1119,32 @@ curl_close($ch);
                     'title' => '失败后的处理',
                     'text' => '401 先检查时间同步、应用凭证和规范化算法；422 修正字段后重试；409 核对商户单号是否复用且金额币种一致；502 或超时保留原商户单号补单。每次重试都重新生成签名头，商户物流接收方的数值错误码另见物流回传章节。',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => '组合付款相关错误',
+                    'headers' => [
+                        '字段 / 规则',
+                        '说明',
+                    ],
+                    'rows' => [
+                        [
+                            'COMBINE_PAYMENT_UNAVAILABLE (409)',
+                            '当前没有商品模式及额度均合格的组合付款渠道；仅支持 MATCH/VIRTUAL，COPY/CREATE 不参与。调整渠道配置或稍后重试。',
+                        ],
+                        [
+                            'CHILD_NUMBER_CONFLICT (409)',
+                            '父子单号命名冲突，改用新的原商户订单号。',
+                        ],
+                        [
+                            'CHILD_ORDER_REQUIRED (422)',
+                            '物流上传必须使用真实子单号。',
+                        ],
+                        [
+                            'COMBINE_ORDER_NOT_PAID (409)',
+                            '原组合订单尚未全部付清，暂不允许上传物流。',
+                        ],
+                    ],
                 ],
             ],
         ],

@@ -60,6 +60,7 @@ flowchart TD
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
 | `/api/webhooks/tatum/{environment}/{monitor}` | `TatumWebhookController` | POST，独立主／测试网 HMAC 与代次 UUID，速率及 64 KiB 限制；默认关闭，仅持久化待核验线索 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
+| `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
 | 争议附件 | `DisputeAttachmentController` | 控制器内检查访问权限，不因公开路由而公开文件 |
@@ -78,6 +79,8 @@ flowchart TD
 - 登录 `User`：`MerchantScope` 调 `User::manageableMerchantIds()`；超管返回 `null` 表示不限，商户级管理员返回名下商户 ID，普通用户返回自身商户 ID。
 - API、CLI、队列：没有后台用户，业务调用必须显式限定商户，或说明为何执行全平台任务。
 - 观察者：`MerchantScope` 不处理 `Observer`，Resource 根据 `observer_payment_methods` 过滤订单。不能依赖默认 guard 的用户一定是 `User`。
+
+组合订单、收款链接、自有域名和关键词替换分别使用 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view` 查看权限，统一加入平台「角色权限分配」的可选项。后三项的既有 `manage` 权限同时允许查看；单独授予 `view` 仅开放列表和只读详情，不允许创建、修改、删除、关键词导入或域名验证。组合订单不再复用 `orders.view`，子单详情链接仍要求普通订单查看权限。Resource 的记录校验和操作按钮均沿用商户范围，写操作在提交时重新鉴权。存量角色通过角色权限页面按需保存同步，已保存模板不自动增加权限；详见 [D-46](decisions.md#d-46-组合订单及商户配置的独立查看权限)。
 
 `MerchantResource::canEdit()` 在每次编辑页请求和保存时重新查询数据库中的商户归属，并检查用户启用状态与商户管理权限；不能只依赖初次打开页面时的 `getEloquentQuery()`。商户转交其他管理员或平台后，原管理员已打开的编辑页也会失去保存权限。
 
@@ -220,6 +223,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `db:backup:upload` | 每 6 小时 |
 | `order-events:sync` | 每分钟，防重叠 |
 | `orders:sync-pending-status` | 每分钟扫描，防重叠；最近 48 小时待支付订单在创建满 30/90 分钟各补查一次，最多两次 |
+| `combined-orders:expire` | 每分钟，防重叠；停止到期父单的新付款，不取消或释放未决远端支付 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `crypto:prepare-checkouts --limit=5` | 每十秒后台处理下单准备／页面重开／显式重新报价；默认关闭，商户与订单锁、订单级缓存互斥及持久重试 |
 | `crypto:maintain-subscriptions --limit=5` | 每分钟、后台、防重叠／多调度节点互斥；默认关闭，订阅代次锁和接管条件仍独立校验 |
@@ -273,3 +277,23 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。
+
+## 组合付款链路（2026-11-13，当前工作区）
+
+应用开关启用、有法币渠道且所有可选普通渠道单笔限额都不足时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。应用切回关闭不阻止已有组合父单继续收款。
+
+链上支付保留独立 `Order`、原始法币汇率与 `CryptoCheckout` 流程，开启组合功能不改变它的币种账本。组合子单只使用法币渠道，不能把链上金额累计到法币父单；混合支付组的普通单额度判断对 crypto 使用原始汇率 USD 金额，关闭链上收款时排除 crypto 候选。独立链上订单及法币子单均通过 `PaymentCapacityService` 计算已付和未决占用；链上核验入账时同步将占用标记为 consumed。边界见 [D-47](decisions.md#d-47-链上支付与法币组合付款的合并边界)。
+
+两个付款页的路由及 Vite 入口同时保留。组合页面、状态、报价和付款分别按 IP 限制每分钟 60／60／20／10 次，使用独立命名限流器，轮询不占用付款次数；链上页面继续使用原有 Host 校验、补查／恢复订阅、显式重新报价及专用限流器。
+
+组合付款候选仅允许 `MATCH` / `VIRTUAL`（空配置沿用 `MATCH`），`COPY` / `CREATE` 从随机拆分和余额一次付清候选中排除；普通单路由不受此限制。报价复用、锁内建子单及远端补建/继续付款复用 `CombinedPaymentRouter::supportsProductMode()` 校验，模式变更不能沿用旧报价绕过。已有未决子单保留原引用及占用，不自动替换；已发生支付的状态回调仍按原链路登记。详见 [D-44](decisions.md#d-44-组合付款排除-copycreate-商品模式)。
+
+`CombinedPaymentRouter` 优先沿用当前报价渠道，没有报价时按子单序号取最近已付子单的渠道。该渠道可以收清余额就收清，否则仍按其上限的 70%～90% 随机拆付；其他渠道能收清或限额更高不会触发切换。只有首次未选渠道或原渠道不可用时，才按原规则先找一次付清渠道，否则从完整上限可被日/月余额容纳的最高三个渠道随机选一。报价过期仍记住已选渠道，切换后不会仅因旧渠道恢复而回切，见 [D-45](decisions.md#d-45-组合付款优先沿用已选支付渠道)。`CombinedOrderService` 保存五分钟报价，发起支付时按商户→父单→渠道锁序复查并创建一个真实 `Order`；提交后使用原下单服务远端建单。当前子单未决时只复用此单，失败不切渠道或换远端引用。商品准备沿用合格渠道模式；回跳固定回组合收银台。
+
+`PaymentCapacityService` 统一计算渠道跨商户的已成交及未决占用。新普通订单也持有未决占用，使其与组合子单共享额度；待处理旧订单不自动回填。真实建单在渠道行锁下再检查，金额不经浮点数记账。
+
+`CombinedPaymentStatusService` 在状态事务内校验已付金额/币种并原子累计；`OrderApiPayload` 统一父单查询、收银台与 webhook 结构。每笔首次成功创建原通知尝试，业务快照与付款同事务提交；投递独立重试，pending/processing 丢失任务由原通知扫描恢复。V1 通知保持；开启组合使用 V2 完整 JSON 验签、event_id 去重及 version 防乱序。详细协议仅维护在 [商户 API](../doc/api.md#组合付款与-v2-通知) 与中英文网页文案。
+
+账务仍只有子单经过 `BalanceService`；父单未付清阻止子单结算释放，广告转化只在付清时按父单总额触发。物流仍按实际子单保存并同步其原渠道，父单原号上传拒绝，未付清拒绝；商户网站物流回传携带子单和父单引用。插件同运单跨订单能力不在本仓库实现。
+
+后台只读组合订单列表/详情使用独立的 `combined_orders.view` 权限与 MerchantScope，不注册到观察者面板；实际子单从现有订单页面查询网关、核对资金及物流，仍需对应订单权限。到期/核对记录保留已付与未决数据，不自动退款。核心回归见 `CombinedPaymentTest`、`CombinedPaymentRoutingTest`、`CombinedPaymentAdminTest`。

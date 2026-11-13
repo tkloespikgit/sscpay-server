@@ -482,3 +482,49 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 新迁移冻结本次初值，通过查询构造器在事务内补缺，并仅填充旧记录的 `NULL`／空字符串，保留非空值、`0` 和已有元数据；提交后逐项清配置缓存。Seeder 使用一致初值，只补缺。迁移不调用可变 Seeder、不持有钱包密钥或 Tatum 凭证、不启用收款，也不重算历史报价和账本。回滚保留配置，避免误删迁移前已有或管理员之后修改的数据。
 
 **依据：** [数据迁移](../database/migrations/2026_11_12_163459_add_crypto_defaults_to_system_configs.php)、[配置 Seeder](../database/seeders/CryptoSettingsSeeder.php)、[迁移测试](../tests/Feature/CryptoSettingsMigrationTest.php)。部署步骤与参数见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。
+
+## D-43 应用级组合付款与动态逐笔收款
+
+**状态：当前工作区实现，未提交（2026-11-13，按用户确认的最新方案）。** 仅新增父单表，不创建子单草稿，不提前创建所有远端支付；每次客户发起当前付款才创建真实 orders 子单。此方案替代讨论中的预拆草稿和全程固定支付方式方案：每轮允许重新选择原支付组内有权使用的渠道，已发起的一笔仍锁定原渠道和远端引用。
+
+后续修订：每轮重新选渠道的规则已由 [D-45](#d-45-组合付款优先沿用已选支付渠道) 替代，改为原渠道可用时持续沿用；其余父子单、金额和通知规则保留。
+
+**原因与影响：** 单笔限额不足时进入独立组合收银台；本轮优先一次付清余额，否则在最高三个合格上限中随机选渠道，并随机收取上限的 70%～90%。日/月可用额度须能覆盖完整上限，真实订单占用在渠道锁内复查；不保证未来付款额度。父单锁和当前子单指针限制为串行付款，网络失败不可用新号替代未决订单。
+
+应用开启组合同时选择 V2 通知，原 V1 体保持；每笔首次成功通知包含父单进度、真实子单数组、event_id 和付款 version。商户原订单只在全部付清后成功，完整 JSON 参与旧算法签名。查询、物流、邮件、广告和子单结算约束见 [API 协议](../doc/api.md#组合付款与-v2-通知) 与 [数据设计](database.md#组合付款数据演进2026-11-13当前工作区)。父单不参与余额记账。部分付款到期或异常需要核对，不自动退款，不伪造物流号。
+
+**依据：** [CombinedOrderService](../app/Services/CombinedOrderService.php)、[CombinedPaymentRouter](../app/Services/CombinedPaymentRouter.php)、[CombinedPaymentStatusService](../app/Services/CombinedPaymentStatusService.php)、[核心测试](../tests/Feature/CombinedPaymentTest.php)。
+
+## D-44 组合付款排除 COPY/CREATE 商品模式
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 补充 D-43 的渠道资格规则：组合付款仅使用 `MATCH` / `VIRTUAL`，空配置仍按既有 `MATCH` 默认处理；`COPY` / `CREATE` 不参与首笔、后续随机付款或余额一次付清。普通订单仍允许这两种模式，不能因为组合限制把本可普通全额付款的订单改成组合单。
+
+**原因与影响：** 组合子单使用本笔金额的付款明细，未实现父单原商品到子单的分配；直接使用 COPY 会把付款描述当作商品名。按用户选择限制渠道，不改写现有创建/复制商品规则。组合报价和每次付款前均复查模式，已有未决子单的远端补建和付款链接复用同样受限；不自动取消外部支付、不删除原子单或释放未决占用，已发生的真实付款继续登记。无合格渠道时返回原 `COMBINE_PAYMENT_UNAVAILABLE`。无数据库变更。
+
+**依据：** [渠道资格](../app/Services/CombinedPaymentRouter.php)、[报价校验](../app/Services/CombinedOrderService.php)、[真实建单与续付](../app/Services/OrderCreationService.php)、[路由回归](../tests/Feature/CombinedPaymentRoutingTest.php)、[未决子单回归](../tests/Feature/CombinedPaymentTest.php)。
+
+## D-45 组合付款优先沿用已选支付渠道
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 替代 D-43 中每轮重新随机选渠道的规则；优先沿用已选报价渠道，否则使用最近一笔已付子单的渠道。报价过期或有其他限额更高的渠道不构成切换理由；原渠道不能一次收清但能按既有规则拆付时继续使用。原渠道可收清则一次收尾。
+
+**切换条件：** 原渠道已停用/删除、不在商户可用范围或原支付组内、商品模式不符合 D-44，或日/月金额、日笔数、手续费及金额精度无法满足本笔规则。首次尚未选定渠道，或原渠道确实不合格时，才按原规则优先找可一次收清的渠道，否则从最高三个合格上限随机选一。切换后继续沿用新渠道，旧渠道恢复不自动回切；所有金额仍按原规则计算。
+
+**数据与资金边界：** 使用已有报价 JSON 和按序号排序的已付子单记录，不新增字段或迁移。未决子单仍受 `current_order_id` 保护，网络失败不能换渠道另建一笔；回调、资金、查询和物流协议不变。依据见 [路由实现](../app/Services/CombinedPaymentRouter.php)、[渠道回归](../tests/Feature/CombinedPaymentRoutingTest.php)、[逐笔付款回归](../tests/Feature/CombinedPaymentTest.php)。
+
+## D-46 组合订单及商户配置的独立查看权限
+
+**状态：按用户要求采用，当前工作区实现，未提交（2026-11-13）。** 新增 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view`，可在「角色权限分配」独立授予。组合订单不再借用普通订单 `orders.view`；只能查看组合订单的账号可看父单和子单摘要，不能进入完整子单详情。
+
+**读写边界：** 收款链接、自有域名、关键词替换的 `manage` 继续包含查看，`view` 本身不授予任何写权限。列表提供只读详情；创建、编辑、删除、关键词导入与域名验证显式验证管理权限和记录归属。仅隐藏按钮不足以授权，已打开操作提交时仍检查权限；商户用户只看本商户，商户级管理员只看名下商户，启用的超级管理员保留全局访问。
+
+**数据与兼容：** 复用 Spatie 权限表，无迁移。新增权限由现有 Seeder 或角色模板保存补齐；新商户内置订单、物流、财务管理员模板增加组合订单查看，保持这些默认角色原来的组合订单可见能力。存量已保存模板和自建角色不自动扩权，需由超管按需勾选并保存同步。依据见 [权限定义](../app/Support/Permissions.php)、[角色模板](../app/Services/MerchantRoleProvisioningService.php)、[只读边界回归](../tests/Feature/Filament/ResourceViewPermissionsTest.php)、[组合订单回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-47 链上支付与法币组合付款的合并边界
+
+**状态：当前工作区合并兼容策略，未提交（2026-11-13）。** 用户要求消除两分支冲突并保留区块链支付及拆单组合付款。本次保留各自已实现的资金口径：链上支付仍是独立普通单和独立币种账本；组合付款只汇总法币真实子单。不据此推定已支持跨币种组合付款。
+
+**原因与实现：** 现有组合父单保存两位法币总额，通过网关状态汇总；链上核验按最小币单位入账，不存在对应的父单累计协议。`CombinedPaymentRouter` 在报价、复用、建子单和续付入口排除 crypto；普通路由仍可选链上渠道，组合开关不阻止独立链上支付。混合组是否需拆单按各渠道实际口径判断：法币使用现有汇损汇率，crypto 使用原始汇率 USD；链上开关关闭时排除对应候选。
+
+**额度与通知：** 保留组合分支新增的未决额度锁定读，并为 crypto 使用相同原始汇率金额；链上原子入账同步更新 consumed 状态。API 同时保留父子身份和链上公开状态；V2 应用的链上通知仍是独立 `single` 事件，不产生法币结算。公开组合页的四种请求各自限流，状态轮询不消耗付款配额。
+
+**依据：** [统一下单](../app/Services/OrderCreationService.php)、[渠道路由](../app/Services/PaymentService.php)、[组合路由](../app/Services/CombinedPaymentRouter.php)、[共存回归](../tests/Feature/CryptoCombinedPaymentCompatibilityTest.php)、[链上补查回归](../tests/Feature/CryptoCheckoutTest.php)。不新增数据库迁移，不改变钱包签名／归集和审核取款边界。

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ApiDocumentationController;
+use App\Http\Controllers\CombinedPaymentController;
 use App\Http\Controllers\CryptoPaymentPageController;
 use App\Http\Controllers\DisputeAttachmentController;
 use App\Http\Controllers\HomeController;
@@ -36,6 +37,13 @@ Route::get('/purchase-orders/{purchaseOrder}/details', [PurchaseOrderController:
 Route::get('/payment/{token}', [PaymentPageController::class, 'show'])->middleware('throttle:120,1')->name('payment.show');
 Route::get('/payment/{token}/crypto', [CryptoPaymentPageController::class, 'status'])->middleware('throttle:crypto-checkout-read')->name('payment.crypto.status');
 Route::post('/payment/{token}/crypto', [CryptoPaymentPageController::class, 'open'])->middleware('throttle:crypto-checkout-open')->name('payment.crypto.open');
+Route::prefix('combine-payment/{token}')->name('combined-payment.')->group(function (): void {
+    Route::get('/', [CombinedPaymentController::class, 'show'])->name('show')->middleware('throttle:combined-payment-show');
+    Route::get('/status', [CombinedPaymentController::class, 'status'])->name('status')->middleware('throttle:combined-payment-status');
+    Route::post('/quote', [CombinedPaymentController::class, 'quote'])->name('quote')->middleware('throttle:combined-payment-quote');
+    Route::post('/pay', [CombinedPaymentController::class, 'pay'])->name('pay')->middleware('throttle:combined-payment-pay');
+});
+
 Route::post('/payment/{token}/confirm', [PaymentPageController::class, 'confirm'])->name('payment.confirm');
 Route::get('/payment/expired', fn () => view('payment.expired'))->name('payment.expired');
 

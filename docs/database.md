@@ -13,6 +13,8 @@ erDiagram
     payment_methods ||--o{ merchant_payment_methods : shared
     payment_groups ||--o{ payment_group_methods : contains
     payment_methods ||--o{ payment_group_methods : routes
+    applications ||--o{ combined_orders : combines
+    combined_orders o|--o{ orders : groups
     applications ||--o{ orders : authenticates
     payment_methods o|--o{ orders : selected
     orders ||--o{ order_items : original
@@ -45,6 +47,8 @@ erDiagram
 | `payment_group_methods` | 组内渠道，`group_id`/`method_id`，`priority` 为分流权重 |
 | `payment_method_config_maps`、`payment_method_profiles` | 网关字段模板及渠道资料附表；profile 每渠道至多一条 |
 | `observers`、`observer_payment_methods` | 独立观察者账户与允许查看的渠道；展示缩放不修改账务金额 |
+
+独立查看权限 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view` 复用现有 `permissions` 和角色关联表，无表结构迁移。`PermissionSeeder` 幂等补齐权限及平台商户级管理员；「角色权限分配」保存时也会补齐权限并按勾选同步商户默认角色。已有模板按保存值生效，不自动扩权；后三项原有 `manage` 权限仍包含查看能力。
 
 支付方式新增可空 `display_name`（最长 100 字符），`method_name` 保留原名称。商户交易列表及渠道筛选优先读取展示名称，空值/空白回退原名称；平台账号（含商户级管理员）继续显示原名称。自有、共享及软删除渠道沿用原授权范围；无渠道关联的订单回退已有渠道代码。迁移只新增字段，不回填或改写历史订单。
 
@@ -349,3 +353,30 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 服务费按累计实际收款与冻结费率重算、只收一次固定费；有原收入时沿用原报价，否则采用最早有款报价。为保持非负净额，人工处理的费用上限为实收数量，全部收款失效时费用和净额同时归零；此选择在确认窗口展示。复原链证据时追加恢复差额。证据变化或重新补查后恢复待复核，重复指纹不会重复记账，重复 UUID 返回原结果。
 
 生产 MySQL DDL／锁竞争尚未验收；迁移只在隔离测试库验证。含真实账务时不可通过回滚迁移删除上述审计记录。
+
+## 组合付款数据演进（2026-11-13，当前工作区）
+
+迁移只新增一个业务表 `combined_orders`，不创建子单草稿表；实际支付沿用 `orders`、物流、结算、审计和通知尝试表。定义见 [父单迁移](../database/migrations/2026_11_13_012113_create_combined_orders_table.php) 与 [关联字段迁移](../database/migrations/2026_11_13_012114_add_combined_payment_fields_to_orders_and_applications.php)。
+
+| 表 | 新增或变更 |
+|---|---|
+| applications | `is_combine_payment_enabled` 默认 false；`webhook_version` 默认 1，开启组合付款时保存为 2 |
+| combined_orders 身份 | merchant/application/payment_group/可空 checkout_link 外键；系统号、原商户号、来源、币种 |
+| combined_orders 金额 | original_amount、auto_discount、amount、converted_amount、paid_amount、paid_converted_amount、remaining_amount、remaining_converted_amount 均 decimal(15,2)；汇率 decimal(15,6) |
+| combined_orders 快照 | exchange_snapshot / order_snapshot JSON；客户、商品、物流跟踪开关和建单信息，不保存应用 API Key |
+| combined_orders 进度 | status、current_order_id、next_sequence、付款 version；current_quote JSON 只缓存当前报价（金额/渠道/版本/有效期），不是预生成子单 |
+| combined_orders 链接及时间 | 不可猜 payment_link_token、checkout_host/origin、三个 URL、通知协议快照、邮件状态、首次/全部付款时间、到期时间及错误码 |
+| orders | 可空 combined_order_id / combined_sequence；risk_reservation_status / risk_reserved_at；商户号及原生成列扩至 80 |
+| order_notification_attempts | 可空 combined_order_id、event_id、event_version；沿用原尝试表保存逐笔付款时的不可变业务快照 |
+
+父单系统号、token 唯一；未软删除的 merchant_id + merchant_order_no 通过生成列唯一约束；子单 (combined_order_id, combined_sequence) 唯一；通知 (event_id, attempt_number) 唯一。原 orders 生成列唯一约束保持，原号建单仍校验 64，物流上传允许 80。
+
+后续付款的优先渠道复用 `current_quote.payment_method_id`（报价到期仍保留选择），没有报价时读取最近已付子单的 `payment_method_id`，按 `combined_sequence` 倒序并包含软删除历史。只有原渠道不符合本笔规则时才重选，不新增父单渠道列、不回填历史数据；已有未决子单仍由 `current_order_id` 限制为同一笔。
+
+不回填历史订单，不迁移资金，不预留未来全部额度。新订单的 held 占用按渠道 ID 跨商户统计，与窗口内已付金额/笔数合并；初次支付改 consumed，明确取消/过期改 released。页面/父单到期本身不释放未决支付占用。MySQL 锁定读用于事务内额度检查，避免等到渠道锁后仍读取旧快照。未来需要清理未决占用时，必须先核实远端已不可付，不能仅按本地年龄释放。
+
+合并区块链分支后，`combined_orders` 仍只汇总法币子单；链上 `orders.combined_order_id` 留空，币数量继续写独立加密资产附表和账本。链上订单的 `converted_amount`／占用金额使用原始法币汇率 USD 参考值，法币结算金额保持零；首次链上原子入账同步将 `risk_reservation_status` 改为 consumed，不重复累加未决额度。本次兼容修复不增加迁移，保留两分支已有迁移及审计数据。
+
+父单累计是已确认毛收款，不是净结算额；子单手续费与结算快照照常保存，父单不参与余额入账及成交统计。累计 USD 以累计原币折算差额分配舍入尾差。子单退款/争议保留曾收款事实，父单转 review；本功能不自动执行退款。
+
+回滚第二个迁移会移除关联和开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。

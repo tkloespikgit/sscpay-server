@@ -21,6 +21,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -92,6 +93,26 @@ class ApplicationResource extends Resource
                     ->maxLength(255)
                     ->required()
                     ->placeholder('hat.com'),
+
+                Toggle::make('is_combine_payment_enabled')
+                    ->label(__('combined.enable'))
+                    ->helperText(__('combined.enable_help'))
+                    ->default(false)
+                    ->live()
+                    ->afterStateUpdated(function (Set $set, bool $state): void {
+                        if ($state) {
+                            $set('webhook_version', 2);
+                        }
+                    })
+                    ->inline(false),
+
+                Select::make('webhook_version')
+                    ->label(__('combined.webhook_version'))
+                    ->options([1 => __('combined.webhook_v1'), 2 => __('combined.webhook_v2')])
+                    ->default(1)
+                    ->required()
+                    ->disabled(fn (Get $get): bool => (bool) $get('is_combine_payment_enabled'))
+                    ->helperText(__('combined.webhook_help')),
 
                 Toggle::make('is_auto_discount_enabled')
                     ->label(__('admin.application.fields.is_auto_discount_enabled'))

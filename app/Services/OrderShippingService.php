@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\CombinedPaymentException;
 use App\Jobs\RegisterLogisticsTrackingJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Merchant;
@@ -51,6 +52,9 @@ class OrderShippingService
         return DB::transaction(function () use ($order, $operatorId, $attributes): OrderShipping {
             Merchant::query()->whereKey($order->merchant_id)->lockForUpdate()->firstOrFail();
             $order = Order::query()->forMerchant($order->merchant_id)->whereKey($order->id)->lockForUpdate()->firstOrFail();
+            if ($order->combined_order_id && ! $order->combinedOrder()->forMerchant($order->merchant_id)->where('status', 'paid')->exists()) {
+                throw new CombinedPaymentException('COMBINE_ORDER_NOT_PAID');
+            }
             if (! in_array($order->status, self::RECORDABLE_STATUSES, true)) {
                 throw ValidationException::withMessages([
                     'order' => "订单当前状态为「{$order->status}」，只有已收款且未全额退款、未拒付的订单才能录入物流信息。",

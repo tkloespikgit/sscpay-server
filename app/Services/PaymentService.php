@@ -29,7 +29,7 @@ use Random\Randomizer;
  * 的状态，见 Order::NEVER_PAID_STATUSES），按首次支付时间 paid_at 归入日/月窗口；
  * paid_at 为空的历史已成交订单暂按 created_at 归入窗口。
  * （2.4 节允许用 Redis 计数器加速，这里先给出 DB 查询版本作为权威实现；
- * 如果后续要接入 Redis 计数器，替换 dailyStatsForMethods()/monthlyAmountForMethod()
+ * 如果后续要接入 Redis 计数器，替换 PaymentCapacityService 及 dailyStatsForMethods()
  * 内部实现即可，对外接口不变）。
  *
  * 后台支付组关联表通过 routingLoadSnapshot() 展示同口径的当天负载对照
@@ -40,6 +40,7 @@ class PaymentService
     public function __construct(
         private readonly TelegramNotificationService $telegram,
         private readonly Randomizer $randomizer = new Randomizer,
+        private readonly PaymentCapacityService $capacity = new PaymentCapacityService,
     ) {}
 
     /**
@@ -48,7 +49,7 @@ class PaymentService
      *
      * @throws NoAvailablePaymentMethodException
      */
-    public function resolvePaymentMethod(PaymentGroup $group, float $amountUsd, array $excludedMethodIds = [], array $orderDetails = []): PaymentMethod
+    public function resolvePaymentMethod(PaymentGroup $group, string|float $amountUsd, array $excludedMethodIds = [], array $orderDetails = [], ?int $excludingOrderId = null): PaymentMethod
     {
         $candidates = $group->activePaymentMethods()
             ->forMerchant((int) $group->merchant_id)
@@ -56,17 +57,15 @@ class PaymentService
             ->whereNotIn('payment_methods.id', $excludedMethodIds)
             ->get();
 
-        // 一次 SQL 批量取全部候选的当天统计，再逐一过风控，避免每个通道一次查询。
+        // 负载排序批量读取；额度使用锁定读检查已成交和未决占用。
         [$dayStart, $dayEnd] = $this->dayRange();
         $dailyStats = $this->dailyStatsForMethods($candidates->pluck('id')->all(), $dayStart, $dayEnd);
 
         $passing = [];
 
         foreach ($candidates as $method) {
-            $stats = $dailyStats[$method->id] ?? ['amount' => 0.0, 'count' => 0];
-
-            $riskAmount = $method->payment_type === 'crypto' ? (float) ($orderDetails['crypto_amount_usd'] ?? $amountUsd) : $amountUsd;
-            if ($this->passesRiskControl($method, $riskAmount, $stats)) {
+            $riskAmount = (string) ($method->payment_type === 'crypto' ? ($orderDetails['crypto_amount_usd'] ?? $amountUsd) : $amountUsd);
+            if ($this->capacity->permits($method, $riskAmount, $excludingOrderId)) {
                 $passing[] = $method;
             }
         }
@@ -154,7 +153,7 @@ class PaymentService
      *
      * @param  array<string, string>  $orderDetails
      */
-    private function alertNoAvailablePaymentMethod(PaymentGroup $group, float $amountUsd, int $candidateCount, array $orderDetails): void
+    private function alertNoAvailablePaymentMethod(PaymentGroup $group, string|float $amountUsd, int $candidateCount, array $orderDetails): void
     {
         $dedupeKey = "no_available_payment_method_alert:{$group->id}";
 
@@ -169,7 +168,7 @@ class PaymentService
         $this->telegram->send($group->merchant_id, __('admin.telegram_notification.no_available_payment_method', [
             'group_name' => $group->group_name,
             'group_key' => $group->group_key,
-            'amount' => number_format($amountUsd, 2),
+            'amount' => number_format((float) $amountUsd, 2),
             'reason' => $reason,
         ])."\n\n".OrderTelegramSummary::render($orderDetails));
     }
@@ -228,37 +227,6 @@ class PaymentService
     }
 
     /**
-     * @param  array{amount: float, count: int}  $daily
-     */
-    private function passesRiskControl(PaymentMethod $method, float $amountUsd, array $daily): bool
-    {
-        if ($method->exceedsPerTransactionLimit($amountUsd)) {
-            return false;
-        }
-
-        if (! $method->isUnlimited('max_amount_per_day')
-            && bccomp((string) ($daily['amount'] + $amountUsd), (string) $method->max_amount_per_day, 2) > 0) {
-            return false;
-        }
-
-        if (! $method->isUnlimited('max_count_per_day')
-            && ($daily['count'] + 1) > $method->max_count_per_day) {
-            return false;
-        }
-
-        if (! $method->isUnlimited('max_amount_per_month')) {
-            [$monthStart, $monthEnd] = $this->monthRange();
-            $monthlyAmount = $this->monthlyAmountForMethod($method, $monthStart, $monthEnd);
-
-            if (bccomp((string) ($monthlyAmount + $amountUsd), (string) $method->max_amount_per_month, 2) > 0) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
      * 风控窗口一律按系统默认时区（config('app.timezone')）划分，不用支付组时区。
      *
      * 限额统计的维度是"支付方式本身"、跨商户汇总（见 dailyStatsForMethods()）。
@@ -278,18 +246,6 @@ class PaymentService
         $now = Carbon::now($this->riskControlTimezone());
 
         return [$now->copy()->startOfDay(), $now->copy()->endOfDay()];
-    }
-
-    /**
-     * 当月窗口，口径同 dayRange()：系统默认时区。
-     *
-     * @return array{0: Carbon, 1: Carbon}
-     */
-    private function monthRange(): array
-    {
-        $now = Carbon::now($this->riskControlTimezone());
-
-        return [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()];
     }
 
     private function riskControlTimezone(): string
@@ -339,25 +295,5 @@ class PaymentService
                 'count' => (int) $row->total_count,
             ],
         ])->all();
-    }
-
-    /**
-     * 当月已成交金额，口径同 dailyStatsForMethods()：按支付方式本身跨商户汇总，
-     * 且计入全部"曾经支付成功过"的状态。
-     */
-    private function monthlyAmountForMethod(PaymentMethod $method, Carbon $start, Carbon $end): float
-    {
-        $result = Order::query()
-            ->withoutGlobalScopes()
-            ->where('payment_method_id', $method->id)
-            ->whereNotIn('status', Order::NEVER_PAID_STATUSES)
-            ->where(function ($query) use ($start, $end) {
-                $query->whereBetween('paid_at', [$start, $end])
-                    ->orWhere(fn ($legacy) => $legacy->whereNull('paid_at')
-                        ->whereBetween('created_at', [$start, $end]));
-            })
-            ->sum('converted_amount');
-
-        return (float) $result;
     }
 }

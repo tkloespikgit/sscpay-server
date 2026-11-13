@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
+use App\Exceptions\CombinedPaymentException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderDetailsConflictException;
@@ -14,9 +15,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\CreateOrderRequest;
 use App\Http\Requests\Api\SyncOrderShippingRequest;
 use App\Jobs\SendPaymentLinkJob;
+use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Services\CryptoCheckoutPresenter;
+use App\Services\OrderApiPayload;
 use App\Services\OrderCreationService;
 use App\Services\OrderShippingService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
@@ -34,6 +37,7 @@ class OrderController extends Controller
     public function __construct(
         private readonly OrderCreationService $orderCreationService,
         private readonly OrderShippingService $orderShippingService,
+        private readonly OrderApiPayload $payloads,
         private readonly CryptoCheckoutPresenter $cryptoPresenter,
     ) {}
 
@@ -52,6 +56,8 @@ class OrderController extends Controller
                 application: $application,
                 source: 'api',
             );
+        } catch (CombinedPaymentException $e) {
+            return $this->errorResponse($e->errorCode, $e->getMessage(), $e->httpStatus);
         } catch (
             AmountMismatchException
             |OrderItemsMismatchException
@@ -75,24 +81,32 @@ class OrderController extends Controller
         // 使用订单中保存的发送意图，避免重试请求的 send_mail 参数改变原订单行为。
         if ($order->send_mail && filled($order->pay_url)
             && ($order->wasRecentlyCreated || $order->wasChanged('pay_url'))) {
-            SendPaymentLinkJob::dispatch($order->id);
+            SendPaymentLinkJob::dispatch($order->id, $order instanceof CombinedOrder ? 'combine' : 'single');
+        }
+
+        if ($order instanceof CombinedOrder) {
+            return response()->json(['code' => 0, 'msg' => 'success', 'data' => [
+                ...$this->payloads->parent($order),
+                'payment_link_token' => $order->payment_link_token,
+                'payment_url' => $order->pay_url, 'pay_url' => $order->pay_url,
+            ]]);
         }
 
         return response()->json([
             'code' => 0,
             'msg' => 'success',
             'data' => [
+                'order_type' => 'single',
                 'order_no' => $order->order_no,
+                'merchant_order_no' => $order->merchant_order_no,
                 'payment_link_token' => $order->payment_link_token,
-                'payment_url' => $order->payment_type === 'crypto' ? $order->pay_url : url("/payment/{$order->payment_link_token}"),
+                'payment_url' => $order->payment_type === 'crypto' ? $order->pay_url : route('payment.show', $order->payment_link_token),
                 // 支付网关插件渲染的收银台地址（远程创建支付订单成功后回填）
                 'pay_url' => $order->pay_url,
                 'converted_currency' => $order->converted_currency,
                 'converted_amount' => (string) $order->converted_amount,
                 'exchange_rate' => (string) $order->exchange_rate,
                 'payment_method' => $order->payment_method,
-                'payment_type' => $order->payment_type,
-                ...($order->payment_type === 'crypto' ? ['crypto_payment' => collect($this->cryptoPresenter->data($order))->except('qr')->all()] : []),
                 ...$this->statusData($order),
             ],
         ]);
@@ -106,6 +120,14 @@ class OrderController extends Controller
             'order_no' => ['required_without:merchant_order_no', 'string'],
             'merchant_order_no' => ['required_without:order_no', 'string'],
         ]);
+
+        $parent = CombinedOrder::query()->forMerchant($merchantId)
+            ->when($request->filled('order_no'), fn ($q) => $q->where('order_no', $request->input('order_no')))
+            ->when($request->filled('merchant_order_no'), fn ($q) => $q->where('merchant_order_no', $request->input('merchant_order_no')))
+            ->first();
+        if ($parent) {
+            return response()->json(['code' => 0, 'msg' => 'success', 'data' => $this->payloads->parent($parent)]);
+        }
 
         $order = Order::query()
             ->forMerchant($merchantId)
@@ -124,13 +146,13 @@ class OrderController extends Controller
                 'order_no' => $order->order_no,
                 'merchant_order_no' => $order->merchant_order_no,
                 ...$this->statusData($order),
+                ...$this->payloads->identity($order),
+                ...$this->payloads->child($order),
                 'platform' => $order->platform,
                 'currency' => $order->currency,
                 'amount' => (string) $order->amount,
                 'converted_amount' => (string) $order->converted_amount,
                 'payment_method' => $order->payment_method,
-                'payment_type' => $order->payment_type,
-                ...($order->payment_type === 'crypto' ? ['crypto_payment' => collect($this->cryptoPresenter->data($order))->except('qr')->all()] : []),
                 'created_at' => $order->created_at->toIso8601String(),
             ],
         ]);
@@ -151,6 +173,10 @@ class OrderController extends Controller
             ->first();
 
         if (! $order) {
+            if (CombinedOrder::query()->forMerchant($merchantId)->where('merchant_order_no', $validated['merchant_order_no'])->exists()) {
+                return $this->errorResponse('CHILD_ORDER_REQUIRED', __('combined.errors.CHILD_ORDER_REQUIRED'), 422);
+            }
+
             return $this->errorResponse('ORDER_NOT_FOUND', 'Order not found', 404);
         }
 
@@ -165,6 +191,8 @@ class OrderController extends Controller
                     'shipped_at' => $validated['shipped_at'],
                 ]
             );
+        } catch (CombinedPaymentException $e) {
+            return $this->errorResponse($e->errorCode, $e->getMessage(), $e->httpStatus);
         } catch (ValidationException $e) {
             return $this->errorResponse('INVALID_ORDER_STATUS', $e->getMessage(), 422);
         }
@@ -176,24 +204,25 @@ class OrderController extends Controller
                 'order_no' => $order->order_no,
                 'merchant_order_no' => $order->merchant_order_no,
                 ...$this->statusData($order->refresh()),
+                ...$this->payloads->identity($order),
                 'logistics_company' => $shipping->logistics_company,
                 'tracking_number' => $shipping->tracking_number,
                 'tracking_url' => $shipping->tracking_url,
                 'shipped_at' => $shipping->shipped_at->toIso8601String(),
+                'sync_status' => $shipping->sync_status,
             ],
         ]);
     }
 
     /**
-     * @return array{status: string, order_status: string, settlement_status: ?string, shipping_status: string}
+     * @return array<string, mixed>
      */
     private function statusData(Order $order): array
     {
         return [
-            'status' => $order->status === 'pending_settlement' ? 'paid' : $order->status,
-            'order_status' => $order->status,
-            'settlement_status' => $order->settlement()->forMerchant($order->merchant_id)->value('status'),
-            'shipping_status' => $order->shipping()->forMerchant($order->merchant_id)->exists() ? 'shipped' : 'unshipped',
+            ...$this->payloads->status($order),
+            'payment_type' => $order->payment_type,
+            ...($order->payment_type === 'crypto' ? ['crypto_payment' => $this->cryptoPresenter->data($order)] : []),
         ];
     }
 

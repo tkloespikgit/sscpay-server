@@ -70,7 +70,7 @@ class SettleDueOrders extends Command
             OrderSettlement::query()->withoutGlobalScopes()->where('status', 'waiting_shipment')
                 ->whereHas('order', fn (Builder $query) => $query->withoutGlobalScopes()
                     ->whereIn('status', ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'])
-                    ->withoutUnresolvedGatewayReversal()
+                    ->withoutUnresolvedGatewayReversal()->withCompletedCombinedPayment()
                     ->where(fn (Builder $gateway) => $gateway->whereNull('gateway_status')->orWhere('gateway_status', '!=', 'disputing'))
                     ->whereDoesntHave('activeDisputeEvent', fn (Builder $events) => $events->withoutGlobalScopes())
                     ->whereDoesntHave('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())
@@ -95,7 +95,7 @@ class SettleDueOrders extends Command
             OrderSettlement::query()->withoutGlobalScopes()->where('status', 'pending')->where('due_at', '<=', now())
                 ->whereHas('order', fn (Builder $query) => $query->withoutGlobalScopes()
                     ->whereIn('status', ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded'])
-                    ->withoutUnresolvedGatewayReversal()
+                    ->withoutUnresolvedGatewayReversal()->withCompletedCombinedPayment()
                     ->where(fn (Builder $gateway) => $gateway->whereNull('gateway_status')->orWhere('gateway_status', '!=', 'disputing'))
                     ->whereDoesntHave('activeDisputeEvent', fn (Builder $events) => $events->withoutGlobalScopes())
                     ->whereDoesntHave('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())),

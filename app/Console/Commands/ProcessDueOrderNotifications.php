@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\SendOrderNotificationJob;
 use App\Models\OrderNotificationAttempt;
 use App\Models\Scopes\MerchantScope;
 use App\Services\OrderNotificationService;
@@ -23,6 +24,17 @@ class ProcessDueOrderNotifications extends Command
 
     public function handle(OrderNotificationService $service): int
     {
+        OrderNotificationAttempt::query()->withoutGlobalScope(MerchantScope::class)
+            ->where('status', 'processing')->where('attempted_at', '<=', now()->subMinutes(2))
+            ->update(['status' => 'pending']);
+        OrderNotificationAttempt::query()->withoutGlobalScope(MerchantScope::class)
+            ->where('status', 'pending')->where('created_at', '<=', now()->subMinutes(2))
+            ->chunkById(100, function ($attempts): void {
+                foreach ($attempts as $attempt) {
+                    SendOrderNotificationJob::dispatch($attempt->id);
+                }
+            });
+
         $dueAttempts = OrderNotificationAttempt::query()
             ->withoutGlobalScope(MerchantScope::class)
             ->dueForRetry()

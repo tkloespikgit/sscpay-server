@@ -32,6 +32,7 @@ class OrderNotificationAttempt extends Model
 
     protected $fillable = [
         'order_id',
+        'combined_order_id', 'event_id', 'event_version',
         'merchant_id',
         'notify_type',
         'attempt_number',
@@ -108,6 +109,9 @@ class OrderNotificationAttempt extends Model
     {
         return static::create([
             'order_id' => $order->id,
+            'combined_order_id' => $order->combined_order_id,
+            'event_id' => $requestPayload['event_id'] ?? null,
+            'event_version' => $requestPayload['version'] ?? null,
             'merchant_id' => $order->merchant_id,
             'notify_type' => $notifyType,
             'attempt_number' => 1,
@@ -156,6 +160,9 @@ class OrderNotificationAttempt extends Model
 
             $next = static::create([
                 'order_id' => $current->order_id,
+                'combined_order_id' => $current->combined_order_id,
+                'event_id' => $current->event_id,
+                'event_version' => $current->event_version,
                 'merchant_id' => $current->merchant_id,
                 'notify_type' => $current->notify_type,
                 'attempt_number' => $current->attempt_number + 1,

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Jobs\SendPaymentLinkJob;
 use App\Models\Application;
+use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\Order;
 
@@ -23,7 +24,7 @@ class ManualOrderService
      *                       但没有 customer_ip / user_agent / accept_language
      *                       这些"客户端环境"字段（手工建单没有真实客户端请求）。
      */
-    public function createOrder(array $data, Merchant $merchant, Application $application, int $operatorId): Order
+    public function createOrder(array $data, Merchant $merchant, Application $application, int $operatorId): Order|CombinedOrder
     {
         // 手工建单目前没有对应的"是否发送"表单开关，维持一直以来的既有行为：
         // 手工建的订单总是要发付款链接邮件。
@@ -39,7 +40,7 @@ class ManualOrderService
         // 幂等命中已存在订单的情况下（重复提交同一个 merchant_order_no），
         // 不应该重复发送付款链接邮件，只有真正新建的订单才发送。
         if ($order->wasRecentlyCreated) {
-            SendPaymentLinkJob::dispatch($order->id);
+            SendPaymentLinkJob::dispatch($order->id, $order instanceof CombinedOrder ? 'combine' : 'single');
         }
 
         return $order;

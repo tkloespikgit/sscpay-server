@@ -8,6 +8,7 @@ use App\Models\CryptoLedgerEntry;
 use App\Models\CryptoPaymentRequest;
 use App\Models\CryptoWebhookReceipt;
 use App\Models\Order;
+use App\Models\OrderNotificationAttempt;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\CryptoCheckoutService;
@@ -18,6 +19,7 @@ use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\CreatesCryptoCheckout;
 use Tests\TestCase;
 
@@ -85,6 +87,37 @@ class CryptoCheckoutTest extends TestCase
         $this->assertDatabaseCount('crypto_ledger_entries', 1);
         $this->assertDatabaseCount('crypto_address_monitors', 1);
         Http::assertNotSent(fn ($request) => str_contains($request->url(), '/v4/subscription'));
+    }
+
+    public function test_combined_enabled_application_keeps_crypto_backfill_credit_and_v2_notification_independent(): void
+    {
+        [$checkout, $monitor, $rpc] = $this->checkoutFixture(withPayment: true);
+        $this->application->update(['is_combine_payment_enabled' => true]);
+        $order = $monitor->paymentRequest->order;
+        $order->update(['notify_url' => 'https://shop.example.com/notify', 'risk_reservation_status' => 'held']);
+        $monitor->update(['status' => 'cold', 'cancelled_at' => now()->subMinute()]);
+        $fiatBalances = $this->merchant->fresh()->only(['balance', 'frozen_balance', 'pending_settlement_balance']);
+        Queue::fake();
+        $this->fakeCheckoutProvider($rpc);
+
+        app(CryptoCheckoutService::class)->process($order->merchant_id, $order->id);
+        $this->artisan('crypto:verify-receipts')->assertSuccessful();
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
+
+        $this->getJson($this->endpoint($order))->assertOk()->assertJsonPath('state', 'paid');
+        $this->assertSame('consumed', $order->fresh()->risk_reservation_status);
+        $this->assertDatabaseCount('crypto_ledger_entries', 1);
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('order_settlements', 0);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        $this->assertSame($fiatBalances, $this->merchant->fresh()->only(array_keys($fiatBalances)));
+        $notification = OrderNotificationAttempt::sole();
+        $this->assertSame('single', $notification->request_payload['order_type']);
+        $this->assertSame('paid', $notification->request_payload['status']);
+        $this->assertSame([], $notification->request_payload['children']);
+        $this->assertNotEmpty($notification->event_id);
+        $this->assertNull($notification->combined_order_id);
     }
 
     public function test_expired_quote_requires_explicit_action_and_uses_new_address_with_frozen_service_fee(): void

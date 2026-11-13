@@ -44,7 +44,7 @@ class ReleaseDueMerchantFundFreezes extends Command
             ->where(fn (Builder $query) => $query->whereNull('order_id')
                 ->orWhereHas('order', fn (Builder $orders) => $orders->withoutGlobalScopes()
                     ->whereNotIn('status', ['disputing', Order::STATUS_DISPUTE_REVIEW])
-                    ->withoutUnresolvedGatewayReversal()
+                    ->withoutUnresolvedGatewayReversal()->withCompletedCombinedPayment()
                     ->where(fn (Builder $gateway) => $gateway->whereNull('gateway_status')->orWhere('gateway_status', '!=', 'disputing'))
                     ->whereDoesntHave('activeDisputeEvent', fn (Builder $events) => $events->withoutGlobalScopes())
                     ->whereDoesntHave('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())))

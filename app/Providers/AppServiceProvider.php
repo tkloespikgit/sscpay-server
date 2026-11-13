@@ -22,6 +22,10 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        foreach (['show' => 60, 'status' => 60, 'quote' => 20, 'pay' => 10] as $action => $limit) {
+            RateLimiter::for('combined-payment-'.$action, fn (Request $request) => Limit::perMinute($limit)->by($request->ip()));
+        }
+
         RateLimiter::for('crypto-checkout-read', fn (Request $request) => [
             Limit::perMinute(240)->by('ip:'.$request->ip()),
             Limit::perMinute(120)->by('token:'.hash('sha256', (string) $request->route('token'))),

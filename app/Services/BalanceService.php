@@ -313,6 +313,7 @@ class BalanceService
             $fresh->refunded_amount = $newRefunded;
             $fresh->status = bccomp($newRefunded, (string) $fresh->amount, 2) >= 0 ? 'refunded' : 'partially_refunded';
             $fresh->save();
+            $this->lifecycle->sync($fresh);
 
             return $refund;
         });
@@ -369,6 +370,7 @@ class BalanceService
 
             $fresh->status = 'chargeback';
             $fresh->save();
+            $this->lifecycle->sync($fresh);
         });
     }
 
