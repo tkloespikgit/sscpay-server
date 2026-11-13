@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Application;
 use App\Models\CheckoutLink;
+use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\MerchantDomain;
 use App\Models\Order;
@@ -876,6 +877,23 @@ class CheckoutLinkTest extends TestCase
      * PaymentService 会因为"组内无可用通道"直接抛 NoAvailablePaymentMethodException
      * （API 层 409），测不到组路由本身。
      */
+    public function test_over_limit_checkout_uses_a_parent_and_keeps_the_session_on_the_combined_cashier(): void
+    {
+        $this->withoutVite();
+        $this->application->update(['is_combine_payment_enabled' => true]);
+        $this->method->update(['max_amount_per_transaction' => '800.00']);
+        $link = $this->createLink(['fixed_amount' => '4000.00', 'auto_redirect' => true]);
+        $this->post('/c/'.$link->slug, $this->validPayload())
+            ->assertRedirectContains('/combine-payment/')
+            ->assertSessionHas('checkout_last_order_type', 'combine');
+        $parent = CombinedOrder::sole();
+        $this->assertSame($link->id, $parent->checkout_link_id);
+        $this->assertNull($parent->notify_url);
+        $this->assertDatabaseCount('orders', 0);
+        $this->get($parent->pay_url)->assertOk();
+        $this->get('/c/'.$link->slug.'/success')->assertOk()->assertSee($parent->order_no);
+    }
+
     private function createGroup(string $groupKey, string $groupName, bool $isActive = true): PaymentGroup
     {
         $group = PaymentGroup::create([

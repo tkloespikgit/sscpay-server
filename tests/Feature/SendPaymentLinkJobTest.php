@@ -23,6 +23,23 @@ class SendPaymentLinkJobTest extends TestCase
     use CreatesTestOrders;
     use RefreshDatabase;
 
+    public function test_a_payment_link_job_queued_before_combined_payments_still_sends_the_single_order(): void
+    {
+        $order = $this->mailOrder();
+        Mail::fake();
+        Http::preventStrayRequests();
+        $class = SendPaymentLinkJob::class;
+        $payload = sprintf('O:%d:"%s":1:{s:7:"orderId";i:%d;}', strlen($class), $class, $order->id);
+        $job = unserialize($payload, ['allowed_classes' => [$class]]);
+
+        $job->handle();
+
+        Mail::assertSent(PaymentLinkMail::class, fn (PaymentLinkMail $mail): bool => $mail->order->id === $order->id);
+        Mail::assertSentCount(1);
+        $this->assertNotNull($order->refresh()->payment_link_sent_at);
+        Http::assertNothingSent();
+    }
+
     /** @param array<string, mixed> $paymentMethodOverrides */
     #[DataProvider('paymentMethodMailSettings')]
     public function test_sends_using_the_application_identity_and_driver(array $paymentMethodOverrides): void

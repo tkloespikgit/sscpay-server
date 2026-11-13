@@ -4,6 +4,7 @@ namespace App\Filament\Resources\OrderResource\Pages;
 
 use App\Filament\Resources\OrderResource;
 use App\Models\Application;
+use App\Models\CombinedOrder;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\PaymentGroup;
@@ -236,7 +237,7 @@ class CreateManualOrder extends Page
             ->success()
             ->send();
 
-        $this->redirect(OrderResource::getUrl('view', ['record' => $order]));
+        $this->redirect($order instanceof CombinedOrder ? $order->pay_url : OrderResource::getUrl('view', ['record' => $order]));
     }
 
     /**

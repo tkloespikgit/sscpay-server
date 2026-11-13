@@ -94,6 +94,9 @@ class OrderResource extends Resource
                 TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable()
                     ->color(fn ($record) => $record->activeDisputeEvent ? 'danger' : null),
                 TextColumn::make('merchant_order_no')->label(__('admin.order.columns.merchant_order_no'))->searchable(),
+                TextColumn::make('combinedOrder.merchant_order_no')->label(__('combined.admin.title'))
+                    ->searchable()->toggleable(isToggledHiddenByDefault: true)
+                    ->visible(fn (): bool => auth()->user() instanceof User),
                 TextColumn::make('transaction_id')->label(__('admin.order.columns.transaction_id'))
                     ->searchable()
                     ->copyable()

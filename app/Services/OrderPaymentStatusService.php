@@ -47,6 +47,7 @@ class OrderPaymentStatusService
         private readonly TelegramNotificationService $telegram,
         private readonly OrderAccountingService $accountingService,
         private readonly OrderLifecycleService $lifecycle,
+        private readonly CombinedPaymentStatusService $combinedPayments,
     ) {}
 
     /**
@@ -250,6 +251,13 @@ class OrderPaymentStatusService
                 $outcome = 'obsolete_reference';
             }
 
+            if ($outcome !== 'obsolete_reference' && $targetStatus === 'paid' && $locked->combined_order_id
+                && in_array($outcome, ['accepted', 'duplicate'], true)
+                && ! $this->combinedPayments->amountMatches($locked, $payload)) {
+                $outcome = 'amount_mismatch';
+                $this->combinedPayments->rejectAmount($locked);
+            }
+
             OrderGatewayStatusEvent::query()->create([
                 'merchant_id' => $locked->merchant_id,
                 'order_id' => $locked->id,
@@ -305,11 +313,23 @@ class OrderPaymentStatusService
             }
 
             $locked->status = $this->lifecycle->resolve($locked, $targetStatus);
+            if ($locked->paid_at !== null) {
+                $locked->risk_reservation_status = 'consumed';
+            } elseif (in_array($targetStatus, ['cancelled', 'expired'], true)) {
+                $locked->risk_reservation_status = 'released';
+            }
             $locked->save();
+            $parent = $this->combinedPayments->apply($locked, $firstPayment);
             $this->accountingService->recordForStatus($locked, $targetStatus, $firstPayment);
             if ($firstPayment) {
                 $this->notificationService->dispatchInitial($locked);
-                $this->adConversionService->dispatchInitial($locked);
+                if ($parent === null) {
+                    $this->adConversionService->dispatchInitial($locked);
+                } elseif ($parent->status === 'paid') {
+                    $adOrder = clone $locked;
+                    $adOrder->forceFill($parent->only(['order_no', 'merchant_order_no', 'amount', 'converted_amount']));
+                    $this->adConversionService->dispatchInitial($adOrder);
+                }
             }
 
             return ['old' => $old, 'accepted' => true, 'first' => $firstPayment, 'changed' => $old !== $locked->status];
@@ -320,7 +340,7 @@ class OrderPaymentStatusService
             $this->notifyForbiddenPaymentMethod($order, $disabledMethod);
         }
         if (! $result['accepted']) {
-            if ($queryOnRejection && $result['outcome'] !== 'obsolete_reference') {
+            if ($queryOnRejection && ! in_array($result['outcome'], ['obsolete_reference', 'amount_mismatch'], true)) {
                 $queryResult = $this->queryAndApply($order);
 
                 return $queryResult['changed'] ? $queryResult['old_status'] : null;

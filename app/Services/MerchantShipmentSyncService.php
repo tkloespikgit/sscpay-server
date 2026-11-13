@@ -85,6 +85,14 @@ class MerchantShipmentSyncService
                 'tracking_number' => (string) $shipping->tracking_number,
                 'shipped_at' => $shipping->shipped_at->toIso8601String(),
             ];
+            if ($order->combined_order_id) {
+                $parent = $order->combinedOrder()->forMerchant($order->merchant_id)->firstOrFail();
+                $payload += [
+                    'order_type' => 'combine', 'order_no' => $order->order_no,
+                    'parent_order_no' => $parent->order_no,
+                    'parent_merchant_order_no' => $parent->merchant_order_no,
+                ];
+            }
             if (filled($shipping->tracking_url)) {
                 $payload['tracking_url'] = $shipping->tracking_url;
             }

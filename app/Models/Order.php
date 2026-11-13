@@ -75,6 +75,10 @@ class Order extends Model
         'application_id',
         'payment_group_id',
         'checkout_link_id',
+        'combined_order_id',
+        'combined_sequence',
+        'risk_reservation_status',
+        'risk_reserved_at',
         'order_no',
         'gateway_order_no',
         'invoice_number',
@@ -157,6 +161,8 @@ class Order extends Model
     {
         return [
             'paid_at' => 'datetime',
+            'combined_sequence' => 'integer', 'combined_order_id' => 'integer',
+            'risk_reserved_at' => 'datetime',
             'gateway_status_updated_at' => 'datetime',
             'gateway_status_version' => 'integer',
             'failed_at' => 'datetime',
@@ -230,6 +236,11 @@ class Order extends Model
     // ------------------------------------------------------------------
     // 关联关系
     // ------------------------------------------------------------------
+
+    public function combinedOrder(): BelongsTo
+    {
+        return $this->belongsTo(CombinedOrder::class);
+    }
 
     public function merchant(): BelongsTo
     {
@@ -463,6 +474,15 @@ class Order extends Model
     public function scopePaidEver(Builder $query): Builder
     {
         return $query->whereNotIn('status', self::NEVER_PAID_STATUSES);
+    }
+
+    /** 普通单或所属组合父单已付清，才进入结算候选。 */
+    public function scopeWithCompletedCombinedPayment(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $orders) => $orders->whereNull('orders.combined_order_id')
+            ->orWhereHas('combinedOrder', fn (Builder $parents) => $parents->withoutGlobalScopes()
+                ->whereNull('combined_orders.deleted_at')->where('status', 'paid')
+                ->whereColumn('combined_orders.merchant_id', 'orders.merchant_id')));
     }
 
     /** 网关已确认反转但本金未记账的订单不得释放资金。 */

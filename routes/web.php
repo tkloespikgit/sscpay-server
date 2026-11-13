@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ApiDocumentationController;
+use App\Http\Controllers\CombinedPaymentController;
 use App\Http\Controllers\DisputeAttachmentController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PaymentPageController;
@@ -31,6 +32,13 @@ Route::get('/purchase-orders/{purchaseOrder}', [PurchaseOrderController::class, 
 Route::get('/purchase-orders/{purchaseOrder}/details', [PurchaseOrderController::class, 'details'])
     ->whereNumber('purchaseOrder')
     ->name('purchase-orders.details');
+
+Route::prefix('combine-payment/{token}')->name('combined-payment.')->group(function (): void {
+    Route::get('/', [CombinedPaymentController::class, 'show'])->name('show')->middleware('throttle:60,1');
+    Route::get('/status', [CombinedPaymentController::class, 'status'])->name('status')->middleware('throttle:60,1');
+    Route::post('/quote', [CombinedPaymentController::class, 'quote'])->name('quote')->middleware('throttle:20,1');
+    Route::post('/pay', [CombinedPaymentController::class, 'pay'])->name('pay')->middleware('throttle:10,1');
+});
 
 Route::get('/payment/{token}', [PaymentPageController::class, 'show'])->name('payment.show');
 Route::post('/payment/{token}/confirm', [PaymentPageController::class, 'confirm'])->name('payment.confirm');

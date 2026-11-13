@@ -48,6 +48,7 @@ flowchart TD
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
 | 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
+| `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
 | 争议附件 | `DisputeAttachmentController` | 控制器内检查访问权限，不因公开路由而公开文件 |
@@ -204,6 +205,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `db:backup:upload` | 每 6 小时 |
 | `order-events:sync` | 每分钟，防重叠 |
 | `orders:sync-pending-status` | 每分钟扫描，防重叠；最近 48 小时待支付订单在创建满 30/90 分钟各补查一次，最多两次 |
+| `combined-orders:expire` | 每分钟，防重叠；停止到期父单的新付款，不取消或释放未决远端支付 |
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
@@ -252,3 +254,17 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。
+
+## 组合付款链路（2026-11-13，当前工作区）
+
+应用开关启用且各渠道单笔限额都不足时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。应用切回关闭不阻止已有组合父单继续收款。
+
+`CombinedPaymentRouter` 先尝试一笔付清，否则从完整上限可被日/月余额容纳的最高三个渠道中随机选一，随机取其单笔上限的 70%～90%。`CombinedOrderService` 保存五分钟报价，发起支付时按商户→父单→渠道锁序复查并创建一个真实 `Order`；提交后使用原下单服务远端建单。当前子单未决时只复用此单，失败不切渠道或换远端引用。每笔成功后可重新路由下一笔。商品准备沿用渠道模式，组合子单不把本地虚拟分期行当作同站点已有商品直接传给远端；回跳固定回组合收银台。
+
+`PaymentCapacityService` 统一计算渠道跨商户的已成交及未决占用。新普通订单也持有未决占用，使其与组合子单共享额度；待处理旧订单不自动回填。真实建单在渠道行锁下再检查，金额不经浮点数记账。
+
+`CombinedPaymentStatusService` 在状态事务内校验已付金额/币种并原子累计；`OrderApiPayload` 统一父单查询、收银台与 webhook 结构。每笔首次成功创建原通知尝试，业务快照与付款同事务提交；投递独立重试，pending/processing 丢失任务由原通知扫描恢复。V1 通知保持；开启组合使用 V2 完整 JSON 验签、event_id 去重及 version 防乱序。详细协议仅维护在 [商户 API](../doc/api.md#组合付款与-v2-通知) 与中英文网页文案。
+
+账务仍只有子单经过 `BalanceService`；父单未付清阻止子单结算释放，广告转化只在付清时按父单总额触发。物流仍按实际子单保存并同步其原渠道，父单原号上传拒绝，未付清拒绝；商户网站物流回传携带子单和父单引用。插件同运单跨订单能力不在本仓库实现。
+
+后台新增只读组合订单列表/详情，沿用订单查看权限与 MerchantScope，不注册到观察者面板；实际子单从现有订单页面查询网关、核对资金及物流。到期/核对记录保留已付与未决数据，不自动退款。核心回归见 `CombinedPaymentTest`、`CombinedPaymentRoutingTest`、`CombinedPaymentAdminTest`。

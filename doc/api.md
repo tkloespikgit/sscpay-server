@@ -19,6 +19,7 @@
 11. [常见对接问题](#常见对接问题)
 12. [Postman 联调](#postman-联调)
 13. [外部物流回传协议（附件 v1.1）](#外部物流回传协议附件-v11)
+14. [组合付款与 V2 通知](#组合付款与-v2-通知)
 
 ---
 
@@ -409,7 +410,7 @@ POST {BASE_URL}/api/order/ship
 ### 行为说明（对接前务必确认）
 
 1. **覆盖语义**：同一个订单重复提交 `/order/ship`（补发、改单、录错重传）会**直接覆盖**原有物流记录，物流表不保留多批历史；已生成的商户网站回传快照及请求结果独立保留。此行为和 `/order/create` "重复提交原样返回、不覆盖"的幂等语义**不一样**，调用前请确认参数无误。
-2. **不会触发交易结果 webhook**：此接口不会往 `notify_url` 推送发货通知；调用方可根据成功响应中的物流字段和订单状态处理后续流程。`/order/query` 仅返回订单状态，不返回物流明细。录入后系统另会将物流同步任务加入队列，发给订单关联的 WordPress 支付插件，具体协议见[物流同步接口说明](wordpress/s-system-sync-tracking.md)。应用开启物流回传时，还会独立异步推送到该应用配置的商户网站接口，见[外部物流回传协议](#外部物流回传协议附件-v11)；本接口成功只代表本地保存成功，不能据此判断任何远端已同步成功。
+2. **不会触发交易结果 webhook**：此接口不会往 `notify_url` 推送发货通知；调用方可根据成功响应中的物流字段和订单状态处理后续流程。`/order/query` 返回订单状态和 `logistics`（组合父单在 `children[].logistics`）。录入后系统另会将物流同步任务加入队列，发给订单关联的 WordPress 支付插件，具体协议见[物流同步接口说明](wordpress/s-system-sync-tracking.md)。应用开启物流回传时，还会独立异步推送到该应用配置的商户网站接口，见[外部物流回传协议](#外部物流回传协议附件-v11)；本接口成功只代表本地保存成功，不能据此判断任何远端已同步成功。
 3. **操作人标记**：这类物流记录在后台展示为"操作人：API"，用于和人工在后台手动录入的物流区分开。
 
 ---
@@ -460,7 +461,7 @@ POST {BASE_URL}/api/order/query
 }
 ```
 
-创建、查询及上传物流三个成功响应均包含 `status`、`order_status`、`settlement_status`、`shipping_status`，含义与创建订单响应一致。`status` 保留旧客户端可识别的值，新增待结算仅通过 `order_status` 精确表达。查询不返回 `pay_url`、付款 token 或物流明细。需要保存的付款链接以建单响应为准；物流字段以 `/order/ship` 成功响应为准。
+创建、查询及上传物流三个成功响应均包含 `status`、`order_status`、`settlement_status`、`shipping_status`，含义与创建订单响应一致。`status` 保留旧客户端可识别的值，新增待结算仅通过 `order_status` 精确表达。查询不返回 `pay_url` 或付款 token；物流明细位于 `logistics` 或组合父单的 `children[].logistics`。需要保存的付款链接以建单响应为准；物流字段以 `/order/ship` 成功响应为准。
 
 ### 失败响应
 
@@ -476,11 +477,13 @@ POST {BASE_URL}/api/order/query
 
 ### 触发条件（重要，容易被误解）
 
-系统只在**首次确认支付成功**时创建交易结果通知，投递到建单时保存的 `notify_url`。该支付事实与本地履约、结算阶段独立：订单可能已进入 `pending_settlement`，或因 0 天周期已进入 `completed`，通知中的 `status` 仍固定为 `paid`。已收款订单的状态恢复、结算或售后变化不会重复创建首次支付通知；已创建通知的失败重试仍可能继续投递。
+普通单只在**首次确认支付成功**时创建交易结果通知，投递到建单时保存的 `notify_url`。该支付事实与本地履约、结算阶段独立：订单可能已进入 `pending_settlement`，或因 0 天周期已进入 `completed`，通知中的 `status` 仍固定为 `paid`。已收款订单的状态恢复、结算或售后变化不会重复创建首次支付通知；已创建通知的失败重试仍可能继续投递。
 
 **其他状态变化都不会触发这个 webhook**，包括：`failed`（支付失败）、`cancelled`（取消）、`expired`（过期）、`refunded`（退款）、`disputing`（争议中）、`chargeback`（拒付），也包括发货推进为 `shipped`、结算推进为 `completed`。这些状态目前只在系统后台产生记录/人工提醒，**不会**同步推送给对接方。如果需要感知这些状态，目前只能通过 [POST /order/query](#post-orderquery查询订单) 轮询兜底。
 
-### Payload
+组合单在每笔子单首次确认付款时都通知；顶层原订单仅在全部付清时为 `paid`，协议见[组合付款与 V2 通知](#组合付款与-v2-通知)。
+
+### Payload（V1 普通单）
 
 符合上述首次支付条件时，系统会往创建订单时传入的 `notify_url` 发一个 `POST` 请求。**请求结构和你调用我们接口时完全对称**：签名相关的三个值放在 Header，业务字段 + `sign` 放在 body，验签算法和[第 2 节](#鉴权与签名三个接口通用)的签名算法是同一个函数：
 
@@ -628,7 +631,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 3. **服务器时钟需要与标准时间同步**：调用我们接口时 `Timestamp` 误差超过 5 分钟会被直接拒绝（401）。Webhook 每次投递都会刷新时间戳、nonce 和签名，接收方可据此校验每次投递的时间窗口并防重放。
 4. **`notify_url`/`return_url`/`cancel_url` 三个都必填**：普通路由的应用网站域名检查当前已关闭；指定渠道时须与渠道绑定站点域名一致（`PAYMENT_METHOD_DOMAIN_MISMATCH`）。
 5. **`/order/create` 和 `/order/ship` 的幂等语义不同**：前者币种和原始金额一致时复用本地订单，已有支付链接直接返回，无链接、未收款且为 `pending/failed` 时重新校验并沿用原渠道补建，失败即返回，不切换其他通道。后者"重复提交=直接覆盖旧物流记录"。
-6. **只有首次支付成功会创建交易结果 webhook**，`shipped`/`refunded`/`cancelled` 等状态变化以及已收款订单恢复为 `paid` 都不会创建新的首次支付通知；可轮询 `/order/query` 读取已保存状态，查询本身不会向网关补查。
+6. **普通订单只有首次支付成功会创建交易结果 webhook**，`shipped`/`refunded`/`cancelled` 等状态变化以及已收款订单恢复为 `paid` 都不会创建新的首次支付通知；可轮询 `/order/query` 读取已保存状态，查询本身不会向网关补查。
 7. Webhook 接收端在 10 秒内返回 HTTP 2xx，耗时逻辑放异步队列，并按 `order_no` + `status` 幂等。默认最多投递 5 次（含首次），每次重试的签名 Header 都会刷新。
 
 ---
@@ -667,3 +670,212 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 成功要求 HTTP 200 且响应 JSON `code = 0`。网络异常、超时、HTTP 429/5xx 含首次最多尝试 5 次，失败后的等待间隔依次为 30 秒、5 分钟、30 分钟、1 小时；401/404/422 等其他响应直接终止。`merchant-shipments:process-due` 每分钟投递到期任务、回收两分钟处理超时任务并处理失败提醒，实际重试时间受调度和队列执行时间影响。每次请求和响应单独记录，终败 Telegram 按商户每组最多 5 笔合并发送；发送失败或限流保留待办并冷却 5 分钟后重发，没有启用的机器人时保留失败记录并标记提醒不可用。
 
 支付站点物流出站链路另见 [WordPress 物流同步协议](wordpress/s-system-sync-tracking.md)。其 endpoint、凭证、字段和 `order_shippings.sync_*` 结果继续独立维护；商户网站回传结果写入 `order_shipment_syncs` / `order_shipment_sync_attempts`。
+
+## 组合付款与 V2 通知
+
+### 应用开关与创建
+
+应用管理增加「允许组合付款」和支付通知版本。默认关闭、V1 保持原通知体；开启后自动使用 V2。关闭开关仅停止新组合订单，已有组合订单仍按父单保存的 V2 协议继续付款。商户需先完成 V2 验签、进度处理及物流对接，再开启。
+
+所有入口仍复用统一建单服务。未指定 `payment_method_key`，且原支付组中所有启用、商户有权使用的渠道都存在有限单笔上限、订单 USD 总额超过这些上限时，尝试创建组合单。因日/月余额不足而无法普通付款不会单独触发拆单。指定渠道入口保持原语义，不转为组合单。
+
+建单返回 `order_type=single|combine`。组合单只创建父记录，保存商品/客户/回跳信息和总金额；不创建子单草稿，不预建远端支付订单。商户原号仍最多 64 字符，实际子单追加 `-S001`、`-S002` 等后缀；相应命名空间不可被其他新订单占用。幂等按商户和原号判断，币种/原请求金额不同返回冲突。
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "pending",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "0.00",
+    "paid_converted_amount": "0.00",
+    "remaining_amount": "4000.00",
+    "remaining_converted_amount": "4000.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 0,
+    "children": [],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null,
+    "payment_link_token": "PUBLIC_PAYMENT_TOKEN",
+    "payment_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN",
+    "pay_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN"
+  }
+}
+```
+
+组合单的 `payment_url` 和 `pay_url` 都是独立收银台，商户只需引导客户进入此地址。收银台保存短期报价，只有点击付款才创建当前真实子单及远端订单；刷新/重复点击沿用同一笔。未来笔数和金额不预定。发送付款邮件时只发送父单收银台。
+
+### 每轮金额与渠道
+
+1. 优先寻找可一次收清剩余原币金额及其 USD 对应金额的可用渠道，沿用组内负载/权重选择规则。
+2. 无法一次收清时，候选须满足启用、授权、原组关系、手续费及日笔数，且日/月余额均能容纳渠道的完整单笔上限 U。不限单笔上限的渠道不参加百分比随机。
+3. 按 U 降序取最高三个候选，等概率随机选择一个；金额从 U 的 70%～90% 区间随机取原币整数分，USD 校验也在此区间。
+4. 父单只应用一次自动折扣、一次汇率/汇损快照。第 i 笔 USD 金额为「累计原币已付金额 × 锁定汇率截断两位」减去之前累计 USD 已付；最后一笔收清两种币种余额，避免每笔独立舍入累积尾差。金额全部使用十进制字符串和 bcmath。
+5. 每次真实建单在商户、父单和渠道锁内复查额度；所有新订单的未决支付占用日/月金额及笔数，支付成功后改为成交统计。历史未决订单不自动回填占用。
+6. 当前子单确认收款后，才可重新选择下一笔渠道。可跨本支付组内可用渠道，不能创建多个同时可付的子单；不预留未来全部额度。中途无渠道时保留进度，恢复后重试。
+
+远端超时/错误保留原子单、渠道、金额与远端引用，只能重试同一笔或通过后台「查询最新状态」核对。不能把网络失败当作未付款后换号收取。收到明确取消/过期、金额或币种不符、退款/拒付/争议时进入核对流程；不会自行创建替代子单，也不自动退款。
+
+父单付款截止时间沿用付款链接有效期。到期停止新付款，保留未决子单的额度占用；有效迟到成功仍记账并通知，若该笔收清余额则可以完成，否则父单保持到期。部分付款资金先进入原子单账务，父单不重复入账；只有父单付清才允许子单到期结算到可提现。广告转化仅在父单付清时按原订单总额触发一次。
+
+### 查询返回
+
+原号 / 父系统号查询父单；带后缀的商户号 / 子系统号查询真实子单，并返回 `parent_order_no`、`parent_merchant_order_no`。同时传两个编号仍使用 AND，所有接口显式限定当前商户。
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "partially_paid",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "640.00",
+    "paid_converted_amount": "640.00",
+    "remaining_amount": "3360.00",
+    "remaining_converted_amount": "3360.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 1,
+    "children": [
+      {
+        "sequence": 1,
+        "order_no": "ORD202611130001",
+        "merchant_order_no": "M20261113001-S001",
+        "status": "paid",
+        "order_status": "pending_settlement",
+        "settlement_status": "pending",
+        "shipping_status": "unshipped",
+        "payment_status": "paid",
+        "currency": "USD",
+        "amount": "640.00",
+        "converted_currency": "USD",
+        "converted_amount": "640.00",
+        "payment_method": "example_channel",
+        "paid_at": "2026-11-13T12:00:00+08:00",
+        "logistics": null
+      }
+    ],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null
+  }
+}
+```
+
+- `amount / converted_amount` 始终为父单应付总额。`paid_amount / paid_converted_amount` 为累计原币 / USD 已收毛额，不是扣手续费后的净入账额，也不因后续退款反向减少；退款/争议由子单 `order_status` 与父单 `review` 表示。
+- `remaining_amount / remaining_converted_amount` 为尚未收取金额。
+- 部分付款：`status=pending`、`order_status=partially_paid`；全部付清：`status=paid`。到期或待核对分别为 `expired` / `review`；不凭已收到某笔子单款发货。
+- `children` 仅包含已创建的真实子单，无未来付款占位。已付子单 `payment_status=paid`；尚未完成的真实子单保留实际 pending 等状态。退款/拒付请看 `order_status`。
+- 子单 `logistics` 未上传为 null，否则含公司、单号、追踪链接、发货时间和远端 `sync_status`。父单 `shipping_status` 为 unshipped / partially_shipped / shipped。
+- `version` 是已确认付款的递增版本，不是所有售后状态的版本。查询只读取数据库，不主动向网关补查。
+- 父单 `payment_method`、`settlement_status` 为 null；实际渠道和结算状态分别在子单内。
+
+### 每笔付款的 webhook
+
+组合父单的每个真实子单首次确认成功后生成一个事件，事件快照和付款状态在同一事务内保存，提交后排队投递。顶层使用父单号、原商户号和父单总额；`paid_order_no` 指明本次新增付款。部分付款发送如下通知：
+
+```json
+{
+  "order_type": "combine",
+  "order_no": "CMB01JEXAMPLEPARENT00000000000",
+  "merchant_order_no": "M20261113001",
+  "status": "pending",
+  "order_status": "partially_paid",
+  "platform": "wordpress",
+  "currency": "USD",
+  "amount": "4000.00",
+  "converted_currency": "USD",
+  "converted_amount": "4000.00",
+  "exchange_rate": "1.000000",
+  "paid_amount": "640.00",
+  "paid_converted_amount": "640.00",
+  "remaining_amount": "3360.00",
+  "remaining_converted_amount": "3360.00",
+  "payment_method": null,
+  "settlement_status": null,
+  "shipping_status": "unshipped",
+  "current_order_no": null,
+  "version": 1,
+  "children": [
+    {
+      "sequence": 1,
+      "order_no": "ORD202611130001",
+      "merchant_order_no": "M20261113001-S001",
+      "status": "paid",
+      "order_status": "pending_settlement",
+      "settlement_status": null,
+      "shipping_status": "unshipped",
+      "payment_status": "paid",
+      "currency": "USD",
+      "amount": "640.00",
+      "converted_currency": "USD",
+      "converted_amount": "640.00",
+      "payment_method": "example_channel",
+      "paid_at": "2026-11-13T12:00:00+08:00",
+      "logistics": null
+    }
+  ],
+  "created_at": "2026-11-13T11:55:00+08:00",
+  "paid_at": null,
+  "event_id": "bc7c186f-a106-4ec7-ad42-1bea374be103",
+  "paid_order_no": "ORD202611130001",
+  "occurred_at": "2026-11-13T12:00:01+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}
+```
+
+最后一笔通知将 `status / order_status` 设为 paid，累计金额等于总额，两个 remaining 字段为 0.00，`paid_at` 为完成时间，children 包含所有实际子单。V2 普通单保留原字段并增加 `order_type=single`、`event_id`、`version=1`、`paid_order_no`、累计金额、余额为零和 `children=[]`。
+
+**验签算法不变，但新增字段必然改变签名原文。** 对完整收到的 body 去掉 sign，再用原 SignatureCanonicalizer 规则递归规范化、HMAC；children、null 和金额字符串全部参与，不能只选旧字段验签，也不能先把金额字符串转成浮点数。
+
+按 `event_id` 去重，按父单 `version` 只前进不回退；不要用「父单号 + pending」去重不同子单事件。一次事件的重试保持原快照与 event_id，Timestamp/X-Nonce/sign 每次刷新。网络重试可能乱序，较小版本直接确认接收并忽略其旧进度。只有经过验证的父单 `status=paid` 才将商户原订单标为成功。HTTP 2xx 应答和原重试间隔保持。
+
+### 商户物流上传与回传
+
+父单全部付清后，按每笔真实子单号分别调用现有 `POST /order/ship`；上传号上限扩为 80 字符。请求金额、签名和承运商校验规则保持：
+
+```json
+{
+  "merchant_order_no": "M20261113001-S001",
+  "logistics_company": "DHL",
+  "tracking_number": "REAL-TRACKING-001",
+  "shipped_at": "2026-11-14T12:00:00+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}
+```
+
+成功响应保留原物流字段并增加 `order_type=combine`、`parent_order_no`、`parent_merchant_order_no` 与 `sync_status`。每个子单通过自己的渠道同步物流；父单不写物流记录。商户网站物流回传同样使用子商户号，并额外带父单引用，接收方需按完整通知体验签。
+
+| HTTP | 错误码 | 处理 |
+|---|---|---|
+| 409 | COMBINE_PAYMENT_UNAVAILABLE | 目前没有满足拆单条件的渠道，保留已付款进度，稍后重试 |
+| 409 | CHILD_NUMBER_CONFLICT | 父子号命名空间冲突，建单时换一个原商户订单号 |
+| 422 | CHILD_ORDER_REQUIRED | 将父单原号换成真实子商户号 |
+| 409 | COMBINE_ORDER_NOT_PAID | 等待原组合订单全部付清 |
+| 409 | QUOTE_EXPIRED | 收银台重新报价，确认新金额后付款 |
+| 409 | COMBINE_NOT_PAYABLE / COMBINE_REVIEW_REQUIRED | 停止继续付款，核对状态及已收款 |
+
+一个真实包裹涉及多笔子单时，逐笔提交相同的真实物流号。现有[支付插件物流协议](wordpress/s-system-sync-tracking.md)对跨订单重复运单有限制：插件须支持同一真实运单关联多个订单，否则相应子单显示同步失败，不能承诺全部成功。禁止伪造带 -S001 的运单号。本仓库不包含插件代码，未修改插件去重规则。

@@ -16,6 +16,9 @@ Schedule::command('orders:sync-pending-status')
         Log::error('待支付订单状态定时查询存在失败，请检查单笔查询日志');
     });
 
+Schedule::command('combined-orders:expire')->everyMinute()->withoutOverlapping()
+    ->onFailure(fn () => Log::error('组合订单到期处理失败，将在后续调度重试。'));
+
 Schedule::command('order-notifications:process-due')->everyMinute()->withoutOverlapping();
 
 Schedule::command('merchant-shipments:process-due')->everyMinute()->runInBackground()->withoutOverlapping(10)

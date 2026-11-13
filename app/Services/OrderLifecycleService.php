@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\DB;
 /** 从独立的支付、账务、审核及履约事实推导订单主状态，不直接修改资金。 */
 final class OrderLifecycleService
 {
+    public function __construct(private readonly CombinedPaymentStatusService $combinedPayments) {}
+
     public function normalStatus(Order $order): string
     {
         if ($order->settlement_mode === null) {
@@ -81,6 +83,7 @@ final class OrderLifecycleService
         $order->normal_status = $this->normalStatus($order);
         $order->status = $this->resolve($order);
         $order->save();
+        $this->combinedPayments->apply($order, false);
 
         if ($old === $order->status) {
             return false;
@@ -94,7 +97,10 @@ final class OrderLifecycleService
 
     public function isBlocked(Order $order): bool
     {
-        return in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true)
+        return ($order->combined_order_id !== null
+                && ! $order->combinedOrder()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
+                    ->whereNull('deleted_at')->where('status', 'paid')->exists())
+            || in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true)
             || $order->gateway_status === 'disputing'
             || (($order->gateway_status === 'refunded' || $order->status === 'refunded') && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0)
             || (($order->gateway_status === 'chargeback' || $order->status === 'chargeback') && ! BalanceService::hasChargebackLedger($order))

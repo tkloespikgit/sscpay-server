@@ -350,3 +350,13 @@
 支付方式编辑页移除管理员转交动作并锁定已有商户归属，顶部显示管理员标签；新增最多 5,000 字符的可空备注。原 `PaymentMethodOwnershipService` 保留为无页面入口的内部方法，拒绝会使现有分配跨管理员的转交。按用户后续澄清，编辑页授权放在“所属商户”选择框下的常驻双栏点选面板，不使用弹窗；仅未设置所属商户的系统级支付方式显示，商户自有支付方式隐藏。按名称/ID 搜索并立即保存，主表单不提交已有分配字段。新授权复制商户最新已保存的手续费、保证金和结算默认值，已有独立值不覆盖；明确撤销清理分配、该商户含软删除支付组引用及独立财务配置，重新授权重新初始化。此规则替代 [D-22](#d-22-商户默认财务配置按分配复制) 和 [D-27](#d-27-商户编辑页集中授权系统支付渠道) 中“原支付方式编辑页取消保留配置”的旧约定；直接 Pivot 解除关系仍保留配置。
 
 **依据：** [PaymentMethod](../app/Models/PaymentMethod.php)、[MerchantPaymentMethod](../app/Models/MerchantPaymentMethod.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[PaymentMethodMerchantAssignmentService](../app/Services/PaymentMethodMerchantAssignmentService.php)、[管理员边界测试](../tests/Feature/PaymentMethodAdministratorBoundaryTest.php)。
+
+## D-33 应用级组合付款与动态逐笔收款
+
+**状态：当前工作区实现，未提交（2026-11-13，按用户确认的最新方案）。** 仅新增父单表，不创建子单草稿，不提前创建所有远端支付；每次客户发起当前付款才创建真实 orders 子单。此方案替代讨论中的预拆草稿和全程固定支付方式方案：每轮允许重新选择原支付组内有权使用的渠道，已发起的一笔仍锁定原渠道和远端引用。
+
+**原因与影响：** 单笔限额不足时进入独立组合收银台；本轮优先一次付清余额，否则在最高三个合格上限中随机选渠道，并随机收取上限的 70%～90%。日/月可用额度须能覆盖完整上限，真实订单占用在渠道锁内复查；不保证未来付款额度。父单锁和当前子单指针限制为串行付款，网络失败不可用新号替代未决订单。
+
+应用开启组合同时选择 V2 通知，原 V1 体保持；每笔首次成功通知包含父单进度、真实子单数组、event_id 和付款 version。商户原订单只在全部付清后成功，完整 JSON 参与旧算法签名。查询、物流、邮件、广告和子单结算约束见 [API 协议](../doc/api.md#组合付款与-v2-通知) 与 [数据设计](database.md#组合付款数据演进2026-11-13当前工作区)。父单不参与余额记账。部分付款到期或异常需要核对，不自动退款，不伪造物流号。
+
+**依据：** [CombinedOrderService](../app/Services/CombinedOrderService.php)、[CombinedPaymentRouter](../app/Services/CombinedPaymentRouter.php)、[CombinedPaymentStatusService](../app/Services/CombinedPaymentStatusService.php)、[核心测试](../tests/Feature/CombinedPaymentTest.php)。

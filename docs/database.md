@@ -13,6 +13,8 @@ erDiagram
     payment_methods ||--o{ merchant_payment_methods : shared
     payment_groups ||--o{ payment_group_methods : contains
     payment_methods ||--o{ payment_group_methods : routes
+    applications ||--o{ combined_orders : combines
+    combined_orders o|--o{ orders : groups
     applications ||--o{ orders : authenticates
     payment_methods o|--o{ orders : selected
     orders ||--o{ order_items : original
@@ -262,3 +264,26 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 新增数据结构同时检查：模型 fillable/casts/关系、权限与租户范围、现有数据回填、索引、删除策略、相关 FormRequest/Resource 和测试。种子顺序见 `DatabaseSeeder`，商户角色创建前必须已存在权限记录。
 
 `Application::api_key` 及部分邮件/广告凭证依赖 Laravel 加密 cast；沿用原 `APP_KEY` 才能读取已有数据。文档与测试样例只用占位凭证。
+
+## 组合付款数据演进（2026-11-13，当前工作区）
+
+迁移只新增一个业务表 `combined_orders`，不创建子单草稿表；实际支付沿用 `orders`、物流、结算、审计和通知尝试表。定义见 [父单迁移](../database/migrations/2026_11_13_012113_create_combined_orders_table.php) 与 [关联字段迁移](../database/migrations/2026_11_13_012114_add_combined_payment_fields_to_orders_and_applications.php)。
+
+| 表 | 新增或变更 |
+|---|---|
+| applications | `is_combine_payment_enabled` 默认 false；`webhook_version` 默认 1，开启组合付款时保存为 2 |
+| combined_orders 身份 | merchant/application/payment_group/可空 checkout_link 外键；系统号、原商户号、来源、币种 |
+| combined_orders 金额 | original_amount、auto_discount、amount、converted_amount、paid_amount、paid_converted_amount、remaining_amount、remaining_converted_amount 均 decimal(15,2)；汇率 decimal(15,6) |
+| combined_orders 快照 | exchange_snapshot / order_snapshot JSON；客户、商品、物流跟踪开关和建单信息，不保存应用 API Key |
+| combined_orders 进度 | status、current_order_id、next_sequence、付款 version；current_quote JSON 只缓存当前报价（金额/渠道/版本/有效期），不是预生成子单 |
+| combined_orders 链接及时间 | 不可猜 payment_link_token、checkout_host/origin、三个 URL、通知协议快照、邮件状态、首次/全部付款时间、到期时间及错误码 |
+| orders | 可空 combined_order_id / combined_sequence；risk_reservation_status / risk_reserved_at；商户号及原生成列扩至 80 |
+| order_notification_attempts | 可空 combined_order_id、event_id、event_version；沿用原尝试表保存逐笔付款时的不可变业务快照 |
+
+父单系统号、token 唯一；未软删除的 merchant_id + merchant_order_no 通过生成列唯一约束；子单 (combined_order_id, combined_sequence) 唯一；通知 (event_id, attempt_number) 唯一。原 orders 生成列唯一约束保持，原号建单仍校验 64，物流上传允许 80。
+
+不回填历史订单，不迁移资金，不预留未来全部额度。新订单的 held 占用按渠道 ID 跨商户统计，与窗口内已付金额/笔数合并；初次支付改 consumed，明确取消/过期改 released。页面/父单到期本身不释放未决支付占用。MySQL 锁定读用于事务内额度检查，避免等到渠道锁后仍读取旧快照。未来需要清理未决占用时，必须先核实远端已不可付，不能仅按本地年龄释放。
+
+父单累计是已确认毛收款，不是净结算额；子单手续费与结算快照照常保存，父单不参与余额入账及成交统计。累计 USD 以累计原币折算差额分配舍入尾差。子单退款/争议保留曾收款事实，父单转 review；本功能不自动执行退款。
+
+回滚第二个迁移会移除关联和开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。

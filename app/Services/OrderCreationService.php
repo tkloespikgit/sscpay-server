@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Events\DesignatedOrderCreated;
 use App\Exceptions\AmountMismatchException;
 use App\Exceptions\CallbackDomainNotAllowedException;
+use App\Exceptions\CombinedPaymentException;
 use App\Exceptions\MinimumAmountNotMetException;
 use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Exceptions\OrderDetailsConflictException;
@@ -14,20 +15,22 @@ use App\Exceptions\PaymentMethodDomainMismatchException;
 use App\Exceptions\PaymentMethodNotAvailableException;
 use App\Models\Application;
 use App\Models\CheckoutLink;
+use App\Models\CombinedOrder;
 use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Models\SystemConfig;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
-use App\Support\Money;
 use App\Support\OrderTelegramSummary;
 use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * 下单核心逻辑，API 下单（对外接口）、商户后台手工建单、收款链接落地页下单
@@ -55,8 +58,8 @@ use Illuminate\Support\Facades\DB;
  *   8. 事务内创建订单 + 商品明细。
  *   9. 调支付网关插件 /pay 远程创建支付订单，拿到收银台支付链接（pay_url）回填订单。
  *
- * 注意：第 1~7 步都在数据库事务之外完成，只有第 8 步才开事务——这样风控检查、
- * 汇率读取这些"只读"操作不会持有不必要的事务/锁时间，失败时也不需要回滚任何东西。
+ * 初选与汇率读取在事务外，真实建单在商户及渠道锁内重新检查额度并写入未决占用。
+ * 应用允许组合且所有单笔限额不足时只保存父单；每次付款另建一个真实子单。
  * 第 9 步同样在事务外（HTTP 调用不占事务）：网关失败后立即返回失败，不切换渠道。
  * 本地订单保留，后续幂等请求沿用原渠道及远端引用补建，不切换其他渠道。
  */
@@ -67,6 +70,9 @@ class OrderCreationService
         private readonly PaymentGatewayService $paymentGateway,
         private readonly OrderItemService $orderItemService,
         private readonly PaymentMethodFailureService $paymentMethodFailureService,
+        private readonly CombinedPaymentRouter $combinedRouter,
+        private readonly PaymentCapacityService $capacity,
+        private readonly OrderFinancialService $financial,
     ) {}
 
     /**
@@ -91,7 +97,7 @@ class OrderCreationService
         Merchant $merchant,
         Application $application,
         string $source,
-    ): Order {
+    ): Order|CombinedOrder {
         // 同一笔订单（merchant_id + merchant_order_no）的并发请求（重复提交/webhook 重试/
         // 手抖重复点击）在此串行化，避免两边都落在"幂等检查未命中"或"CREATE 模式未命中
         // 站点同价商品"的窗口期里各自建单/建品，在 WordPress 站点上建出重复商品。
@@ -118,13 +124,118 @@ class OrderCreationService
         ));
     }
 
+    /** 当前一笔在调用方的父单事务中创建，远端调用由事务外的 resumePayment() 完成。 */
+    public function createCombinedChild(CombinedOrder $parent, PaymentMethod $method, array $quote): Order
+    {
+        $amount = (string) $quote['amount'];
+        $number = $parent->merchant_order_no.'-S'.str_pad((string) $parent->next_sequence, 3, '0', STR_PAD_LEFT);
+        $data = array_merge($parent->order_snapshot, [
+            'merchant_order_no' => $number, 'amount' => $amount, 'subtotal' => $amount,
+            'shipping_fee' => '0.00', 'discount' => '0.00', 'tax' => '0.00', 'send_mail' => false,
+            'payment_method_key' => null, 'notify_url' => $parent->notify_url,
+            'return_url' => $parent->pay_url, 'cancel_url' => $parent->pay_url,
+            'items' => [[
+                'product_id' => $parent->order_no.'-'.$parent->next_sequence,
+                'product_url' => $parent->pay_url,
+                'product_name' => 'Payment '.$parent->next_sequence.' / '.$parent->merchant_order_no,
+                'unit_price' => $amount, 'quantity' => 1,
+            ]],
+        ]);
+        $result = $this->createOrderLocked($data, $parent->merchant, $parent->application, $parent->source, $parent, $method);
+
+        return $result;
+    }
+
+    public function resumePayment(Order $order): Order
+    {
+        $lockSeconds = max(600, (int) config('payment_gateway.creation_lock_seconds', 600),
+            120 + OrderItemService::maximumRemotePreparationSeconds($order->items()->count()));
+        Cache::lock("order-create:{$order->merchant_id}:{$order->merchant_order_no}", $lockSeconds)
+            ->block(10, function () use ($order): void {
+                $order->refresh();
+                $this->retryPayment($order, $order->merchant);
+            });
+
+        return $order->refresh();
+    }
+
+    private function createCombinedParent(array $data, Merchant $merchant, Application $application, PaymentGroup $group,
+        string $source, array $rate, string $originalAmount, string $autoDiscount): CombinedOrder
+    {
+        $converted = bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
+        $snapshot = array_intersect_key($data, array_flip(array_merge((new Order)->getFillable(), ['items', 'group_key'])));
+        $snapshot['logistics_tracking_enabled'] = (bool) $application->is_logistics_tracking_enabled;
+        $parent = new CombinedOrder([
+            'merchant_id' => $merchant->id, 'application_id' => $application->id, 'payment_group_id' => $group->id,
+            'checkout_link_id' => $data['checkout_link_id'] ?? null, 'source' => $source, 'platform' => $data['platform'] ?? null,
+            'order_no' => 'CMB'.strtoupper((string) Str::ulid()), 'merchant_order_no' => $data['merchant_order_no'],
+            'currency' => $data['currency'], 'converted_currency' => 'USD', 'original_amount' => $originalAmount,
+            'auto_discount' => $autoDiscount, 'amount' => $data['amount'], 'converted_amount' => $converted,
+            'paid_amount' => '0.00', 'paid_converted_amount' => '0.00',
+            'remaining_amount' => $data['amount'], 'remaining_converted_amount' => $converted,
+            'exchange_rate' => $rate['actual_rate'], 'exchange_snapshot' => $rate, 'order_snapshot' => $snapshot,
+            'status' => 'pending', 'version' => 0, 'next_sequence' => 1, 'webhook_version' => 2,
+            'payment_link_token' => Order::generatePaymentLinkToken(), 'checkout_host' => parse_url(url('/'), PHP_URL_HOST),
+            'checkout_origin' => rtrim(url('/'), '/'),
+            'notify_url' => $data['notify_url'] ?? null, 'return_url' => $data['return_url'] ?? null,
+            'cancel_url' => $data['cancel_url'] ?? null,
+            'send_mail' => in_array($data['send_mail'] ?? null, ['Y', true], true),
+            'expires_at' => now()->addDays((int) SystemConfig::get('payment_link.expire_days', 7)),
+        ]);
+        $this->combinedRouter->quote($parent);
+
+        return DB::transaction(function () use ($parent, $merchant): CombinedOrder {
+            Merchant::query()->withoutGlobalScopes()->whereKey($merchant->id)->lockForUpdate()->firstOrFail();
+            $this->assertOrderNumberAvailable($merchant->id, $parent->merchant_order_no);
+            if (Order::query()->forMerchant($merchant->id)->where('merchant_order_no', $parent->merchant_order_no)->exists()) {
+                throw new OrderDetailsConflictException;
+            }
+            $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $parent->merchant_order_no).'-S%';
+            $numbers = Order::query()->forMerchant($merchant->id)
+                ->whereRaw("merchant_order_no LIKE ? ESCAPE '!'", [$prefix])->pluck('merchant_order_no');
+            foreach ($numbers as $number) {
+                if (preg_match('/^'.preg_quote($parent->merchant_order_no, '/').'-S[0-9]+$/u', $number)) {
+                    throw new CombinedPaymentException('CHILD_NUMBER_CONFLICT');
+                }
+            }
+            $parent->save();
+
+            return $parent;
+        }, 3);
+    }
+
+    private function assertOrderNumberAvailable(int $merchantId, string $number, ?CombinedOrder $parent = null): void
+    {
+        if (preg_match('/^(.+)-S[0-9]+$/u', $number, $matches)) {
+            $owner = CombinedOrder::query()->forMerchant($merchantId)->where('merchant_order_no', $matches[1])->first();
+            if ($owner && (! $parent || $owner->id !== $parent->id)) {
+                throw new CombinedPaymentException('CHILD_NUMBER_CONFLICT');
+            }
+        }
+    }
+
     private function createOrderLocked(
         array $data,
         Merchant $merchant,
         Application $application,
         string $source,
-    ): Order {
+        ?CombinedOrder $parent = null,
+        ?PaymentMethod $forcedMethod = null,
+    ): Order|CombinedOrder {
         // 1. 幂等检查
+        if ($parent === null) {
+            $combined = CombinedOrder::query()->forMerchant($merchant->id)
+                ->where('merchant_order_no', $data['merchant_order_no'])->first();
+            if ($combined) {
+                if ($combined->currency !== $data['currency']
+                    || bccomp($combined->original_amount, (string) $data['amount'], 2) !== 0) {
+                    throw new OrderDetailsConflictException;
+                }
+
+                return $combined;
+            }
+            $this->assertOrderNumberAvailable($merchant->id, (string) $data['merchant_order_no']);
+        }
         $existing = Order::query()
             ->forMerchant($merchant->id)
             ->where('merchant_order_no', $data['merchant_order_no'])
@@ -161,7 +272,7 @@ class OrderCreationService
         // 原始金额用于幂等校验；自动折扣仅在首次建单时生成，先于汇率和费用快照。
         $originalAmount = (string) $data['amount'];
         $autoDiscount = '0.00';
-        if ($application->is_auto_discount_enabled && bccomp($originalAmount, '0.01', 2) > 0) {
+        if ($parent === null && $application->is_auto_discount_enabled && bccomp($originalAmount, '0.01', 2) > 0) {
             $maxCents = bccomp($originalAmount, '200.00', 2) <= 0 ? 10 : 50;
             if (bccomp($originalAmount, '0.51', 2) < 0) {
                 $maxCents = min($maxCents, (int) bcmul($originalAmount, '100', 0) - 1);
@@ -199,9 +310,10 @@ class OrderCreationService
         }
 
         // 5. 汇率 + 汇损快照。
-        $rate = ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
+        $rate = $parent?->exchange_snapshot ?? ExchangeRate::getRateWithSurcharge($data['currency'], 'USD');
 
-        $convertedAmount = bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
+        $convertedAmount = $parent ? $this->combinedRouter->convertedAmount($parent, (string) $data['amount'])
+            : bcmul((string) $data['amount'], (string) $rate['actual_rate'], 2);
         $subtotalConverted = bcmul((string) $data['subtotal'], (string) $rate['actual_rate'], 2);
         $shippingFeeConverted = bcmul((string) $data['shipping_fee'], (string) $rate['actual_rate'], 2);
         $discountConverted = bcmul((string) $data['discount'], (string) $rate['actual_rate'], 2);
@@ -224,7 +336,14 @@ class OrderCreationService
         // 传了 payment_method_key 就直接用该渠道（不走组内路由、不查限额风控）；
         // 没传则在风控通过的渠道中按负载排序，从前三个随机抽取。
         // 7. 按渠道和商户费率保存财务快照；普通路由跳过手续费超过金额的候选。
-        if (filled($data['payment_method_key'] ?? null)) {
+        if ($parent === null && ! filled($data['payment_method_key'] ?? null)
+            && $application->is_combine_payment_enabled && $this->combinedRouter->required($group, $convertedAmount)) {
+            return $this->createCombinedParent($data, $merchant, $application, $group, $source, $rate, $originalAmount, $autoDiscount);
+        }
+        if ($forcedMethod !== null) {
+            $paymentMethod = $forcedMethod;
+            $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
+        } elseif (filled($data['payment_method_key'] ?? null)) {
             $paymentMethod = $this->resolveDesignatedPaymentMethod($merchant, (string) $data['payment_method_key'], $data);
             $financialSnapshot = $this->financialSnapshot($paymentMethod, $merchant, $convertedAmount);
         } else {
@@ -264,13 +383,26 @@ class OrderCreationService
             $storedSurchargeType,
             $storedSurchargeAmount,
             $itemConvertRate,
+            $parent,
         ) {
+            Merchant::query()->withoutGlobalScopes()->whereKey($merchant->id)->lockForUpdate()->firstOrFail();
+            $this->assertOrderNumberAvailable($merchant->id, (string) $data['merchant_order_no'], $parent);
+            $lockedMethod = PaymentMethod::query()->forMerchant($merchant->id)->where('is_active', true)
+                ->lockForUpdate()->find($paymentMethod->id);
+            if (! $lockedMethod || (! filled($data['payment_method_key'] ?? null)
+                && ! $this->capacity->permits($lockedMethod, $convertedAmount))) {
+                throw new NoAvailablePaymentMethodException($group->group_key);
+            }
             $order = Order::createWithGeneratedIdentifiers([
                 'merchant_id' => $merchant->id,
                 'application_id' => $application->id,
                 'payment_group_id' => $group->id,
                 // 收款链接下单时由 CheckoutLinkOrderService 传入，其余来源为 null
                 'checkout_link_id' => $data['checkout_link_id'] ?? null,
+                'combined_order_id' => $parent?->id,
+                'combined_sequence' => $parent?->next_sequence,
+                'risk_reservation_status' => 'held',
+                'risk_reserved_at' => now(),
                 'merchant_order_no' => $data['merchant_order_no'],
                 'source' => $source,
                 // 电商网站平台类型（API 下单必传；手工建单可选，没传就是 null）
@@ -283,7 +415,7 @@ class OrderCreationService
                 'amount' => $data['amount'],
                 'original_amount' => $originalAmount,
                 'auto_discount' => $autoDiscount,
-                'logistics_tracking_enabled' => (bool) $application->is_logistics_tracking_enabled,
+                'logistics_tracking_enabled' => $parent ? (bool) ($parent->order_snapshot['logistics_tracking_enabled'] ?? false) : (bool) $application->is_logistics_tracking_enabled,
                 'converted_currency' => 'USD',
                 'converted_amount' => $convertedAmount,
                 'subtotal_converted' => $subtotalConverted,
@@ -348,7 +480,9 @@ class OrderCreationService
         }
 
         // 9. 调支付网关插件 /pay 远程创建支付订单，获取收银台支付链接。
-        $this->createPayment($order, $paymentMethod);
+        if ($parent === null) {
+            $this->createPayment($order, $paymentMethod);
+        }
 
         return $order;
     }
@@ -358,26 +492,7 @@ class OrderCreationService
      */
     private function financialSnapshot(PaymentMethod $method, Merchant $merchant, string $amountUsd): array
     {
-        $settings = $method->configurationForMerchant($merchant);
-        $percentFee = Money::truncate(bcmul($amountUsd, bcdiv($settings['fee_percent'], '100', 8), 8));
-        $fixedFee = Money::truncate($settings['fee_fixed']);
-        $totalFee = bcadd($percentFee, $fixedFee, 2);
-
-        if (bccomp($totalFee, $amountUsd, 2) > 0) {
-            throw new MinimumAmountNotMetException($method->minTransactionAmount($merchant->id), $amountUsd);
-        }
-
-        return [
-            'fee_percent_amount' => $percentFee,
-            'fee_fixed_amount' => $fixedFee,
-            'settlement_amount' => Money::truncate(bcsub($amountUsd, $totalFee, 8)),
-            'reserve_percent' => $settings['reserve_percent'],
-            'reserve_days' => $settings['reserve_days'],
-            'refund_fee_snapshot' => $settings['refund_fee'],
-            'chargeback_fee_snapshot' => $settings['chargeback_fee'],
-            'settlement_mode' => $settings['settlement_mode'],
-            'settlement_days' => $settings['settlement_days'],
-        ];
+        return $this->financial->snapshot($method, $merchant, $amountUsd);
     }
 
     /**
@@ -391,7 +506,7 @@ class OrderCreationService
 
         while (true) {
             try {
-                $method = $this->paymentService->resolvePaymentMethod($group, (float) $amountUsd, $excludedMethodIds, $orderDetails);
+                $method = $this->paymentService->resolvePaymentMethod($group, $amountUsd, $excludedMethodIds, $orderDetails);
             } catch (NoAvailablePaymentMethodException $error) {
                 throw $amountError ?? $error;
             }
@@ -439,9 +554,10 @@ class OrderCreationService
                 ->pluck('payment_methods.id')->map(fn ($id): int => (int) $id)->all();
             $method = $this->paymentService->resolvePaymentMethod(
                 $group,
-                (float) $order->converted_amount,
+                (string) $order->converted_amount,
                 $otherMethodIds,
                 OrderTelegramSummary::details($order),
+                $order->id,
             );
 
             if ($method->id !== (int) $previousMethodId) {
@@ -634,7 +750,7 @@ class OrderCreationService
         $originalDiscount = bcsub((string) $order->discount, $previousOverflow, 2);
 
         $matched = match (true) {
-            $this->isSameSite($order, $paymentMethod) => $this->directItems($order),
+            ! $order->combined_order_id && $this->isSameSite($order, $paymentMethod) => $this->directItems($order),
             $mode === PaymentMethod::MODE_MATCH,
             $mode === PaymentMethod::MODE_VIRTUAL => $this->orderItemService->matchItems($paymentMethod, $originalSubtotal,
                 (string) $order->exchange_rate),
@@ -785,6 +901,10 @@ class OrderCreationService
      */
     private function resolveAllowReturnedSource(Order $order, PaymentMethod $paymentMethod): string
     {
+        if ($order->combined_order_id) {
+            return 'Y';
+        }
+
         if ($order->platform === Order::PLATFORM_INVOICE || $order->platform == Order::PLATFORM_INVOICE) {
             return 'N';
         }

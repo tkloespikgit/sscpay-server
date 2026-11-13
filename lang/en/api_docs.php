@@ -364,6 +364,7 @@ curl_close($ch);
   "msg": "success",
   "data": {
     "order_no": "ORD202611031234561234",
+    "order_type": "single",
     "payment_link_token": "EXAMPLE_PAYMENT_TOKEN",
     "payment_url": "https://api.example.com/payment/EXAMPLE_PAYMENT_TOKEN",
     "pay_url": "https://gateway.example.com/checkout/EXAMPLE",
@@ -402,6 +403,87 @@ curl_close($ch);
                     'title' => 'Idempotency and timeout recovery',
                     'text' => 'The idempotency key is merchant + merchant_order_no. Matching currency and original requested amount reuse the existing order: an existing payment link is returned, and a missing link may be created again. A different currency or original amount returns HTTP 409 / ORDER_DETAILS_CONFLICT. Reuse the original reference after a timeout or GATEWAY_ERROR instead of generating a new one. Application automatic discounts and exchange snapshots are fixed at first creation; retries do not redraw discounts, so the queried amount can differ from the original request.',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => 'Combined payments require V2 notification handling',
+                    'text' => 'When enabled on the application, an order without payment_method_key becomes order_type=combine if its USD total exceeds every eligible channel’s transaction limit in its payment group. Other orders return single. Creation stores only the parent, without child or remote orders. Redirect the customer to the returned combined checkout; do not precreate child payments. Disabling the switch affects new orders only.',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => 'Each step first attempts to pay the full balance. Otherwise a channel must have daily/monthly capacity for its full transaction cap and an available daily count. Choose uniformly among the three highest eligible caps and charge 70–90% of that cap. Only one unresolved child is allowed; the next step opens after confirmation and selects a channel again. If no channel is available, paid progress is retained for retry. Creation does not reserve capacity for all future payments.',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => 'Combined creation fields',
+                    'headers' => [
+                        'Field / rule',
+                        'Description',
+                    ],
+                    'rows' => [
+                        [
+                            'order_type',
+                            'single / combine',
+                        ],
+                        [
+                            'order_no / merchant_order_no',
+                            'Parent system reference / original merchant reference. Real children are created only when payment starts, using -S001, -S002 suffixes; that namespace is reserved for the parent.',
+                        ],
+                        [
+                            'payment_url / pay_url',
+                            'Both point to the independent combined checkout; its token is a payment-link credential, not an API key.',
+                        ],
+                        [
+                            'amount / converted_amount',
+                            'Total due in original currency / USD; automatic discount and exchange rate are fixed once on parent creation and not reapplied per child.',
+                        ],
+                        [
+                            'paid_amount / paid_converted_amount',
+                            'Cumulative gross paid in original currency / USD, as decimal strings. Cumulative conversion allocates cent differences so child totals equal the parent.',
+                        ],
+                        [
+                            'children',
+                            'Only real children already created; initially empty, with no future-payment placeholders.',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => 'Combined creation response',
+                    'language' => 'json',
+                    'code' => '{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "pending",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "0.00",
+    "paid_converted_amount": "0.00",
+    "remaining_amount": "4000.00",
+    "remaining_converted_amount": "4000.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 0,
+    "children": [],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null,
+    "payment_link_token": "PUBLIC_PAYMENT_TOKEN",
+    "payment_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN",
+    "pay_url": "https://pay.example.com/combine-payment/PUBLIC_PAYMENT_TOKEN"
+  }
+}',
                 ],
             ],
         ],
@@ -491,8 +573,98 @@ curl_close($ch);
                 [
                     'type' => 'callout',
                     'title' => 'Reads local state only',
-                    'text' => 'This endpoint does not query the payment gateway in real time or change order state. It does not return pay_url, a payment token, or shipment details; save payment links from the creation response. Cross-merchant orders and mismatching references both return ORDER_NOT_FOUND.',
+                    'text' => 'This endpoint does not query the payment gateway in real time or change order state. It does not return pay_url or a payment token; save payment links from the creation response. Shipment details are included in logistics / children[].logistics. Cross-merchant orders and mismatching references both return ORDER_NOT_FOUND.',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => 'Query by parent order_no or the original merchant_order_no to receive totals, cumulative paid amounts, remaining balances, all real children and their shipping data. Query a child by system reference or suffixed merchant reference to receive parent_order_no / parent_merchant_order_no. Both identifiers, when supplied, must match the same record within the current merchant.',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => 'Combined query states',
+                    'headers' => [
+                        'Field / rule',
+                        'Description',
+                    ],
+                    'rows' => [
+                        [
+                            'status=pending / order_status=partially_paid',
+                            'Partially paid; the original order is not paid and must not be fulfilled.',
+                        ],
+                        [
+                            'status=paid',
+                            'Both original-currency and USD balances are zero; paid in full.',
+                        ],
+                        [
+                            'expired / review',
+                            'Expired checkout / review required; no further payment. Collected funds remain recorded and are not automatically refunded. Valid late confirmations are still recorded and notified.',
+                        ],
+                        [
+                            'children[].payment_status',
+                            'paid means that child has a confirmed receipt; use order_status for refunds and disputes. Unpaid real children show their actual pending or other state.',
+                        ],
+                        [
+                            'children[].logistics',
+                            'null before shipping; otherwise includes carrier, tracking number, URL, shipment time and sync_status.',
+                        ],
+                        [
+                            'version',
+                            'Increments for each newly confirmed payment. This is a payment progress version; query for later after-sales state changes.',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => 'Combined query: first payment received',
+                    'language' => 'json',
+                    'code' => '{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "order_type": "combine",
+    "order_no": "CMB01JEXAMPLEPARENT00000000000",
+    "merchant_order_no": "M20261113001",
+    "status": "pending",
+    "order_status": "partially_paid",
+    "platform": "wordpress",
+    "currency": "USD",
+    "amount": "4000.00",
+    "converted_currency": "USD",
+    "converted_amount": "4000.00",
+    "exchange_rate": "1.000000",
+    "paid_amount": "640.00",
+    "paid_converted_amount": "640.00",
+    "remaining_amount": "3360.00",
+    "remaining_converted_amount": "3360.00",
+    "payment_method": null,
+    "settlement_status": null,
+    "shipping_status": "unshipped",
+    "current_order_no": null,
+    "version": 1,
+    "children": [
+      {
+        "sequence": 1,
+        "order_no": "ORD202611130001",
+        "merchant_order_no": "M20261113001-S001",
+        "status": "paid",
+        "order_status": "pending_settlement",
+        "settlement_status": "pending",
+        "shipping_status": "unshipped",
+        "payment_status": "paid",
+        "currency": "USD",
+        "amount": "640.00",
+        "converted_currency": "USD",
+        "converted_amount": "640.00",
+        "payment_method": "example_channel",
+        "paid_at": "2026-11-13T12:00:00+08:00",
+        "logistics": null
+      }
+    ],
+    "created_at": "2026-11-13T11:55:00+08:00",
+    "paid_at": null
+  }
+}',
                 ],
             ],
         ],
@@ -514,7 +686,7 @@ curl_close($ch);
                     'caption' => 'Request fields',
                     'headers' => ['Field', 'Type / limit', 'Required', 'Description'],
                     'rows' => [
-                        ['merchant_order_no', 'string ≤64', 'Yes', 'Locates the order within the application merchant only.'],
+                        ['merchant_order_no', 'string ≤80', 'Yes', 'Locates the order within the application merchant only.'],
                         ['logistics_company', 'string ≤100', 'Yes', 'An enabled carrier_code from the carrier list, not a free-text company name; case-insensitive. Ask an administrator to add an unknown carrier first.'],
                         ['tracking_number', 'string ≤100', 'Yes', 'Tracking number; send as a string to preserve leading zeros and long references.'],
                         ['tracking_url', 'URL ≤255', 'No', 'Customer tracking URL.'],
@@ -591,6 +763,16 @@ curl_close($ch);
                 [
                     'type' => 'paragraph',
                     'text' => 'Uploading a shipment does not send a payment-result webhook to notify_url. If application shipment callbacks are enabled, this save also queues a separate request to the configured merchant website. View the current shipment and callback results in the order details.',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => 'Upload real tracking for each child',
+                    'text' => 'After the parent is paid in full, call this endpoint separately for each real child merchant_order_no, for example M20261113001-S001. A parent reference returns CHILD_ORDER_REQUIRED; an unpaid parent returns COMBINE_ORDER_NOT_PAID. Each child syncs to its own locked payment site. Success confirms local persistence only; inspect sync_status for remote results. Shipping accepts up to 80 characters for suffixed references; creation still accepts 64.',
+                ],
+                [
+                    'type' => 'paragraph',
+                    'text' => 'One real parcel may cover several payment children, so the same real tracking number can be submitted separately. The current payment plugin protocol may deduplicate tracking numbers across orders and reject this. The plugin must support one tracking number linked to multiple orders first. This system never invents suffixed tracking numbers or treats one remote success as success for all children.',
                 ],
             ],
         ],
@@ -722,7 +904,7 @@ curl_close($ch);
                 ],
                 [
                     'type' => 'paragraph',
-                    'text' => 'A payment-result notification is created only when payment is first confirmed. Its status remains paid even when the local order has already entered pending_settlement or completed through a zero-day cycle. Later refunds, chargebacks, disputes, shipments, settlements, or recovery do not create another first-payment notification. Query orders for other status changes.',
+                    'text' => 'For single orders, a payment-result notification is created only when payment is first confirmed. Its status remains paid even when the local order has already entered pending_settlement or completed through a zero-day cycle. Later refunds, chargebacks, disputes, shipments, settlements, or recovery do not create another first-payment notification. Query orders for other status changes.',
                 ],
                 [
                     'type' => 'links',
@@ -756,7 +938,7 @@ curl_close($ch);
                     'headers' => ['Field', 'Description'],
                     'rows' => [
                         ['order_no / merchant_order_no', 'System / merchant order reference.'],
-                        ['status', 'Currently paid for this notification.'],
+                        ['status', 'paid for single payments; combined progress uses pending until fully paid, with expired / review when stopped.'],
                         ['currency / amount', 'Order currency and actual amount due; the amount is a decimal string.'],
                         ['converted_currency / converted_amount', 'Converted currency and amount; the converted currency is currently USD.'],
                         ['payment_method', 'Channel used for payment.'],
@@ -767,7 +949,7 @@ curl_close($ch);
                 [
                     'type' => 'callout',
                     'title' => 'Verify signatures and process idempotently',
-                    'text' => 'Check App-ID, Timestamp, and X-Nonce, compute the expected signature using the algorithm above, and compare sign in constant time (for example, PHP hash_equals). Track nonce values to prevent replay. Process idempotently by order_no + status and acknowledge already-processed duplicates to avoid duplicate fulfillment or accounting.',
+                    'text' => 'Check App-ID, Timestamp, and X-Nonce, compute the expected signature using the algorithm above, and compare sign in constant time (for example, PHP hash_equals). Track nonce values to prevent replay. For V1, process idempotently by order_no + status; for V2, deduplicate by event_id and compare parent version and acknowledge already-processed duplicates to avoid duplicate fulfillment or accounting.',
                     'tone' => 'warning',
                 ],
                 [
@@ -779,6 +961,94 @@ curl_close($ch);
                     'title' => 'The two callback types have different acknowledgments',
                     'text' => 'Payment-result notifications accept any HTTP 2xx. Merchant shipment callbacks require exactly HTTP 200 with JSON integer code 0. Handle the two acknowledgment rules separately.',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'callout',
+                    'tone' => 'warning',
+                    'title' => 'V1 / V2 and signature compatibility',
+                    'text' => 'Applications using V1 with combined payments disabled keep the original notification body. Enabling combined payments selects V2; V2 single orders also include order_type=single. New fields change the signed content, but not the algorithm: remove sign and recursively canonicalize the complete received JSON object, including children, null and paid_amount. Do not reconstruct the payload from an old field whitelist.',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => 'V2 notification rules',
+                    'headers' => [
+                        'Field / rule',
+                        'Description',
+                    ],
+                    'rows' => [
+                        [
+                            'order_type=combine',
+                            'One event per newly confirmed child. Top-level references always identify the parent / original merchant order, and amount / converted_amount remain parent totals. payment_method is null; actual methods are inside children.',
+                        ],
+                        [
+                            'paid_order_no / children',
+                            'System reference of the child paid in this event / snapshot of all real children at event creation. Future, uncreated payments are absent.',
+                        ],
+                        [
+                            'status',
+                            'pending with order_status=partially_paid until fully paid; only then paid. Receiving a payment webhook alone must not trigger fulfillment.',
+                        ],
+                        [
+                            'event_id / version',
+                            'Deduplicate by event_id; compare version per parent to prevent older retries overwriting newer progress. Retries retain the snapshot and event_id while refreshing signature, timestamp and nonce. Parent reference + pending is not a valid per-payment deduplication key.',
+                        ],
+                        [
+                            'order_type=single',
+                            'Keeps ordinary payment fields and adds event_id, version=1, paid_order_no, cumulative paid amounts, zero balances and children=[].',
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'code',
+                    'label' => 'V2 combined notification: first USD 640 paid',
+                    'language' => 'json',
+                    'code' => '{
+  "order_type": "combine",
+  "order_no": "CMB01JEXAMPLEPARENT00000000000",
+  "merchant_order_no": "M20261113001",
+  "status": "pending",
+  "order_status": "partially_paid",
+  "platform": "wordpress",
+  "currency": "USD",
+  "amount": "4000.00",
+  "converted_currency": "USD",
+  "converted_amount": "4000.00",
+  "exchange_rate": "1.000000",
+  "paid_amount": "640.00",
+  "paid_converted_amount": "640.00",
+  "remaining_amount": "3360.00",
+  "remaining_converted_amount": "3360.00",
+  "payment_method": null,
+  "settlement_status": null,
+  "shipping_status": "unshipped",
+  "current_order_no": null,
+  "version": 1,
+  "children": [
+    {
+      "sequence": 1,
+      "order_no": "ORD202611130001",
+      "merchant_order_no": "M20261113001-S001",
+      "status": "paid",
+      "order_status": "pending_settlement",
+      "settlement_status": null,
+      "shipping_status": "unshipped",
+      "payment_status": "paid",
+      "currency": "USD",
+      "amount": "640.00",
+      "converted_currency": "USD",
+      "converted_amount": "640.00",
+      "payment_method": "example_channel",
+      "paid_at": "2026-11-13T12:00:00+08:00",
+      "logistics": null
+    }
+  ],
+  "created_at": "2026-11-13T11:55:00+08:00",
+  "paid_at": null,
+  "event_id": "bc7c186f-a106-4ec7-ad42-1bea374be103",
+  "paid_order_no": "ORD202611130001",
+  "occurred_at": "2026-11-13T12:00:01+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}',
                 ],
             ],
         ],
@@ -855,6 +1125,32 @@ curl_close($ch);
                     'title' => 'Handling a failed request',
                     'text' => 'For 401, check clock synchronization, application credentials, and canonicalization. Correct fields for 422. For 409, verify reference reuse and matching amount/currency. After 502 or a timeout, recover with the same merchant reference. Refresh authentication values for every retry. Shipment receiver numeric error codes are documented in the shipment callback section.',
                     'tone' => 'info',
+                ],
+                [
+                    'type' => 'table',
+                    'caption' => 'Combined payment errors',
+                    'headers' => [
+                        'Field / rule',
+                        'Description',
+                    ],
+                    'rows' => [
+                        [
+                            'COMBINE_PAYMENT_UNAVAILABLE (409)',
+                            'No split candidate meets the full cap and daily/monthly capacity requirements; retry later.',
+                        ],
+                        [
+                            'CHILD_NUMBER_CONFLICT (409)',
+                            'Parent/child reference namespace conflict; use another original merchant reference.',
+                        ],
+                        [
+                            'CHILD_ORDER_REQUIRED (422)',
+                            'Shipping requires a real child reference.',
+                        ],
+                        [
+                            'COMBINE_ORDER_NOT_PAID (409)',
+                            'The combined parent is not fully paid; shipping is not allowed yet.',
+                        ],
+                    ],
                 ],
             ],
         ],

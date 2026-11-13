@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f2c1a9e-4b7d-4e3a-9c5f-8d2e4a7b1c30",
     "name": "多商户订单系统 - 建单 / 查询 / 物流 / Webhook",
-    "description": "按 2026-10-28 当前工作区代码核对。完整协议见仓库 doc/api.md。\n\n## 开始使用\n1. 导入同目录 Order-System-Local.postman_environment.json 并选中环境。base_url 必须包含 /api，末尾不加斜杠；生产使用 API_DOMAIN 对应的部署地址。\n2. 填写 app_id / api_key / group_key 以及三个回跳地址。平台枚举、启用的支付组、承运商以后台配置为准。金额一律传十进制字符串。\n3. 先发「创建订单」，再发「重试原建单」和两种查询。脚本会保存实际商户单号、完整原请求和返回的系统单号；超时/502 应复用原请求，不要重新 AUTO 建单。\n4. 物流录入使用 shipping_merchant_order_no 指定可发货订单，不能直接给刚创建的 pending 订单发货。\n\n## 四种调用方向\n- 商户 → 本系统：POST {{base_url}}/order/create、/order/query、/order/ship。App-ID/Timestamp/X-Nonce + body.sign。\n- WordPress 网关 → 本系统：POST {{base_url}}/webhooks/payment-gateway/status。独立 X-PGA-Signature 对最终原始 JSON 字节签名。\n- 本系统 → 商户 notify_url：仅首次支付成功自动通知，复用商户签名；退款/拒付/发货不自动发送此通知。\n- 本系统 → 商户站点 /api/fulfillment/shipment：依据附件 v1.1（2026-10-26）的外部协议示例，当前后端未自动接入。与 /order/ship 的字段和覆盖/分批语义不同。\n\n## 联调开关\nWebhook 示例默认跳过；在测试环境设置 enable_webhook_examples=true 后单独发送。模拟网关 paid 会改变订单状态并触发真实业务副作用，应使用测试单。gateway_s_order_id 需从当前网关引用取得，故障切换后可能不等于 order_no，不能自动回填猜测。\n附件物流示例设置 enable_fulfillment_examples=true 后单独发送，使用接收站点签发的 fulfillment_app_id / fulfillment_api_key；请先确认接收方部署情况。附件“已上线”和“确认后实现”的表述不一致，本集合未验证五站状态。\n\n## 签名脚本\n先完成变量替换，再计算签名并写回请求。使用当前 Postman 支持的 Web Crypto API，无额外 npm 依赖。商户接口时间误差 ±300 秒，nonce 保存 300 秒；附件站点接口 nonce 为 600 秒。每次调用重新生成 Timestamp/X-Nonce/sign；网关 webhook 不做 canonicalize，不带商户签名字段。\n\n脚本 API 依据：[Postman 全局对象](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-require) 与 [skipRequest](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-execution)。",
+    "description": "按 2026-11-13 当前工作区代码核对。完整协议见仓库 doc/api.md。\n\n## 开始使用\n1. 导入同目录 Order-System-Local.postman_environment.json 并选中环境。base_url 必须包含 /api，末尾不加斜杠；生产使用 API_DOMAIN 对应的部署地址。\n2. 填写 app_id / api_key / group_key 以及三个回跳地址。平台枚举、启用的支付组、承运商以后台配置为准。金额一律传十进制字符串。\n3. 先发「创建订单」，再发「重试原建单」和两种查询。脚本会保存实际商户单号、完整原请求和返回的系统单号；超时/502 应复用原请求，不要重新 AUTO 建单。\n4. 物流录入使用 shipping_merchant_order_no 指定可发货订单，不能直接给刚创建的 pending 订单发货。\n\n## 四种调用方向\n- 商户 → 本系统：POST {{base_url}}/order/create、/order/query、/order/ship。App-ID/Timestamp/X-Nonce + body.sign。\n- WordPress 网关 → 本系统：POST {{base_url}}/webhooks/payment-gateway/status。独立 X-PGA-Signature 对最终原始 JSON 字节签名。\n- 本系统 → 商户 notify_url：普通单首次成功通知；组合单每笔成功通知父单进度，复用商户签名；退款/拒付/发货不自动发送此通知。\n- 本系统 → 商户站点 /api/fulfillment/shipment：依据附件 v1.1（2026-10-26）的外部协议示例，应用开启物流回传后自动接入。与 /order/ship 的字段和覆盖/分批语义不同。\n\n## 联调开关\nWebhook 示例默认跳过；在测试环境设置 enable_webhook_examples=true 后单独发送。模拟网关 paid 会改变订单状态并触发真实业务副作用，应使用测试单。gateway_s_order_id 需从当前网关引用取得，故障切换后可能不等于 order_no，不能自动回填猜测。\n附件物流示例设置 enable_fulfillment_examples=true 后单独发送，使用接收站点签发的 fulfillment_app_id / fulfillment_api_key；请先确认接收方部署情况。附件“已上线”和“确认后实现”的表述不一致，本集合未验证五站状态。\n\n## 签名脚本\n先完成变量替换，再计算签名并写回请求。使用当前 Postman 支持的 Web Crypto API，无额外 npm 依赖。商户接口时间误差 ±300 秒，nonce 保存 300 秒；附件站点接口 nonce 为 600 秒。每次调用重新生成 Timestamp/X-Nonce/sign；网关 webhook 不做 canonicalize，不带商户签名字段。\n\n脚本 API 依据：[Postman 全局对象](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-require) 与 [skipRequest](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-execution)。\n\n组合付款详见 doc/api.md「组合付款与 V2 通知」。开启应用开关前先完成商户完整 JSON 验签、event_id 去重与 version 防乱序；顶层 status=paid 才完成原订单。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -168,7 +168,7 @@
               }
             },
             "url": "{{base_url}}/order/create",
-            "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+            "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；一旦本地订单创建便锁定渠道与远端引用；失败复用同一订单重试，不自动切换渠道。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
           },
           "response": [
             {
@@ -195,7 +195,7 @@
                   }
                 },
                 "url": "{{base_url}}/order/create",
-                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；一旦本地订单创建便锁定渠道与远端引用；失败复用同一订单重试，不自动切换渠道。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
               },
               "status": "OK",
               "code": 200,
@@ -233,7 +233,7 @@
                   }
                 },
                 "url": "{{base_url}}/order/create",
-                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；一旦本地订单创建便锁定渠道与远端引用；失败复用同一订单重试，不自动切换渠道。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
               },
               "status": "Conflict",
               "code": 409,
@@ -271,7 +271,7 @@
                   }
                 },
                 "url": "{{base_url}}/order/create",
-                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；一旦本地订单创建便锁定渠道与远端引用；失败复用同一订单重试，不自动切换渠道。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
               },
               "status": "Bad Gateway",
               "code": 502,
@@ -309,7 +309,7 @@
                   }
                 },
                 "url": "{{base_url}}/order/create",
-                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；网关/明确商品准备失败时同请求默认最多尝试三个不同渠道。最终渠道可能改变，响应为最终结果。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
+                "description": "金额公式：180.00 + 15.00 - 10.00 + 5.00 = 190.00，明细 90.00 × 2 = subtotal 180.00。普通下单三个 URL 必填，应用 website 域名检查当前关闭。按当天成交额/权重排序，从前三候选随机选择；一旦本地订单创建便锁定渠道与远端引用；失败复用同一订单重试，不自动切换渠道。\n\nmerchant_order_no=AUTO 只用于首次创建；send_mail=N，可改Y。启用自动折扣时 amount 保存减免后金额，重试仍提交原始190.00，首次汇率/折扣保留。平台wordpress是示例，请确认后台枚举。"
               },
               "status": "Not Found",
               "code": 404,
@@ -1356,7 +1356,7 @@
       ]
     },
     {
-      "name": "外部站点物流回传（附件 v1.1，尚未自动接入）",
+      "name": "外部站点物流回传（附件 v1.1）",
       "description": "enable_fulfillment_examples默认false；不是本系统API，不代表已验证接收方上线。",
       "item": [
         {
@@ -1383,7 +1383,7 @@
               }
             },
             "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
           },
           "response": [
             {
@@ -1410,7 +1410,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
               },
               "status": "OK",
               "code": 200,
@@ -1448,7 +1448,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
               },
               "status": "Unauthorized",
               "code": 401,
@@ -1486,7 +1486,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
               },
               "status": "Not Found",
               "code": 404,
@@ -1524,7 +1524,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
               },
               "status": "Unprocessable Entity",
               "code": 422,
@@ -1562,7 +1562,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。"
               },
               "status": "Internal Server Error",
               "code": 500,
@@ -1614,7 +1614,7 @@
               }
             },
             "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
+            "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
           },
           "response": [
             {
@@ -1641,7 +1641,7 @@
                   }
                 },
                 "url": "{{fulfillment_base_url}}/api/fulfillment/shipment",
-                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。当前本系统没有该路由，也没有自动向该接口回传的实现。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
+                "description": "外部站点协议示例，依据用户提供的《发货状态同步 API 接口规范》v1.1（2026-10-26）。本系统不接收此路由；应用开启物流回传后会向配置的商户端点自动发送。fulfillment_base_url为接收站点根地址，不包含/api；凭证用该站点签发的fulfillment_app_id/fulfillment_api_key，不应直接假定等于本系统应用凭证。\n\n必填merchant_order_no/carrier/tracking_number；carrier是自由文本名称；carrier_code/tracking_url/shipped_at/items可选，shipped_at省略取接收时间，items[].sku和quantity可选（quantity为整数）。时间戳允许±300秒，nonce 10分钟不重复。\n\n同merchant_order_no+tracking_number重复提交返回200 code0，不新增记录/不重复邮件；不同运单号新增批次并通知客户。不会覆盖旧记录，不支持覆盖/删除修正；可重发同业务字段，需刷新Timestamp/X-Nonce/sign。与/order/ship的单条覆盖语义不同。\n\n成功200 code0/msg success；401 code1鉴权，404 code2订单不存在，422 code3字段错，500 code9可重试。\n\n本例省略shipped_at/tracking_url，使用第二批运单号；接收端新增独立发货记录并通知客户。此行为不能用本系统/order/ship模拟。"
               },
               "status": "OK",
               "code": 200,
@@ -1664,6 +1664,184 @@
                 "exec": [
                   "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
                   "pm.test('站点记录成功或幂等去重', function () { pm.expect(pm.response.json()).to.include({ code: 0, msg: 'success' }); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "组合付款 V2（应用与商户完成适配后单独运行）",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (String(pm.variables.get('enable_combined_examples')) !== 'true') {",
+              "    console.info('组合示例默认跳过；仅在测试环境开启 enable_combined_examples');",
+              "    pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "12 创建组合订单（应用开启后单独运行）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchant_order_no\": \"AUTO\",\n  \"currency\": \"USD\",\n  \"group_key\": \"{{group_key}}\",\n  \"platform\": \"wordpress\",\n  \"subtotal\": \"4000.00\",\n  \"shipping_fee\": \"0.00\",\n  \"discount\": \"0.00\",\n  \"tax\": \"0.00\",\n  \"amount\": \"4000.00\",\n  \"customer\": {\n    \"first_name\": \"John\",\n    \"last_name\": \"Doe\",\n    \"email\": \"john.doe@example.com\",\n    \"phone\": \"+4915112345678\"\n  },\n  \"shipping_address\": {\n    \"line1\": \"Alexanderplatz 1\",\n    \"line2\": \"Apt. 4B\",\n    \"city\": \"Berlin\",\n    \"state\": \"Berlin\",\n    \"country\": \"DE\",\n    \"zip\": \"10178\"\n  },\n  \"items\": [\n    {\n      \"product_id\": \"SOURCE-001\",\n      \"product_url\": \"https://merchant.example.com/product/1\",\n      \"product_name\": \"Combined payment example\",\n      \"unit_price\": \"4000.00\",\n      \"quantity\": 1\n    }\n  ],\n  \"notify_url\": \"{{notify_url}}\",\n  \"return_url\": \"{{return_url}}\",\n  \"cancel_url\": \"{{cancel_url}}\",\n  \"send_mail\": \"N\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/create",
+            "description": "应用开启组合付款并接入 V2，组内全部可用渠道单笔限额小于 4000 USD，候选日/月余额足够容纳完整单笔上限时返回 combine。只生成父单；打开 pay_url 逐笔付款。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const original = JSON.parse(pm.request.body.raw);",
+                  "delete original.sign;",
+                  "pm.collectionVariables.set('last_create_body', JSON.stringify(original));",
+                  "pm.collectionVariables.set('last_merchant_order_no', original.merchant_order_no);",
+                  "// 在发出前保存，网络超时也能原单重试；清除上一张单的结果，避免混查。",
+                  "['last_order_no', 'last_payment_link_token', 'last_payment_url', 'last_pay_url', 'last_converted_amount', 'last_payment_method'].forEach((key) => pm.collectionVariables.unset(key));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "delete sent.sign;",
+                  "// 网关失败也保存原单，后续补建复用同一商户单号。",
+                  "if (pm.response.code === 200 || pm.response.code === 502) {",
+                  "    pm.collectionVariables.set('last_create_body', JSON.stringify(sent));",
+                  "    pm.collectionVariables.set('last_merchant_order_no', sent.merchant_order_no);",
+                  "}",
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "if (pm.response.code === 200 && json.code === 0 && json.data) {",
+                  "    pm.collectionVariables.set('last_order_no', json.data.order_no);",
+                  "    pm.collectionVariables.set('last_payment_link_token', json.data.payment_link_token);",
+                  "    pm.collectionVariables.set('last_payment_url', json.data.payment_url);",
+                  "    pm.collectionVariables.set('last_pay_url', json.data.pay_url || '');",
+                  "    pm.collectionVariables.set('last_converted_amount', json.data.converted_amount);",
+                  "    pm.collectionVariables.set('last_payment_method', json.data.payment_method);",
+                  "}",
+                  "pm.test('组合父单', () => pm.expect(json.data.order_type).to.eql('combine'));",
+                  "pm.test('初始无子单', () => pm.expect(json.data.children).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13 查询组合父单（进度和真实子单）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_no\": \"{{last_order_no}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/order/query",
+            "description": "部分付款 status=pending，只有全部付清为 paid。按 children[].merchant_order_no 逐笔上传物流；将真实子单号填入 shipping_merchant_order_no 后复用 05 请求。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('业务成功', function () { pm.expect(json.code).to.eql(0); });",
+                  "const sent = JSON.parse(pm.request.body.raw);",
+                  "if (json.data) {",
+                  "    pm.test('查询编号匹配', function () {",
+                  "        if (sent.order_no) { pm.expect(json.data.order_no).to.eql(sent.order_no); }",
+                  "        if (sent.merchant_order_no) { pm.expect(json.data.merchant_order_no).to.eql(sent.merchant_order_no); }",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "14 V2 组合付款通知（仅商户测试回调）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"order_type\": \"combine\",\n  \"order_no\": \"CMB01JEXAMPLEPARENT00000000000\",\n  \"merchant_order_no\": \"M20261113001\",\n  \"status\": \"pending\",\n  \"order_status\": \"partially_paid\",\n  \"platform\": \"wordpress\",\n  \"currency\": \"USD\",\n  \"amount\": \"4000.00\",\n  \"converted_currency\": \"USD\",\n  \"converted_amount\": \"4000.00\",\n  \"exchange_rate\": \"1.000000\",\n  \"paid_amount\": \"640.00\",\n  \"paid_converted_amount\": \"640.00\",\n  \"remaining_amount\": \"3360.00\",\n  \"remaining_converted_amount\": \"3360.00\",\n  \"payment_method\": null,\n  \"settlement_status\": null,\n  \"shipping_status\": \"unshipped\",\n  \"current_order_no\": null,\n  \"version\": 1,\n  \"children\": [\n    {\n      \"sequence\": 1,\n      \"order_no\": \"ORD202611130001\",\n      \"merchant_order_no\": \"M20261113001-S001\",\n      \"status\": \"paid\",\n      \"order_status\": \"pending_settlement\",\n      \"settlement_status\": null,\n      \"shipping_status\": \"unshipped\",\n      \"payment_status\": \"paid\",\n      \"currency\": \"USD\",\n      \"amount\": \"640.00\",\n      \"converted_currency\": \"USD\",\n      \"converted_amount\": \"640.00\",\n      \"payment_method\": \"example_channel\",\n      \"paid_at\": \"2026-11-13T12:00:00+08:00\",\n      \"logistics\": null\n    }\n  ],\n  \"created_at\": \"2026-11-13T11:55:00+08:00\",\n  \"paid_at\": null,\n  \"event_id\": \"bc7c186f-a106-4ec7-ad42-1bea374be103\",\n  \"paid_order_no\": \"ORD202611130001\",\n  \"occurred_at\": \"2026-11-13T12:00:01+08:00\",\n  \"sign\": \"SIGNATURE_PLACEHOLDER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{notify_url}}",
+            "description": "需开启 enable_combined_examples 与 enable_webhook_examples，只向商户测试 notify_url 发送；修改样例父子单号为测试数据。完整 JSON 签名，按 event_id 去重、version 防乱序；部分付款 pending 不得发货。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('商户返回任意2xx即确认通知', function () { pm.expect(pm.response.code).to.be.within(200, 299); });"
                 ]
               }
             }

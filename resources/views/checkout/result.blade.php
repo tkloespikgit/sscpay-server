@@ -39,7 +39,7 @@
                 </div>
                 <div class="flex justify-between">
                     <dt class="text-slate-500">{{ __('checkout.result.status') }}</dt>
-                    <dd class="font-medium" style="color: {{ \App\Support\OrderStatusColor::cssColor($order->status) }}">{{ in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed'], true) ? __('checkout.result.paid') : __('admin.order.statuses.'.$order->status) }}</dd>
+                    <dd class="font-medium" style="color: {{ \App\Support\OrderStatusColor::cssColor($order->status) }}">{{ $order instanceof \App\Models\CombinedOrder ? __('combined.admin.states.'.$order->status) : (in_array($order->status, ['paid', 'pending_settlement', 'shipped', 'completed'], true) ? __('checkout.result.paid') : __('admin.order.statuses.'.$order->status)) }}</dd>
                 </div>
             </dl>
         @endif

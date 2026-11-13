@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\CreateCheckoutOrderRequest;
 use App\Models\CheckoutLink;
+use App\Models\CombinedOrder;
 use App\Models\Order;
 use App\Services\Checkout\CheckoutLinkOrderService;
 use App\Services\Checkout\TurnstileService;
@@ -83,6 +84,7 @@ class CheckoutLinkController extends Controller
         // 供回跳页面展示订单号与当前状态。只存 ID 不存整个订单，
         // session 里放客户的收货地址等 PII 没有必要。
         $request->session()->put('checkout_last_order_id', $order->id);
+        $request->session()->put('checkout_last_order_type', $order instanceof CombinedOrder ? 'combine' : 'single');
 
         // 正常情况下 OrderCreationService 第 9 步已经把远端收银台地址写进 pay_url。
         // 拿不到说明远端建单失败（站点凭证没配齐、插件报错等），订单已经落库但
@@ -108,7 +110,8 @@ class CheckoutLinkController extends Controller
     public function payment(Request $request, string $slug): View
     {
         $link = $this->resolveLink($request, $slug);
-        $order = Order::query()->withoutGlobalScopes()
+        $order = ($request->session()->get('checkout_last_order_type') === 'combine' ? CombinedOrder::query() : Order::query())
+            ->withoutGlobalScopes()->whereNull('deleted_at')
             ->where('merchant_id', $link->merchant_id)
             ->where('checkout_link_id', $link->id)
             ->whereKey($request->session()->get('checkout_last_order_id'))
@@ -171,7 +174,7 @@ class CheckoutLinkController extends Controller
      * 回跳页面上要展示的订单。支付网关回跳时通常不带我们的订单号，
      * 所以用 store() 阶段写进 session 的那一笔。取不到就只显示通用提示。
      */
-    private function resolveRecentOrder(Request $request): ?Order
+    private function resolveRecentOrder(Request $request): Order|CombinedOrder|null
     {
         $orderId = $request->session()->get('checkout_last_order_id');
 
@@ -179,7 +182,11 @@ class CheckoutLinkController extends Controller
             return null;
         }
 
-        return Order::query()->withoutGlobalScopes()->find($orderId);
+        $link = $this->resolveLink($request, (string) $request->route('slug'));
+
+        return ($request->session()->get('checkout_last_order_type') === 'combine' ? CombinedOrder::query() : Order::query())
+            ->withoutGlobalScopes()->whereNull('deleted_at')->where('merchant_id', $link->merchant_id)
+            ->where('checkout_link_id', $link->id)->find($orderId);
     }
 
     /**
