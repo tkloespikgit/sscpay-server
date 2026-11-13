@@ -122,6 +122,7 @@ class CombinedPaymentTest extends TestCase
             $this->assertSame($secondMethod->id, $child->payment_method_id);
             $this->assertSame(sprintf('COMBINE-001-S%03d', ++$index), $child->merchant_order_no);
             $this->paid($child);
+            $firstMethod->update(['is_active' => true]);
         }
         $this->assertSame('paid', $parent->status);
         $this->assertSame('4000.00', $parent->paid_amount);

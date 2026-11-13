@@ -143,6 +143,7 @@ class MerchantRoleProvisioningService
                 'label' => '订单管理员',
                 'permissions' => [
                     Permissions::ORDERS_VIEW,
+                    Permissions::COMBINED_ORDERS_VIEW,
                     Permissions::ORDERS_CREATE_MANUAL,
                     Permissions::ORDERS_SHIP,
                     Permissions::LOGISTICS_IMPORTS_MANAGE,
@@ -157,6 +158,7 @@ class MerchantRoleProvisioningService
                 'label' => '物流管理员',
                 'permissions' => [
                     Permissions::ORDERS_VIEW,
+                    Permissions::COMBINED_ORDERS_VIEW,
                     Permissions::ORDERS_SHIP,
                     Permissions::LOGISTICS_IMPORTS_MANAGE,
                 ],
@@ -173,6 +175,7 @@ class MerchantRoleProvisioningService
                     Permissions::WITHDRAWALS_REVIEW,
                     Permissions::BALANCE_ADJUST,
                     Permissions::ORDERS_VIEW,
+                    Permissions::COMBINED_ORDERS_VIEW,
                     Permissions::ORDERS_REFUND,
                     Permissions::ORDERS_CHARGEBACK,
                     Permissions::ORDER_DISPUTES_VIEW,

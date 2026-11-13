@@ -16,7 +16,9 @@ use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 use Tests\TestCase;
 
 class MerchantRolePermissionsTest extends TestCase
@@ -84,9 +86,46 @@ class MerchantRolePermissionsTest extends TestCase
         // 写死数字的话以后再加角色这里就会假失败。
         Livewire::test(MerchantRolePermissions::class)->assertFormSet($data)->call('save')->assertHasNoFormErrors();
         $this->assertSame(
-            count(app(\App\Services\MerchantRoleProvisioningService::class)->definitions()),
+            count(app(MerchantRoleProvisioningService::class)->definitions()),
             Role::where('merchant_id', $second->id)->count()
         );
+    }
+
+    public function test_read_only_permissions_can_be_assigned_without_management_and_registered_on_save(): void
+    {
+        $merchant = $this->merchant('Read-only merchant');
+        $permissions = [
+            Permissions::COMBINED_ORDERS_VIEW,
+            Permissions::CHECKOUT_LINKS_VIEW,
+            Permissions::MERCHANT_DOMAINS_VIEW,
+            Permissions::REPLACE_KEYWORDS_VIEW,
+        ];
+        Permission::query()->whereIn('name', $permissions)->delete();
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+        $data = $this->templateData();
+        $data['order_admin'] = $permissions;
+
+        foreach (['zh_CN', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $page = Livewire::test(MerchantRolePermissions::class)->assertOk();
+            foreach ($permissions as $permission) {
+                $label = __('admin.role_permissions.permissions.'.str_replace('.', '_', $permission));
+                $this->assertNotSame('admin.role_permissions.permissions.'.str_replace('.', '_', $permission), $label);
+                $page->assertSee($label);
+            }
+        }
+        $page->fillForm($data)->call('save')->assertHasNoFormErrors()->assertNotified();
+
+        foreach ([$merchant, $this->merchant('After read-only template')] as $record) {
+            $user = User::factory()->create(['merchant_id' => $record->id]);
+            $user->assignRole($this->role($record, '订单管理员'));
+            foreach ($permissions as $permission) {
+                $this->assertTrue($user->can($permission));
+            }
+            foreach ([Permissions::CHECKOUT_LINKS_MANAGE, Permissions::MERCHANT_DOMAINS_MANAGE, Permissions::REPLACE_KEYWORDS_MANAGE, Permissions::ORDERS_VIEW] as $permission) {
+                $this->assertFalse($user->can($permission));
+            }
+        }
     }
 
     public function test_only_enabled_super_admins_in_the_platform_panel_can_access_and_save(): void

@@ -73,6 +73,137 @@ class CombinedPaymentRoutingTest extends TestCase
         $this->assertSame('900.00', $quote['converted_amount']);
     }
 
+    public function test_next_payment_keeps_the_previous_channel_even_outside_the_highest_three_limits(): void
+    {
+        $previous = $this->combinedMethod('previous', '800.00');
+        $parent = $this->parentPaidOn($previous);
+        $this->combinedMethod('larger-one', '1000.00');
+        $this->combinedMethod('larger-two', '1200.00');
+        $this->combinedMethod('larger-three', '1400.00');
+
+        $quote = $this->postJson($parent->pay_url.'/quote')->assertOk()
+            ->assertJsonPath('data.quote.payment_method', $previous->method_code)->json('data.quote');
+
+        $this->assertGreaterThanOrEqual(0, bccomp($quote['amount'], '560.00', 2));
+        $this->assertLessThanOrEqual(0, bccomp($quote['amount'], '720.00', 2));
+        Http::assertNothingSent();
+    }
+
+    public function test_previous_channel_is_kept_even_when_another_channel_can_pay_the_whole_balance(): void
+    {
+        $previous = $this->combinedMethod('previous', '800.00');
+        $parent = $this->parentPaidOn($previous);
+        $this->combinedMethod('full-balance', '5000.00');
+
+        $quote = app(CombinedPaymentRouter::class)->quote($parent);
+
+        $this->assertSame($previous->id, $quote['payment_method_id']);
+        $this->assertLessThanOrEqual(0, bccomp($quote['amount'], '720.00', 2));
+        Http::assertNothingSent();
+    }
+
+    public function test_final_balance_uses_previous_channel_even_when_daily_capacity_is_below_its_full_cap(): void
+    {
+        $previous = $this->combinedMethod('previous', '800.00', ['max_amount_per_day' => '1000.00']);
+        $parent = $this->parentPaidOn($previous, [
+            'original_amount' => '1000.00', 'amount' => '1000.00', 'converted_amount' => '1000.00',
+            'remaining_amount' => '360.00', 'remaining_converted_amount' => '360.00',
+        ]);
+        $this->combinedMethod('alternative-one', '1000.00');
+        $this->combinedMethod('alternative-two', '1200.00');
+        for ($i = 0; $i < 5; $i++) {
+            $quote = app(CombinedPaymentRouter::class)->quote($parent);
+            $this->assertSame($previous->id, $quote['payment_method_id']);
+            $this->assertSame('360.00', $quote['amount']);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_expired_first_quote_keeps_its_channel_when_it_is_still_available(): void
+    {
+        $this->freezeTime();
+        $previous = $this->combinedMethod('previous', '800.00');
+        $this->createCombined()->assertOk();
+        $parent = CombinedOrder::sole();
+        $first = $this->postJson($parent->pay_url.'/quote')->assertOk()->json('data.quote');
+        $this->combinedMethod('larger-one', '1000.00');
+        $this->combinedMethod('larger-two', '1200.00');
+        $this->combinedMethod('larger-three', '1400.00');
+        $this->travel(6)->minutes();
+
+        $next = $this->postJson($parent->pay_url.'/quote')->assertOk()
+            ->assertJsonPath('data.quote.payment_method', $previous->method_code)->json('data.quote');
+
+        $this->assertNotSame($first['id'], $next['id']);
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('unavailablePreviousChannelSettings')]
+    public function test_previous_channel_is_replaced_only_when_it_cannot_take_a_payment(array $settings): void
+    {
+        $previous = $this->combinedMethod('previous', '800.00');
+        $parent = $this->parentPaidOn($previous);
+        $previous->update($settings);
+        $alternative = $this->combinedMethod('alternative', '700.00');
+
+        $quote = app(CombinedPaymentRouter::class)->quote($parent);
+
+        $this->assertSame($alternative->id, $quote['payment_method_id']);
+        $this->assertSame('640.00', $parent->refresh()->paid_amount);
+        $this->assertDatabaseCount('orders', 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_expired_fallback_quote_keeps_the_new_channel_when_the_old_channel_recovers(): void
+    {
+        $this->freezeTime();
+        $previous = $this->combinedMethod('previous', '800.00');
+        $parent = $this->parentPaidOn($previous);
+        $previous->update(['is_active' => false]);
+        $alternative = $this->combinedMethod('alternative', '700.00');
+        $first = $this->postJson($parent->pay_url.'/quote')->assertOk()
+            ->assertJsonPath('data.quote.payment_method', $alternative->method_code)->json('data.quote');
+        $previous->update(['is_active' => true]);
+        $this->travel(6)->minutes();
+
+        $next = $this->postJson($parent->pay_url.'/quote')->assertOk()
+            ->assertJsonPath('data.quote.payment_method', $alternative->method_code)->json('data.quote');
+
+        $this->assertNotSame($first['id'], $next['id']);
+        $this->assertDatabaseCount('orders', 1);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function unavailablePreviousChannelSettings(): array
+    {
+        return [
+            'disabled' => [['is_active' => false]],
+            'daily capacity below full cap' => [['max_amount_per_day' => '1439.99']],
+            'monthly capacity below full cap' => [['max_amount_per_month' => '1439.99']],
+            'daily count exhausted' => [['max_count_per_day' => 1]],
+            'fees exceed allowed random amount' => [['fee_fixed' => '721.00']],
+            'create mode' => [['product_match_mode' => PaymentMethod::MODE_CREATE]],
+            'copy mode' => [['product_match_mode' => PaymentMethod::MODE_COPY]],
+        ];
+    }
+
+    public function test_previous_shared_channel_must_still_be_authorized_for_the_merchant(): void
+    {
+        $previous = $this->combinedMethod('shared', '800.00');
+        $previous->update(['merchant_id' => null]);
+        $previous->assignedMerchants()->attach($this->merchant->id);
+        $parent = $this->parentPaidOn($previous);
+        $previous->assignedMerchants()->detach($this->merchant->id);
+        $alternative = $this->combinedMethod('alternative', '700.00');
+
+        $quote = app(CombinedPaymentRouter::class)->quote($parent);
+
+        $this->assertSame($alternative->id, $quote['payment_method_id']);
+        Http::assertNothingSent();
+    }
+
     public function test_full_balance_routing_excludes_create_and_copy_from_the_normal_channel_selector(): void
     {
         $allowed = $this->combinedMethod('allowed', '1000.00');
@@ -252,5 +383,23 @@ class CombinedPaymentRoutingTest extends TestCase
         $this->assertSame($parent->converted_amount, $usd);
         $this->assertSame($usd, $parent->paid_converted_amount);
         $this->assertSame('paid', $parent->status);
+    }
+
+    private function parentPaidOn(PaymentMethod $method, array $overrides = []): CombinedOrder
+    {
+        $parent = $this->combinedParent(array_merge([
+            'status' => 'partially_paid', 'paid_amount' => '640.00', 'paid_converted_amount' => '640.00',
+            'remaining_amount' => '3360.00', 'remaining_converted_amount' => '3360.00',
+            'next_sequence' => 2, 'version' => 1, 'first_paid_at' => now(),
+        ], $overrides));
+        $this->makeOrder('PREVIOUS-CHILD', $parent->merchant_order_no.'-S001', [
+            'combined_order_id' => $parent->id, 'combined_sequence' => 1,
+            'payment_group_id' => $this->group->id, 'payment_method_id' => $method->id,
+            'payment_method' => $method->method_code, 'status' => 'paid', 'paid_at' => now(),
+            'amount' => '640.00', 'subtotal' => '640.00', 'converted_amount' => '640.00',
+            'subtotal_converted' => '640.00', 'risk_reservation_status' => 'consumed',
+        ]);
+
+        return $parent;
     }
 }

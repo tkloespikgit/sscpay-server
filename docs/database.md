@@ -48,6 +48,8 @@ erDiagram
 | `payment_method_config_maps`、`payment_method_profiles` | 网关字段模板及渠道资料附表；profile 每渠道至多一条 |
 | `observers`、`observer_payment_methods` | 独立观察者账户与允许查看的渠道；展示缩放不修改账务金额 |
 
+独立查看权限 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view` 复用现有 `permissions` 和角色关联表，无表结构迁移。`PermissionSeeder` 幂等补齐权限及平台商户级管理员；「角色权限分配」保存时也会补齐权限并按勾选同步商户默认角色。已有模板按保存值生效，不自动扩权；后三项原有 `manage` 权限仍包含查看能力。
+
 支付方式新增可空 `display_name`（最长 100 字符），`method_name` 保留原名称。商户交易列表及渠道筛选优先读取展示名称，空值/空白回退原名称；平台账号（含商户级管理员）继续显示原名称。自有、共享及软删除渠道沿用原授权范围；无渠道关联的订单回退已有渠道代码。迁移只新增字段，不回填或改写历史订单。
 
 `PaymentMethod::forMerchant()` 的含义是“商户可使用”，包含自有与已分配渠道；不能用普通商户外键过滤替代。`site_products.merchant_id` 也可为空，商品实际按支付渠道关联，避免假设所有业务模型均有非空商户 ID。
@@ -281,6 +283,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | order_notification_attempts | 可空 combined_order_id、event_id、event_version；沿用原尝试表保存逐笔付款时的不可变业务快照 |
 
 父单系统号、token 唯一；未软删除的 merchant_id + merchant_order_no 通过生成列唯一约束；子单 (combined_order_id, combined_sequence) 唯一；通知 (event_id, attempt_number) 唯一。原 orders 生成列唯一约束保持，原号建单仍校验 64，物流上传允许 80。
+
+后续付款的优先渠道复用 `current_quote.payment_method_id`（报价到期仍保留选择），没有报价时读取最近已付子单的 `payment_method_id`，按 `combined_sequence` 倒序并包含软删除历史。只有原渠道不符合本笔规则时才重选，不新增父单渠道列、不回填历史数据；已有未决子单仍由 `current_order_id` 限制为同一笔。
 
 不回填历史订单，不迁移资金，不预留未来全部额度。新订单的 held 占用按渠道 ID 跨商户统计，与窗口内已付金额/笔数合并；初次支付改 consumed，明确取消/过期改 released。页面/父单到期本身不释放未决支付占用。MySQL 锁定读用于事务内额度检查，避免等到渠道锁后仍读取旧快照。未来需要清理未决占用时，必须先核实远端已不可付，不能仅按本地年龄释放。
 

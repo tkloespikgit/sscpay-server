@@ -19,6 +19,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class CombinedOrderResource extends Resource
 {
@@ -64,7 +65,8 @@ class CombinedOrderResource extends Resource
             ]),
             RepeatableEntry::make('children')->label(__('combined.history'))->columnSpanFull()->columns(3)->schema([
                 TextEntry::make('merchant_order_no')->label(__('combined.order'))->copyable()
-                    ->url(fn (Order $record): string => OrderResource::getUrl('view', ['record' => $record])),
+                    ->url(fn (Order $record): ?string => OrderResource::canView($record)
+                        ? OrderResource::getUrl('view', ['record' => $record]) : null),
                 TextEntry::make('amount')->label(__('combined.current')),
                 TextEntry::make('status')->label(__('admin.order.columns.status'))
                     ->formatStateUsing(fn (string $state): string => __('admin.order.statuses.'.$state)),
@@ -93,17 +95,19 @@ class CombinedOrderResource extends Resource
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
             ])->filters([
                 SelectFilter::make('status')->label(__('admin.order.columns.status'))->options(__('combined.admin.states')),
-            ])->recordActions([ViewAction::make()])->defaultSort('created_at', 'desc');
+            ])->recordActions([
+                ViewAction::make()->authorize(fn (CombinedOrder $record): bool => static::canView($record)),
+            ])->defaultSort('created_at', 'desc');
     }
 
     public static function canViewAny(): bool
     {
         $user = auth()->user();
 
-        return $user instanceof User && $user->status && $user->can(Permissions::ORDERS_VIEW);
+        return $user instanceof User && $user->status && $user->can(Permissions::COMBINED_ORDERS_VIEW);
     }
 
-    public static function canView($record): bool
+    public static function canView(Model $record): bool
     {
         return static::canViewAny() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
@@ -113,12 +117,12 @@ class CombinedOrderResource extends Resource
         return false;
     }
 
-    public static function canEdit($record): bool
+    public static function canEdit(Model $record): bool
     {
         return false;
     }
 
-    public static function canDelete($record): bool
+    public static function canDelete(Model $record): bool
     {
         return false;
     }

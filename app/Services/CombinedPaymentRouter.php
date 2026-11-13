@@ -40,6 +40,17 @@ class CombinedPaymentRouter
         $merchant = Merchant::query()->withoutGlobalScopes()->findOrFail($parent->merchant_id);
         $methods = $this->methods($group);
         $supported = $methods->filter(fn (PaymentMethod $method): bool => $this->supportsProductMode($method));
+        $previous = $supported->firstWhere('id', $this->previousPaymentMethodId($parent));
+        if ($previous !== null) {
+            if ($this->eligible($previous, $merchant, $parent->remaining_converted_amount)) {
+                return $this->result($previous, $parent->remaining_amount, $parent->remaining_converted_amount);
+            }
+            $bounds = $this->splitBounds($parent, $previous, $merchant);
+            if ($bounds !== null) {
+                return $this->randomPayment($parent, $previous, $bounds);
+            }
+        }
+
         $full = $supported->filter(fn (PaymentMethod $method): bool => $this->eligible($method, $merchant, $parent->remaining_converted_amount));
         if ($full->isNotEmpty()) {
             $excluded = $methods->pluck('id')->diff($full->pluck('id'))->all();
@@ -50,11 +61,7 @@ class CombinedPaymentRouter
 
         $candidates = [];
         foreach ($supported as $method) {
-            $limit = (string) $method->max_amount_per_transaction;
-            if ($method->isUnlimited('max_amount_per_transaction') || ! $this->capacity->permits($method, $limit)) {
-                continue;
-            }
-            $bounds = $this->amountBounds($parent, $method, $merchant);
+            $bounds = $this->splitBounds($parent, $method, $merchant);
             if ($bounds !== null) {
                 $candidates[] = ['method' => $method, 'bounds' => $bounds];
             }
@@ -65,10 +72,8 @@ class CombinedPaymentRouter
             throw new CombinedPaymentException('COMBINE_PAYMENT_UNAVAILABLE');
         }
         $selected = $candidates[$this->randomizer->getInt(0, min(3, count($candidates)) - 1)];
-        [$low, $high] = $selected['bounds'];
-        $amount = bcdiv((string) $this->randomizer->getInt($low, $high), '100', 2);
 
-        return $this->result($selected['method'], $amount, $this->convertedAmount($parent, $amount));
+        return $this->randomPayment($parent, $selected['method'], $selected['bounds']);
     }
 
     public function supportsProductMode(PaymentMethod $method): bool
@@ -83,6 +88,44 @@ class CombinedPaymentRouter
             bcmul(bcadd($parent->paid_amount, $amount, 2), $parent->exchange_rate, 2),
             $parent->paid_converted_amount, 2,
         );
+    }
+
+    private function previousPaymentMethodId(CombinedOrder $parent): ?int
+    {
+        $quotedMethodId = $parent->current_quote['payment_method_id'] ?? null;
+        if ($quotedMethodId !== null) {
+            return (int) $quotedMethodId;
+        }
+        if (! $parent->exists) {
+            return null;
+        }
+        $methodId = $parent->children()->forMerchant($parent->merchant_id)->withTrashed()
+            ->whereNotNull('paid_at')->reorder()->orderByDesc('combined_sequence')->value('payment_method_id');
+
+        return $methodId === null ? null : (int) $methodId;
+    }
+
+    /** @return array{int, int}|null */
+    private function splitBounds(CombinedOrder $parent, PaymentMethod $method, Merchant $merchant): ?array
+    {
+        if ($method->isUnlimited('max_amount_per_transaction')
+            || ! $this->capacity->permits($method, (string) $method->max_amount_per_transaction)) {
+            return null;
+        }
+
+        return $this->amountBounds($parent, $method, $merchant);
+    }
+
+    /**
+     * @param  array{int, int}  $bounds
+     * @return array{payment_method_id: int, payment_method: string, amount: string, converted_amount: string}
+     */
+    private function randomPayment(CombinedOrder $parent, PaymentMethod $method, array $bounds): array
+    {
+        [$low, $high] = $bounds;
+        $amount = bcdiv((string) $this->randomizer->getInt($low, $high), '100', 2);
+
+        return $this->result($method, $amount, $this->convertedAmount($parent, $amount));
     }
 
     /** 将美元区间映射到原币整数分，二分边界避免汇率舍入越界。 @return array{int, int}|null */

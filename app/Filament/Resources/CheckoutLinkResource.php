@@ -7,6 +7,7 @@ use App\Models\Application;
 use App\Models\CheckoutLink;
 use App\Models\Merchant;
 use App\Models\MerchantDomain;
+use App\Models\PaymentGroup;
 use App\Models\SystemConfig;
 use App\Models\User;
 use App\Services\Checkout\CheckoutLinkGroupSelection;
@@ -15,6 +16,7 @@ use App\Support\Permissions;
 use Closure;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
+use Filament\Actions\ViewAction;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
@@ -22,6 +24,9 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Forms\Components\ViewField;
+use Filament\Infolists\Components\IconEntry;
+use Filament\Infolists\Components\RepeatableEntry;
+use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Group;
@@ -32,6 +37,7 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * 收款链接（Checkout Link）。商户创建一条可反复使用的收银链接，客户打开后
@@ -366,6 +372,52 @@ class CheckoutLinkResource extends Resource
         return $query->pluck('host', 'id');
     }
 
+    public static function infolist(Schema $schema): Schema
+    {
+        return $schema->columns(2)->components([
+            Section::make(__('admin.checkout_link.sections.basic_info'))->columns(2)->columnSpanFull()->schema([
+                TextEntry::make('merchant.name')->label(__('admin.checkout_link.fields.merchant'))
+                    ->visible(fn (): bool => (bool) auth()->user()?->isPlatformStaff()),
+                TextEntry::make('link_name')->label(__('admin.checkout_link.fields.link_name')),
+                TextEntry::make('title')->label(__('admin.checkout_link.fields.title')),
+                TextEntry::make('application.name')->label(__('admin.checkout_link.fields.application')),
+                TextEntry::make('url')->label(__('admin.checkout_link.columns.url'))
+                    ->state(fn (CheckoutLink $record): string => $record->url())->copyable()->columnSpanFull(),
+                TextEntry::make('domain.host')->label(__('admin.checkout_link.fields.domain'))
+                    ->placeholder(__('admin.checkout_link.placeholders.platform_domain')),
+                TextEntry::make('paymentGroup.group_name')->label(__('admin.checkout_link.fields.payment_group')),
+                TextEntry::make('payment_groups')->label(__('admin.checkout_link.fields.payment_groups'))
+                    ->state(fn (CheckoutLink $record): array => PaymentGroup::query()->forMerchant((int) $record->merchant_id)
+                        ->withTrashed()->whereIn('id', $record->payment_group_ids ?? [])->pluck('group_name')->all()),
+                TextEntry::make('supported_countries')->label(__('admin.checkout_link.fields.supported_countries')),
+                TextEntry::make('customer_notice')->label(__('admin.checkout_link.fields.customer_notice'))->columnSpanFull(),
+                IconEntry::make('auto_redirect')->label(__('admin.checkout_link.fields.auto_redirect'))->boolean(),
+                IconEntry::make('is_active')->label(__('admin.checkout_link.fields.is_active'))->boolean(),
+            ]),
+            Section::make(__('admin.checkout_link.sections.amount'))->columns(3)->columnSpanFull()->schema([
+                TextEntry::make('currency')->label(__('admin.checkout_link.fields.currency')),
+                TextEntry::make('amount_mode')->label(__('admin.checkout_link.fields.amount_mode'))
+                    ->formatStateUsing(fn (string $state): string => __('admin.checkout_link.amount_modes.'.$state)),
+                TextEntry::make('fixed_amount')->label(__('admin.checkout_link.fields.fixed_amount'))
+                    ->visible(fn (CheckoutLink $record): bool => $record->isFixedAmount()),
+                TextEntry::make('min_amount')->label(__('admin.checkout_link.fields.min_amount'))
+                    ->visible(fn (CheckoutLink $record): bool => ! $record->isFixedAmount()),
+                TextEntry::make('max_amount')->label(__('admin.checkout_link.fields.max_amount'))
+                    ->visible(fn (CheckoutLink $record): bool => ! $record->isFixedAmount()),
+                TextEntry::make('shipping_fee')->label(__('admin.checkout_link.fields.shipping_fee')),
+                TextEntry::make('tax')->label(__('admin.checkout_link.fields.tax')),
+                TextEntry::make('discount')->label(__('admin.checkout_link.fields.discount')),
+            ]),
+            RepeatableEntry::make('items')->label(__('admin.checkout_link.sections.items'))->columns(3)->columnSpanFull()->schema([
+                TextEntry::make('product_name')->label(__('admin.checkout_link.fields.product_name')),
+                TextEntry::make('unit_price')->label(__('admin.checkout_link.fields.unit_price')),
+                TextEntry::make('quantity')->label(__('admin.checkout_link.fields.quantity')),
+                TextEntry::make('product_sku')->label(__('admin.checkout_link.fields.product_sku')),
+                TextEntry::make('product_url')->label(__('admin.checkout_link.fields.product_url'))->columnSpan(2),
+            ]),
+        ]);
+    }
+
     public static function table(Table $table): Table
     {
         $columns = [];
@@ -403,8 +455,9 @@ class CheckoutLinkResource extends Resource
                 IconColumn::make('is_active')->label(__('admin.checkout_link.fields.is_active'))->boolean(),
             ]))
             ->recordActions([
-                EditAction::make(),
-                DeleteAction::make(),
+                ViewAction::make()->authorize(fn (CheckoutLink $record): bool => static::canView($record)),
+                EditAction::make()->authorize(fn (CheckoutLink $record): bool => static::canEdit($record)),
+                DeleteAction::make()->authorize(fn (CheckoutLink $record): bool => static::canDelete($record)),
             ])
             ->defaultSort('id', 'desc');
     }
@@ -420,21 +473,31 @@ class CheckoutLinkResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return (bool) auth()->user()?->can(Permissions::CHECKOUT_LINKS_MANAGE);
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status
+            && ($user->can(Permissions::CHECKOUT_LINKS_VIEW) || $user->can(Permissions::CHECKOUT_LINKS_MANAGE));
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return static::canViewAny() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
     public static function canCreate(): bool
     {
-        return static::canViewAny();
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status && $user->can(Permissions::CHECKOUT_LINKS_MANAGE);
     }
 
-    public static function canEdit($record): bool
+    public static function canEdit(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canCreate() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
-    public static function canDelete($record): bool
+    public static function canDelete(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canEdit($record);
     }
 }

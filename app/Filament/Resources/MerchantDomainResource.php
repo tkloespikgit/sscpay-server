@@ -5,12 +5,14 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\MerchantDomainResource\Pages;
 use App\Models\Merchant;
 use App\Models\MerchantDomain;
+use App\Models\User;
 use App\Services\Checkout\CloudflareSaasService;
 use App\Services\Checkout\MerchantDomainService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
+use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -22,6 +24,7 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * 商户自有域名。收款链接落地页跑在这些域名上。
@@ -170,12 +173,15 @@ class MerchantDomainResource extends Resource
                     ->toggleable(isToggledHiddenByDefault: true),
             ]))
             ->recordActions([
+                ViewAction::make()->authorize(fn (MerchantDomain $record): bool => static::canView($record)),
                 Action::make('verify')
                     ->label(__('admin.merchant_domain.actions.verify'))
                     ->icon('heroicon-o-shield-check')
+                    ->authorize(fn (MerchantDomain $record): bool => static::canEdit($record))
                     ->action(fn (MerchantDomain $record) => static::verifyDomain($record)),
-                EditAction::make(),
+                EditAction::make()->authorize(fn (MerchantDomain $record): bool => static::canEdit($record)),
                 DeleteAction::make()
+                    ->authorize(fn (MerchantDomain $record): bool => static::canDelete($record))
                     // 本地记录删掉的同时清理 CF 侧的自定义主机名，
                     // 否则会在 CF 那边留下孤儿记录持续计费。
                     ->before(fn (MerchantDomain $record) => app(CloudflareSaasService::class)->delete($record)),
@@ -218,6 +224,8 @@ class MerchantDomainResource extends Resource
 
     public static function verifyDomain(MerchantDomain $record): void
     {
+        abort_unless(static::canEdit($record), 403);
+
         $ready = app(MerchantDomainService::class)->verify($record);
         $record->refresh();
 
@@ -241,21 +249,31 @@ class MerchantDomainResource extends Resource
 
     public static function canViewAny(): bool
     {
-        return (bool) auth()->user()?->can(Permissions::MERCHANT_DOMAINS_MANAGE);
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status
+            && ($user->can(Permissions::MERCHANT_DOMAINS_VIEW) || $user->can(Permissions::MERCHANT_DOMAINS_MANAGE));
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return static::canViewAny() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
     public static function canCreate(): bool
     {
-        return static::canViewAny();
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status && $user->can(Permissions::MERCHANT_DOMAINS_MANAGE);
     }
 
-    public static function canEdit($record): bool
+    public static function canEdit(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canCreate() && static::getEloquentQuery()->whereKey($record->id)->exists();
     }
 
-    public static function canDelete($record): bool
+    public static function canDelete(Model $record): bool
     {
-        return static::canViewAny();
+        return static::canEdit($record);
     }
 }
