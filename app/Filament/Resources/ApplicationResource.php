@@ -93,13 +93,6 @@ class ApplicationResource extends Resource
                     ->required()
                     ->placeholder('hat.com'),
 
-                Select::make('webhook_version')
-                    ->label(__('combined.webhook_version'))
-                    ->options([1 => __('combined.webhook_v1'), 2 => __('combined.webhook_v2')])
-                    ->default(1)
-                    ->required()
-                    ->helperText(__('combined.webhook_help')),
-
                 Toggle::make('is_auto_discount_enabled')
                     ->label(__('admin.application.fields.is_auto_discount_enabled'))
                     ->helperText(__('admin.application.help.auto_discount'))

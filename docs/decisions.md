@@ -405,8 +405,18 @@
 
 **状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-14）。** 组合付款开关从应用移到支付组，支付组另设整笔组合订单的 USD 最高金额。开启必须填写正数、最多两位小数；按实际汇率（含汇损）折算后的总应付金额比较，等于上限允许，超过则返回 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不保存父子单或创建远端支付。缺失或非正数上限不表示无限额。
 
+后续修订：下述“应用通知版本控制普通单”的规则已由 [D-40](#d-40-通知协议随支付组自动确定并按订单保存) 替代，应用不再提供协议选择；支付组组合开关自动决定新普通单的 V1/V2，并在订单上保存。
+
 **生效范围：** 同一应用下，各支付组独立配置。统一下单服务在商户→支付组锁内复查开关和上限，API、手工下单与公开收款链接共用。上限仅控制新组合单；普通单和指定渠道保留原规则，已建父单可幂等获取并继续付清，后续关闭组合开关或降低上限不截断付款。
 
 **通知与结构：** 移除应用开关及保存时强制 V2 的逻辑，应用通知版本仅控制普通单；组合父单始终固定 V2，不修改应用设置。支付组新增布尔开关（默认关闭）及可空 decimal(15,2) 上限，应用删除原开关字段。按用户说明当前尚未上线，仅做结构调整，不搬迁旧应用配置、不回填、不保留旧字段兼容。此决定替代 D-33 的开关归属和应用通知联动约定。
 
 **依据：** [下单服务](../app/Services/OrderCreationService.php)、[支付组表单](../app/Filament/Resources/PaymentGroupResource.php)、[组创建服务](../app/Services/PaymentGroupMethodService.php)、[字段迁移](../database/migrations/2026_11_14_143454_move_combined_payment_settings_to_payment_groups.php)、[创建回归](../tests/Feature/CombinedPaymentTest.php)、[后台回归](../tests/Feature/CombinedPaymentAdminTest.php)。协议见 [API 手册](../doc/api.md#支付组开关金额上限与创建)。
+
+## D-40 通知协议随支付组自动确定并按订单保存
+
+**状态：按用户提出的简化规则采用，当前工作区实现，未提交（2026-11-14）。** 应用移除通知协议选择及 `webhook_version` 字段。支付组开启组合付款时，该组新普通单与组合单都使用 V2；关闭时新普通单使用 V1，无额外配置开关。
+
+**订单快照：** `OrderCreationService` 在普通单建单时写入 `orders.webhook_version`，组合父单固定 V2，子单继承父单版本。首次通知读订单版本，重试继续使用原通知快照；后续切换组开关、幂等重提、关闭组合后的子单续付都不改变已经确定的协议。字段扩展和验签规则本身不变。
+
+**结构与范围：** 新增 orders 的 unsigned tinyint 版本列（默认 1），删除应用版本列；按当前测试阶段要求不迁移旧配置、不增加旧字段兼容读取。该决定替代 D-39 中应用为普通单单独选择协议的部分。依据见 [下单服务](../app/Services/OrderCreationService.php)、[通知服务](../app/Services/OrderNotificationService.php)、[结构迁移](../database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php)、[协议及签名回归](../tests/Feature/CombinedPaymentTest.php)、[后台回归](../tests/Feature/CombinedPaymentAdminTest.php)。

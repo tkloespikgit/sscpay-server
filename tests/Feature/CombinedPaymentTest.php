@@ -54,8 +54,60 @@ class CombinedPaymentTest extends TestCase
         $this->assertNull($parent->current_quote);
         $this->assertStringContainsString('/combine-payment/', $response->json('data.pay_url'));
         $this->assertSame(2, $parent->webhook_version);
-        $this->assertSame(1, $this->application->fresh()->webhook_version);
         Http::assertNothingSent();
+    }
+
+    #[DataProvider('groupWebhookVersions')]
+    public function test_single_order_webhook_version_follows_its_group_at_creation_and_survives_switch_changes(bool $enabled, int $version): void
+    {
+        $this->group->update(['is_combine_payment_enabled' => $enabled]);
+        $this->combinedMethod();
+        $this->fakeCombinedGateway();
+        $data = ['amount' => '100.00', 'subtotal' => '100.00'];
+        $this->createCombined($data)->assertOk()->assertJsonPath('data.order_type', 'single');
+        $order = Order::sole();
+        $this->assertSame($version, $order->webhook_version);
+        $this->group->update(['is_combine_payment_enabled' => ! $enabled]);
+
+        $this->createCombined($data)->assertOk()->assertJsonPath('data.order_no', $order->order_no);
+        $this->paid($order);
+
+        $attempt = OrderNotificationAttempt::sole();
+        $payload = $attempt->request_payload;
+        $this->assertSame($version, $order->fresh()->webhook_version);
+        $this->assertSame('paid', $payload['status']);
+        $this->assertSame($enabled ? 'single' : null, $payload['order_type'] ?? null);
+        $this->assertSame($enabled ? '100.00' : null, $payload['paid_amount'] ?? null);
+        $this->assertSame($enabled ? [] : null, $payload['children'] ?? null);
+        $this->assertSame($enabled, isset($payload['event_id']));
+
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['https://shop.example.com/notify' => Http::sequence()->push('', 503)->push('', 200)]);
+        $notifications = app(OrderNotificationService::class);
+        $notifications->attempt($attempt);
+        $this->travel(31)->seconds();
+        $retry = $notifications->dispatchRetry($attempt->fresh());
+        $this->assertNotNull($retry);
+        $notifications->attempt($retry);
+
+        $this->assertSame('success', $retry->fresh()->status);
+        Http::assertSentCount(2);
+        foreach (Http::recorded() as [$request]) {
+            $sent = $request->data();
+            unset($sent['sign']);
+            $this->assertSame($payload, $sent);
+            $this->assertSame(SignatureCanonicalizer::sign(
+                $this->application->app_id, $request->header('Timestamp')[0],
+                $request->header('X-Nonce')[0], $request->data(), $this->application->api_key,
+            ), $request['sign']);
+        }
+    }
+
+    /** @return array<string, array{bool, int}> */
+    public static function groupWebhookVersions(): array
+    {
+        return ['combined enabled' => [true, 2], 'combined disabled' => [false, 1]];
     }
 
     public function test_disabled_payment_group_keeps_the_existing_single_order_path(): void
@@ -275,6 +327,7 @@ class CombinedPaymentTest extends TestCase
             $quote = $payments->quote($parent);
             $child = $payments->pay($parent, $quote['id']);
             $this->assertSame($secondMethod->id, $child->payment_method_id);
+            $this->assertSame(2, $child->webhook_version);
             $this->assertSame(sprintf('COMBINE-001-S%03d', ++$index), $child->merchant_order_no);
             $this->paid($child);
             $firstMethod->update(['is_active' => true]);

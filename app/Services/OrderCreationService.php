@@ -466,6 +466,7 @@ class OrderCreationService
                     ? mb_substr((string) $data['accept_language'], 0, 255)
                     : null,
                 'notify_url' => $data['notify_url'] ?? null,
+                'webhook_version' => $parent?->webhook_version ?? ($group->is_combine_payment_enabled ? 2 : 1),
                 'return_url' => $data['return_url'] ?? null,
                 'cancel_url' => $data['cancel_url'] ?? null,
                 'status' => 'pending',

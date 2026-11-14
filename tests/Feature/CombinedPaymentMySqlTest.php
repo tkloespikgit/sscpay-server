@@ -20,9 +20,11 @@ class CombinedPaymentMySqlTest extends TestCase
         $this->beforeRefreshingDatabase();
         $this->refreshTestDatabase();
         $this->beforeApplicationDestroyed(function (): void {
-            $this->artisan('migrate:rollback', ['--step' => 2])->assertSuccessful();
+            $this->artisan('migrate:rollback', ['--step' => 4])->assertSuccessful();
             $this->assertFalse(Schema::hasTable('combined_orders'));
             $this->assertFalse(Schema::hasColumn('orders', 'combined_order_id'));
+            $this->assertFalse(Schema::hasColumn('orders', 'webhook_version'));
+            $this->assertFalse(Schema::hasColumn('payment_groups', 'is_combine_payment_enabled'));
             RefreshDatabaseState::$migrated = false;
         });
     }

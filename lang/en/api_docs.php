@@ -993,7 +993,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => 'V1 / V2 and signature compatibility',
-                    'text' => 'The application notification setting controls single orders: V1 keeps the original body, while V2 includes order_type=single. Combined payments and their maximum amount are configured per payment group. Combined orders always use V2 regardless of the application setting, without changing it. New fields change the signed content, but not the algorithm: remove sign and recursively canonicalize the complete received JSON object, including children, null and paid_amount. Do not reconstruct the payload from an old field whitelist.',
+                    'text' => 'The payment group determines the notification protocol at order creation: when combined payments are enabled, all new orders use V2, including single orders; otherwise new single orders use V1. No application protocol setting is needed. Each order saves its version, so later switch changes do not alter its initial notification, retries or idempotent resubmissions. Combined children inherit the parent V2 protocol. V1 keeps the original body; V2 single orders include order_type=single. New fields change the signed content, but not the algorithm: remove sign and recursively canonicalize the complete received JSON object, including children, null and paid_amount. Do not reconstruct the payload from an old field whitelist.',
                 ],
                 [
                     'type' => 'table',

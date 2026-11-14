@@ -25,7 +25,6 @@ class Application extends Model
         'api_key',
         'is_order_email_enabled',
         'is_auto_discount_enabled',
-        'webhook_version',
         'is_logistics_tracking_enabled',
         'is_shipment_sync_enabled',
         'shipment_sync_url',
@@ -43,7 +42,6 @@ class Application extends Model
         return [
             'is_order_email_enabled' => 'boolean',
             'is_auto_discount_enabled' => 'boolean',
-            'webhook_version' => 'integer',
             'is_logistics_tracking_enabled' => 'boolean',
             'is_shipment_sync_enabled' => 'boolean',
             'status' => 'boolean',

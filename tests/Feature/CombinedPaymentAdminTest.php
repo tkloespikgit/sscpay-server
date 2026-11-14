@@ -76,15 +76,17 @@ class CombinedPaymentAdminTest extends TestCase
         Livewire::actingAs($admin)->test(ManageCombinedOrders::class)->assertOk();
     }
 
-    public function test_application_form_has_no_combined_switch_and_still_saves_the_single_order_webhook_version(): void
+    public function test_application_form_has_no_combined_switch_or_webhook_version_setting(): void
     {
         $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
         $user->givePermissionTo(Permissions::APPLICATIONS_MANAGE);
         Livewire::actingAs($user)->test(EditApplication::class, ['record' => $this->application->id])
             ->assertFormFieldDoesNotExist('is_combine_payment_enabled')
-            ->fillForm(['webhook_version' => 2])
+            ->assertFormFieldDoesNotExist('webhook_version')
+            ->fillForm(['name' => 'Updated application'])
             ->call('save')->assertHasNoFormErrors();
-        $this->assertSame(2, $this->application->fresh()->webhook_version);
+        $this->assertSame('Updated application', $this->application->fresh()->name);
+        $this->assertArrayNotHasKey('webhook_version', $this->application->fresh()->getAttributes());
     }
 
     public function test_payment_group_form_saves_combined_settings_without_changing_the_application(): void
@@ -99,7 +101,7 @@ class CombinedPaymentAdminTest extends TestCase
 
         $this->assertTrue($this->group->fresh()->is_combine_payment_enabled);
         $this->assertSame('5000.25', $this->group->fresh()->max_combined_amount);
-        $this->assertSame(1, $this->application->fresh()->webhook_version);
+        $this->assertArrayNotHasKey('webhook_version', $this->application->fresh()->getAttributes());
     }
 
     public function test_new_payment_group_persists_the_combined_switch_and_maximum(): void
