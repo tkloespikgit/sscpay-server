@@ -92,6 +92,20 @@ class PaymentGroupResource extends Resource
                     ->helperText(__('admin.payment_group.help.group_key')),
                 TextInput::make('group_name')->label(__('admin.payment_group.fields.group_name'))->required()->maxLength(100),
                 Toggle::make('is_active')->label(__('admin.payment_group.fields.status'))->default(true)->inline(false),
+                Toggle::make('is_combine_payment_enabled')
+                    ->label(__('combined.enable'))
+                    ->helperText(__('combined.enable_help'))
+                    ->default(false)
+                    ->live()
+                    ->inline(false),
+                TextInput::make('max_combined_amount')
+                    ->label(__('combined.max_amount'))
+                    ->helperText(__('combined.max_amount_help'))
+                    ->numeric()
+                    ->suffix('USD')
+                    ->rules(['decimal:0,2', 'min:0.01', 'max:9999999999999.99'])
+                    ->required(fn (Get $get): bool => (bool) $get('is_combine_payment_enabled'))
+                    ->visible(fn (Get $get): bool => (bool) $get('is_combine_payment_enabled')),
                 FileUpload::make('logo_path')
                     ->label(__('admin.payment_group.fields.logo'))
                     ->image()
@@ -159,6 +173,8 @@ class PaymentGroupResource extends Resource
                 TextColumn::make('timezone')->label(__('admin.payment_group.fields.timezone'))->default(config('app.timezone', 'UTC')),
                 TextColumn::make('payment_methods_count')->counts('paymentMethods')->label(__('admin.payment_group.columns.payment_methods_count')),
                 IconColumn::make('is_active')->label(__('admin.payment_group.fields.is_active'))->boolean(),
+                IconColumn::make('is_combine_payment_enabled')->label(__('combined.enable'))->boolean(),
+                TextColumn::make('max_combined_amount')->label(__('combined.max_amount'))->money('USD'),
             ]))
             ->recordActions([
                 EditAction::make(),

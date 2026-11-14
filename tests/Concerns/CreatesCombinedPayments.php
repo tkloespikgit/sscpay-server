@@ -24,10 +24,10 @@ trait CreatesCombinedPayments
     protected function setupCombinedPayments(): void
     {
         $this->createMerchantAndApplication();
-        $this->application->update(['is_combine_payment_enabled' => true]);
         $this->group = PaymentGroup::create([
             'merchant_id' => $this->merchant->id, 'group_key' => 'combine',
             'group_name' => 'Combined payments', 'is_active' => true,
+            'is_combine_payment_enabled' => true, 'max_combined_amount' => '10000.00',
         ]);
         config(['payment_gateway.retry_times' => 1]);
         $this->app->instance(Randomizer::class, new Randomizer(new Mt19937(0)));

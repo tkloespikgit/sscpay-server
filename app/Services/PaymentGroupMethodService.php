@@ -61,8 +61,10 @@ class PaymentGroupMethodService
             throw new AuthorizationException;
         }
 
-        $validated = Validator::make(['merchant_id' => $data['merchant_id'] ?? null, 'paymentMethods' => $members], [
+        $validated = Validator::make(Arr::only($data, ['merchant_id', 'is_combine_payment_enabled', 'max_combined_amount']) + ['paymentMethods' => $members], [
             'merchant_id' => ['required', 'integer', 'min:1'],
+            'is_combine_payment_enabled' => ['sometimes', 'boolean'],
+            'max_combined_amount' => ['required_if:is_combine_payment_enabled,true', 'nullable', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999999999.99'],
             'paymentMethods' => ['array', 'list'],
             'paymentMethods.*' => ['required', 'array:id,priority'],
             'paymentMethods.*.id' => ['required', 'integer', 'min:1', 'distinct'],
@@ -98,7 +100,7 @@ class PaymentGroupMethodService
                 ]);
             }
 
-            $attributes = Arr::only($data, ['group_key', 'group_name', 'logo_path', 'description', 'timezone', 'is_active']);
+            $attributes = Arr::only($data, ['group_key', 'group_name', 'logo_path', 'description', 'timezone', 'is_active', 'is_combine_payment_enabled', 'max_combined_amount']);
             $attributes['merchant_id'] = $merchant->id;
             $group = PaymentGroup::query()->create($attributes);
             $weights = [];

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6f2c1a9e-4b7d-4e3a-9c5f-8d2e4a7b1c30",
     "name": "多商户订单系统 - 建单 / 查询 / 物流 / Webhook",
-    "description": "按 2026-11-13 当前工作区代码核对。完整协议见仓库 doc/api.md。\n\n## 开始使用\n1. 导入同目录 Order-System-Local.postman_environment.json 并选中环境。base_url 必须包含 /api，末尾不加斜杠；生产使用 API_DOMAIN 对应的部署地址。\n2. 填写 app_id / api_key / group_key 以及三个回跳地址。平台枚举、启用的支付组、承运商以后台配置为准。金额一律传十进制字符串。\n3. 先发「创建订单」，再发「重试原建单」和两种查询。脚本会保存实际商户单号、完整原请求和返回的系统单号；超时/502 应复用原请求，不要重新 AUTO 建单。\n4. 物流录入使用 shipping_merchant_order_no 指定可发货订单，不能直接给刚创建的 pending 订单发货。\n\n## 四种调用方向\n- 商户 → 本系统：POST {{base_url}}/order/create、/order/query、/order/ship。App-ID/Timestamp/X-Nonce + body.sign。\n- WordPress 网关 → 本系统：POST {{base_url}}/webhooks/payment-gateway/status。独立 X-PGA-Signature 对最终原始 JSON 字节签名。\n- 本系统 → 商户 notify_url：普通单首次成功通知；组合单每笔成功通知父单进度，复用商户签名；退款/拒付/发货不自动发送此通知。\n- 本系统 → 商户站点 /api/fulfillment/shipment：依据附件 v1.1（2026-10-26）的外部协议示例，应用开启物流回传后自动接入。与 /order/ship 的字段和覆盖/分批语义不同。\n\n## 联调开关\nWebhook 示例默认跳过；在测试环境设置 enable_webhook_examples=true 后单独发送。模拟网关 paid 会改变订单状态并触发真实业务副作用，应使用测试单。gateway_s_order_id 需从当前网关引用取得，故障切换后可能不等于 order_no，不能自动回填猜测。\n附件物流示例设置 enable_fulfillment_examples=true 后单独发送，使用接收站点签发的 fulfillment_app_id / fulfillment_api_key；请先确认接收方部署情况。附件“已上线”和“确认后实现”的表述不一致，本集合未验证五站状态。\n\n## 签名脚本\n先完成变量替换，再计算签名并写回请求。使用当前 Postman 支持的 Web Crypto API，无额外 npm 依赖。商户接口时间误差 ±300 秒，nonce 保存 300 秒；附件站点接口 nonce 为 600 秒。每次调用重新生成 Timestamp/X-Nonce/sign；网关 webhook 不做 canonicalize，不带商户签名字段。\n\n脚本 API 依据：[Postman 全局对象](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-require) 与 [skipRequest](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-execution)。\n\n组合付款详见 doc/api.md「组合付款与 V2 通知」。开启应用开关前先完成商户完整 JSON 验签、event_id 去重与 version 防乱序；顶层 status=paid 才完成原订单。",
+    "description": "按 2026-11-13 当前工作区代码核对。完整协议见仓库 doc/api.md。\n\n## 开始使用\n1. 导入同目录 Order-System-Local.postman_environment.json 并选中环境。base_url 必须包含 /api，末尾不加斜杠；生产使用 API_DOMAIN 对应的部署地址。\n2. 填写 app_id / api_key / group_key 以及三个回跳地址。平台枚举、启用的支付组、承运商以后台配置为准。金额一律传十进制字符串。\n3. 先发「创建订单」，再发「重试原建单」和两种查询。脚本会保存实际商户单号、完整原请求和返回的系统单号；超时/502 应复用原请求，不要重新 AUTO 建单。\n4. 物流录入使用 shipping_merchant_order_no 指定可发货订单，不能直接给刚创建的 pending 订单发货。\n\n## 四种调用方向\n- 商户 → 本系统：POST {{base_url}}/order/create、/order/query、/order/ship。App-ID/Timestamp/X-Nonce + body.sign。\n- WordPress 网关 → 本系统：POST {{base_url}}/webhooks/payment-gateway/status。独立 X-PGA-Signature 对最终原始 JSON 字节签名。\n- 本系统 → 商户 notify_url：普通单首次成功通知；组合单每笔成功通知父单进度，复用商户签名；退款/拒付/发货不自动发送此通知。\n- 本系统 → 商户站点 /api/fulfillment/shipment：依据附件 v1.1（2026-10-26）的外部协议示例，应用开启物流回传后自动接入。与 /order/ship 的字段和覆盖/分批语义不同。\n\n## 联调开关\nWebhook 示例默认跳过；在测试环境设置 enable_webhook_examples=true 后单独发送。模拟网关 paid 会改变订单状态并触发真实业务副作用，应使用测试单。gateway_s_order_id 需从当前网关引用取得，故障切换后可能不等于 order_no，不能自动回填猜测。\n附件物流示例设置 enable_fulfillment_examples=true 后单独发送，使用接收站点签发的 fulfillment_app_id / fulfillment_api_key；请先确认接收方部署情况。附件“已上线”和“确认后实现”的表述不一致，本集合未验证五站状态。\n\n## 签名脚本\n先完成变量替换，再计算签名并写回请求。使用当前 Postman 支持的 Web Crypto API，无额外 npm 依赖。商户接口时间误差 ±300 秒，nonce 保存 300 秒；附件站点接口 nonce 为 600 秒。每次调用重新生成 Timestamp/X-Nonce/sign；网关 webhook 不做 canonicalize，不带商户签名字段。\n\n脚本 API 依据：[Postman 全局对象](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-require) 与 [skipRequest](https://learning.postman.com/latest-v-12/docs/tests-and-scripts/write-scripts/postman-sandbox-reference/pm-execution)。\n\n组合付款详见 doc/api.md「组合付款与 V2 通知」。开启支付组组合付款并设置最高金额前，先完成商户完整 JSON 验签、event_id 去重与 version 防乱序；顶层 status=paid 才完成原订单。",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -1672,7 +1672,7 @@
       ]
     },
     {
-      "name": "组合付款 V2（应用与商户完成适配后单独运行）",
+      "name": "组合付款 V2（支付组配置与商户适配完成后单独运行）",
       "event": [
         {
           "listen": "prerequest",
@@ -1689,7 +1689,7 @@
       ],
       "item": [
         {
-          "name": "12 创建组合订单（应用开启后单独运行）",
+          "name": "12 创建组合订单（支付组开启后单独运行）",
           "request": {
             "method": "POST",
             "header": [
@@ -1712,7 +1712,7 @@
               }
             },
             "url": "{{base_url}}/order/create",
-            "description": "应用开启组合付款并接入 V2，组内全部可用渠道单笔限额小于 4000 USD，且存在 MATCH/VIRTUAL 候选、日/月余额足够容纳完整单笔上限时返回 combine。COPY/CREATE 不参与组合付款，包括余额一次付清。只生成父单；打开 pay_url 逐笔付款，后续沿用已选渠道，仅原渠道不可用时重新选择。"
+            "description": "支付组开启组合付款、组合订单最高金额不低于 4000 USD，并接入 V2 通知；组内全部可用渠道单笔限额小于 4000 USD，且存在 MATCH/VIRTUAL 候选、日/月余额足够容纳完整单笔上限时返回 combine。COPY/CREATE 不参与组合付款，包括余额一次付清。超过支付组组合金额上限返回 422 / COMBINE_AMOUNT_LIMIT_EXCEEDED。组合通知固定 V2，应用通知版本仅控制普通单。只生成父单；打开 pay_url 逐笔付款，后续沿用已选渠道，仅原渠道不可用时重新选择。"
           },
           "response": [],
           "event": [

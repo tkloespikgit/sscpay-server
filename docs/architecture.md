@@ -259,7 +259,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 
 ## 组合付款链路（2026-11-13，当前工作区）
 
-应用开关启用且各渠道单笔限额都不足时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。应用切回关闭不阻止已有组合父单继续收款。
+支付组 `is_combine_payment_enabled` 启用、各渠道单笔限额都不足且整笔折算 USD 应付金额不超过组内 `max_combined_amount` 时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。保存父单前按商户→支付组加锁，复查组启用状态、组合开关和金额上限；超限返回 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不落单或调用网关。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。组合开关关闭或上限降低不阻止已有父单续付。应用移除组合开关，通知版本仅控制普通单，组合单固定 V2，见 [D-39](decisions.md#d-39-支付组控制组合付款开关与最高金额)。
 
 组合付款候选仅允许 `MATCH` / `VIRTUAL`（空配置沿用 `MATCH`），`COPY` / `CREATE` 从随机拆分和余额一次付清候选中排除；普通单路由不受此限制。报价复用、锁内建子单及远端补建/继续付款复用 `CombinedPaymentRouter::supportsProductMode()` 校验，模式变更不能沿用旧报价绕过。已有未决子单保留原引用及占用，不自动替换；已发生支付的状态回调仍按原链路登记。详见 [D-34](decisions.md#d-34-组合付款排除-copycreate-商品模式)。
 

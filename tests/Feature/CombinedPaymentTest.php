@@ -7,9 +7,11 @@ use App\Mail\PaymentLinkMail;
 use App\Models\Application;
 use App\Models\Carrier;
 use App\Models\CombinedOrder;
+use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
+use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\AdConversionService;
 use App\Services\BalanceService;
@@ -51,18 +53,114 @@ class CombinedPaymentTest extends TestCase
         $this->assertDatabaseCount('orders', 0);
         $this->assertNull($parent->current_quote);
         $this->assertStringContainsString('/combine-payment/', $response->json('data.pay_url'));
-        $this->assertSame(2, $this->application->fresh()->webhook_version);
+        $this->assertSame(2, $parent->webhook_version);
+        $this->assertSame(1, $this->application->fresh()->webhook_version);
         Http::assertNothingSent();
     }
 
-    public function test_disabled_application_keeps_the_existing_single_order_path(): void
+    public function test_disabled_payment_group_keeps_the_existing_single_order_path(): void
     {
         $this->combinedMethod();
-        $this->application->update(['is_combine_payment_enabled' => false]);
+        $this->group->update(['is_combine_payment_enabled' => false]);
         $this->createCombined()->assertStatus(409)->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
         $this->assertDatabaseCount('combined_orders', 0);
         $this->fakeCombinedGateway();
         $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00'])->assertOk()->assertJsonPath('data.order_type', 'single');
+    }
+
+    #[DataProvider('allowedCombinedAmounts')]
+    public function test_combined_order_total_can_be_below_or_equal_to_the_group_maximum(string $amount): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['amount' => $amount, 'subtotal' => $amount])->assertOk()
+            ->assertJsonPath('data.order_type', 'combine')->assertJsonPath('data.converted_amount', $amount);
+
+        $this->assertDatabaseCount('combined_orders', 1);
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{string}> */
+    public static function allowedCombinedAmounts(): array
+    {
+        return ['one cent below' => ['3999.99'], 'equal' => ['4000.00']];
+    }
+
+    public function test_combined_total_above_the_group_maximum_is_rejected_before_saving_or_contacting_the_gateway(): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['amount' => '4000.01', 'subtotal' => '4000.01'])->assertStatus(422)
+            ->assertJsonPath('error_code', 'COMBINE_AMOUNT_LIMIT_EXCEEDED');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 0);
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+    }
+
+    public function test_combined_group_maximum_uses_the_converted_usd_total(): void
+    {
+        ExchangeRate::updateBatchRates(['EUR' => '2.000000']);
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['currency' => 'EUR', 'amount' => '2000.01', 'subtotal' => '2000.01'])
+            ->assertStatus(422)->assertJsonPath('error_code', 'COMBINE_AMOUNT_LIMIT_EXCEEDED');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('unusableCombinedMaximums')]
+    public function test_enabling_a_group_without_a_positive_maximum_does_not_allow_unlimited_combined_orders(?string $maximum): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => $maximum]);
+
+        $this->createCombined()->assertStatus(409)->assertJsonPath('error_code', 'COMBINE_PAYMENT_UNAVAILABLE');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{?string}> */
+    public static function unusableCombinedMaximums(): array
+    {
+        return ['unset' => [null], 'zero' => ['0.00'], 'negative' => ['-1.00']];
+    }
+
+    public function test_combined_settings_are_selected_by_payment_group_within_the_same_application(): void
+    {
+        $method = $this->combinedMethod();
+        $other = PaymentGroup::create([
+            'merchant_id' => $this->merchant->id, 'group_key' => 'single-only',
+            'group_name' => 'Single payments', 'is_active' => true,
+        ]);
+        $other->paymentMethods()->attach($method->id, ['priority' => 100]);
+
+        $this->createCombined(['group_key' => $other->group_key])->assertStatus(409)
+            ->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
+        $this->createCombined()->assertOk()->assertJsonPath('data.order_type', 'combine');
+
+        $this->assertSame($this->group->id, CombinedOrder::sole()->payment_group_id);
+        Http::assertNothingSent();
+    }
+
+    public function test_the_combined_maximum_does_not_restrict_a_single_payment(): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '50.00']);
+        $this->fakeCombinedGateway();
+
+        $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00'])->assertOk()
+            ->assertJsonPath('data.order_type', 'single');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 1);
     }
 
     public function test_cashier_stays_english_with_a_chinese_language_query_and_saved_preference(): void
@@ -169,7 +267,8 @@ class CombinedPaymentTest extends TestCase
 
         $firstMethod->update(['is_active' => false]);
         $secondMethod = $this->combinedMethod('alternative');
-        $this->application->update(['is_combine_payment_enabled' => false]);
+        $this->group->update(['is_combine_payment_enabled' => false, 'max_combined_amount' => '1.00']);
+        $this->createCombined()->assertOk()->assertJsonPath('data.order_no', $parent->order_no);
         $index = 1;
         while ($parent->refresh()->remaining_amount !== '0.00') {
             $this->assertLessThan(10, $index);

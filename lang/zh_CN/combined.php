@@ -3,11 +3,13 @@
 return [
     'expired_count' => '已停止 :count 笔到期组合订单的新付款。',
     'enable' => '允许组合付款',
-    'enable_help' => '超过所有可用渠道单笔限额时，使用独立收银台逐笔付款，优先沿用已选渠道，仅不可用时切换。组合付款仅使用 MATCH/VIRTUAL 渠道，COPY/CREATE 不参与。启用后使用新版 webhook，商户须按累计进度处理通知。',
+    'enable_help' => '允许本支付组在总额超过全部可用渠道单笔限额、且未超过组内最高金额时创建组合订单。仅使用 MATCH/VIRTUAL 渠道。组合订单固定使用 V2 通知，商户须按累计付款进度处理。',
+    'max_amount' => '组合订单最高金额（USD）',
+    'max_amount_help' => '开启时必填，必须大于 0，最多两位小数。限制整笔订单按实际汇率（含汇损）折算后的 USD 总额。调整开关或上限只影响新组合订单。',
     'webhook_version' => '付款通知协议',
     'webhook_v1' => 'V1：原有支付成功通知',
     'webhook_v2' => 'V2：订单类型与累计付款进度',
-    'webhook_help' => '组合付款使用 V2。关闭组合付款开关不会关闭已有父单的续付，也不会自动降级通知协议。',
+    'webhook_help' => '此设置控制普通订单的通知协议。组合付款在支付组中开启，组合订单始终使用 V2，不受此设置影响。',
     'title' => '组合付款',
     'order' => '商户订单',
     'total' => '总应付',
@@ -33,6 +35,7 @@ return [
         'states' => ['pending' => '待支付', 'partially_paid' => '部分已付', 'paid' => '全部付清', 'expired' => '已到期', 'review' => '待核对'],
     ],
     'errors' => [
+        'COMBINE_AMOUNT_LIMIT_EXCEEDED' => '订单总金额超过该支付组允许的组合付款最高金额。',
         'COMBINE_PAYMENT_UNAVAILABLE' => '暂时没有可用支付方式，已付款记录已保留，请稍后重试。',
         'COMBINE_NOT_PAYABLE' => '此订单当前不能继续付款，请查询进度或联系商户。',
         'COMBINE_REVIEW_REQUIRED' => '订单需要核对，请联系商户，勿重复付款。',

@@ -408,7 +408,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => 'Combined payments require V2 notification handling',
-                    'text' => 'When enabled on the application, an order without payment_method_key becomes order_type=combine if its USD total exceeds every eligible channel’s transaction limit in its payment group. Other orders return single. Creation stores only the parent, without child or remote orders. Redirect the customer to the returned combined checkout; do not precreate child payments. The checkout is English only. Once paid in full, it displays a completion message with no return-to-merchant link or automatic redirect; confirm the order through webhooks and queries. Disabling the switch affects new orders only.',
+                    'text' => 'Enable combined payments on the payment group and set a positive maximum in USD with up to two decimal places. Without payment_method_key, an order whose USD total exceeds every eligible channel’s transaction limit becomes order_type=combine if its full total, converted at the actual rate including exchange adjustments, is within that maximum. An equal total is allowed; an excess returns 422 / COMBINE_AMOUNT_LIMIT_EXCEEDED. Other orders return single. Creation stores only the parent. Redirect customers to the returned English-only checkout, which displays completion with no merchant return link or automatic redirect. Disabling the switch or lowering the maximum affects new orders only; existing combined orders can still be paid in full.',
                 ],
                 [
                     'type' => 'paragraph',
@@ -993,7 +993,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => 'V1 / V2 and signature compatibility',
-                    'text' => 'Applications using V1 with combined payments disabled keep the original notification body. Enabling combined payments selects V2; V2 single orders also include order_type=single. New fields change the signed content, but not the algorithm: remove sign and recursively canonicalize the complete received JSON object, including children, null and paid_amount. Do not reconstruct the payload from an old field whitelist.',
+                    'text' => 'The application notification setting controls single orders: V1 keeps the original body, while V2 includes order_type=single. Combined payments and their maximum amount are configured per payment group. Combined orders always use V2 regardless of the application setting, without changing it. New fields change the signed content, but not the algorithm: remove sign and recursively canonicalize the complete received JSON object, including children, null and paid_amount. Do not reconstruct the payload from an old field whitelist.',
                 ],
                 [
                     'type' => 'table',
@@ -1163,7 +1163,11 @@ curl_close($ch);
                     'rows' => [
                         [
                             'COMBINE_PAYMENT_UNAVAILABLE (409)',
-                            'No combined-payment channel meets the product-mode and capacity requirements. Only MATCH/VIRTUAL are supported; COPY/CREATE are excluded. Adjust channel settings or retry later.',
+                            'The group has no valid positive maximum, or no combined-payment channel meets the product-mode and capacity requirements. Only MATCH/VIRTUAL are supported; COPY/CREATE are excluded. Adjust settings or retry later.',
+                        ],
+                        [
+                            'COMBINE_AMOUNT_LIMIT_EXCEEDED (422)',
+                            'The full order total converted to USD exceeds the payment group maximum. No parent, child or remote payment is created. Adjust the order or group settings before retrying.',
                         ],
                         [
                             'CHILD_NUMBER_CONFLICT (409)',

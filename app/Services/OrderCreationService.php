@@ -59,7 +59,7 @@ use Illuminate\Support\Str;
  *   9. 调支付网关插件 /pay 远程创建支付订单，拿到收银台支付链接（pay_url）回填订单。
  *
  * 初选与汇率读取在事务外，真实建单在商户及渠道锁内重新检查额度并写入未决占用。
- * 应用允许组合且所有单笔限额不足时只保存父单；每次付款另建一个真实子单。
+ * 支付组允许组合、总额未超过组上限且所有单笔限额不足时只保存父单；每次付款另建一个真实子单。
  * 第 9 步同样在事务外（HTTP 调用不占事务）：网关失败后立即返回失败，不切换渠道。
  * 本地订单保留，后续幂等请求沿用原渠道及远端引用补建，不切换其他渠道。
  */
@@ -188,10 +188,19 @@ class OrderCreationService
             'send_mail' => in_array($data['send_mail'] ?? null, ['Y', true], true),
             'expires_at' => now()->addDays((int) SystemConfig::get('payment_link.expire_days', 7)),
         ]);
-        $this->combinedRouter->quote($parent);
 
         return DB::transaction(function () use ($parent, $merchant): CombinedOrder {
             Merchant::query()->withoutGlobalScopes()->whereKey($merchant->id)->lockForUpdate()->firstOrFail();
+            $group = PaymentGroup::query()->forMerchant($merchant->id)->where('is_active', true)
+                ->lockForUpdate()->find($parent->payment_group_id);
+            if (! $group || ! $group->is_combine_payment_enabled || $group->max_combined_amount === null
+                || bccomp($group->max_combined_amount, '0', 2) <= 0) {
+                throw new CombinedPaymentException('COMBINE_PAYMENT_UNAVAILABLE');
+            }
+            if (bccomp($parent->converted_amount, $group->max_combined_amount, 2) > 0) {
+                throw new CombinedPaymentException('COMBINE_AMOUNT_LIMIT_EXCEEDED', 422);
+            }
+            $this->combinedRouter->quote($parent);
             $this->assertOrderNumberAvailable($merchant->id, $parent->merchant_order_no);
             if (Order::query()->forMerchant($merchant->id)->where('merchant_order_no', $parent->merchant_order_no)->exists()) {
                 throw new OrderDetailsConflictException;
@@ -343,7 +352,7 @@ class OrderCreationService
         // 没传则在风控通过的渠道中按负载排序，从前三个随机抽取。
         // 7. 按渠道和商户费率保存财务快照；普通路由跳过手续费超过金额的候选。
         if ($parent === null && ! filled($data['payment_method_key'] ?? null)
-            && $application->is_combine_payment_enabled && $this->combinedRouter->required($group, $convertedAmount)) {
+            && $group->is_combine_payment_enabled && $this->combinedRouter->required($group, $convertedAmount)) {
             return $this->createCombinedParent($data, $merchant, $application, $group, $source, $rate, $originalAmount, $autoDiscount);
         }
         if ($forcedMethod !== null) {

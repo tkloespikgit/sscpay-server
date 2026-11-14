@@ -6,13 +6,19 @@ use App\Filament\Resources\ApplicationResource\Pages\EditApplication;
 use App\Filament\Resources\CombinedOrders\CombinedOrderResource;
 use App\Filament\Resources\CombinedOrders\Pages\ManageCombinedOrders;
 use App\Filament\Resources\OrderResource;
+use App\Filament\Resources\PaymentGroupResource\Pages\CreatePaymentGroup;
+use App\Filament\Resources\PaymentGroupResource\Pages\EditPaymentGroup;
 use App\Models\Merchant;
+use App\Models\PaymentGroup;
 use App\Models\User;
+use App\Services\PaymentGroupMethodService;
 use App\Support\Permissions;
 use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesCombinedPayments;
 use Tests\TestCase;
 
@@ -70,15 +76,94 @@ class CombinedPaymentAdminTest extends TestCase
         Livewire::actingAs($admin)->test(ManageCombinedOrders::class)->assertOk();
     }
 
-    public function test_enabling_combined_payments_on_the_application_saves_v2_webhooks(): void
+    public function test_application_form_has_no_combined_switch_and_still_saves_the_single_order_webhook_version(): void
     {
-        $this->application->update(['is_combine_payment_enabled' => false, 'webhook_version' => 1]);
         $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
         $user->givePermissionTo(Permissions::APPLICATIONS_MANAGE);
         Livewire::actingAs($user)->test(EditApplication::class, ['record' => $this->application->id])
-            ->fillForm(['is_combine_payment_enabled' => true])
+            ->assertFormFieldDoesNotExist('is_combine_payment_enabled')
+            ->fillForm(['webhook_version' => 2])
             ->call('save')->assertHasNoFormErrors();
-        $this->assertTrue($this->application->fresh()->is_combine_payment_enabled);
         $this->assertSame(2, $this->application->fresh()->webhook_version);
+    }
+
+    public function test_payment_group_form_saves_combined_settings_without_changing_the_application(): void
+    {
+        $this->group->update(['is_combine_payment_enabled' => false, 'max_combined_amount' => null]);
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
+        $user->givePermissionTo(Permissions::PAYMENT_GROUPS_MANAGE);
+
+        Livewire::actingAs($user)->test(EditPaymentGroup::class, ['record' => $this->group->id])
+            ->fillForm(['is_combine_payment_enabled' => true, 'max_combined_amount' => '5000.25'])
+            ->call('save')->assertHasNoFormErrors();
+
+        $this->assertTrue($this->group->fresh()->is_combine_payment_enabled);
+        $this->assertSame('5000.25', $this->group->fresh()->max_combined_amount);
+        $this->assertSame(1, $this->application->fresh()->webhook_version);
+    }
+
+    public function test_new_payment_group_persists_the_combined_switch_and_maximum(): void
+    {
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
+        $user->givePermissionTo(Permissions::PAYMENT_GROUPS_MANAGE);
+
+        Livewire::actingAs($user)->test(CreatePaymentGroup::class)->fillForm([
+            'group_name' => 'Combined limit', 'group_key' => 'combined-limit',
+            'is_combine_payment_enabled' => true, 'max_combined_amount' => '8000.00',
+        ])->call('create')->assertHasNoFormErrors();
+
+        $group = PaymentGroup::query()->where('group_key', 'combined-limit')->sole();
+        $this->assertTrue($group->is_combine_payment_enabled);
+        $this->assertSame('8000.00', $group->max_combined_amount);
+        $this->assertSame($this->merchant->id, $group->merchant_id);
+    }
+
+    #[DataProvider('invalidMaximums')]
+    public function test_enabled_combined_payments_require_a_valid_maximum(?string $maximum, string $rule): void
+    {
+        $this->group->update(['is_combine_payment_enabled' => false]);
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
+        $user->givePermissionTo(Permissions::PAYMENT_GROUPS_MANAGE);
+
+        Livewire::actingAs($user)->test(EditPaymentGroup::class, ['record' => $this->group->id])
+            ->fillForm(['is_combine_payment_enabled' => true, 'max_combined_amount' => $maximum])
+            ->call('save')->assertHasFormErrors(['max_combined_amount' => $rule]);
+
+        $this->assertFalse($this->group->fresh()->is_combine_payment_enabled);
+    }
+
+    /** @return array<string, array{?string, string}> */
+    public static function invalidMaximums(): array
+    {
+        return [
+            'missing' => [null, 'required'], 'zero' => ['0', 'min'], 'negative' => ['-1', 'min'],
+            'fraction precision' => ['4000.001', 'decimal'], 'non numeric' => ['invalid', 'numeric'],
+            'storage overflow' => ['10000000000000', 'max'],
+        ];
+    }
+
+    #[DataProvider('enabledSwitchValues')]
+    public function test_group_creation_service_requires_a_maximum_for_all_enabled_switch_representations(bool|int|string $enabled): void
+    {
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
+        $user->givePermissionTo(Permissions::PAYMENT_GROUPS_MANAGE);
+
+        try {
+            app(PaymentGroupMethodService::class)->createGroup($user, [
+                'merchant_id' => $this->merchant->id, 'group_key' => 'missing-limit',
+                'group_name' => 'Missing maximum', 'is_combine_payment_enabled' => $enabled,
+            ], []);
+            $this->fail('Enabling combined payments without a maximum must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('max_combined_amount', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('payment_groups', ['group_key' => 'missing-limit']);
+    }
+
+    /** @return array<string, array{bool|int|string}> */
+    public static function enabledSwitchValues(): array
+    {
+        return ['boolean' => [true], 'integer' => [1], 'string' => ['1']];
     }
 }

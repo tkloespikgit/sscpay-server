@@ -273,7 +273,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 | 表 | 新增或变更 |
 |---|---|
-| applications | `is_combine_payment_enabled` 默认 false；`webhook_version` 默认 1，开启组合付款时保存为 2 |
+| applications | 删除 `is_combine_payment_enabled`；保留 `webhook_version` 默认 1，仅控制普通订单通知 |
+| payment_groups | `is_combine_payment_enabled` 默认 false；`max_combined_amount` 为可空 decimal(15,2)，开启时须为正数，限制组合订单整笔 USD 总额，包含等于上限 |
 | combined_orders 身份 | merchant/application/payment_group/可空 checkout_link 外键；系统号、原商户号、来源、币种 |
 | combined_orders 金额 | original_amount、auto_discount、amount、converted_amount、paid_amount、paid_converted_amount、remaining_amount、remaining_converted_amount 均 decimal(15,2)；汇率 decimal(15,6) |
 | combined_orders 快照 | exchange_snapshot / order_snapshot JSON；客户、商品、物流跟踪开关和建单信息，不保存应用 API Key |
@@ -290,4 +291,6 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 父单累计是已确认毛收款，不是净结算额；子单手续费与结算快照照常保存，父单不参与余额入账及成交统计。累计 USD 以累计原币折算差额分配舍入尾差。子单退款/争议保留曾收款事实，父单转 review；本功能不自动执行退款。
 
-回滚第二个迁移会移除关联和开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。
+开关迁移到支付组使用 [字段调整迁移](../database/migrations/2026_11_14_143454_move_combined_payment_settings_to_payment_groups.php)：仅调整结构，不搬迁应用旧配置、不回填上限、不改变应用通知版本；测试阶段按新规则为支付组重新配置。回滚该迁移会移除组设置并恢复默认关闭的应用字段，不恢复历史值。组合父单始终保存 V2 通知快照，开关或上限的后续变更只控制新建。
+
+回滚原关联字段迁移会移除关联和原开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。

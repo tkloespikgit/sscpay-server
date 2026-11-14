@@ -3,11 +3,13 @@
 return [
     'expired_count' => 'Stopped new payments for :count expired combined orders.',
     'enable' => 'Allow combined payments',
-    'enable_help' => 'Use a separate checkout for sequential payments when the total exceeds every available single-payment limit. Keep the selected channel unless it becomes unavailable. Only MATCH/VIRTUAL channels participate; COPY/CREATE are excluded. Enabling this uses V2 webhooks; merchants must handle payment progress.',
+    'enable_help' => 'Allow new combined orders in this payment group when the total exceeds every available single-payment limit and is within the group maximum. Only MATCH/VIRTUAL channels participate. Combined orders always use V2 webhooks; merchants must handle payment progress.',
+    'max_amount' => 'Maximum combined order amount (USD)',
+    'max_amount_help' => 'Required when enabled: a positive amount with up to two decimal places. Limits the full order total after conversion to USD, including exchange adjustments. Changing these settings affects new combined orders only.',
     'webhook_version' => 'Payment webhook protocol',
     'webhook_v1' => 'V1: Original payment confirmation',
     'webhook_v2' => 'V2: Order type and cumulative payment progress',
-    'webhook_help' => 'Combined payments use V2. Disabling the switch does not stop existing combined orders or downgrade their notification protocol.',
+    'webhook_help' => 'Select the notification protocol for single orders. Combined payments are enabled per payment group and always use V2, regardless of this setting.',
     'title' => 'Combined payment',
     'order' => 'Merchant order',
     'total' => 'Total due',
@@ -33,6 +35,7 @@ return [
         'states' => ['pending' => 'Pending', 'partially_paid' => 'Partially paid', 'paid' => 'Paid in full', 'expired' => 'Expired', 'review' => 'Under review'],
     ],
     'errors' => [
+        'COMBINE_AMOUNT_LIMIT_EXCEEDED' => 'The order total exceeds the maximum combined payment amount allowed by this payment group.',
         'COMBINE_PAYMENT_UNAVAILABLE' => 'No payment method is available right now. Your payments are saved; please try again later.',
         'COMBINE_NOT_PAYABLE' => 'This order cannot accept a payment right now. Check its progress or contact the merchant.',
         'COMBINE_REVIEW_REQUIRED' => 'This order needs review. Contact the merchant and do not pay again.',

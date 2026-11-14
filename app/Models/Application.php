@@ -25,7 +25,6 @@ class Application extends Model
         'api_key',
         'is_order_email_enabled',
         'is_auto_discount_enabled',
-        'is_combine_payment_enabled',
         'webhook_version',
         'is_logistics_tracking_enabled',
         'is_shipment_sync_enabled',
@@ -39,21 +38,11 @@ class Application extends Model
         'status',
     ];
 
-    protected static function booted(): void
-    {
-        static::saving(function (self $application): void {
-            if ($application->is_combine_payment_enabled) {
-                $application->webhook_version = 2;
-            }
-        });
-    }
-
     protected function casts(): array
     {
         return [
             'is_order_email_enabled' => 'boolean',
             'is_auto_discount_enabled' => 'boolean',
-            'is_combine_payment_enabled' => 'boolean',
             'webhook_version' => 'integer',
             'is_logistics_tracking_enabled' => 'boolean',
             'is_shipment_sync_enabled' => 'boolean',

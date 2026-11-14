@@ -408,7 +408,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => '组合付款：必须先接入 V2 通知',
-                    'text' => '应用开启组合付款后，未指定 payment_method_key 且订单 USD 总额超过支付组内所有可用渠道的单笔限额时，返回 order_type=combine。普通订单返回 single。创建组合订单仅保存父单，不创建子单或远端支付。商户必须把客户跳转到返回的组合收银台，不能自行预生成子单。收银台仅提供英文界面，全部付清后显示付款完成提示，不提供返回商户链接或自动回跳；商户以 webhook 和查询确认订单状态。关闭开关只影响新单，现有组合订单可继续付款。',
+                    'text' => '支付组开启组合付款后，未指定 payment_method_key 且订单 USD 总额超过组内所有可用渠道的单笔限额时，校验支付组组合订单最高金额，通过后返回 order_type=combine。开启时必须设置正数上限（USD，最多两位小数）；按实际汇率（含汇损）折算的整笔应付总额等于上限可创建，超出返回 422 / COMBINE_AMOUNT_LIMIT_EXCEEDED。普通订单返回 single。只保存父单，商户将客户跳转到返回的组合收银台。收银台仅英文，付清后只提示完成，不提供返回商户链接或自动回跳。关闭开关或降低上限只影响新单，已有组合单可继续付清。',
                 ],
                 [
                     'type' => 'paragraph',
@@ -987,7 +987,7 @@ curl_close($ch);
                     'type' => 'callout',
                     'tone' => 'warning',
                     'title' => 'V1 / V2 与验签兼容',
-                    'text' => '未开启组合付款且使用 V1 的应用维持原通知体。开启组合付款自动使用 V2；V2 普通订单也带 order_type=single。新增字段会改变签名原文，验签算法不变：去掉 sign 后对收到的完整 JSON 对象递归规范化再签名，包含 children、null、paid_amount 等全部字段，不能用旧字段白名单重建请求体。',
+                    'text' => '应用中的通知版本仅控制普通订单：V1 保持原通知体，V2 普通订单带 order_type=single。组合付款开关及金额上限在支付组配置，组合订单固定使用 V2，不受应用通知版本影响，也不修改应用设置。新增字段会改变签名原文，验签算法不变：去掉 sign 后对收到的完整 JSON 对象递归规范化再签名，包含 children、null、paid_amount 等全部字段，不能用旧字段白名单重建请求体。',
                 ],
                 [
                     'type' => 'table',
@@ -1157,7 +1157,11 @@ curl_close($ch);
                     'rows' => [
                         [
                             'COMBINE_PAYMENT_UNAVAILABLE (409)',
-                            '当前没有商品模式及额度均合格的组合付款渠道；仅支持 MATCH/VIRTUAL，COPY/CREATE 不参与。调整渠道配置或稍后重试。',
+                            '支付组未配置有效的正数上限，或当前没有商品模式及额度均合格的组合付款渠道；仅支持 MATCH/VIRTUAL，COPY/CREATE 不参与。调整配置或稍后重试。',
+                        ],
+                        [
+                            'COMBINE_AMOUNT_LIMIT_EXCEEDED (422)',
+                            '整笔订单折算 USD 总额超过支付组的组合付款上限；未创建父子单或远端支付。调整订单或支付组配置后重试。',
                         ],
                         [
                             'CHILD_NUMBER_CONFLICT (409)',

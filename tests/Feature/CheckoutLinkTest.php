@@ -880,7 +880,7 @@ class CheckoutLinkTest extends TestCase
     public function test_over_limit_checkout_uses_a_parent_and_keeps_the_session_on_the_combined_cashier(): void
     {
         $this->withoutVite();
-        $this->application->update(['is_combine_payment_enabled' => true]);
+        $this->group->update(['is_combine_payment_enabled' => true, 'max_combined_amount' => '4000.00']);
         $this->method->update(['max_amount_per_transaction' => '800.00']);
         $link = $this->createLink(['fixed_amount' => '4000.00', 'auto_redirect' => true]);
         $this->post('/c/'.$link->slug, $this->validPayload())
@@ -892,6 +892,21 @@ class CheckoutLinkTest extends TestCase
         $this->assertDatabaseCount('orders', 0);
         $this->get($parent->pay_url)->assertOk();
         $this->get('/c/'.$link->slug.'/success')->assertOk()->assertSee($parent->order_no);
+    }
+
+    public function test_checkout_rejects_a_combined_total_above_its_payment_group_maximum(): void
+    {
+        $this->group->update(['is_combine_payment_enabled' => true, 'max_combined_amount' => '3999.99']);
+        $this->method->update(['max_amount_per_transaction' => '800.00']);
+        $link = $this->createLink(['fixed_amount' => '4000.00']);
+
+        $this->from('/c/'.$link->slug)->post('/c/'.$link->slug, $this->validPayload())
+            ->assertRedirect('/c/'.$link->slug)
+            ->assertSessionHas('checkout_error', __('checkout.errors.order_failed'));
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
     }
 
     private function createGroup(string $groupKey, string $groupName, bool $isActive = true): PaymentGroup
