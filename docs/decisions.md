@@ -420,3 +420,19 @@
 **订单快照：** `OrderCreationService` 在普通单建单时写入 `orders.webhook_version`，组合父单固定 V2，子单继承父单版本。首次通知读订单版本，重试继续使用原通知快照；后续切换组开关、幂等重提、关闭组合后的子单续付都不改变已经确定的协议。字段扩展和验签规则本身不变。
 
 **结构与范围：** 新增 orders 的 unsigned tinyint 版本列（默认 1），删除应用版本列；按当前测试阶段要求不迁移旧配置、不增加旧字段兼容读取。该决定替代 D-39 中应用为普通单单独选择协议的部分。依据见 [下单服务](../app/Services/OrderCreationService.php)、[通知服务](../app/Services/OrderNotificationService.php)、[结构迁移](../database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php)、[协议及签名回归](../tests/Feature/CombinedPaymentTest.php)、[后台回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-41 组合付款仅允许超管或直属管理员开启
+
+**状态：按用户要求采用，当前工作区实现，未提交（2026-11-14）。** 创建启用组合付款的支付组，或将现有支付组从关闭改为开启，只允许启用的超级管理员，或商户当前 `owner_id` 指定且具有支付组管理权限的商户级管理员。绑定具体商户的普通账号即使具有支付组管理权限，也不能开启；其他商户的管理员同样没有授权。
+
+**执行与范围：** 表单禁用无权限的启用入口，创建和编辑保存时在商户行锁内另行校验；不信任传入开关或页面首次加载时的归属。普通商户保留原有支付组管理能力，可以保存已经开启的状态或关闭，但关闭后不能重新开启，旧页面也不能恢复已经关闭的开关。关闭后既有组合父单续付、订单通知协议快照仍沿用 D-39 / D-40，无新增表字段或权限项。
+
+**依据：** [权限与创建服务](../app/Services/PaymentGroupMethodService.php)、[支付组表单](../app/Filament/Resources/PaymentGroupResource.php)、[编辑保存校验](../app/Filament/Resources/PaymentGroupResource/Pages/EditPaymentGroup.php)、[权限与伪造提交回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-42 API 文档按协议版本独立展示
+
+**状态：按用户要求采用，当前工作区实现，未提交（2026-11-14）。** `/docs/api` 默认显示最新 2.0，语言切换右侧提供版本按钮，通过 `?version=1.0|2.0` 选择。两种语言都使用各自独立的 `api_docs_v1.php` / `api_docs_v2.php` 接口正文，共享签名和附录由原 `api_docs.php` 提供。版本由固定白名单映射到语言文件，非法值返回 404。
+
+**内容与边界：** 1.0 展示普通订单和 V1 支付通知，不夹杂组合付款字段、示例和错误码；2.0 展示普通单与组合付款，普通单示例也采用完整 V2 通知。两版仍说明当前共用的 API 路径，切换只影响文档，不改变订单协议或后台配置。语言切换保留所选版本，版本切换保留语言，两者都保留稳定章节锚点。公开配置附录和不读取私有应用凭证的约束保留，无数据库变更。
+
+**依据：** [入口](../app/Http/Controllers/ApiDocumentationController.php)、[页面](../resources/views/api-documentation.blade.php)、[中文 1.0](../lang/zh_CN/api_docs_v1.php)、[中文 2.0](../lang/zh_CN/api_docs_v2.php)、[英文 1.0](../lang/en/api_docs_v1.php)、[英文 2.0](../lang/en/api_docs_v2.php)、[版本与示例回归](../tests/Feature/ApiDocumentationTest.php)、[双版公开配置附录](../tests/Feature/ApiDocumentationReferenceTest.php)。

@@ -47,7 +47,7 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
-| 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
+| 接口文档 `/docs/api/{locale?}?version=1.0\|2.0` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读，支持 `zh_CN` / `en` 和独立的 1.0 / 2.0 文档，未指定版本默认 2.0；不查询商户应用或展示真实凭证 |
 | `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
@@ -96,7 +96,7 @@ flowchart TD
 
 订单列表的物流模板导出沿用当前筛选与搜索条件，不要求平台账号选定单个商户；超管可跨商户导出，其他用户限定在 `manageableMerchantIds()` 范围。物流上传仍绑定登录用户所属商户。订单支付方式筛选及观察者账户的渠道分配包含软删除渠道，保留渠道的租户可见性过滤；观察者关联也包含软删除渠道，以便回显和保留已有分配。
 
-API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。文案存于 `lang/zh_CN/api_docs.php` 和 `lang/en/api_docs.php`，按执行代码与 [API 手册](../doc/api.md) 同步维护；目录锚点在两种语言中保持一致，语言切换保留当前章节，不改变后台会话语言。首页、应用列表及创建/编辑表单提供“API 文档”入口。正文提供币种、platform 和全部订单状态的附录跳转；`ApiDocumentationReferenceService` 只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
+API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。两种语言分别由 `api_docs_v1.php`、`api_docs_v2.php` 保存版本独立的接口正文，`api_docs.php` 只保存共享文案、签名及参考附录，按执行代码与 [API 手册](../doc/api.md) 同步维护。语言按钮右侧的版本按钮切换 `?version=1.0|2.0`，省略参数打开最新 2.0，未知或非字符串版本返回 404；1.0 不显示组合付款内容，2.0 的普通单和组合单示例均使用 V2 通知。两种语言与版本的章节锚点保持一致，切换保留语言、版本及当前章节，不改变后台会话语言或支付配置。首页、应用列表及创建/编辑表单仍使用默认文档入口。`ApiDocumentationReferenceService` 为两版只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
 
 商户网站物流回传由应用的 `is_shipment_sync_enabled` 开关与完整 HTTPS `shipment_sync_url` 配置，默认关闭；地址保留路径和 query，发送时读取该应用当前地址及 `app_id` / `api_key`，复用 `SignatureCanonicalizer`。`OrderShippingService::record()` 在物流保存后调用 `MerchantShipmentSyncService`，新增独立物流快照并提交后派发 `SyncMerchantShipmentJob`。本地改单仍覆盖 `order_shippings`；已有待发、待重试或暂停的旧版本标为 `superseded`，只尝试最新物流。历史物流不自动回填，具备订单查看、物流权限及租户访问权限的用户可在订单详情手动推送当前物流。
 
@@ -258,6 +258,8 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。
 
 ## 组合付款链路（2026-11-13，当前工作区）
+
+组合付款启用权限独立于普通支付组管理权限：只有启用的超级管理员，或具有支付组管理权限且等于商户当前 `owner_id` 的商户级管理员可以开启。表单复用 `PaymentGroupMethodService::canEnableCombinedPayments()`；创建服务及编辑保存入口在商户行锁内核对归属，普通商户伪造开关、使用旧表单重新开启都被拒绝。普通商户仍可维护已有配置或关闭组合付款，关闭后不能自行重开。此处不增加数据库字段，见 [D-41](decisions.md#d-41-组合付款仅允许超管或直属管理员开启)。
 
 支付组 `is_combine_payment_enabled` 启用、各渠道单笔限额都不足且整笔折算 USD 应付金额不超过组内 `max_combined_amount` 时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。保存父单前按商户→支付组加锁，复查组启用状态、组合开关和金额上限；超限返回 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不落单或调用网关。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。组合开关关闭或上限降低不阻止已有父单续付，见 [D-39](decisions.md#d-39-支付组控制组合付款开关与最高金额)。应用不再有组合开关或通知协议设置：建单时支付组开启组合，则新普通单使用 V2，否则 V1；`orders.webhook_version` 保存版本，通知服务只读该快照。组合父单固定 V2，子单沿用父单版本，见 [D-40](decisions.md#d-40-通知协议随支付组自动确定并按订单保存)。
 

@@ -94,8 +94,13 @@ class PaymentGroupResource extends Resource
                 Toggle::make('is_active')->label(__('admin.payment_group.fields.status'))->default(true)->inline(false),
                 Toggle::make('is_combine_payment_enabled')
                     ->label(__('combined.enable'))
-                    ->helperText(__('combined.enable_help'))
+                    ->helperText(__('combined.enable_restricted').' '.__('combined.enable_help'))
                     ->default(false)
+                    ->disabled(fn (Get $get, ?PaymentGroup $record): bool => ! $record?->fresh()?->is_combine_payment_enabled
+                        && ! PaymentGroupMethodService::canEnableCombinedPayments(
+                            auth()->user(), Merchant::query()->find($record?->merchant_id ?? $get('merchant_id')),
+                        ))
+                    ->dehydrated()
                     ->live()
                     ->inline(false),
                 TextInput::make('max_combined_amount')

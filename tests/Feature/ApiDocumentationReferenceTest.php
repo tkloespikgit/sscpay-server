@@ -26,14 +26,14 @@ class ApiDocumentationReferenceTest extends TestCase
     }
 
     #[DataProvider('locales')]
-    public function test_reference_tables_show_configured_codes_with_localized_names_in_each_language(string $locale): void
+    public function test_reference_tables_show_configured_codes_with_localized_names_in_each_language(string $locale, string $version): void
     {
         SystemConfig::set('exchange.supported_currencies', ['USD', 'CNY', 'CUSTOM-CURRENCY'], 'exchange');
         SystemConfig::set('order.platforms', ['wordpress', 'invoice', 'custom-store'], 'order');
         Http::preventStrayRequests();
         Queue::fake();
 
-        $response = $this->get(route('api.documentation', ['locale' => $locale]));
+        $response = $this->get(route('api.documentation', ['locale' => $locale, 'version' => $version]));
 
         $response->assertOk();
         $currencyNames = Lang::get('api_docs.reference.currency_names', [], $locale);
@@ -82,12 +82,12 @@ class ApiDocumentationReferenceTest extends TestCase
     }
 
     #[DataProvider('locales')]
-    public function test_explicit_empty_configuration_displays_localized_empty_messages_and_does_not_advertise_default_values(string $locale): void
+    public function test_explicit_empty_configuration_displays_localized_empty_messages_and_does_not_advertise_default_values(string $locale, string $version): void
     {
         SystemConfig::set('exchange.supported_currencies', [], 'exchange');
         SystemConfig::set('order.platforms', [], 'order');
 
-        $response = $this->get(route('api.documentation', ['locale' => $locale]))->assertOk();
+        $response = $this->get(route('api.documentation', ['locale' => $locale, 'version' => $version]))->assertOk();
 
         $this->assertSame([], $this->rows($response->getContent(), 'reference-currencies'));
         $this->assertSame([], $this->rows($response->getContent(), 'reference-platforms'));
@@ -100,9 +100,9 @@ class ApiDocumentationReferenceTest extends TestCase
     }
 
     #[DataProvider('locales')]
-    public function test_the_status_appendix_keeps_its_existing_anchor_and_contains_every_application_order_status(string $locale): void
+    public function test_the_status_appendix_keeps_its_existing_anchor_and_contains_every_application_order_status(string $locale, string $version): void
     {
-        $response = $this->get(route('api.documentation', ['locale' => $locale]))->assertOk();
+        $response = $this->get(route('api.documentation', ['locale' => $locale, 'version' => $version]))->assertOk();
         $rows = $this->rows($response->getContent(), 'order-statuses');
         $expected = array_keys(Lang::get('admin.order.statuses', [], $locale));
         $actual = array_column($rows, 0);
@@ -118,9 +118,9 @@ class ApiDocumentationReferenceTest extends TestCase
     }
 
     #[DataProvider('locales')]
-    public function test_body_reference_links_point_to_the_corresponding_currency_platform_and_status_appendices(string $locale): void
+    public function test_body_reference_links_point_to_the_corresponding_currency_platform_and_status_appendices(string $locale, string $version): void
     {
-        $response = $this->get(route('api.documentation', ['locale' => $locale]))->assertOk();
+        $response = $this->get(route('api.documentation', ['locale' => $locale, 'version' => $version]))->assertOk();
         $xpath = $this->document($response->getContent());
         $references = [
             'overview' => ['reference-currencies', 'reference-platforms', 'order-statuses'],
@@ -156,10 +156,13 @@ class ApiDocumentationReferenceTest extends TestCase
         $this->assertSame(0, $xpath->query('//*[@id="reference-platforms"]//script')->length);
     }
 
-    /** @return array<string, array{string}> */
+    /** @return array<string, array{string, string}> */
     public static function locales(): array
     {
-        return ['chinese' => ['zh_CN'], 'english' => ['en']];
+        return [
+            'chinese 1.0' => ['zh_CN', '1.0'], 'english 1.0' => ['en', '1.0'],
+            'chinese 2.0' => ['zh_CN', '2.0'], 'english 2.0' => ['en', '2.0'],
+        ];
     }
 
     /** @return list<list<string>> */

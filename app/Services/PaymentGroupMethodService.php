@@ -24,6 +24,15 @@ class PaymentGroupMethodService
         return self::authorizedGroup($actor, $group) !== null;
     }
 
+    public static function canEnableCombinedPayments(?User $actor, ?Merchant $merchant): bool
+    {
+        $actor = self::authorizedActor($actor);
+
+        return $actor !== null && $merchant !== null
+            && ($actor->is_super_admin
+                || ($actor->isMerchantManager() && (int) $merchant->owner_id === (int) $actor->id));
+    }
+
     /**
      * @return Collection<int, PaymentMethod>
      */
@@ -83,6 +92,10 @@ class PaymentGroupMethodService
 
             if (! self::canAccessMerchant($actor, $merchant)) {
                 throw new AuthorizationException;
+            }
+
+            if (($validated['is_combine_payment_enabled'] ?? false) && ! self::canEnableCombinedPayments($actor, $merchant)) {
+                throw new AuthorizationException(__('combined.enable_restricted'));
             }
 
             $members = $validated['paymentMethods'];

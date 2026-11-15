@@ -3,6 +3,7 @@
 return [
     'expired_count' => 'Stopped new payments for :count expired combined orders.',
     'enable' => 'Allow combined payments',
+    'enable_restricted' => 'Only a super administrator or this merchant\'s assigned administrator may enable combined payments. Merchant users may disable it, but cannot enable it again.',
     'enable_help' => 'Allow new combined orders in this payment group when the total exceeds every available single-payment limit and is within the group maximum. Only MATCH/VIRTUAL channels participate in combined payments. When enabled, all new orders in this group use V2 webhooks, including single orders; when disabled, new single orders use V1. Existing orders keep their notification format.',
     'max_amount' => 'Maximum combined order amount (USD)',
     'max_amount_help' => 'Required when enabled: a positive amount with up to two decimal places. Limits the full order total after conversion to USD, including exchange adjustments. Changing this maximum affects new combined orders only.',
