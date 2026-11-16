@@ -12,7 +12,7 @@
     @endif
 
     @if ($this::canManageTelegram())
-        <form wire:submit="saveTelegram">
+        <form wire:submit="saveTelegram" @if ($telegramBinding !== null) wire:poll.3s="refreshTelegramBinding" @endif>
             {{ $this->telegramForm }}
         </form>
     @endif

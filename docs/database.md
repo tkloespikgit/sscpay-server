@@ -88,6 +88,12 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 
 商户网站物流回传使用 `applications.is_shipment_sync_enabled`（默认 false）和可空 `shipment_sync_url`（最长 2048 字符）；开启时必须提供完整 HTTPS 接口地址，路径及 query 原样使用。每次发送读取当前应用配置及已有加密 `api_key`，不增加独立凭证。新增字段与回传表由迁移 `2026_11_03_153030_add_merchant_shipment_sync_configuration` 引入，不自动生成历史订单回传记录。
 
+### Telegram 快速绑定（2026-11-16，当前工作区）
+
+`telegram_bots` 新增 `uses_platform_bot`（默认 false）、`chat_title` 和 `chat_type`（可空）。已有 `merchant_id_uniq` 生成列及唯一索引保持不变，每商户仍最多一条未删除配置。旧记录继续使用加密的自建 `bot_token`；快速绑定记录将该字段保存为加密的空字符串，通过明确的 `uses_platform_bot=true` 在发送时读取部署配置，平台密钥不复制进商户记录，也不返回商户页面。重新绑定会替换接收对象并清空旧目标的发送时间；解除绑定沿用软删除。
+
+新增 `telegram_binding_requests` 保存每商户一个当前请求：商户/发起用户外键、唯一 `token_hash`、平台 Token 指纹 `bot_fingerprint`、目标类型 `private/group`、到期及消费时间。令牌为 32 字节安全随机数的 64 位十六进制表示，库中仅保存 SHA-256 摘要；有效期 10 分钟。生成、手动保存、解绑与回调写入都先锁商户行，回调再锁对应请求并原子保存目标/消费令牌；以一次性令牌保证绑定幂等，不依据未授权的商户 ID 或仅依赖全局 scope。请求不保存 Telegram 原始消息或平台密钥，数量受商户唯一约束限制。新迁移不改历史配置、不执行数据回填；MySQL 上的既有生成列约束继续保留。
+
 ## 3. 订单及金额快照
 
 `orders` / [Order](../app/Models/Order.php) 是中心模型：
@@ -253,6 +259,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `applications.app_id_uniq` | 有效应用 ID 全局唯一 |
 | `payment_groups(merchant_id, group_key_uniq)` | 商户内有效支付组键唯一 |
 | `order_shippings.order_id_uniq` | 每订单仅一条有效物流记录 |
+| `telegram_bots.merchant_id_uniq` | 每商户仅一条有效 Telegram 配置，快速绑定与自建模式共用 |
+| `telegram_binding_requests.merchant_id`、`token_hash` | 每商户仅保留一个当前绑定请求；令牌摘要全局唯一 |
 | `order_shipment_sync_attempts(order_shipment_sync_id, attempt_number)` | 同一物流回传批次的尝试序号唯一，不同物流快照各自计数 |
 | `order_dispute_events.order_id_active_uniq` | 仅 `processing` 状态参与，同一订单最多一个处理中审核事件 |
 | `merchant_balance_transactions.idempotency_key` | 自动资金动作幂等；允许人工动作无幂等键 |

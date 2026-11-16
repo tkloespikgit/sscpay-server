@@ -436,3 +436,13 @@
 **内容与边界：** 1.0 展示普通订单和 V1 支付通知，不夹杂组合付款字段、示例和错误码；2.0 展示普通单与组合付款，普通单示例也采用完整 V2 通知。两版仍说明当前共用的 API 路径，切换只影响文档，不改变订单协议或后台配置。语言切换保留所选版本，版本切换保留语言，两者都保留稳定章节锚点。公开配置附录和不读取私有应用凭证的约束保留，无数据库变更。
 
 **依据：** [入口](../app/Http/Controllers/ApiDocumentationController.php)、[页面](../resources/views/api-documentation.blade.php)、[中文 1.0](../lang/zh_CN/api_docs_v1.php)、[中文 2.0](../lang/zh_CN/api_docs_v2.php)、[英文 1.0](../lang/en/api_docs_v1.php)、[英文 2.0](../lang/en/api_docs_v2.php)、[版本与示例回归](../tests/Feature/ApiDocumentationTest.php)、[双版公开配置附录](../tests/Feature/ApiDocumentationReferenceTest.php)。
+
+## D-43 Telegram 平台机器人快速绑定
+
+**状态：按用户提出的简化需求实现，当前工作区未提交（2026-11-16）。** 商户不再需要各自创建机器人和查找 Chat ID。平台统一配置一个机器人，商户在服务配置页选择个人或群聊，通过 Telegram 深链接完成绑定；原有自建机器人仍可使用。当前沿用每商户一个接收目标，个人与群聊二选一，新绑定成功才替换旧目标并启用通知。
+
+**权限与凭证：** 平台 Token 只由服务端部署配置持有。未绑定或已关闭通知的商户不自动收到通知，自建模式不回退平台凭证。绑定链接 10 分钟有效、仅可消费一次；重新生成、保存 Telegram 配置或解除绑定都会撤销旧链接，避免旧请求覆盖后续设置。数据库仅保存令牌摘要。生成和回调都检查账号、商户启用与当前管理权限，商户转交后原管理员的链接失效；群聊另校验 Telegram 群主/管理员。回调独立验证 Telegram Secret Header，不复用商户 API 签名或后台登录态。
+
+**实现与运维：** 商户行锁串行化配置变化，目标更新与令牌消费同事务；重复回调不重复改绑，群管理员查询失败返回 503 等待上游重试。页面轮询只更新 Telegram 区块。平台通过 `telegram:register-webhook` 校验机器人用户名和群组能力后注册回调，不丢弃既有待投递消息。部署需执行新增迁移并完成平台机器人配置，操作见 [部署手册](../doc/deployment.md#31-telegram-快速绑定)。
+
+**依据：** [绑定服务](../app/Services/TelegramBindingService.php)、[回调控制器](../app/Http/Controllers/TelegramWebhookController.php)、[通知服务](../app/Services/TelegramNotificationService.php)、[配置页面](../app/Filament/Pages/ServiceSettings.php)、[绑定回归](../tests/Feature/TelegramBindingTest.php)、[页面回归](../tests/Feature/Filament/ServiceSettingsTest.php)、[注册命令回归](../tests/Feature/TelegramWebhookRegistrationTest.php)。

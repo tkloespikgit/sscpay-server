@@ -45,6 +45,12 @@ return [
         'secret_key' => env('BAIDU_TRANSLATE_SECRET_KEY'),
     ],
 
+    'telegram' => [
+        'bot_token' => env('TELEGRAM_BOT_TOKEN'),
+        'bot_username' => env('TELEGRAM_BOT_USERNAME'),
+        'webhook_secret' => env('TELEGRAM_WEBHOOK_SECRET'),
+    ],
+
     /*
     | Cloudflare for SaaS（自定义主机名）。商户把自己的域名 CNAME 到
     | fallback_origin，平台调 CF API 把该域名注册为自定义主机名，

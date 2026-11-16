@@ -10,6 +10,7 @@
 - [1. 前置软件](#1-前置软件)
 - [2. 目录与权限（www-data 属主）](#2-目录与权限www-data-属主)
 - [3. 生产环境变量（.env）](#3-生产环境变量env)
+- [3.1 Telegram 快速绑定](#31-telegram-快速绑定)
 - [4. Crontab 定时任务](#4-crontab-定时任务)
 - [5. Supervisor 队列 Worker](#5-supervisor-队列-worker)
 - [6. 日志轮转（logrotate）](#6-日志轮转logrotate)
@@ -140,6 +141,34 @@ BAIDU_TRANSLATE_SECRET_KEY=…
 ```
 
 > `APP_KEY` 必须与生产环境保持一致：`applications.api_key` 用了 `encrypted` cast，换 key 会导致历史加密数据无法解密。
+
+### 3.1 Telegram 快速绑定
+
+平台只需创建和维护一个通知机器人，商户无需自行创建机器人或查询 Chat ID。平台管理员通过 BotFather 取得 Token 和机器人用户名，并允许机器人加入群组；生产环境配置：
+
+```dotenv
+TELEGRAM_BOT_TOKEN=平台机器人的Token
+TELEGRAM_BOT_USERNAME=机器人用户名不含@
+TELEGRAM_WEBHOOK_SECRET=至少32位随机字母数字下划线或短横线
+```
+
+回调密钥独立于 Bot Token，长度为 32–256。可使用 `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` 在部署环境生成，然后写入环境配置。此机器人应专用于本系统：Telegram 每个机器人只有一个 webhook，注册会更新该机器人的既有回调。
+
+发布新增迁移后，按实际 PHP 路径和运行用户执行：
+
+```bash
+sudo -u www-data /usr/bin/php artisan migrate --force
+sudo -u www-data /usr/bin/php artisan config:cache
+sudo -u www-data /usr/bin/php artisan route:cache
+sudo -u www-data /usr/bin/php artisan telegram:register-webhook
+sudo -u www-data /usr/bin/php artisan queue:restart
+```
+
+默认回调为 `APP_URL` 下的 `/api/webhooks/telegram`，必须是 Telegram 可访问的公网 HTTPS 地址。若 API 使用独立入口，可在注册命令传 `--url=https://实际公网域名/api/webhooks/telegram`。网关须转发 `X-Telegram-Bot-Api-Secret-Token` 请求头，不对此路径施加交互式登录或人机验证。命令先校验 Token 对应的用户名及群组能力，再注册 `message` 更新，不清空已有待处理消息。更换 Token、回调域名或 Secret 后重新注册并刷新配置缓存、重启队列；更换 Token 也会使未完成的绑定链接失效。
+
+商户在「服务配置 → Telegram 通知」选择「快速绑定」，点击个人或群聊按钮生成链接，再前往 Telegram：个人聊天点 Start，群聊由群主/管理员选择群并添加机器人，确保机器人有发言权限。链接 10 分钟有效且只能用一次，不应转发；后台会自动显示绑定结果，可发送测试消息、关闭通知或解除绑定。每个商户当前只有一个接收目标，完成新绑定会替换旧目标并开启通知；已有自建机器人沿用原配置，手动模式也可继续使用。
+
+实现采用 Telegram 官方的 [深链接机制](https://core.telegram.org/bots/features#deep-linking) 和 [webhook Secret Header](https://core.telegram.org/bots/api#setwebhook)。平台凭证不会发给商户浏览器，未绑定的商户不会自动使用平台机器人。
 
 ---
 

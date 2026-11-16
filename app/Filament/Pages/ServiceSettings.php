@@ -8,6 +8,8 @@ use App\Models\TelegramBot;
 use App\Models\User;
 use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
 use App\Services\LogisticsTracking\LogisticsTrackingManager;
+use App\Services\TelegramBindingService;
+use App\Services\TelegramBotClient;
 use App\Services\TelegramNotificationService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -17,12 +19,14 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Collection;
 use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;
+use Livewire\Attributes\Locked;
 
 class ServiceSettings extends Page
 {
@@ -37,6 +41,13 @@ class ServiceSettings extends Page
     public ?array $logisticsData = [];
 
     public ?array $telegramData = [];
+
+    /** @var array{token: string, url: string, expires_at: string, merchant_id: int}|null */
+    #[Locked]
+    public ?array $telegramBinding = null;
+
+    #[Locked]
+    public ?string $telegramRecipient = null;
 
     public static function getNavigationGroup(): ?string
     {
@@ -179,13 +190,54 @@ class ServiceSettings extends Page
         return $schema
             ->components([
                 Section::make(__('admin.telegram.nav_label'))
+                    ->key('telegramSettings')
                     ->schema([
+                        Select::make('mode')
+                            ->label(__('admin.telegram.fields.mode'))
+                            ->options([
+                                'platform' => __('admin.telegram.modes.platform'),
+                                'custom' => __('admin.telegram.modes.custom'),
+                            ])
+                            ->required()
+                            ->live(),
+                        Placeholder::make('recipient')
+                            ->label(__('admin.telegram.fields.recipient'))
+                            ->content(fn (): string => $this->telegramRecipient ?? __('admin.telegram.help.not_bound')),
+                        Placeholder::make('quick_binding_help')
+                            ->hiddenLabel()
+                            ->content(fn (): string => TelegramBotClient::platformIsConfigured()
+                                ? __('admin.telegram.help.quick_binding')
+                                : __('admin.telegram.help.unavailable'))
+                            ->visible(fn (Get $get): bool => $get('mode') === 'platform'),
+                        Actions::make([
+                            Action::make('bindTelegramPrivate')
+                                ->label(__('admin.telegram.actions.bind_private'))
+                                ->action(fn (TelegramBindingService $service) => $this->createTelegramBinding('private', $service)),
+                            Action::make('bindTelegramGroup')
+                                ->label(__('admin.telegram.actions.bind_group'))
+                                ->color('gray')
+                                ->action(fn (TelegramBindingService $service) => $this->createTelegramBinding('group', $service)),
+                        ])
+                            ->key('telegramBindingActions')
+                            ->visible(fn (Get $get): bool => $get('mode') === 'platform' && TelegramBotClient::platformIsConfigured()),
+                        Placeholder::make('binding_pending')
+                            ->hiddenLabel()
+                            ->content(__('admin.telegram.help.binding_pending'))
+                            ->visible(fn (Get $get): bool => $get('mode') === 'platform' && $this->telegramBinding !== null),
+                        Actions::make([
+                            Action::make('openTelegram')
+                                ->label(__('admin.telegram.actions.open_telegram'))
+                                ->url(fn (): ?string => $this->telegramBinding['url'] ?? null, shouldOpenInNewTab: true),
+                        ])
+                            ->visible(fn (Get $get): bool => $get('mode') === 'platform' && $this->telegramBinding !== null),
                         TextInput::make('bot_token')
                             ->label(__('admin.telegram.fields.bot_token'))
-                            ->password()->revealable()->required(),
+                            ->password()->revealable()->required()->maxLength(255)
+                            ->visible(fn (Get $get): bool => $get('mode') === 'custom'),
                         TextInput::make('chat_id')
                             ->label(__('admin.telegram.fields.chat_id'))
-                            ->required()->rule('regex:/^-?\d+$/')
+                            ->required()->maxLength(100)->rule('regex:/^-?\d+$/')
+                            ->visible(fn (Get $get): bool => $get('mode') === 'custom')
                             ->helperText(__('admin.telegram.help.chat_id')),
                         Toggle::make('is_enabled')
                             ->label(__('admin.telegram.fields.is_enabled'))
@@ -198,7 +250,13 @@ class ServiceSettings extends Page
                         Action::make('sendTest')
                             ->label(__('admin.telegram.actions.send_test'))
                             ->color('gray')
-                            ->action('sendTest'),
+                            ->action(fn (TelegramNotificationService $service, TelegramBindingService $bindings) => $this->sendTest($service, $bindings)),
+                        Action::make('disconnectTelegram')
+                            ->label(__('admin.telegram.actions.disconnect'))
+                            ->color('danger')
+                            ->requiresConfirmation()
+                            ->visible(fn (): bool => $this->telegramRecipient !== null)
+                            ->action(fn (TelegramBindingService $service) => $this->disconnectTelegram($service)),
                     ])
                     ->columnSpanFull(),
             ])
@@ -277,25 +335,75 @@ class ServiceSettings extends Page
         Notification::make()->title(__('admin.logistics_tracking.notifications.webhook_token_regenerated'))->success()->send();
     }
 
-    public function saveTelegram(): void
+    public function saveTelegram(TelegramBindingService $bindings): void
     {
         abort_unless(static::canManageTelegram(), 403);
 
         $merchantId = $this->selectedMerchantId();
         $data = $this->telegramForm->getState();
 
-        TelegramBot::query()->updateOrCreate(['merchant_id' => $merchantId], $data);
+        $bindings->save(auth()->user(), $merchantId, $data);
+        $this->telegramBinding = null;
+        $this->fillTelegramForm(TelegramBot::query()->forMerchant($merchantId)->first());
 
         Notification::make()->title(__('admin.telegram.notifications.saved'))->success()->send();
     }
 
-    public function sendTest(TelegramNotificationService $service): void
+    public function sendTest(TelegramNotificationService $service, TelegramBindingService $bindings): void
     {
-        $this->saveTelegram();
+        $this->saveTelegram($bindings);
 
         $sent = $service->sendTest($this->selectedMerchantId());
         $notification = Notification::make()->title(__('admin.telegram.notifications.'.($sent ? 'test_sent' : 'test_failed')));
         ($sent ? $notification->success() : $notification->danger())->send();
+    }
+
+    public function createTelegramBinding(string $chatType, TelegramBindingService $service): void
+    {
+        abort_unless(static::canManageTelegram(), 403);
+        $merchantId = $this->selectedMerchantId();
+        $this->telegramBinding = [
+            ...$service->createLink(auth()->user(), $merchantId, $chatType),
+            'merchant_id' => $merchantId,
+        ];
+        $this->telegramData['mode'] = 'platform';
+        $this->resetValidation('telegramData.mode');
+    }
+
+    public function refreshTelegramBinding(TelegramBindingService $service): void
+    {
+        abort_unless(static::canManageTelegram(), 403);
+        $merchantId = $this->selectedMerchantId();
+
+        if ($this->telegramBinding === null || $this->telegramBinding['merchant_id'] !== $merchantId) {
+            $this->telegramBinding = null;
+
+            return;
+        }
+
+        $status = $service->status(auth()->user(), $merchantId, $this->telegramBinding['token']);
+
+        if ($status === 'pending') {
+            return;
+        }
+
+        $this->telegramBinding = null;
+
+        if ($status === 'bound') {
+            $this->fillTelegramForm(TelegramBot::query()->forMerchant($merchantId)->first());
+            Notification::make()->title(__('admin.telegram.notifications.bound'))->success()->send();
+        } else {
+            Notification::make()->title(__('admin.telegram.notifications.expired'))->warning()->send();
+        }
+    }
+
+    public function disconnectTelegram(TelegramBindingService $service): void
+    {
+        abort_unless(static::canManageTelegram(), 403);
+        $service->disconnect(auth()->user(), $this->selectedMerchantId());
+        $this->telegramBinding = null;
+        $this->fillTelegramForm(null);
+        Notification::make()->title(__('admin.telegram.notifications.disconnected'))->success()->send();
     }
 
     private function loadSettings(): void
@@ -316,13 +424,21 @@ class ServiceSettings extends Page
         }
 
         if (static::canManageTelegram()) {
+            $this->telegramBinding = null;
             $bot = $merchantId ? TelegramBot::query()->where('merchant_id', $merchantId)->first() : null;
-            $this->telegramForm->fill([
-                'bot_token' => $bot?->bot_token,
-                'chat_id' => $bot?->chat_id,
-                'is_enabled' => $bot?->is_enabled ?? true,
-            ]);
+            $this->fillTelegramForm($bot);
         }
+    }
+
+    private function fillTelegramForm(?TelegramBot $bot): void
+    {
+        $this->telegramRecipient = $bot ? ($bot->chat_title ? $bot->chat_title.' · ' : '').$bot->chat_id : null;
+        $this->telegramForm->fill([
+            'mode' => $bot ? ($bot->uses_platform_bot ? 'platform' : 'custom') : (TelegramBotClient::platformIsConfigured() ? 'platform' : 'custom'),
+            'bot_token' => $bot?->uses_platform_bot ? null : $bot?->bot_token,
+            'chat_id' => $bot?->chat_id,
+            'is_enabled' => $bot?->is_enabled ?? true,
+        ]);
     }
 
     private function fillLogisticsForm(?MerchantLogisticsTrackingSetting $setting): void

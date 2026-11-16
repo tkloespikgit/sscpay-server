@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\LogisticsTrackingWebhookController;
 use App\Http\Controllers\PaymentGatewayWebhookController;
+use App\Http\Controllers\TelegramWebhookController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -35,3 +36,7 @@ Route::post('/webhooks/payment-gateway/status', [PaymentGatewayWebhookController
 // 17TRACK 验签头 sign = sha256(rawBody + "/" + 商户 webhook_secret)。
 Route::post('/webhooks/logistics-tracking/{driver}/{webhookToken}', LogisticsTrackingWebhookController::class)
     ->name('webhooks.logistics-tracking');
+
+Route::post('/webhooks/telegram', TelegramWebhookController::class)
+    ->middleware('throttle:120,1')
+    ->name('webhooks.telegram');

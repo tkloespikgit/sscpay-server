@@ -8,9 +8,11 @@ use App\Filament\Pages\TelegramSettings;
 use App\Models\Merchant;
 use App\Models\MerchantLogisticsTrackingSetting;
 use App\Models\SystemConfig;
+use App\Models\TelegramBindingRequest;
 use App\Models\TelegramBot;
 use App\Models\User;
 use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
+use App\Services\TelegramBindingService;
 use App\Support\Permissions;
 use Database\Seeders\PermissionSeeder;
 use Filament\Actions\Testing\TestAction;
@@ -33,6 +35,7 @@ class ServiceSettingsTest extends TestCase
 
         $this->seed(PermissionSeeder::class);
         SystemConfig::set('logistics_tracking.available_drivers', [SeventeenTrackDriver::NAME], 'logistics');
+        config()->set('services.telegram', ['bot_token' => '', 'bot_username' => '', 'webhook_secret' => '']);
         Filament::setCurrentPanel('admin');
     }
 
@@ -152,6 +155,8 @@ class ServiceSettingsTest extends TestCase
         return [
             'logistics cannot save Telegram' => [Permissions::LOGISTICS_TRACKING_MANAGE, 'saveTelegram', 'original-bot-token'],
             'logistics cannot test Telegram' => [Permissions::LOGISTICS_TRACKING_MANAGE, 'sendTest', 'original-bot-token'],
+            'logistics cannot disconnect Telegram' => [Permissions::LOGISTICS_TRACKING_MANAGE, 'disconnectTelegram', 'original-bot-token'],
+            'logistics cannot poll Telegram' => [Permissions::LOGISTICS_TRACKING_MANAGE, 'refreshTelegramBinding', 'original-bot-token'],
             'Telegram cannot save logistics' => [Permissions::TELEGRAM_MANAGE, 'saveLogisticsTracking', 'original-tracking-token'],
             'Telegram cannot rotate webhook token' => [Permissions::TELEGRAM_MANAGE, 'regenerateWebhookToken', 'original-webhook-secret'],
         ];
@@ -371,6 +376,172 @@ class ServiceSettingsTest extends TestCase
             'logistics' => [LogisticsTrackingSettings::class],
             'Telegram' => [TelegramSettings::class],
         ];
+    }
+
+    public function test_quick_binding_actions_generate_private_and_group_links_without_exposing_platform_credentials(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $this->actingAs($this->merchantUser($merchant));
+
+        $page = Livewire::test(ServiceSettings::class)
+            ->assertSet('telegramData.mode', 'platform')
+            ->assertDontSee('12345:platform-token')
+            ->callAction(TestAction::make('bindTelegramPrivate')->schemaComponent('telegramSettings.telegramBindingActions', 'telegramForm'))
+            ->assertHasNoErrors()
+            ->assertSee(__('admin.telegram.actions.open_telegram'));
+
+        $privateUrl = $page->get('telegramBinding.url');
+        $this->assertStringStartsWith('https://t.me/platform_test_bot?start=', $privateUrl);
+
+        $page->callAction(TestAction::make('bindTelegramGroup')->schemaComponent('telegramSettings.telegramBindingActions', 'telegramForm'))
+            ->assertHasNoErrors()
+            ->assertDontSee('12345:platform-token');
+
+        $this->assertStringStartsWith('https://t.me/platform_test_bot?startgroup=', $page->get('telegramBinding.url'));
+        $this->assertDatabaseCount('telegram_binding_requests', 1);
+        $this->assertSame('group', TelegramBindingRequest::query()->sole()->chat_type);
+        $this->assertDatabaseCount('telegram_bots', 0);
+    }
+
+    public function test_refreshing_a_completed_binding_updates_telegram_only_and_escapes_the_chat_title(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $this->actingAs($this->merchantUser($merchant));
+        $page = Livewire::test(ServiceSettings::class)
+            ->fillForm(['api_token' => 'unsaved-logistics'], 'logisticsForm')
+            ->call('createTelegramBinding', 'private');
+
+        $this->postJson(route('webhooks.telegram'), ['message' => [
+            'text' => '/start '.$page->get('telegramBinding.token'),
+            'from' => ['id' => 12345, 'is_bot' => false],
+            'chat' => ['id' => 12345, 'type' => 'private', 'first_name' => '<script>alert(1)</script>'],
+        ]], ['X-Telegram-Bot-Api-Secret-Token' => str_repeat('s', 40)])->assertOk();
+
+        $page->call('refreshTelegramBinding')
+            ->assertHasNoErrors()
+            ->assertNotified(__('admin.telegram.notifications.bound'))
+            ->assertSet('telegramBinding', null)
+            ->assertSet('telegramData.mode', 'platform')
+            ->assertSet('telegramData.bot_token', null)
+            ->assertSet('telegramData.chat_id', '12345')
+            ->assertSet('logisticsData.api_token', 'unsaved-logistics')
+            ->assertSee('&lt;script&gt;alert(1)&lt;/script&gt;', escape: false)
+            ->assertDontSee('<script>alert(1)</script>', escape: false)
+            ->assertDontSee('12345:platform-token');
+    }
+
+    public function test_quick_binding_requires_permission_even_when_called_directly(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $this->actingAs($this->merchantUser($merchant, [Permissions::LOGISTICS_TRACKING_MANAGE]));
+
+        Livewire::test(ServiceSettings::class)->call('createTelegramBinding', 'private')->assertForbidden();
+
+        $this->assertDatabaseCount('telegram_binding_requests', 0);
+    }
+
+    public function test_a_merchant_cannot_generate_a_link_for_another_merchant(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $other = $this->createMerchant('Other');
+        $this->actingAs($this->merchantUser($merchant));
+
+        Livewire::test(ServiceSettings::class)
+            ->set('merchantData', ['merchant_id' => $other->id])
+            ->call('createTelegramBinding', 'private')
+            ->assertHasFormErrors(['merchant_id'], 'merchantForm');
+
+        $this->assertDatabaseCount('telegram_binding_requests', 0);
+    }
+
+    public function test_platform_mode_cannot_be_saved_without_a_verified_binding(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $this->actingAs($this->merchantUser($merchant));
+
+        Livewire::test(ServiceSettings::class)
+            ->set('telegramData.chat_id', 'forged-recipient')
+            ->call('saveTelegram')
+            ->assertHasFormErrors(['mode'], 'telegramForm');
+
+        $this->assertDatabaseCount('telegram_bots', 0);
+    }
+
+    public function test_saving_a_platform_binding_ignores_forged_credentials_and_recipient(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $bot = $this->createBot($merchant);
+        $bot->update(['uses_platform_bot' => true, 'bot_token' => '', 'chat_type' => 'group', 'chat_title' => 'Operations']);
+        $this->actingAs($this->merchantUser($merchant));
+
+        Livewire::test(ServiceSettings::class)
+            ->set('telegramData.bot_token', 'forged-token')
+            ->set('telegramData.chat_id', '-666')
+            ->set('telegramData.is_enabled', false)
+            ->call('saveTelegram')
+            ->assertHasNoErrors()
+            ->assertSet('telegramData.bot_token', null);
+
+        $this->assertFalse($bot->fresh()->is_enabled);
+        $this->assertSame('-100999', $bot->fresh()->chat_id);
+        $this->assertSame('', $bot->fresh()->bot_token);
+        $this->assertTrue($bot->fresh()->uses_platform_bot);
+    }
+
+    public function test_saving_a_custom_bot_cancels_pending_quick_binding(): void
+    {
+        $this->configurePlatformBot();
+        $merchant = $this->createMerchant();
+        $actor = $this->merchantUser($merchant);
+        app(TelegramBindingService::class)->createLink($actor, $merchant->id, 'private');
+        $this->actingAs($actor);
+
+        Livewire::test(ServiceSettings::class)
+            ->set('telegramData.mode', 'custom')
+            ->fillForm($this->telegramInput(), 'telegramForm')
+            ->call('saveTelegram')
+            ->assertHasNoErrors();
+
+        $this->assertDatabaseCount('telegram_binding_requests', 0);
+        $this->assertFalse(TelegramBot::query()->sole()->uses_platform_bot);
+    }
+
+    public function test_disconnect_action_requires_confirmation_and_preserves_other_service_edits(): void
+    {
+        $merchant = $this->createMerchant();
+        $bot = $this->createBot($merchant);
+        $this->actingAs($this->merchantUser($merchant));
+        $action = TestAction::make('disconnectTelegram')->schemaComponent('telegramSettings', 'telegramForm');
+
+        $page = Livewire::test(ServiceSettings::class)
+            ->fillForm(['api_token' => 'unsaved-logistics'], 'logisticsForm')
+            ->mountAction($action)
+            ->assertActionMounted($action);
+
+        $this->assertFalse($bot->fresh()->trashed());
+
+        $page->callMountedAction()
+            ->assertHasNoErrors()
+            ->assertSet('telegramRecipient', null)
+            ->assertSet('logisticsData.api_token', 'unsaved-logistics')
+            ->assertNotified(__('admin.telegram.notifications.disconnected'));
+
+        $this->assertSoftDeleted($bot);
+    }
+
+    private function configurePlatformBot(): void
+    {
+        config()->set('services.telegram', [
+            'bot_token' => '12345:platform-token',
+            'bot_username' => 'platform_test_bot',
+            'webhook_secret' => str_repeat('s', 40),
+        ]);
     }
 
     private function createMerchant(string $name = 'Test Merchant', ?User $owner = null): Merchant

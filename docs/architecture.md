@@ -47,6 +47,7 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
+| `/api/webhooks/telegram` | `TelegramWebhookController` | POST，以 `X-Telegram-Bot-Api-Secret-Token` 校验平台机器人回调；一次性链接定位商户并重新检查绑定发起人的权限 |
 | 接口文档 `/docs/api/{locale?}?version=1.0\|2.0` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读，支持 `zh_CN` / `en` 和独立的 1.0 / 2.0 文档，未指定版本默认 2.0；不查询商户应用或展示真实凭证 |
 | `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
@@ -57,6 +58,10 @@ flowchart TD
 平台日志页仅由 `AdminPanelProvider` 注册并限制超级管理员访问。`RecentLogProvider` 复用日志插件解析器，在请求内缓存结果，绕过插件全量 Redis 缓存；按文件修改时间优先选择符合插件单文件上限且累计不超过 2 MiB 的日志，保留其中最新 1000 条。页面筛选和统计只覆盖这部分记录，完整历史仍在服务器日志中。`LogViewer` 关闭自动发现，避免被共享页面扫描加入商户后台。
 
 商户配置分组的“服务配置”由 `ServiceSettings` 统一提供时区、物流跟踪与 Telegram 三个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。时区区块对能打开页面的用户都可见，只更新所选商户的 `merchants.timezone`，留空回退系统时区。物流和 Telegram 仍只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载三个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
+
+Telegram 支持平台机器人快速绑定与原有自建机器人两种模式。平台在部署配置中设置 Token、用户名和回调密钥，运行 `telegram:register-webhook` 注册 HTTPS 回调；商户通过个人聊天的 `start` 或群聊的 `startgroup` 链接完成绑定，不接触平台 Token。`TelegramBindingService` 生成 10 分钟有效的一次性随机令牌，数据库只存摘要，每个商户只保留一个当前请求；重新生成、保存 Telegram 配置或解除绑定会使旧链接失效。回调在商户行锁内重新检查发起账号启用状态、`telegram.manage`、当前商户归属和商户启用状态，再保存聊天目标并消费令牌；群聊另通过 Telegram API 检查发送者是否群主或管理员，查询失败返回 503 供 Telegram 重试。已消费令牌的重放不修改记录。
+
+每商户仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
 
 订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；渠道禁用广播仅向订单所属商户追加完整摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
 
