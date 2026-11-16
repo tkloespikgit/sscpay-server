@@ -4,31 +4,34 @@ namespace Tests\Feature\Filament;
 
 use App\Filament\Pages\TelegramNotificationRoutes;
 use App\Filament\Resources\SystemConfigResource;
-use App\Models\SystemConfig;
+use App\Models\TelegramBot;
 use App\Models\User;
 use App\Services\PlatformRoleProvisioningService;
-use App\Services\TelegramNotificationRouter;
+use App\Services\TelegramNotificationSettings;
 use App\Support\TelegramNotificationKind;
 use Database\Seeders\PermissionSeeder;
+use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
+use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
 class TelegramNotificationRoutesPageTest extends TestCase
 {
+    use CreatesTestOrders;
     use RefreshDatabase;
 
     protected function setUp(): void
     {
         parent::setUp();
-
-        $this->seed(PermissionSeeder::class);
         Filament::setCurrentPanel('admin');
     }
 
     public function test_only_enabled_super_admins_in_the_platform_panel_can_open_and_save(): void
     {
+        $this->seed(PermissionSeeder::class);
         $manager = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
         $manager->assignRole(app(PlatformRoleProvisioningService::class)->provisionMerchantManagerRole());
         $disabledSuper = User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => false]);
@@ -43,70 +46,95 @@ class TelegramNotificationRoutesPageTest extends TestCase
         $this->actingAs($super);
         Filament::setCurrentPanel('merchant');
         Livewire::test(TelegramNotificationRoutes::class)->assertForbidden();
-
         Filament::setCurrentPanel('admin');
-        $page = Livewire::test(TelegramNotificationRoutes::class)
-            ->assertOk()
-            ->assertSee(__('admin.telegram_routes.title'))
-            ->assertSee(__('admin.telegram_routes.recipients.channel_owner'))
-            ->assertSee(rtrim(__('admin.telegram_routes.kinds.payment_method_forbidden.description'), '。.'))
-            ->assertDontSee(__('admin.telegram_routes.kinds.payment_method_forbidden.description'));
+        $page = Livewire::test(TelegramNotificationRoutes::class)->assertOk()
+            ->call('setNotificationGroup', 'channel')
+            ->mountAction(TestAction::make('edit')->table('order_paid'));
         $super->update(['is_super_admin' => false]);
-        $this->actingAs($super->fresh());
-        $page->call('save')->assertForbidden();
+        $page->callMountedAction()->assertForbidden();
+        $this->assertDatabaseMissing('system_configs', ['config_key' => TelegramNotificationSettings::CONFIG_KEY]);
     }
 
-    public function test_super_admin_can_save_recipients_and_the_raw_config_stays_out_of_system_settings(): void
+    public function test_super_admin_can_save_one_rule_and_the_raw_config_stays_out_of_system_settings(): void
     {
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
-        $data = app(TelegramNotificationRouter::class)->current();
-        $data[TelegramNotificationKind::NoAvailablePaymentMethod->value] = ['super_admins'];
+        Http::preventStrayRequests();
 
         Livewire::test(TelegramNotificationRoutes::class)
-            ->fillForm($data)
-            ->call('save')
-            ->assertHasNoFormErrors()
-            ->assertNotified();
+            ->call('setNotificationGroup', 'channel')
+            ->callAction(TestAction::make('edit')->table('order_paid'), [
+                'enabled' => false, 'template' => 'Payment :order_no :amount :currency', 'repeat_count' => 2,
+            ])
+            ->assertHasNoActionErrors()->assertNotified();
 
-        $stored = json_decode((string) SystemConfig::query()->where('config_key', TelegramNotificationRouter::CONFIG_KEY)->value('config_value'), true);
-        $this->assertSame(['super_admins'], $stored[TelegramNotificationKind::NoAvailablePaymentMethod->value]);
-        $this->assertNull(SystemConfigResource::getEloquentQuery()->where('config_key', TelegramNotificationRouter::CONFIG_KEY)->first());
+        $this->assertSame(['enabled' => false, 'template' => 'Payment :order_no :amount :currency', 'repeat_count' => 2],
+            app(TelegramNotificationSettings::class)->get(TelegramNotificationKind::OrderPaid));
+        $this->assertNull(SystemConfigResource::getEloquentQuery()->where('config_key', TelegramNotificationSettings::CONFIG_KEY)->first());
+        Http::assertNothingSent();
     }
 
-    public function test_checking_do_not_send_clears_the_other_recipients_on_the_page(): void
+    public function test_tabs_search_and_filter_show_the_expected_notification_groups(): void
     {
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
-        $field = 'data.'.TelegramNotificationKind::OrderPaid->value;
-
-        Livewire::test(TelegramNotificationRoutes::class)
-            ->set($field, ['merchant', 'none'])
-            ->assertSet($field, ['none']);
+        app(TelegramNotificationSettings::class)->save(TelegramNotificationKind::OrderPaid, [
+            'enabled' => false, 'template' => '', 'repeat_count' => 5,
+        ]);
+        $page = Livewire::test(TelegramNotificationRoutes::class)
+            ->assertCanSeeTableRecords(['no_available_payment_method', 'logistics_anomaly'])
+            ->assertCanNotSeeTableRecords(['order_paid', 'designated_order_created'])
+            ->call('setNotificationGroup', 'channel')
+            ->assertCanSeeTableRecords(['order_paid', 'designated_order_created', 'site_products_sync_completed'])
+            ->searchTable(__('admin.telegram_routes.kinds.order_paid.label'));
+        $this->assertCount(1, $page->instance()->getTableRecords());
+        $page->searchTable('')->filterTable('enabled', '0')
+            ->assertCanSeeTableRecords(['order_paid']);
     }
 
-    public function test_checking_another_recipient_clears_do_not_send_on_the_page(): void
+    public function test_invalid_template_is_shown_as_an_action_error(): void
     {
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
-        $field = 'data.'.TelegramNotificationKind::OrderPaid->value;
-
         Livewire::test(TelegramNotificationRoutes::class)
-            ->set($field, ['none'])
-            ->set($field, ['none', 'merchant'])
-            ->assertSet($field, ['merchant']);
+            ->callAction(TestAction::make('edit')->table('logistics_anomaly'), ['enabled' => true, 'template' => ':bot_token'])
+            ->assertHasActionErrors(['template']);
+        $this->assertDatabaseMissing('system_configs', ['config_key' => TelegramNotificationSettings::CONFIG_KEY]);
     }
 
-    public function test_a_combined_do_not_send_selection_is_reduced_before_it_is_saved(): void
+    public function test_recipient_preview_resolves_channel_owner_without_exposing_bot_credentials_or_sending(): void
+    {
+        $this->createMerchantAndApplication();
+        $method = $this->makePaymentMethod('preview-channel');
+        TelegramBot::create([
+            'merchant_id' => $this->merchant->id, 'bot_token' => 'private-token',
+            'chat_id' => 'private-chat', 'is_enabled' => true,
+        ]);
+        $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
+        Http::preventStrayRequests();
+
+        $page = Livewire::test(TelegramNotificationRoutes::class)->call('setNotificationGroup', 'channel')
+            ->mountAction(TestAction::make('recipient')->table('designated_order_created'))
+            ->assertActionMounted(TestAction::make('recipient')->table('designated_order_created'))
+            ->fillForm(['context_id' => $method->id])
+            ->assertActionDataSet(['context_id' => $method->id]);
+
+        $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
+        $this->assertStringContainsString($this->merchant->name, $modal);
+        $this->assertStringContainsString(__('admin.telegram_routes.recipient_statuses.ready'), $modal);
+        $this->assertStringNotContainsString('private-token', $modal);
+        $this->assertStringNotContainsString('private-chat', $modal);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_restoring_defaults_only_changes_the_selected_notification(): void
     {
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
-        $data = app(TelegramNotificationRouter::class)->current();
-        $data[TelegramNotificationKind::OrderPaid->value] = ['merchant', 'none'];
+        $settings = app(TelegramNotificationSettings::class);
+        $settings->save(TelegramNotificationKind::OrderPaid, ['enabled' => false, 'template' => 'Custom', 'repeat_count' => 1]);
+        $settings->save(TelegramNotificationKind::OrderDisputing, ['enabled' => false, 'template' => 'Dispute']);
+        Livewire::test(TelegramNotificationRoutes::class)->call('setNotificationGroup', 'channel')
+            ->callAction(TestAction::make('reset')->table('order_paid'))->assertNotified();
 
-        Livewire::test(TelegramNotificationRoutes::class)
-            ->fillForm($data)
-            ->assertSet('data.'.TelegramNotificationKind::OrderPaid->value, ['none'])
-            ->call('save')
-            ->assertHasNoFormErrors();
-
-        $stored = json_decode((string) SystemConfig::query()->where('config_key', TelegramNotificationRouter::CONFIG_KEY)->value('config_value'), true);
-        $this->assertSame(['none'], $stored[TelegramNotificationKind::OrderPaid->value]);
+        $this->assertSame(['enabled' => true, 'template' => '', 'repeat_count' => 5], $settings->get(TelegramNotificationKind::OrderPaid));
+        $this->assertFalse($settings->get(TelegramNotificationKind::OrderDisputing)['enabled']);
     }
 }

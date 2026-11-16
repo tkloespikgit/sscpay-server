@@ -138,7 +138,7 @@ class AdminTelegramBindingTest extends TestCase
         $this->assertSame('merchant-chat', $messages->first()[0]['chat_id']);
     }
 
-    public function test_unowned_system_channel_notifies_each_enabled_super_admin_after_one_delivery_fails(): void
+    public function test_failed_delivery_to_the_system_channel_owner_does_not_notify_other_admins(): void
     {
         $this->createMerchantAndApplication();
         $method = $this->makePaymentMethod('system-channel');
@@ -146,6 +146,7 @@ class AdminTelegramBindingTest extends TestCase
         $method->assignedMerchants()->attach($this->merchant->id);
         $first = $this->superAdmin();
         $second = $this->superAdmin();
+        $method->forceFill(['owner_id' => $first->id])->save();
         TelegramBot::query()->create([
             'user_id' => $first->id, 'merchant_id' => null, 'bot_token' => 'first-token', 'chat_id' => 'first-admin', 'is_enabled' => true,
         ]);
@@ -168,7 +169,7 @@ class AdminTelegramBindingTest extends TestCase
         $chatIds = Http::recorded(fn (Request $request): bool => str_contains($request->url(), 'api.telegram.org/'))
             ->map(fn (array $entry): string => (string) $entry[0]['chat_id'])
             ->all();
-        $this->assertSame(['first-admin', 'second-admin'], $chatIds);
+        $this->assertSame(['first-admin'], $chatIds);
         $this->assertFalse($method->refresh()->is_active);
     }
 

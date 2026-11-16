@@ -8,6 +8,7 @@ use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
 use App\Services\MerchantRoleProvisioningService;
 use App\Services\TelegramNotificationRouter;
+use App\Services\TelegramNotificationSettings;
 use App\Support\OrderStatusColor;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
@@ -235,6 +236,7 @@ class SystemConfigResource extends Resource
             ->whereNotIn('config_key', [
                 MerchantRoleProvisioningService::TEMPLATE_CONFIG_KEY,
                 TelegramNotificationRouter::CONFIG_KEY,
+                TelegramNotificationSettings::CONFIG_KEY,
             ]);
     }
 

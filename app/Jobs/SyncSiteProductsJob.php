@@ -47,22 +47,9 @@ class SyncSiteProductsJob implements ShouldQueue
 
         $stats = $syncService->sync($paymentMethod);
 
-        // 收件人由通知接收人配置决定。默认是这条通道的所属商户和已分配商户。
-        $recipientIds = $paymentMethod->notifiableMerchantIds();
-
-        $message = sprintf(
-            "✅ 站点商品同步完成：%s\n共同步 %d 个商品（新增 %d / 更新 %d / 清理 %d / 跳过 0 价 %d）",
-            $paymentMethod->domain,
-            $stats['total'],
-            $stats['created'],
-            $stats['updated'],
-            $stats['deleted'],
-            $stats['skipped'] ?? 0,
-        );
-
-        $telegramRoutes->send(
+        $telegramRoutes->sendNotification(
             TelegramNotificationKind::SiteProductsSyncCompleted,
-            $message,
+            ['domain' => $paymentMethod->domain, ...$stats, 'skipped' => $stats['skipped'] ?? 0],
             $paymentMethod->merchant_id !== null ? (int) $paymentMethod->merchant_id : null,
             $paymentMethod,
         );
@@ -70,7 +57,6 @@ class SyncSiteProductsJob implements ShouldQueue
         Log::info('Site products sync completed', [
             'payment_method_id' => $paymentMethod->id,
             'stats' => $stats,
-            'notified_merchants' => $recipientIds,
         ]);
     }
 
@@ -86,23 +72,19 @@ class SyncSiteProductsJob implements ShouldQueue
         Log::error('Site products sync failed permanently', [
             'payment_method_id' => $this->paymentMethodId,
             'error' => $exception?->getMessage(),
-            'notified_merchants' => $paymentMethod?->notifiableMerchantIds() ?? [],
         ]);
 
         if ($paymentMethod === null) {
             return;
         }
 
-        $message = sprintf(
-            "❌ 站点商品同步失败：%s（%s）\n%s",
-            $paymentMethod->domain,
-            $paymentMethod->method_name,
-            mb_substr($exception?->getMessage() ?? '未知错误', 0, 200),
-        );
-
-        app(TelegramNotificationRouter::class)->send(
+        app(TelegramNotificationRouter::class)->sendNotification(
             TelegramNotificationKind::SiteProductsSyncFailed,
-            $message,
+            [
+                'domain' => $paymentMethod->domain,
+                'method_name' => $paymentMethod->method_name,
+                'error' => mb_substr($exception?->getMessage() ?? '未知错误', 0, 200),
+            ],
             $paymentMethod->merchant_id !== null ? (int) $paymentMethod->merchant_id : null,
             $paymentMethod,
         );

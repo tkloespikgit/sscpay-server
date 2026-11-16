@@ -7,7 +7,9 @@ use App\Models\ExchangeRate;
 use App\Models\PaymentGroup;
 use App\Services\PaymentService;
 use App\Services\TelegramNotificationService;
+use App\Services\TelegramNotificationSettings;
 use App\Support\SignatureCanonicalizer;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -101,6 +103,29 @@ class NoAvailablePaymentMethodTelegramTest extends TestCase
             ->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
         $this->sendOrder('SECOND-ORDER')->assertConflict()
             ->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
+
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_custom_cooldown_expires_and_disabled_alerts_do_not_claim_it(): void
+    {
+        $this->freezeTime();
+        $this->createGroup();
+        ExchangeRate::updateBatchRates(['EUR' => 2]);
+        $settings = app(TelegramNotificationSettings::class);
+        $rule = ['enabled' => false, 'template' => '', 'cooldown_minutes' => 2];
+        $settings->save(TelegramNotificationKind::NoAvailablePaymentMethod, $rule);
+        $this->mock(TelegramNotificationService::class)->shouldReceive('send')->twice()
+            ->with($this->merchant->id, \Mockery::type('string'))->andReturn(true);
+
+        $this->sendOrder('DISABLED')->assertConflict();
+        $settings->save(TelegramNotificationKind::NoAvailablePaymentMethod, [...$rule, 'enabled' => true]);
+        $this->sendOrder('FIRST')->assertConflict();
+        $this->travel(1)->minutes();
+        $this->sendOrder('COOLDOWN')->assertConflict();
+        $this->travel(61)->seconds();
+        $this->sendOrder('AFTER-COOLDOWN')->assertConflict();
 
         $this->assertDatabaseCount('orders', 0);
         Http::assertNothingSent();

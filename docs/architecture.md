@@ -63,7 +63,9 @@ Telegram 支持平台机器人快速绑定与原有自建机器人两种模式�
 
 每商户和每名管理员仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
 
-订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；商户自有渠道被自动禁用时，默认只通知该商户，并在订单属于该商户时追加完整摘要。系统渠道默认通知归属管理员；没有归属管理员时通知所有启用的超级管理员，并附上触发订单摘要，不向正在使用该渠道的商户逐个广播。超级管理员可在平台管理的「通知接收人」按模板改接收人，未保存的模板沿用上述默认，见 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
+Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商户通知 13 项和支付通道通知 7 项。订单、资金、物流及支付组无可用通道的通知只发给事件所属商户；通道禁用、支付链接创建失败、源网站建单/付款成功、商品同步完成/失败按当前通道归属发送：商户专属通道发给该商户，系统级通道发给 `owner_id` 对应管理员。缺少归属管理员时跳过并提示配置异常，不广播给其他管理员或已分配商户。超级管理员在平台管理的「Telegram 通知管理」维护各项开关、正文和适用发送参数，也可只读预览实际接收人。`TelegramNotificationSettings` 保存配置；`TelegramMessageTemplate` 仅替换白名单变量并转义 HTML，不执行模板代码。不新增发送记录表或页面，见 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
+
+订单相关 Telegram 通知通过 `OrderTelegramSummary` 自动追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义，自定义正文不移除统一摘要。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条；商户自有渠道自动禁用时，只有触发订单属于该商户才附摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入、商品同步等批次通知不关联单笔订单。
 
 静态配置演示不落库、不提交。`StaticConfigShowcase::screensFor()` 决定可见屏：平台管理员（超管）和商户级管理员可见入驻向导、商户配置、支付方式配置；商户管理员和支付通道管理员仅在账号与所属商户启用时可见支付方式配置，且必须是该商户名下的这两个默认角色，单独授予支付方式权限不够。页面不挂全局 auth 中间件（项目没有 `login` 路由），未登录直接 403。入驻向导、商户创建/编辑的页头入口链到当前域名的 `/showcase#对应屏`。支付方式演示入口只在支付方式列表页页头。
 
@@ -139,11 +141,11 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 保留历史渠道切换产生的网关引用、来源日志和迟到结果校验，旧尝试回调/查询不能改变当前尝试的状态及账务；本次及后续同单号重试不生成新的渠道尝试引用。同渠道恢复依赖插件对同一 `s_order_id` 的幂等处理，不把本地锁或引用校验描述成全链路绝无重复支付的保证。
 
-`PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息发送给订单商户的已启用机器人。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号或渠道商户推断接收人。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
+`PaymentGatewayService::createPayment()` 最终失败时（包括业务错误、连接重试耗尽、异常响应和缺少付款链接），根据 `OrderCreationService` 传入的本地订单派发 `PaymentLinkCreationFailed`。现有 `SendTelegramNotification` 队列监听器将脱敏后的原因、错误码、订单号/商户单号、金额和渠道信息按通道当前归属发送。每次调用最终失败仅派发一次，通知异常不覆盖原异常，本地订单继续支持幂等补建；没有可信订单上下文时只记跳过日志，不按全局订单号猜测上下文。进入 `createPayment()` 前的渠道/商品准备异常不在此事件范围。
 
 连续建单失败保护由 `OrderCreationService::createPayment()` 调用 [PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php) 的 `recordFailure()` / `recordSuccess()` 统一记录：网关建单或明确的商品准备最终失败时，针对当前渠道累计一次 `consecutive_failed_times`；一次创建内部的多次 HTTP 连接重试只计一次。成功保存有效 `pay_url` 才清零；已有链接的幂等命中、金额/授权校验或风控拒绝既不计数也不清零。计数按支付方式 ID 跨商户持久化，事务中先锁原订单、再锁渠道，核对原商户、当前渠道/引用及收款/链接状态，过期结果不计入其他尝试。直接调用底层网关客户端的工具操作不在该统计入口内。
 
-系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后按当前通知接收人配置发 Telegram。默认仍是渠道归属：商户自有渠道发给该商户，系统渠道发给归属管理员，没有归属管理员时发给所有启用的超级管理员。未配置、未启用或限流时跳过；一名管理员发送失败不影响其他管理员。通知异常不覆盖建单失败。原来逐次网关建单失败的提醒默认继续发给下单商户，也可以在同一页面改接收人。部署补齐 `telegram.notification_routes` 的规则见 [数据库说明](database.md#2-租户身份和渠道)，决策见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用)、[D-44](decisions.md#d-44-管理员-telegram-与支付通道通知归属) 与 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。
+系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后按通道当前归属发 Telegram；逐次支付链接创建失败也采用相同归属。关闭通知、归属缺失、机器人不可用或发送异常不影响禁用结果，不另选其他接收人。业务阈值仍在支付通道设置中维护，通知页仅控制通知行为，见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用) 与 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
 
 人工核验渠道恢复后，通过 `PaymentMethod` 模型将停用渠道重新启用（`is_active: false → true`）时，同次保存自动将 `consecutive_failed_times` 清零，开始新一轮计数。普通编辑但启用状态未变时不清零；运行中的成功/失败计数使用 `saveQuietly()`，不触发该模型事件。编辑页只提交主动修改的启用状态，在事务内重新锁定并读取渠道后保存，避免旧页面恢复自动停用状态或重复清掉新计数；保存后同步页面的启用状态。此补充无需新增字段或迁移。
 
@@ -216,7 +218,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `order-notifications:process-due` | 每分钟，防重叠 |
 | `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
-| `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠 |
+| `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠；提醒提前小时数和开关由 Telegram 通知配置读取（默认 24 小时） |
 | `fund-freezes:release-due` | 每 10 秒，后台执行、防重叠；默认每次最多 500 条 |
 | `orders:settle-due` | 每 10 秒，后台执行、防重叠；补偿记账、启动发货周期、到期结算，每类默认最多 500 条 |
 | `order-stats:aggregate --days=8` | 每天 02:00，防重叠 |
@@ -225,7 +227,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `checkout:sync-domains` | 每 15 分钟，防重叠 |
 | `logistics-imports:prune` | 每天 03:10，防重叠 |
 | `logistics-tracking:reflag-anomalies` | 每天 06:00，防重叠；按供应商状态和系统配置天数重算物流异常，含已有异常以支持阈值放宽后恢复；仅 false→true 且启用门闩通过时主动查一次，确认异常后排队 Telegram 提醒 |
-| `orders:notify-unshipped-overdue` | 每天 10:00，防重叠；超 10 天未发货汇总 Telegram（不看物流跟踪开关） |
+| `orders:notify-unshipped-overdue` | 每分钟读取通知配置，按系统时区在指定时刻执行，防重叠且单节点；默认每天 10:00 汇总超 10 天未发货订单，时间/天数/开关可配置（不看物流跟踪开关） |
 
 ## 6. 按任务定位
 

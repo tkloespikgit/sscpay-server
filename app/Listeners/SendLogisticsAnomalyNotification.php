@@ -38,19 +38,14 @@ class SendLogisticsAnomalyNotification implements ShouldQueueAfterCommit
             'status' => $statusLabel === $statusKey ? $status : $statusLabel,
             'reason' => $reasonLabel === $reasonKey ? $reason : $reasonLabel,
         ];
-        $details = array_map(
-            fn (string $value): string => htmlspecialchars(mb_substr($value, 0, 100), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-            $details,
-        );
-
-        $message = __('admin.telegram_notification.logistics_anomaly', $details)
-            ."\n\n".OrderTelegramSummary::render($event->details);
+        $details = array_map(fn (string $value): string => mb_substr($value, 0, 100), $details);
         $methodId = $event->details['payment_method_id'] ?? null;
-        $delivery = $this->telegramRoutes->send(
+        $delivery = $this->telegramRoutes->sendNotification(
             TelegramNotificationKind::LogisticsAnomaly,
-            $message,
+            $details,
             $event->merchantId,
             paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
+            summary: OrderTelegramSummary::render($event->details),
         );
 
         if ($delivery->sent || $delivery->suppressed || ! $delivery->anyUsable) {

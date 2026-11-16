@@ -31,56 +31,59 @@ enum TelegramNotificationKind: string
             self::PaymentMethodForbidden,
             self::PaymentMethodCreationFailedDisabled,
             self::PaymentLinkCreationFailed,
-            self::NoAvailablePaymentMethod => 'payment',
-            self::LogisticsImportCompleted,
-            self::LogisticsAnomaly,
-            self::UnshippedOverdue,
-            self::ShipmentSyncFailed => 'logistics',
+            self::DesignatedOrderCreated,
+            self::OrderPaid,
             self::SiteProductsSyncCompleted,
-            self::SiteProductsSyncFailed => 'products',
-            default => 'order',
+            self::SiteProductsSyncFailed => 'channel',
+            default => 'merchant',
         };
     }
 
-    public function allowsChannel(): bool
+    public function recipientRule(): string
     {
-        return ! in_array($this, [
-            self::NoAvailablePaymentMethod,
-            self::LogisticsImportCompleted,
-            self::UnshippedOverdue,
-            self::ShipmentSyncFailed,
-        ], true);
+        return $this->group() === 'channel' ? 'channel_owner' : 'merchant';
     }
 
     /**
-     * @return list<TelegramRecipient>
+     * @return array<string, int|string>
      */
-    public function allowed(): array
-    {
-        $recipients = [TelegramRecipient::Merchant];
-
-        if ($this->allowsChannel()) {
-            $recipients[] = TelegramRecipient::ChannelOwner;
-            $recipients[] = TelegramRecipient::ChannelMerchants;
-        }
-
-        $recipients[] = TelegramRecipient::SuperAdmins;
-        $recipients[] = TelegramRecipient::None;
-
-        return $recipients;
-    }
-
-    /**
-     * @return list<TelegramRecipient>
-     */
-    public function defaults(): array
+    public function strategyDefaults(): array
     {
         return match ($this) {
-            self::PaymentMethodForbidden,
-            self::PaymentMethodCreationFailedDisabled => [TelegramRecipient::ChannelOwner],
-            self::SiteProductsSyncCompleted,
-            self::SiteProductsSyncFailed => [TelegramRecipient::ChannelMerchants],
-            default => [TelegramRecipient::Merchant],
+            self::OrderPaid => ['repeat_count' => 5],
+            self::NoAvailablePaymentMethod => ['cooldown_minutes' => 10],
+            self::DisputeReviewGatewayStatusIgnored => ['cooldown_minutes' => 1440],
+            self::OrderDisputeDueSoon => ['reminder_hours' => 24],
+            self::UnshippedOverdue => ['unshipped_days' => 10, 'send_time' => '10:00'],
+            default => [],
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function variables(): array
+    {
+        return match ($this) {
+            self::PaymentMethodForbidden => ['method_name', 'method_code', 'order_no'],
+            self::PaymentMethodCreationFailedDisabled => ['method_name', 'method_code', 'order_no', 'failed_times', 'max_failed_times'],
+            self::PaymentLinkCreationFailed => ['merchant_id', 'order_no', 'merchant_order_no', 'source', 'currency', 'amount', 'converted_amount', 'payment_method', 'payment_method_id', 'gateway_host', 'http_status', 'pga_code', 'error'],
+            self::NoAvailablePaymentMethod => ['group_name', 'group_key', 'amount', 'reason'],
+            self::DesignatedOrderCreated => ['order_no', 'merchant_order_no', 'customer_email', 'currency', 'amount', 'payment_method'],
+            self::OrderPaid => ['order_no', 'currency', 'amount', 'converted_amount', 'payment_method'],
+            self::OrderDisputing => ['order_no'],
+            self::OrderRefundGateway, self::OrderChargebackGateway => ['order_no', 'currency', 'amount'],
+            self::GatewayReversalSettleFailed => ['order_no', 'status', 'error'],
+            self::GatewayReversalAmountMismatch => ['order_no', 'gateway_amount', 'order_amount', 'currency'],
+            self::DisputeReviewGatewayStatusIgnored => ['order_no', 'status'],
+            self::OrderDisputeOpened => ['event_no', 'due_at'],
+            self::OrderDisputeDueSoon => ['order_no', 'event_no', 'due_at'],
+            self::LogisticsImportCompleted => ['file_name', 'total', 'success', 'failed'],
+            self::LogisticsAnomaly => ['order_no', 'merchant_order_no', 'tracking_number', 'status', 'reason'],
+            self::UnshippedOverdue => ['count', 'hours'],
+            self::ShipmentSyncFailed => ['count'],
+            self::SiteProductsSyncCompleted => ['domain', 'total', 'created', 'updated', 'deleted', 'skipped'],
+            self::SiteProductsSyncFailed => ['domain', 'method_name', 'error'],
         };
     }
 
@@ -90,10 +93,8 @@ enum TelegramNotificationKind: string
     public static function grouped(): array
     {
         $groups = [
-            'payment' => [],
-            'order' => [],
-            'logistics' => [],
-            'products' => [],
+            'merchant' => [],
+            'channel' => [],
         ];
 
         foreach (self::cases() as $kind) {

@@ -299,7 +299,7 @@ class MerchantShipmentSyncService
     {
         $batches = [];
         $ids = [];
-        $heading = __('admin.merchant_shipment_sync.telegram_heading', ['count' => $syncs->count()]);
+        $heading = $this->telegramRoutes->message(TelegramNotificationKind::ShipmentSyncFailed, ['count' => $syncs->count()]);
         $message = $heading;
         $orders = $syncs->map(fn (OrderShipmentSync $sync): ?Order => $sync->order)
             ->filter(fn (?Order $order): bool => $order !== null && (int) $order->merchant_id === $merchantId)

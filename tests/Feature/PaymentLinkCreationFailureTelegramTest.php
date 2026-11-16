@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Models\TelegramBot;
+use App\Models\User;
 use App\Services\OrderCreationService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
@@ -254,9 +255,14 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
         });
     }
 
-    public function test_shared_channel_failures_only_notify_the_order_merchant(): void
+    public function test_shared_channel_failures_only_notify_the_channel_owner(): void
     {
-        $this->paymentMethod->update(['merchant_id' => null]);
+        $owner = User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]);
+        TelegramBot::create([
+            'user_id' => $owner->id, 'bot_token' => 'owner-bot-token',
+            'chat_id' => 'owner-chat', 'is_enabled' => true,
+        ]);
+        $this->paymentMethod->forceFill(['merchant_id' => null, 'owner_id' => $owner->id])->save();
         $other = Merchant::create([
             'name' => 'Another Merchant', 'contact_person' => 'Other',
             'contact_phone' => '123456', 'contact_email' => 'other@example.com',
@@ -265,14 +271,15 @@ class PaymentLinkCreationFailureTelegramTest extends TestCase
             'merchant_id' => $other->id, 'bot_token' => 'other-bot-token',
             'chat_id' => '999888777', 'is_enabled' => true,
         ]);
+        $this->paymentMethod->assignedMerchants()->attach([$this->merchant->id, $other->id]);
         $order = $this->contextOrder();
         $this->fakePay(Http::response(['code' => 10004, 'message' => 'Authorization failed'], 401));
 
         $this->failure(fn () => $this->client()->createPayment($this->payload($order), $order));
 
         $request = $this->singleTelegramRequest();
-        $this->assertSame('111222333', $request['chat_id']);
-        $this->assertStringContainsString('/botmerchant-bot-token/', $request->url());
+        $this->assertSame('owner-chat', $request['chat_id']);
+        $this->assertStringContainsString('/botowner-bot-token/', $request->url());
         $this->assertStringNotContainsString('other-bot-token', $request->url());
     }
 

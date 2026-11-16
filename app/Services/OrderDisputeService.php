@@ -144,21 +144,19 @@ class OrderDisputeService
      */
     public function sendDueReminder(OrderDisputeEvent $event): void
     {
-        $message = __('admin.telegram_notification.order_dispute_due_soon', [
-            'order_no' => e($event->order_no),
-            'event_no' => e($event->event_no),
-            'due_at' => $event->due_at->toDateTimeString(),
-        ]);
-
         $order = Order::query()->withoutGlobalScopes()->withTrashed()
             ->forMerchant($event->merchant_id)->findOrFail($event->order_id);
-        $message .= "\n\n".OrderTelegramSummary::forOrder($order);
 
-        $this->telegramRoutes->send(
+        $this->telegramRoutes->sendNotification(
             TelegramNotificationKind::OrderDisputeDueSoon,
-            $message,
+            [
+                'order_no' => $event->order_no,
+                'event_no' => $event->event_no,
+                'due_at' => $event->due_at->toDateTimeString(),
+            ],
             (int) $event->merchant_id,
             $order->paymentMethodConfig(),
+            summary: OrderTelegramSummary::forOrder($order),
         );
 
         $event->update(['reminded_at' => now()]);

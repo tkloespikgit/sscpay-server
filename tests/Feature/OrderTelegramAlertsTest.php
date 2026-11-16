@@ -98,7 +98,7 @@ class OrderTelegramAlertsTest extends TestCase
             'user_id' => $owner->id, 'merchant_id' => null, 'bot_token' => 'admin-alert-token',
             'chat_id' => 'channel-owner', 'is_enabled' => true,
         ]);
-        $this->paymentMethod->update(['merchant_id' => null, 'owner_id' => $owner->id, 'max_failed_times' => 1]);
+        $this->paymentMethod->forceFill(['merchant_id' => null, 'owner_id' => $owner->id, 'max_failed_times' => 1])->save();
         $this->paymentMethod->assignedMerchants()->sync([$this->merchant->id, $otherMerchant->id]);
         $order = $trigger === 'forbidden' ? $this->paidOrder() : $this->paidOrder([
             'status' => 'pending', 'paid_at' => null,

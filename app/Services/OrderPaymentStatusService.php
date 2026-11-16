@@ -114,11 +114,11 @@ class OrderPaymentStatusService
             'owner_id' => $method->owner_id,
         ]);
 
-        $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodForbidden, $method, __('admin.telegram_notification.payment_method_forbidden', [
-            'method_name' => e((string) $method->method_name),
-            'method_code' => e((string) $method->method_code),
-            'order_no' => e((string) $order->order_no),
-        ]), $order);
+        $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodForbidden, $method, [
+            'method_name' => $method->method_name,
+            'method_code' => $method->method_code,
+            'order_no' => $order->order_no,
+        ], $order);
     }
 
     /**
@@ -399,11 +399,11 @@ class OrderPaymentStatusService
                 'error' => $exception->getMessage(),
             ]);
 
-            $this->telegramRoutes->send(TelegramNotificationKind::GatewayReversalSettleFailed, __('admin.telegram_notification.gateway_reversal_settle_failed', [
-                'order_no' => e((string) $order->order_no),
+            $this->telegramRoutes->sendNotification(TelegramNotificationKind::GatewayReversalSettleFailed, [
+                'order_no' => $order->order_no,
                 'status' => __('admin.order.statuses.'.$targetStatus),
-                'error' => e((string) $exception->getMessage()),
-            ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
+                'error' => $exception->getMessage(),
+            ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
         }
     }
 
@@ -436,12 +436,12 @@ class OrderPaymentStatusService
             'order_amount' => (string) $order->amount,
         ]);
 
-        $this->telegramRoutes->send(TelegramNotificationKind::GatewayReversalAmountMismatch, __('admin.telegram_notification.gateway_reversal_amount_mismatch', [
-            'order_no' => e((string) $order->order_no),
+        $this->telegramRoutes->sendNotification(TelegramNotificationKind::GatewayReversalAmountMismatch, [
+            'order_no' => $order->order_no,
             'gateway_amount' => (string) $payloadAmount,
             'order_amount' => (string) $order->amount,
             'currency' => strtoupper((string) $order->currency),
-        ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
+        ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
     }
 
     /** 网关确认已支付不关闭人工审核；按审核事件去重提醒人工核对。 */
@@ -450,13 +450,15 @@ class OrderPaymentStatusService
         $activeDisputeEventId = $order->activeDisputeEvent?->id ?? $order->id;
         $dedupeKey = "dispute_review_gateway_alert:{$activeDisputeEventId}:{$targetStatus}";
 
-        if (! Cache::add($dedupeKey, true, now()->addDay())) {
+        $settings = $this->telegramRoutes->settings(TelegramNotificationKind::DisputeReviewGatewayStatusIgnored);
+
+        if (! $settings['enabled'] || ! Cache::add($dedupeKey, true, now()->addMinutes($settings['cooldown_minutes']))) {
             return;
         }
 
-        $this->telegramRoutes->send(TelegramNotificationKind::DisputeReviewGatewayStatusIgnored, __('admin.telegram_notification.dispute_review_gateway_status_ignored', [
-            'order_no' => e((string) $order->order_no),
+        $this->telegramRoutes->sendNotification(TelegramNotificationKind::DisputeReviewGatewayStatusIgnored, [
+            'order_no' => $order->order_no,
             'status' => __('admin.order.statuses.'.$targetStatus),
-        ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
+        ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
     }
 }

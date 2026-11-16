@@ -32,18 +32,14 @@ final readonly class PaymentMethodFailureService
         ]);
 
         try {
-            $details = array_map(
-                fn ($value): string => htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-                [
-                    'method_name' => $method->method_name,
-                    'method_code' => $method->method_code,
-                    'order_no' => $order->order_no,
-                    'failed_times' => $method->consecutive_failed_times,
-                    'max_failed_times' => $disabled['limit'],
-                ],
-            );
-            $message = __('admin.telegram_notification.payment_method_creation_failed_disabled', $details);
-            $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodCreationFailedDisabled, $method, $message, $order);
+            $details = [
+                'method_name' => $method->method_name,
+                'method_code' => $method->method_code,
+                'order_no' => $order->order_no,
+                'failed_times' => $method->consecutive_failed_times,
+                'max_failed_times' => $disabled['limit'],
+            ];
+            $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodCreationFailedDisabled, $method, $details, $order);
         } catch (Throwable $error) {
             Log::warning('支付通道连续失败禁用提醒发送失败', [
                 'payment_method_id' => $method->id,

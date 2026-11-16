@@ -386,7 +386,7 @@ class PaymentMethodCreationFailureTest extends TestCase
 
         app(PaymentMethodFailureService::class)->recordFailure($order, $method, $order->gatewayOrderReference());
 
-        $this->assertContains('支付通道禁用提醒已跳过：管理员未绑定可用的 Telegram', $logged);
+        $this->assertContains('Telegram 通知已跳过：支付通道缺少归属管理员', $logged);
         $this->assertSame(1, $method->refresh()->consecutive_failed_times);
         $this->assertFalse($method->is_active);
         Http::assertNothingSent();
