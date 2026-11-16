@@ -4,7 +4,7 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\PaymentMethod;
-use App\Support\OrderTelegramSummary;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -12,7 +12,7 @@ use Throwable;
 /** 按渠道记录建单最终结果，共享渠道的计数和自动禁用均为全局状态。 */
 final readonly class PaymentMethodFailureService
 {
-    public function __construct(private TelegramNotificationService $telegram) {}
+    public function __construct(private PaymentChannelTelegramNotifier $channelTelegram) {}
 
     public function recordFailure(Order $order, PaymentMethod $method, string $reference): void
     {
@@ -43,21 +43,7 @@ final readonly class PaymentMethodFailureService
                 ],
             );
             $message = __('admin.telegram_notification.payment_method_creation_failed_disabled', $details);
-            $recipients = array_unique([$order->merchant_id, ...$method->notifiableMerchantIds()]);
-
-            foreach ($recipients as $merchantId) {
-                try {
-                    $this->telegram->send((int) $merchantId, (int) $merchantId === (int) $order->merchant_id
-                        ? $message."\n\n".OrderTelegramSummary::forOrder($order)
-                        : $message);
-                } catch (Throwable $error) {
-                    Log::warning('支付通道连续失败禁用提醒发送失败', [
-                        'payment_method_id' => $method->id,
-                        'merchant_id' => $merchantId,
-                        'exception' => $error::class,
-                    ]);
-                }
-            }
+            $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodCreationFailedDisabled, $method, $message, $order);
         } catch (Throwable $error) {
             Log::warning('支付通道连续失败禁用提醒发送失败', [
                 'payment_method_id' => $method->id,

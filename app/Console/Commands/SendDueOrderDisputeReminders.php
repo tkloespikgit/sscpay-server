@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\OrderDisputeEvent;
 use App\Services\OrderDisputeService;
-use App\Services\TelegramNotificationService;
 use Illuminate\Console\Command;
 
 /**
@@ -23,7 +22,7 @@ class SendDueOrderDisputeReminders extends Command
 
     protected $description = '扫描即将到期的争议审核事件并发送 Telegram 提醒';
 
-    public function handle(OrderDisputeService $service, TelegramNotificationService $telegram): int
+    public function handle(OrderDisputeService $service): int
     {
         $dueSoonEvents = OrderDisputeEvent::query()
             ->withoutGlobalScopes()
@@ -37,7 +36,7 @@ class SendDueOrderDisputeReminders extends Command
         }
 
         foreach ($dueSoonEvents as $event) {
-            $service->sendDueReminder($event, $telegram);
+            $service->sendDueReminder($event);
         }
 
         $this->info("Sent reminder for {$dueSoonEvents->count()} dispute event(s).");

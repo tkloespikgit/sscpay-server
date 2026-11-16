@@ -8,8 +8,9 @@ use App\Events\OrderDisputeOpened;
 use App\Events\OrderStatusChanged;
 use App\Events\PaymentLinkCreationFailed;
 use App\Models\Order;
-use App\Services\TelegramNotificationService;
+use App\Services\TelegramNotificationRouter;
 use App\Support\OrderTelegramSummary;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Events\Dispatcher;
 
@@ -25,7 +26,7 @@ use Illuminate\Events\Dispatcher;
  */
 class SendTelegramNotification implements ShouldQueue
 {
-    public function __construct(private readonly TelegramNotificationService $telegram) {}
+    public function __construct(private readonly TelegramNotificationRouter $telegramRoutes) {}
 
     public function handleOrderStatusChanged(OrderStatusChanged $event): void
     {
@@ -47,18 +48,29 @@ class SendTelegramNotification implements ShouldQueue
         // （OrderPaymentStatusService）触发本事件，所以下面这几条消息文案里
         // "来自网关通知"这类措辞是安全的；如果未来后台人工操作也开始 fire
         // 这个事件，需要回头看看这几条文案是否还准确。
-        $message = match ($event->newStatus) {
-            'disputing' => $this->disputingMessage($event),
-            'refunded' => $this->refundedMessage($event),
-            'chargeback' => $this->chargebackMessage($event),
+        $kind = match ($event->newStatus) {
+            'disputing' => TelegramNotificationKind::OrderDisputing,
+            'refunded' => TelegramNotificationKind::OrderRefundGateway,
+            'chargeback' => TelegramNotificationKind::OrderChargebackGateway,
+            default => null,
+        };
+        $message = match ($kind) {
+            TelegramNotificationKind::OrderDisputing => $this->disputingMessage($event),
+            TelegramNotificationKind::OrderRefundGateway => $this->refundedMessage($event),
+            TelegramNotificationKind::OrderChargebackGateway => $this->chargebackMessage($event),
             default => null,
         };
 
-        if ($message === null) {
+        if ($kind === null || $message === null) {
             return;
         }
 
-        $this->telegram->send($event->order->merchant_id, $message."\n\n".OrderTelegramSummary::forOrder($event->order));
+        $this->telegramRoutes->send(
+            $kind,
+            $message."\n\n".OrderTelegramSummary::forOrder($event->order),
+            (int) $event->order->merchant_id,
+            $event->order->paymentMethodConfig(),
+        );
     }
 
     /**
@@ -78,7 +90,12 @@ class SendTelegramNotification implements ShouldQueue
             'payment_method' => e((string) $order->payment_method),
         ]);
 
-        $this->telegram->send($order->merchant_id, $message."\n\n".OrderTelegramSummary::forOrder($order));
+        $this->telegramRoutes->send(
+            TelegramNotificationKind::DesignatedOrderCreated,
+            $message."\n\n".OrderTelegramSummary::forOrder($order),
+            (int) $order->merchant_id,
+            $order->paymentMethodConfig(),
+        );
     }
 
     public function handleLogisticsImportCompleted(LogisticsImportCompleted $event): void
@@ -94,15 +111,25 @@ class SendTelegramNotification implements ShouldQueue
             'failed' => $task->fail_count,
         ]);
 
-        $this->telegram->send($task->merchant_id, $message);
+        $this->telegramRoutes->send(
+            TelegramNotificationKind::LogisticsImportCompleted,
+            $message,
+            (int) $task->merchant_id,
+        );
     }
 
     public function handlePaymentLinkCreationFailed(PaymentLinkCreationFailed $event): void
     {
         $details = array_map(fn ($value) => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $event->details);
         $message = __('admin.telegram_notification.payment_link_creation_failed', $details);
+        $methodId = $event->details['payment_method_id'] ?? null;
 
-        $this->telegram->send($event->merchantId, $message."\n\n".OrderTelegramSummary::render($event->details));
+        $this->telegramRoutes->send(
+            TelegramNotificationKind::PaymentLinkCreationFailed,
+            $message."\n\n".OrderTelegramSummary::render($event->details),
+            $event->merchantId,
+            paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
+        );
     }
 
     public function handleOrderDisputeOpened(OrderDisputeOpened $event): void
@@ -111,8 +138,14 @@ class SendTelegramNotification implements ShouldQueue
             'event_no' => htmlspecialchars(mb_substr($event->eventNo, 0, 100), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
             'due_at' => htmlspecialchars($event->dueAt, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
         ]);
+        $methodId = $event->details['payment_method_id'] ?? null;
 
-        $this->telegram->send($event->merchantId, $message."\n\n".OrderTelegramSummary::render($event->details));
+        $this->telegramRoutes->send(
+            TelegramNotificationKind::OrderDisputeOpened,
+            $message."\n\n".OrderTelegramSummary::render($event->details),
+            $event->merchantId,
+            paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
+        );
     }
 
     public function subscribe(Dispatcher $events): array
@@ -142,7 +175,12 @@ class SendTelegramNotification implements ShouldQueue
         $message .= "\n\n".OrderTelegramSummary::forOrder($order);
 
         for ($i = 0; $i < 5; $i++) {
-            $this->telegram->send($order->merchant_id, $message);
+            $this->telegramRoutes->send(
+                TelegramNotificationKind::OrderPaid,
+                $message,
+                (int) $order->merchant_id,
+                $order->paymentMethodConfig(),
+            );
         }
     }
 

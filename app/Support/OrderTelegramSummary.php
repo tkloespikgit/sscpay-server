@@ -66,6 +66,7 @@ final class OrderTelegramSummary
             'paid_at' => $order->paid_at?->copy()->setTimezone((string) config('app.timezone', 'UTC'))->format('Y-m-d H:i:s T') ?? '',
             'currency' => strtoupper((string) $order->currency),
             'amount' => (string) $order->amount,
+            'payment_method_id' => (string) ($order->payment_method_id ?? ''),
         ];
     }
 

@@ -11,6 +11,7 @@ use App\Models\OrderDisputeEventReply;
 use App\Models\User;
 use App\Support\OrderTelegramSummary;
 use App\Support\RichTextSanitizer;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -25,7 +26,10 @@ class OrderDisputeService
 {
     private const ATTACHMENT_FEATURE = 'dispute-events';
 
-    public function __construct(private readonly BalanceService $balanceService) {}
+    public function __construct(
+        private readonly BalanceService $balanceService,
+        private readonly TelegramNotificationRouter $telegramRoutes,
+    ) {}
 
     /**
      * 开立争议审核事件（仅超级管理员/商户财务管理员）。正常已收款状态族及
@@ -138,7 +142,7 @@ class OrderDisputeService
      * 无论 Telegram 是否真正发出去（商户未配置机器人时 send() 返回 false，
      * 这不算失败），都置 reminded_at，避免每次调度重复发送。
      */
-    public function sendDueReminder(OrderDisputeEvent $event, TelegramNotificationService $telegram): void
+    public function sendDueReminder(OrderDisputeEvent $event): void
     {
         $message = __('admin.telegram_notification.order_dispute_due_soon', [
             'order_no' => e($event->order_no),
@@ -150,7 +154,12 @@ class OrderDisputeService
             ->forMerchant($event->merchant_id)->findOrFail($event->order_id);
         $message .= "\n\n".OrderTelegramSummary::forOrder($order);
 
-        $telegram->send($event->merchant_id, $message);
+        $this->telegramRoutes->send(
+            TelegramNotificationKind::OrderDisputeDueSoon,
+            $message,
+            (int) $event->merchant_id,
+            $order->paymentMethodConfig(),
+        );
 
         $event->update(['reminded_at' => now()]);
     }

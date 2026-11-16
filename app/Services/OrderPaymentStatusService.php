@@ -11,6 +11,7 @@ use App\Models\PaymentMethod;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Support\OrderTelegramSummary;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -44,7 +45,8 @@ class OrderPaymentStatusService
         private readonly OrderNotificationService $notificationService,
         private readonly PaymentGatewayService $paymentGateway,
         private readonly AdConversionService $adConversionService,
-        private readonly TelegramNotificationService $telegram,
+        private readonly TelegramNotificationRouter $telegramRoutes,
+        private readonly PaymentChannelTelegramNotifier $channelTelegram,
         private readonly OrderAccountingService $accountingService,
         private readonly OrderLifecycleService $lifecycle,
         private readonly CombinedPaymentStatusService $combinedPayments,
@@ -104,51 +106,19 @@ class OrderPaymentStatusService
 
     private function notifyForbiddenPaymentMethod(Order $order, PaymentMethod $method): void
     {
-        $recipientIds = $this->forbiddenNoticeRecipients($order, $method);
-
         Log::warning('payment_status webhook: 支付通道账号已被标记为不可用，自动禁用', [
             'order_no' => $order->order_no,
             'merchant_id' => $order->merchant_id,
             'payment_method_id' => $method->id,
             'method_code' => $method->method_code,
-            'notified_merchants' => $recipientIds,
+            'owner_id' => $method->owner_id,
         ]);
 
-        $message = __('admin.telegram_notification.payment_method_forbidden', [
+        $this->channelTelegram->notify(TelegramNotificationKind::PaymentMethodForbidden, $method, __('admin.telegram_notification.payment_method_forbidden', [
             'method_name' => e((string) $method->method_name),
             'method_code' => e((string) $method->method_code),
             'order_no' => e((string) $order->order_no),
-        ]);
-
-        foreach ($recipientIds as $merchantId) {
-            $this->telegram->send($merchantId, $merchantId === (int) $order->merchant_id
-                ? $message."\n\n".OrderTelegramSummary::forOrder($order)
-                : $message);
-        }
-    }
-
-    /**
-     * 禁用通知的收件商户。
-     *
-     * 禁用是一次全局操作（payment_methods.is_active 只有一份），系统级支付方式被
-     * N 个商户共用时，一家的回调会让 N 家一起断掉收款。只通知下单那一家的话，
-     * 其余商户的支付组里这条通道会静默变成不可用，组内没有其它候选时下单直接失败，
-     * 而"无可用通道"告警有 10 分钟去重（PaymentService::alertNoAvailablePaymentMethod()），
-     * 他们拿不到真正的原因。所以收件人是"全部绑定该通道的商户"
-     * （PaymentMethod::notifiableMerchantIds()），再加下单商户兜底——理论上下单商户
-     * 必然在绑定名单里，但历史脏数据（比如支付组里挂了一条没分配给自己的通道）下
-     * 未必，兜一层不会重复发（下面会去重）。
-     *
-     * @return array<int>
-     */
-    private function forbiddenNoticeRecipients(Order $order, PaymentMethod $method): array
-    {
-        $ids = array_merge([$order->merchant_id], $method->notifiableMerchantIds());
-
-        return array_values(array_unique(array_filter(array_map(
-            fn ($id) => $id === null ? null : (int) $id,
-            $ids,
-        ))));
+        ]), $order);
     }
 
     /**
@@ -429,11 +399,11 @@ class OrderPaymentStatusService
                 'error' => $exception->getMessage(),
             ]);
 
-            $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_settle_failed', [
+            $this->telegramRoutes->send(TelegramNotificationKind::GatewayReversalSettleFailed, __('admin.telegram_notification.gateway_reversal_settle_failed', [
                 'order_no' => e((string) $order->order_no),
                 'status' => __('admin.order.statuses.'.$targetStatus),
                 'error' => e((string) $exception->getMessage()),
-            ])."\n\n".OrderTelegramSummary::forOrder($order));
+            ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
         }
     }
 
@@ -466,12 +436,12 @@ class OrderPaymentStatusService
             'order_amount' => (string) $order->amount,
         ]);
 
-        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.gateway_reversal_amount_mismatch', [
+        $this->telegramRoutes->send(TelegramNotificationKind::GatewayReversalAmountMismatch, __('admin.telegram_notification.gateway_reversal_amount_mismatch', [
             'order_no' => e((string) $order->order_no),
             'gateway_amount' => (string) $payloadAmount,
             'order_amount' => (string) $order->amount,
             'currency' => strtoupper((string) $order->currency),
-        ])."\n\n".OrderTelegramSummary::forOrder($order));
+        ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
     }
 
     /** 网关确认已支付不关闭人工审核；按审核事件去重提醒人工核对。 */
@@ -484,9 +454,9 @@ class OrderPaymentStatusService
             return;
         }
 
-        $this->telegram->send($order->merchant_id, __('admin.telegram_notification.dispute_review_gateway_status_ignored', [
+        $this->telegramRoutes->send(TelegramNotificationKind::DisputeReviewGatewayStatusIgnored, __('admin.telegram_notification.dispute_review_gateway_status_ignored', [
             'order_no' => e((string) $order->order_no),
             'status' => __('admin.order.statuses.'.$targetStatus),
-        ])."\n\n".OrderTelegramSummary::forOrder($order));
+        ])."\n\n".OrderTelegramSummary::forOrder($order), (int) $order->merchant_id, $order->paymentMethodConfig());
     }
 }

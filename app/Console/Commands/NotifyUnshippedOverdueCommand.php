@@ -4,8 +4,9 @@ namespace App\Console\Commands;
 
 use App\Models\Order;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
-use App\Services\TelegramNotificationService;
+use App\Services\TelegramNotificationRouter;
 use App\Support\OrderTelegramSummary;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 
@@ -21,7 +22,7 @@ class NotifyUnshippedOverdueCommand extends Command
 
     private const MESSAGE_LENGTH_LIMIT = 4000;
 
-    public function handle(TelegramNotificationService $telegram): int
+    public function handle(TelegramNotificationRouter $routes): int
     {
         $deadline = now()->subHours(LogisticsTrackingSyncService::UNSHIPPED_HOURS);
 
@@ -40,7 +41,7 @@ class NotifyUnshippedOverdueCommand extends Command
 
         $sent = 0;
 
-        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($telegram, &$sent): void {
+        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($routes, &$sent): void {
             $heading = __('admin.telegram_notification.unshipped_overdue', [
                 'count' => $group->count(),
                 'hours' => LogisticsTrackingSyncService::UNSHIPPED_HOURS,
@@ -54,14 +55,14 @@ class NotifyUnshippedOverdueCommand extends Command
                 $summary = $summaries[(int) $order->id];
 
                 if ($message !== $heading && mb_strlen($message."\n\n".$summary) > self::MESSAGE_LENGTH_LIMIT) {
-                    $notified = $telegram->send((int) $merchantId, $message) || $notified;
+                    $notified = $routes->send(TelegramNotificationKind::UnshippedOverdue, $message, (int) $merchantId)->sent || $notified;
                     $message = $heading;
                 }
 
                 $message .= "\n\n".$summary;
             }
 
-            if ($telegram->send((int) $merchantId, $message) || $notified) {
+            if ($routes->send(TelegramNotificationKind::UnshippedOverdue, $message, (int) $merchantId)->sent || $notified) {
                 $sent++;
             }
         });

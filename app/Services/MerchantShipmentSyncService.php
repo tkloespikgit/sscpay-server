@@ -10,11 +10,11 @@ use App\Models\Order;
 use App\Models\OrderShipmentSync;
 use App\Models\OrderShipmentSyncAttempt;
 use App\Models\OrderShipping;
-use App\Models\TelegramBot;
 use App\Rules\ShipmentSyncUrl;
 use App\Support\OrderTelegramSummary;
 use App\Support\ShipmentSyncEndpoint;
 use App\Support\SignatureCanonicalizer;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -29,7 +29,7 @@ class MerchantShipmentSyncService
     private const RETRY_INTERVALS = [30, 300, 1800, 3600];
 
     public function __construct(
-        private readonly TelegramNotificationService $telegram,
+        private readonly TelegramNotificationRouter $telegramRoutes,
         private readonly ShipmentSyncEndpoint $endpoint,
     ) {}
 
@@ -254,15 +254,29 @@ class MerchantShipmentSyncService
                     ->where('alert_status', 'pending')->where('status', 'failed')
                     ->with(['order' => fn ($query) => $query->withoutGlobalScopes()->withTrashed()->where('merchant_id', (int) $merchantId)])
                     ->get();
-                $bot = TelegramBot::query()->forMerchant((int) $merchantId)->first();
-                if (! $bot?->isUsable()) {
-                    OrderShipmentSync::query()->forMerchant((int) $merchantId)->whereIn('id', $pending->modelKeys())
-                        ->update(['alert_status' => 'unavailable']);
-
-                    return;
-                }
                 foreach ($this->failureAlertBatches($pending->take(25), (int) $merchantId) as $batch) {
-                    if (! $this->telegram->send((int) $merchantId, $batch['message'])) {
+                    $delivery = $this->telegramRoutes->send(
+                        TelegramNotificationKind::ShipmentSyncFailed,
+                        $batch['message'],
+                        (int) $merchantId,
+                    );
+
+                    if ($delivery->suppressed) {
+                        OrderShipmentSync::query()->forMerchant((int) $merchantId)->whereIn('id', $pending->modelKeys())
+                            ->where('alert_status', 'pending')
+                            ->update(['alert_status' => 'sent', 'alerted_at' => now(), 'next_alert_at' => null]);
+
+                        return;
+                    }
+
+                    if (! $delivery->anyUsable) {
+                        OrderShipmentSync::query()->forMerchant((int) $merchantId)->whereIn('id', $pending->modelKeys())
+                            ->update(['alert_status' => 'unavailable']);
+
+                        return;
+                    }
+
+                    if (! $delivery->sent) {
                         OrderShipmentSync::query()->forMerchant((int) $merchantId)->whereIn('id', $pending->modelKeys())
                             ->where('alert_status', 'pending')->update(['next_alert_at' => now()->addMinutes(5)]);
                         break;

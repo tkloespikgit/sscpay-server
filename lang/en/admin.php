@@ -1477,6 +1477,7 @@ return [
             'security' => 'Security',
             'notify' => 'Notifications',
             'logistics' => 'Logistics Tracking',
+            'telegram' => 'Telegram',
         ],
         'value_types' => [
             'string' => 'String',
@@ -1709,6 +1710,8 @@ return [
             'unavailable' => 'Quick connection is not available yet. Contact your platform administrator or use a custom bot.',
             'quick_binding' => 'No bot creation or Chat ID lookup needed. For a private chat, open the link and press Start. For a group, its owner or an administrator selects the group and adds the bot with permission to send messages. Each merchant has one recipient. A new connection replaces the previous recipient and enables notifications.',
             'binding_pending' => 'Your link is ready. Use the button below to finish in Telegram; this page updates automatically. The link expires in 10 minutes and works once. Do not forward it. Generating a new link invalidates the previous one.',
+            'admin_quick_binding' => 'Connect your own platform bot in a private chat or group. When a system payment channel you own is disabled automatically, the notice comes here instead of to merchants using the channel. Finish the link yourself in Telegram.',
+            'admin_unavailable' => 'The platform bot is not configured, so quick connection is unavailable. Add the bot token, username, and webhook secret to the deployment configuration. A custom bot can still be used.',
         ],
         'modes' => [
             'platform' => 'Quick Connection (Platform Bot)',
@@ -1721,6 +1724,7 @@ return [
             'bind_group' => 'Connect Group',
             'open_telegram' => 'Finish Connection in Telegram',
             'disconnect' => 'Disconnect',
+            'disable' => 'Disable notifications',
         ],
         'notifications' => [
             'saved' => 'Telegram settings saved',
@@ -1822,6 +1826,110 @@ return [
         'no_available_payment_method_reasons' => [
             'no_active_method' => 'This payment group has no enabled payment methods',
             'risk_control_blocked' => 'All payment methods in the group were blocked by risk-control thresholds (per-transaction/per-day amount/per-day count/per-month amount)',
+        ],
+    ],
+
+    'telegram_routes' => [
+        'title' => 'Notification recipients',
+        'description' => 'Choose who receives each Telegram notification. One set of rules applies to the whole platform. Order details are sent to every selected recipient. People or merchants without an enabled bot are skipped. Payment-link emails and test messages are not configured here. Channel ownership sends a merchant-owned channel to that merchant, a system channel to its owner, and a system channel with no owner to every enabled super administrator.',
+        'save' => 'Save',
+        'saved' => 'Notification recipients saved',
+        'none_exclusive' => 'Do not send cannot be combined with another recipient.',
+        'invalid_recipient' => 'This notification cannot be sent to the selected recipient.',
+        'groups' => [
+            'payment' => 'Payment channels',
+            'order' => 'Orders and funds',
+            'logistics' => 'Logistics',
+            'products' => 'Product sync',
+        ],
+        'recipients' => [
+            'merchant' => 'Merchant for the event',
+            'channel_owner' => 'Channel owner',
+            'channel_merchants' => 'Merchants using the channel',
+            'super_admins' => 'All enabled super administrators',
+            'none' => 'Do not send',
+        ],
+        'kinds' => [
+            'payment_method_forbidden' => [
+                'label' => 'Payment channel automatically disabled',
+                'description' => 'The gateway reports that the provider account cannot create payments, and the channel is disabled.',
+            ],
+            'payment_method_creation_failed_disabled' => [
+                'label' => 'Channel disabled after repeated creation failures',
+                'description' => 'Consecutive payment-link failures reach the threshold and the channel is disabled.',
+            ],
+            'payment_link_creation_failed' => [
+                'label' => 'Payment link creation failed',
+                'description' => 'Creating a payment link for one order failed. The channel stays enabled.',
+            ],
+            'no_available_payment_method' => [
+                'label' => 'No available payment channel',
+                'description' => 'A payment group has no usable channel, so the order is not created. The same group is notified at most once every 10 minutes.',
+            ],
+            'designated_order_created' => [
+                'label' => 'Source-site order created',
+                'description' => 'A designated-channel order has been saved locally.',
+            ],
+            'order_paid' => [
+                'label' => 'Designated-channel payment received',
+                'description' => 'The first successful payment of a designated-channel order. Five copies are still sent. Ordinary paid orders are not notified.',
+            ],
+            'order_disputing' => [
+                'label' => 'Payment dispute',
+                'description' => 'The gateway marks the order as in dispute.',
+            ],
+            'order_refund_gateway' => [
+                'label' => 'Gateway refund',
+                'description' => 'The gateway starts a refund.',
+            ],
+            'order_chargeback_gateway' => [
+                'label' => 'Chargeback',
+                'description' => 'The gateway starts a chargeback.',
+            ],
+            'gateway_reversal_settle_failed' => [
+                'label' => 'Automatic refund or chargeback posting failed',
+                'description' => 'The status was updated, but the amount was not deducted from the merchant balance.',
+            ],
+            'gateway_reversal_amount_mismatch' => [
+                'label' => 'Gateway amount differs from the order',
+                'description' => 'The order amount was posted.',
+            ],
+            'dispute_review_gateway_status_ignored' => [
+                'label' => 'Gateway status during dispute review',
+                'description' => 'The gateway sends another status while a manual dispute review is open, and the system does not apply it automatically.',
+            ],
+            'order_dispute_opened' => [
+                'label' => 'Dispute review opened',
+                'description' => 'A dispute review is opened in the admin.',
+            ],
+            'order_dispute_due_soon' => [
+                'label' => 'Dispute review due soon',
+                'description' => 'A dispute review is close to its deadline. After the deadline it closes and releases the frozen funds.',
+            ],
+            'logistics_import_completed' => [
+                'label' => 'Logistics import completed',
+                'description' => 'A logistics file has finished importing.',
+            ],
+            'logistics_anomaly' => [
+                'label' => 'Logistics anomaly',
+                'description' => 'A shipment tracking anomaly is detected.',
+            ],
+            'unshipped_overdue' => [
+                'label' => 'Unshipped overdue',
+                'description' => 'Paid orders still have no shipment after the configured time, grouped by merchant.',
+            ],
+            'shipment_sync_failed' => [
+                'label' => 'Shipment sync failed',
+                'description' => 'Sending shipment status back to the merchant site failed.',
+            ],
+            'site_products_sync_completed' => [
+                'label' => 'Site product sync completed',
+                'description' => 'Product sync for a payment channel finished.',
+            ],
+            'site_products_sync_failed' => [
+                'label' => 'Site product sync failed',
+                'description' => 'Product sync for a payment channel exhausted its retries.',
+            ],
         ],
     ],
 

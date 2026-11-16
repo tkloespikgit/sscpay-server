@@ -7,6 +7,7 @@ use App\Filament\Support\SystemConfigForm;
 use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
 use App\Services\MerchantRoleProvisioningService;
+use App\Services\TelegramNotificationRouter;
 use App\Support\OrderStatusColor;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
@@ -231,7 +232,10 @@ class SystemConfigResource extends Resource
     {
         // 角色模板必须经专用页面保存，确保配置与各商户权限一同更新。
         return parent::getEloquentQuery()
-            ->where('config_key', '!=', MerchantRoleProvisioningService::TEMPLATE_CONFIG_KEY);
+            ->whereNotIn('config_key', [
+                MerchantRoleProvisioningService::TEMPLATE_CONFIG_KEY,
+                TelegramNotificationRouter::CONFIG_KEY,
+            ]);
     }
 
     public static function canViewAny(): bool

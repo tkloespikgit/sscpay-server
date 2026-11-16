@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Support\OrderTelegramSummary;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Random\Randomizer;
@@ -37,7 +38,7 @@ use Random\Randomizer;
 class PaymentService
 {
     public function __construct(
-        private readonly TelegramNotificationService $telegram,
+        private readonly TelegramNotificationRouter $telegramRoutes,
         private readonly Randomizer $randomizer = new Randomizer,
         private readonly PaymentCapacityService $capacity = new PaymentCapacityService,
     ) {}
@@ -161,12 +162,12 @@ class PaymentService
             ? __('admin.telegram_notification.no_available_payment_method_reasons.no_active_method')
             : __('admin.telegram_notification.no_available_payment_method_reasons.risk_control_blocked');
 
-        $this->telegram->send($group->merchant_id, __('admin.telegram_notification.no_available_payment_method', [
+        $this->telegramRoutes->send(TelegramNotificationKind::NoAvailablePaymentMethod, __('admin.telegram_notification.no_available_payment_method', [
             'group_name' => $group->group_name,
             'group_key' => $group->group_key,
             'amount' => number_format((float) $amountUsd, 2),
             'reason' => $reason,
-        ])."\n\n".OrderTelegramSummary::render($orderDetails));
+        ])."\n\n".OrderTelegramSummary::render($orderDetails), (int) $group->merchant_id);
     }
 
     /**
