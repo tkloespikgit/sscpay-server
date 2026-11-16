@@ -21,6 +21,15 @@ return [
         'observer' => '观察者账户',
     ],
 
+    'account_settings' => [
+        'label' => '账号设置',
+        'sections' => [
+            'profile' => '个人信息',
+            'password' => '密码',
+            'two_factor' => '两步验证',
+        ],
+    ],
+
     'showcase' => [
         'static_config' => [
             'action' => '静态配置演示',
@@ -1829,7 +1838,7 @@ return [
         'security' => [
             'code_label' => '身份验证码',
             'code_help' => '请输入身份验证器 App 上当前的 6 位验证码',
-            'not_bound' => '请先在「个人资料」里绑定身份验证器后再进行资金操作。',
+            'not_bound' => '请先在头像旁的「账号设置」里绑定身份验证器后再进行资金操作。',
             'invalid_code' => '身份验证码不正确或已过期，请重试。',
         ],
         'adjust' => [

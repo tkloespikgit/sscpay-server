@@ -23,6 +23,15 @@ return [
         'observer' => 'Observer Accounts',
     ],
 
+    'account_settings' => [
+        'label' => 'Account Settings',
+        'sections' => [
+            'profile' => 'Profile',
+            'password' => 'Password',
+            'two_factor' => 'Two-Factor Authentication',
+        ],
+    ],
+
     'showcase' => [
         'static_config' => [
             'action' => 'Static config demo',
@@ -1828,7 +1837,7 @@ return [
         'security' => [
             'code_label' => 'Authentication Code',
             'code_help' => 'Enter the current 6-digit code from your authenticator app',
-            'not_bound' => 'Please bind an authenticator in your profile before performing finance operations.',
+            'not_bound' => 'Please bind an authenticator in Account Settings, next to your avatar, before performing finance operations.',
             'invalid_code' => 'The authentication code is incorrect or expired, please try again.',
         ],
         'adjust' => [
