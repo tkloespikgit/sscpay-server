@@ -10,6 +10,7 @@ use App\Models\CryptoWebhookReceipt;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Support\CryptoAssetRegistry;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoVerificationPolicy;
 use Carbon\CarbonImmutable;
 use DomainException;
@@ -28,7 +29,7 @@ final class CryptoReceiptVerificationService
 
     public function process(int $merchantId, int $receiptId): bool
     {
-        if (! config('services.tatum.verification_enabled')) {
+        if (! CryptoRuntimeSettings::get('verification_enabled')) {
             throw new DomainException('Crypto verification is disabled.');
         }
         $receipt = CryptoWebhookReceipt::query()->forMerchant($merchantId)->findOrFail($receiptId);

@@ -26,9 +26,9 @@ class CryptoCombinedPaymentCompatibilityTest extends TestCase
     {
         parent::setUp();
         $this->setupCombinedPayments();
-        config(['app.url' => 'http://localhost', 'services.tatum.checkout_enabled' => true,
-            'services.tatum.subscriptions_enabled' => true, 'services.tatum.history_enabled' => true,
-            'services.tatum.verification_enabled' => true, 'services.tatum.settlement_enabled' => true]);
+        $this->setCryptoSettings(['app.url' => 'http://localhost', 'crypto.checkout_enabled' => true,
+            'crypto.subscriptions_enabled' => true, 'crypto.history_enabled' => true,
+            'crypto.verification_enabled' => true, 'crypto.settlement_enabled' => true]);
     }
 
     #[DataProvider('combinedGroupSettings')]
@@ -105,7 +105,7 @@ class CryptoCombinedPaymentCompatibilityTest extends TestCase
     {
         $this->combinedMethod();
         $this->cryptoMethod();
-        config(['services.tatum.checkout_enabled' => false]);
+        $this->setCryptoSettings(['crypto.checkout_enabled' => false]);
 
         $this->createCombined()->assertOk()->assertJsonPath('data.order_type', 'combine');
 

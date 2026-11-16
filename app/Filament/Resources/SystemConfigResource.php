@@ -6,7 +6,9 @@ use App\Filament\Resources\SystemConfigResource\Pages;
 use App\Filament\Support\SystemConfigForm;
 use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
+use App\Services\CryptoRuntimeSettingsService;
 use App\Services\MerchantRoleProvisioningService;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoSettings;
 use App\Support\OrderStatusColor;
 use Filament\Actions\EditAction;
@@ -25,7 +27,6 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Lang;
 
 /**
@@ -85,6 +86,8 @@ class SystemConfigResource extends Resource
                     ->disabled(),
                 Textarea::make('description')
                     ->label(__('admin.system_config.fields.description'))
+                    ->formatStateUsing(fn (?string $state, ?SystemConfig $record): ?string => CryptoRuntimeSettings::name($record?->config_key) !== null
+                        ? __('crypto.settings.runtime')[CryptoRuntimeSettings::name($record->config_key)] : $state)
                     ->rows(3)
                     ->disabled()
                     ->columnSpanFull(),
@@ -92,14 +95,27 @@ class SystemConfigResource extends Resource
             Section::make(__('admin.system_config.fields.config_value'))->schema([
                 TextInput::make('value_string')
                     ->label(__('admin.system_config.fields.config_value'))
-                    ->required()
+                    ->required(fn (?SystemConfig $record): bool => CryptoRuntimeSettings::name($record?->config_key) === null)
                     ->visible(fn (Get $get) => $get('value_type') === SystemConfig::TYPE_STRING),
+
+                TextInput::make('value_secret')
+                    ->label(__('admin.system_config.fields.config_value'))
+                    ->password()
+                    ->autocomplete('new-password')
+                    ->maxLength(4096)
+                    ->helperText(__('crypto.settings.secret_help'))
+                    ->visible(fn (?SystemConfig $record): bool => $record?->value_type === SystemConfig::TYPE_SECRET),
+
+                Toggle::make('clear_secret')
+                    ->label(__('crypto.settings.clear_secret'))
+                    ->default(false)
+                    ->visible(fn (?SystemConfig $record): bool => $record?->value_type === SystemConfig::TYPE_SECRET),
 
                 TextInput::make('value_number')
                     ->label(__('admin.system_config.fields.config_value'))
                     ->numeric(fn (?SystemConfig $record): bool => $record?->config_key !== 'crypto.quote_markup_percent')
                     ->inputMode('decimal')
-                    ->required()
+                    ->required(fn (?SystemConfig $record): bool => CryptoRuntimeSettings::name($record?->config_key) === null)
                     ->rules(fn (?SystemConfig $record): array => SystemConfigForm::numberRules($record))
                     ->helperText(fn (?SystemConfig $record): ?string => match ($record?->config_key) {
                         PaymentMethod::MAX_FAILED_TIMES_CONFIG_KEY => __('admin.system_config.max_failed_times.helper'),
@@ -177,6 +193,9 @@ class SystemConfigResource extends Resource
                     ->sortable(),
                 TextColumn::make('config_value')
                     ->label(__('admin.system_config.fields.config_value'))
+                    ->state(fn (SystemConfig $record): ?string => $record->value_type === SystemConfig::TYPE_SECRET
+                        ? (filled($record->getRawOriginal('secret_value')) ? __('crypto.settings.secret_set') : null)
+                        : $record->config_value)
                     ->formatStateUsing(fn (?string $state, SystemConfig $record): ?string => $record->value_type === SystemConfig::TYPE_BOOLEAN
                         ? __('admin.system_config.boolean_values.'.(filter_var($state, FILTER_VALIDATE_BOOLEAN) ? 'true' : 'false'))
                         : $state)
@@ -188,6 +207,8 @@ class SystemConfigResource extends Resource
                     ->placeholder(__('admin.system_config.not_set')),
                 TextColumn::make('description')
                     ->label(__('admin.system_config.fields.description'))
+                    ->formatStateUsing(fn (?string $state, SystemConfig $record): ?string => CryptoRuntimeSettings::name($record->config_key) !== null
+                        ? __('crypto.settings.runtime')[CryptoRuntimeSettings::name($record->config_key)] : $state)
                     ->searchable()
                     ->wrap(),
                 TextColumn::make('value_type')
@@ -214,7 +235,9 @@ class SystemConfigResource extends Resource
                         $record,
                         'mountedActions.'.$action->getNestingIndex().'.data',
                     ))
-                    ->after(fn (SystemConfig $record) => Cache::forget('system_config:'.$record->config_key)),
+                    ->using(fn (SystemConfig $record, array $data, EditAction $action, CryptoRuntimeSettingsService $settings): SystemConfig => $settings->save(
+                        auth()->user(), $record, $data, 'mountedActions.'.$action->getNestingIndex().'.data',
+                    )),
             ])
             ->recordUrl(null)
             ->recordAction('edit')

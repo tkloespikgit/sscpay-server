@@ -4,8 +4,9 @@ namespace App\Filament\Resources\SystemConfigResource\Pages;
 
 use App\Filament\Resources\SystemConfigResource;
 use App\Filament\Support\SystemConfigForm;
+use App\Services\CryptoRuntimeSettingsService;
 use Filament\Resources\Pages\EditRecord;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Database\Eloquent\Model;
 
 class EditSystemConfig extends EditRecord
 {
@@ -22,10 +23,16 @@ class EditSystemConfig extends EditRecord
     }
 
     /**
-     * 保存后清除对应缓存，使配置立即生效。
+     * 保存后清空密钥输入，避免明文留在后续页面状态中。
      */
     protected function afterSave(): void
     {
-        Cache::forget('system_config:'.$this->record->config_key);
+        $this->data['value_secret'] = null;
+        $this->data['clear_secret'] = false;
+    }
+
+    protected function handleRecordUpdate(Model $record, array $data): Model
+    {
+        return app(CryptoRuntimeSettingsService::class)->save(auth()->user(), $record, $data);
     }
 }

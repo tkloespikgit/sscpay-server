@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\CryptoAddressMonitor;
 use App\Services\TatumWebhookService;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\TatumWebhookSignature;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,7 +14,7 @@ class TatumWebhookController extends Controller
 {
     public function __invoke(Request $request, string $environment, string $monitor, TatumWebhookSignature $signature, TatumWebhookService $service): JsonResponse
     {
-        if (! config('services.tatum.subscriptions_enabled')) {
+        if (! CryptoRuntimeSettings::get('subscriptions_enabled')) {
             return response()->json(['code' => 503, 'message' => 'notification receiver is disabled'], 503);
         }
         $raw = $request->getContent();

@@ -590,3 +590,15 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **实现与运维：** 商户行锁串行化配置变化，目标更新与令牌消费同事务；重复回调不重复改绑，群管理员查询失败返回 503 等待上游重试。页面轮询只更新 Telegram 区块。平台通过 `telegram:register-webhook` 校验机器人用户名和群组能力后注册回调，不丢弃既有待投递消息。部署需执行新增迁移并完成平台机器人配置，操作见 [部署手册](../doc/deployment.md#31-telegram-快速绑定)。
 
 **依据：** [绑定服务](../app/Services/TelegramBindingService.php)、[回调控制器](../app/Http/Controllers/TelegramWebhookController.php)、[通知服务](../app/Services/TelegramNotificationService.php)、[配置页面](../app/Filament/Pages/ServiceSettings.php)、[绑定回归](../tests/Feature/TelegramBindingTest.php)、[页面回归](../tests/Feature/Filament/ServiceSettingsTest.php)、[注册命令回归](../tests/Feature/TelegramWebhookRegistrationTest.php)。
+
+## D-55 区块链运行配置集中管理与密钥加密
+
+**状态：当前工作区实现，未提交（2026-11-16）。** 用户确认 `APP_URL` 保留环境配置，其他区块链平台运行参数统一放入 `system_configs`。本条替代 D-35～D-42 关于 Tatum 凭证、开关、网络策略继续从环境变量读取的部分，不改变钱包只读、商户公钥模板和独立账本边界。
+
+运行服务、回调和命令经 `CryptoRuntimeSettings` 读取数据库，不在服务提供者启动阶段加载数据库配置，也不把解密凭证写入 Laravel 配置缓存。普通参数保留原值列；API Key／HMAC 用独立 encrypted TEXT 列，普通值清空、模型隐藏、后台只显示已设置状态，输入留空保留，显式清除才删除。共享缓存仅保存密文，保存后失效，事务内不缓存未提交配置。
+
+后台仍只允许启用的超级管理员保存。验证 HTTPS origin、哈希、确认数、时间范围、密钥长度及测试合约地址。凭证修改和订阅创建以配置行锁串行；任一使用相关凭证的非冷订阅存在时，拒绝直接替换／清除，以免通知失验或无法退订。安全退订完成后允许更换，新代次创建前同步 HMAC。回调域名变更仅用于新代次，部署方继续保留旧回调入口。确认策略仍按请求冻结。新下单开关与既有订单处理分开，关闭新下单不会停止原付款页和后台核验入账。
+
+新增迁移一次性读取旧有效配置缓存或环境，优先保留数据库已有值；新安装保持关闭。完成迁移后 `.env` 旧键失效，不作为运行回退。数据回滚保留配置，有密文时禁止删除密钥列。未执行真实供应商请求或业务库迁移。
+
+**依据：** [读取入口](../app/Support/CryptoRuntimeSettings.php)、[安全保存](../app/Services/CryptoRuntimeSettingsService.php)、[配置模型](../app/Models/SystemConfig.php)、[迁移](../database/migrations/2026_11_16_163325_move_crypto_runtime_settings_to_system_configs.php)、[密钥测试](../tests/Feature/CryptoSecretSettingsTest.php)、[运行配置测试](../tests/Feature/CryptoRuntimeSettingsTest.php)、[部署说明](../doc/deployment.md#32-区块链系统配置与升级)。

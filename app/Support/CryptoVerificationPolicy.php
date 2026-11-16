@@ -21,9 +21,9 @@ final class CryptoVerificationPolicy
     {
         $version = self::version($network);
         $prefix = $version === 'evm-finalized-v1' ? 'evm' : ($version === 'utxo-canonical-v1' ? 'utxo' : 'tron');
-        $policy = ['version' => $version, 'minimum_confirmations' => config('services.tatum.'.$prefix.'_min_confirmations.'.$network)];
+        $policy = ['version' => $version, 'minimum_confirmations' => CryptoRuntimeSettings::get($prefix.'_min_confirmations.'.$network)];
         if ($version !== 'evm-finalized-v1') {
-            $policy['genesis_hash'] = config('services.tatum.genesis_hashes.'.$network);
+            $policy['genesis_hash'] = CryptoRuntimeSettings::get('genesis_hashes.'.$network);
         } else {
             $policy['internal_transfers'] = true;
         }

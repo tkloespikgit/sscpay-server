@@ -18,7 +18,7 @@ class CryptoMarketPriceTest extends TestCase
     public function test_same_asset_across_networks_shares_fresh_usd_price(): void
     {
         $this->freezeTime();
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');
         Http::preventStrayRequests();
         Http::fake(['https://api.tatum.io/v4/data/rate/symbol*' => Http::response([
@@ -37,7 +37,7 @@ class CryptoMarketPriceTest extends TestCase
     public function test_aged_provider_timestamp_is_rechecked_even_while_cache_entry_exists(): void
     {
         $this->freezeTime();
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');
         Cache::put('crypto:tatum:usd-price:ETH', ['value' => '2000', 'at' => CarbonImmutable::now()->subSeconds(61), 'source' => 'Tatum'], 10);
         Http::preventStrayRequests();
@@ -54,7 +54,7 @@ class CryptoMarketPriceTest extends TestCase
     public function test_provider_failure_never_falls_back_to_stale_price(): void
     {
         $this->freezeTime();
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');
         Cache::put('crypto:tatum:usd-price:ETH', ['value' => '2000', 'at' => CarbonImmutable::now()->subSeconds(61), 'source' => 'Tatum'], 10);
         Http::preventStrayRequests();

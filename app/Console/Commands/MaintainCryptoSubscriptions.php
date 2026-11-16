@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoAddressMonitor;
 use App\Services\CryptoAddressMonitorService;
+use App\Support\CryptoRuntimeSettings;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -15,7 +16,7 @@ class MaintainCryptoSubscriptions extends Command
 
     public function handle(CryptoAddressMonitorService $service): int
     {
-        if (! config('services.tatum.subscriptions_enabled')) {
+        if (! CryptoRuntimeSettings::get('subscriptions_enabled')) {
             $this->info('Tatum subscriptions are disabled.');
 
             return self::SUCCESS;

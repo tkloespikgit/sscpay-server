@@ -14,7 +14,7 @@ final class TatumWebhookSignature
         if ($signature === false || strlen($signature) !== 64 || base64_encode($signature) !== $header) {
             return null;
         }
-        $secret = config('services.tatum.'.$environment.'_hmac_secret');
+        $secret = CryptoRuntimeSettings::get($environment.'_hmac_secret');
         if (! is_string($secret) || strlen($secret) < 16 || strlen($secret) > 100) {
             return null;
         }

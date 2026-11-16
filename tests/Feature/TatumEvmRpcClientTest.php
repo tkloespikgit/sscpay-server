@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Services\TatumEvmRpcClient;
 use App\Support\CryptoEvm;
 use DomainException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -12,10 +13,12 @@ use Tests\TestCase;
 
 class TatumEvmRpcClientTest extends TestCase
 {
+    use RefreshDatabase;
+
     #[DataProvider('networks')]
     public function test_network_selects_fixed_host_and_separate_credential(string $network, string $key): void
     {
-        config(['services.tatum.api_key' => 'mainnet-key', 'services.tatum.testnet_key' => 'testnet-key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'mainnet-key', 'crypto.testnet_key' => 'testnet-key']);
         Http::preventStrayRequests();
         Http::fake(['*' => Http::response(['jsonrpc' => '2.0', 'id' => 1, 'result' => '0x1'])]);
 
@@ -34,7 +37,7 @@ class TatumEvmRpcClientTest extends TestCase
     #[DataProvider('badResponses')]
     public function test_http_or_rpc_errors_cannot_be_returned_as_chain_facts(mixed $body, int $status): void
     {
-        config(['services.tatum.testnet_key' => 'testnet-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'testnet-key']);
         Http::fake(['*' => Http::response($body, $status, ['Location' => 'https://untrusted.example/'])]);
         try {
             app(TatumEvmRpcClient::class)->read('ethereum-sepolia', 'eth_chainId');
@@ -58,7 +61,7 @@ class TatumEvmRpcClientTest extends TestCase
 
     public function test_only_transient_read_failures_are_retried(): void
     {
-        config(['services.tatum.testnet_key' => 'testnet-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'testnet-key']);
         Http::fake(['*' => Http::sequence()->push([], 429)->push(['jsonrpc' => '2.0', 'id' => 1, 'result' => null])]);
 
         $this->assertNull(app(TatumEvmRpcClient::class)->read('ethereum-sepolia', 'eth_getTransactionReceipt', ['0x'.str_repeat('c', 64)]));
@@ -67,7 +70,7 @@ class TatumEvmRpcClientTest extends TestCase
 
     public function test_missing_credentials_stop_before_http(): void
     {
-        config(['services.tatum.testnet_key' => null]);
+        $this->setCryptoSettings(['crypto.testnet_key' => null]);
         Http::preventStrayRequests();
         try {
             app(TatumEvmRpcClient::class)->read('ethereum-sepolia', 'eth_chainId');

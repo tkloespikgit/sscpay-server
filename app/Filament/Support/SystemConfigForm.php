@@ -4,6 +4,7 @@ namespace App\Filament\Support;
 
 use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoSettings;
 use App\Support\OrderStatusColor;
 use Closure;
@@ -15,6 +16,12 @@ class SystemConfigForm
 {
     public static function fill(array $data, SystemConfig $record): array
     {
+        unset($data['secret_value']);
+        if ($record->value_type === SystemConfig::TYPE_SECRET) {
+            unset($data['config_value']);
+
+            return [...$data, 'value_secret' => null, 'clear_secret' => false];
+        }
         if ($record->config_key === OrderStatusColor::CONFIG_KEY || CryptoSettings::isObjectKey($record->config_key)) {
             $raw = $data['config_value'] ?? '{}';
             $decoded = json_decode($raw);
@@ -39,10 +46,17 @@ class SystemConfigForm
     /**
      * JSON 列表中的数字文本恢复为数值，只写入当前配置的值。
      *
-     * @return array{config_value: string}
+     * @return array{config_value?: string, secret_value?: ?string}
      */
-    public static function save(array $data, SystemConfig $record, string $statePath = 'data'): array
+    public static function save(#[\SensitiveParameter] array $data, SystemConfig $record, string $statePath = 'data'): array
     {
+        if ($record->value_type === SystemConfig::TYPE_SECRET) {
+            if ($data['clear_secret'] ?? false) {
+                return ['secret_value' => null];
+            }
+
+            return filled($data['value_secret'] ?? null) ? ['secret_value' => $data['value_secret']] : [];
+        }
         if (CryptoSettings::isObjectKey($record->config_key)) {
             return ['config_value' => CryptoSettings::validatedObject($data['value_json_object'] ?? null, $statePath)];
         }
@@ -57,7 +71,7 @@ class SystemConfigForm
             Arr::set($validationData, $field, $value);
 
             Validator::make($validationData, [
-                $field => ['required', ...$numberRules],
+                $field => [CryptoRuntimeSettings::name($record->config_key) !== null ? 'nullable' : 'required', ...$numberRules],
             ])->validate();
         }
 

@@ -35,7 +35,7 @@ class CryptoSettingsTest extends TestCase
         $this->assertSame('300', SystemConfig::get('crypto.history_scan_interval_seconds'));
         $this->assertSame('3', SystemConfig::get('crypto.subscription_reopen_max_renewals'));
         $this->assertSame('{}', SystemConfig::get(CryptoSettings::SUBSCRIPTION_OVERRIDES));
-        $this->assertSame(7, SystemConfig::query()->where('config_key', 'like', 'crypto.%')->count());
+        $this->assertSame(36, SystemConfig::query()->where('config_key', 'like', 'crypto.%')->count());
         $this->assertNull(SystemConfig::query()->where('config_key', 'crypto.subscription_ttl_seconds')->sole()->group);
     }
 

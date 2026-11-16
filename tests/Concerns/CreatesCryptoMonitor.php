@@ -20,14 +20,14 @@ trait CreatesCryptoMonitor
     {
         $this->travelTo(Carbon::parse('2026-11-11 12:00:00'));
         $this->createMerchantAndApplication();
-        config([
-            'services.tatum.subscriptions_enabled' => true,
-            'services.tatum.history_enabled' => true,
-            'services.tatum.webhook_base_url' => 'https://notify.example.test',
-            'services.tatum.api_key' => 'test-mainnet-credential',
-            'services.tatum.testnet_key' => 'test-testnet-credential',
-            'services.tatum.mainnet_hmac_secret' => 'test-mainnet-webhook-secret-123456',
-            'services.tatum.testnet_hmac_secret' => 'test-testnet-webhook-secret-123456',
+        $this->setCryptoSettings([
+            'crypto.subscriptions_enabled' => true,
+            'crypto.history_enabled' => true,
+            'crypto.webhook_base_url' => 'https://notify.example.test',
+            'crypto.api_key' => 'test-mainnet-credential',
+            'crypto.testnet_key' => 'test-testnet-credential',
+            'crypto.mainnet_hmac_secret' => 'test-mainnet-webhook-secret-123456',
+            'crypto.testnet_hmac_secret' => 'test-testnet-webhook-secret-123456',
         ]);
         SystemConfig::set('crypto.subscription_ttl_seconds', '60');
         SystemConfig::set('crypto.history_scan_interval_seconds', '60');

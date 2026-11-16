@@ -393,3 +393,13 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 通知版本通过 [订单快照迁移](../database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php) 从应用配置移到 `orders.webhook_version`：数据库默认 1，统一建单服务按支付组开关明确写入 1/2，组合子单取父单的 2。无旧配置回填或兼容读取；既有通知尝试仍沿用业务快照。回滚移除订单版本字段并恢复应用默认 1，不还原旧配置值。
 
 回滚原关联字段迁移会移除关联和原开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。
+
+### 区块链运行配置与加密密钥（2026-11-16）
+
+新增[密钥列迁移](../database/migrations/2026_11_16_163325_add_secret_value_to_system_configs_table.php)为 `system_configs` 增加可空 TEXT `secret_value`，以及[运行配置迁移](../database/migrations/2026_11_16_163325_move_crypto_runtime_settings_to_system_configs.php)补齐 29 项 `crypto.*` 参数。`value_type=secret` 的配置将普通 `config_value` 置空，密钥经 Laravel encrypted cast 保存到 `secret_value`，模型隐藏该列；API Key 和 HMAC 不保存到订单快照。普通七项报价／时长参数及商户支付方式的公钥 JSON 保持原位置。
+
+数据迁移冻结配置映射。新安装默认关闭五个开关，凭证、网络确认策略留空；升级优先采用旧版本有效 `services.tatum` 配置缓存，其次进程环境与旧环境文件，只导入缺失项。已有数据库配置（包括 false、空值）保留；若密钥曾误存普通值列，仅将其加密并清除普通列，不输出原值。`APP_URL`、订单、报价、账本和原订阅身份不改变。Seeder 只补默认项，不重新导入环境变量。
+
+写入后清除普通值与密文缓存，并在事务提交后再失效；事务内读取不填共享缓存。密钥显式解密只供服务端本次操作使用。应用重启或 `config:cache` 不会覆盖数据库配置，丢失或损坏的密钥不回退旧环境变量。
+
+配置数据迁移回滚保留值；列迁移在存在任何密文时拒绝删除，避免回滚丢失凭证。仅空密钥列可定向回滚／重建。生产修正应向前迁移，不还原明文密钥。加密依赖原 `APP_KEY`，与数据库一同妥善保管其既有恢复能力，不能重新生成。

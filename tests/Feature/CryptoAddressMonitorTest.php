@@ -87,7 +87,7 @@ class CryptoAddressMonitorTest extends TestCase
         $this->activateFixture($monitor);
         $this->travel(16)->minutes();
         $this->coverHistory($monitor);
-        config(['services.tatum.history_enabled' => false]);
+        $this->setCryptoSettings(['crypto.history_enabled' => false]);
         Http::preventStrayRequests();
 
         $this->assertFalse(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
@@ -164,7 +164,7 @@ class CryptoAddressMonitorTest extends TestCase
     public function test_changed_api_credential_requires_reconciliation_instead_of_using_a_different_account(): void
     {
         $monitor = $this->createCryptoMonitor();
-        config(['services.tatum.testnet_key' => 'replacement-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'replacement-key']);
         Http::preventStrayRequests();
 
         $this->assertFalse(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
@@ -210,7 +210,7 @@ class CryptoAddressMonitorTest extends TestCase
 
     public function test_command_is_inert_by_default_and_reports_blocked_expiry_when_enabled(): void
     {
-        config(['services.tatum.subscriptions_enabled' => false]);
+        $this->setCryptoSettings(['crypto.subscriptions_enabled' => false]);
         $this->artisan('crypto:maintain-subscriptions')->assertSuccessful();
         $monitor = $this->createCryptoMonitor();
         $this->activateFixture($monitor);

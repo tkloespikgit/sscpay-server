@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\PaymentMethodResource\Pages\CreatePaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\EditPaymentMethod;
 use App\Filament\Resources\PaymentMethodResource\Pages\ListPaymentMethods;
 use App\Models\Merchant;
@@ -29,6 +30,135 @@ class PaymentMethodAdministratorBoundaryTest extends TestCase
         parent::setUp();
         $this->seed(PermissionSeeder::class);
         Filament::setCurrentPanel('admin');
+    }
+
+    public function test_create_page_point_selection_is_drafted_until_creation_and_initializes_selected_merchants(): void
+    {
+        Http::preventStrayRequests();
+        $owner = $this->administrator();
+        $selected = $this->merchant($owner, ['name' => 'Selected merchant', 'default_fee_percent' => '2.5']);
+        $removed = $this->merchant($owner, ['name' => 'Removed merchant']);
+
+        $page = Livewire::actingAs($owner)->test(CreatePaymentMethod::class)
+            ->assertSee(__('admin.payment_method.authorization.create_description'))
+            ->assertSeeHtml("setMerchantAuthorization({$selected->id}, true)")
+            ->call('setMerchantAuthorization', $selected->id, true)->assertOk()
+            ->call('setMerchantAuthorization', $selected->id, true)->assertOk()
+            ->call('setMerchantAuthorization', $removed->id, true)->assertOk()
+            ->call('setMerchantAuthorization', $removed->id, false)->assertOk()
+            ->assertSet('data.assignedMerchants', [$selected->id])
+            ->assertSeeHtml("setMerchantAuthorization({$selected->id}, false)")
+            ->assertSeeHtml("setMerchantAuthorization({$removed->id}, true)");
+
+        $this->assertDatabaseCount('payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_settings', 0);
+
+        $page->fillForm($this->creationData())->call('create')->assertHasNoFormErrors()->assertRedirect();
+
+        $method = PaymentMethod::query()->sole();
+        $this->assertDatabaseCount('merchant_payment_methods', 1);
+        $this->assertDatabaseHas('merchant_payment_methods', ['payment_method_id' => $method->id, 'merchant_id' => $selected->id]);
+        $this->assertDatabaseHas('merchant_payment_settings', ['payment_method_id' => $method->id, 'merchant_id' => $selected->id, 'fee_percent' => '2.5']);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function test_create_page_hides_and_rejects_merchants_outside_the_creators_administrator_scope(bool $super): void
+    {
+        $actor = $this->administrator($super);
+        $foreign = $this->merchant($this->administrator());
+        $inactive = $this->merchant($actor, ['status' => false]);
+        $platform = Merchant::create(['name' => 'Platform merchant', 'status' => true]);
+
+        $page = Livewire::actingAs($actor)->test(CreatePaymentMethod::class)
+            ->assertDontSeeHtml("setMerchantAuthorization({$foreign->id}, true)")
+            ->assertDontSeeHtml("setMerchantAuthorization({$inactive->id}, true)");
+
+        if ($super) {
+            $page->assertSeeHtml("setMerchantAuthorization({$platform->id}, true)");
+        } else {
+            $page->assertDontSeeHtml("setMerchantAuthorization({$platform->id}, true)");
+        }
+
+        $page->call('setMerchantAuthorization', $foreign->id, true)->assertForbidden();
+        $this->assertDatabaseCount('payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
+    }
+
+    #[TestWith(['disabled'])]
+    #[TestWith(['transferred'])]
+    #[TestWith(['deleted'])]
+    public function test_creation_rechecks_selected_merchants_before_saving(string $change): void
+    {
+        Http::preventStrayRequests();
+        $actor = $this->administrator();
+        $merchant = $this->merchant($actor);
+        $page = Livewire::actingAs($actor)->test(CreatePaymentMethod::class)
+            ->call('setMerchantAuthorization', $merchant->id, true)->assertOk()
+            ->fillForm($this->creationData());
+
+        match ($change) {
+            'disabled' => $merchant->update(['status' => false]),
+            'transferred' => $merchant->update(['owner_id' => $this->administrator()->id]),
+            'deleted' => $merchant->delete(),
+        };
+
+        $page->call('create')->assertHasFormErrors(['assignedMerchants' => 'in'])
+            ->assertSee(__('validation.in', ['attribute' => __('admin.payment_method.fields.assigned_merchants')]));
+        $this->assertDatabaseCount('payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_settings', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_forged_create_selection_is_rejected_without_partial_records(): void
+    {
+        $actor = $this->administrator();
+        $allowed = $this->merchant($actor);
+        $foreign = $this->merchant($this->administrator());
+
+        Livewire::actingAs($actor)->test(CreatePaymentMethod::class)
+            ->fillForm([...$this->creationData(), 'assignedMerchants' => [$allowed->id, $foreign->id]])
+            ->call('create')->assertHasFormErrors(['assignedMerchants' => 'in']);
+        $this->assertDatabaseCount('payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_settings', 0);
+    }
+
+    public function test_changing_to_merchant_owned_creation_clears_draft_authorizations(): void
+    {
+        Http::preventStrayRequests();
+        $actor = $this->administrator();
+        $merchant = $this->merchant($actor);
+
+        $page = Livewire::actingAs($actor)->test(CreatePaymentMethod::class)
+            ->call('setMerchantAuthorization', $merchant->id, true)->assertOk()
+            ->set('data.merchant_id', $merchant->id)
+            ->assertSet('data.assignedMerchants', [])
+            ->assertDontSeeHtml('merchant-authorization-unassigned')
+            ->set('data.merchant_id', null)
+            ->assertSet('data.assignedMerchants', [])
+            ->assertSeeHtml("setMerchantAuthorization({$merchant->id}, true)")
+            ->set('data.merchant_id', $merchant->id);
+
+        $page->fillForm($this->creationData())->call('create')->assertHasNoFormErrors()->assertRedirect();
+        $this->assertSame($merchant->id, PaymentMethod::query()->sole()->merchant_id);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_create_point_selection_rechecks_operator_status(): void
+    {
+        $actor = $this->administrator();
+        $merchant = $this->merchant($actor);
+        $page = Livewire::actingAs($actor)->test(CreatePaymentMethod::class);
+        $actor->update(['status' => false]);
+
+        $page->call('setMerchantAuthorization', $merchant->id, true)->assertForbidden();
+        $this->assertDatabaseCount('payment_methods', 0);
+        $this->assertDatabaseCount('merchant_payment_methods', 0);
     }
 
     public function test_manager_cannot_see_foreign_channels_even_with_legacy_assignment_and_merchant_filter(): void
@@ -217,6 +347,16 @@ class PaymentMethodAdministratorBoundaryTest extends TestCase
         $user->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
 
         return $user;
+    }
+
+    /** @return array<string, string> */
+    private function creationData(): array
+    {
+        return [
+            'method_code' => 'draft-method', 'method_name' => 'Draft method',
+            'domain' => 'https://shop.example.com', 'domain_client_id' => 'ck_test', 'domain_client_sk' => 'cs_test',
+            'product_match_mode' => 'MATCH',
+        ];
     }
 
     private function merchant(User $owner, array $attributes = []): Merchant

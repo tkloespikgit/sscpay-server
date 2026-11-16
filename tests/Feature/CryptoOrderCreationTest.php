@@ -69,7 +69,7 @@ class CryptoOrderCreationTest extends TestCase
     public function test_disabled_crypto_checkout_cannot_be_selected_by_default_or_designated_route(): void
     {
         $method = $this->arrangeChannel();
-        config(['services.tatum.checkout_enabled' => false]);
+        $this->setCryptoSettings(['crypto.checkout_enabled' => false]);
         Http::preventStrayRequests();
         $this->sendOrder()->assertStatus(409)->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
         $this->sendOrder(['payment_method_key' => $method->method_code])->assertStatus(422)->assertJsonPath('error_code', 'PAYMENT_METHOD_NOT_AVAILABLE');
@@ -109,8 +109,8 @@ class CryptoOrderCreationTest extends TestCase
     private function arrangeChannel(): PaymentMethod
     {
         $this->createMerchantAndApplication();
-        config(['app.url' => 'http://localhost', 'services.tatum.checkout_enabled' => true, 'services.tatum.subscriptions_enabled' => true,
-            'services.tatum.history_enabled' => true, 'services.tatum.verification_enabled' => true, 'services.tatum.settlement_enabled' => true]);
+        $this->setCryptoSettings(['app.url' => 'http://localhost', 'crypto.checkout_enabled' => true, 'crypto.subscriptions_enabled' => true,
+            'crypto.history_enabled' => true, 'crypto.verification_enabled' => true, 'crypto.settlement_enabled' => true]);
         $map = PaymentMethodConfigMap::create(['name' => 'Crypto', 'payment_type' => 'crypto', 'fields' => [], 'is_active' => true]);
         $method = PaymentMethod::create(['merchant_id' => $this->merchant->id, 'method_code' => 'eth', 'method_name' => 'ETH',
             'payment_type' => 'crypto', 'is_active' => true, 'config_map_id' => $map->id, 'config' => CryptoConfigurationTest::publicConfig(),

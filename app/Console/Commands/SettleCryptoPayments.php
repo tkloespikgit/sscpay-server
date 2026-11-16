@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoPaymentRequest;
 use App\Services\CryptoSettlementService;
+use App\Support\CryptoRuntimeSettings;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -15,7 +16,7 @@ class SettleCryptoPayments extends Command
 
     public function handle(CryptoSettlementService $service): int
     {
-        if (! config('services.tatum.settlement_enabled') || ! config('services.tatum.history_enabled') || ! config('services.tatum.verification_enabled')) {
+        if (! CryptoRuntimeSettings::get('settlement_enabled') || ! CryptoRuntimeSettings::get('history_enabled') || ! CryptoRuntimeSettings::get('verification_enabled')) {
             $this->info('Crypto automatic settlement is disabled.');
 
             return self::SUCCESS;

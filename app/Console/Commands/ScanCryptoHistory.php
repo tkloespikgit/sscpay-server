@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\CryptoHistoryScanService;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoVerificationPolicy;
 use Illuminate\Console\Command;
 use Throwable;
@@ -15,7 +16,7 @@ class ScanCryptoHistory extends Command
 
     public function handle(CryptoHistoryScanService $service): int
     {
-        if (! config('services.tatum.history_enabled')) {
+        if (! CryptoRuntimeSettings::get('history_enabled')) {
             $this->info('Crypto history scanning is disabled.');
 
             return self::SUCCESS;

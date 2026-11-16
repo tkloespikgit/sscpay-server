@@ -10,6 +10,7 @@ use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\SystemConfig;
 use App\Support\CryptoAssetRegistry;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoTronAddress;
 use App\Support\CryptoVerificationPolicy;
 use Carbon\CarbonImmutable;
@@ -26,7 +27,7 @@ final class CryptoHistoryScanService
     /** One complete block shared by up to 500 requests at the same cursor; HTTP never holds financial locks. */
     public function scan(string $network, ?int $merchantId = null, ?int $requestId = null): bool
     {
-        if (! config('services.tatum.history_enabled')) {
+        if (! CryptoRuntimeSettings::get('history_enabled')) {
             throw new DomainException('Crypto history scanning is disabled.');
         }
         CryptoVerificationPolicy::version($network);
@@ -79,7 +80,7 @@ final class CryptoHistoryScanService
             }
             $this->blocks->assertNetwork($network, $genesis);
             $head = $this->blocks->head($network);
-            $maxAge = config('services.tatum.history_max_head_age_seconds');
+            $maxAge = CryptoRuntimeSettings::get('history_max_head_age_seconds');
             if ((! is_int($maxAge) && ! is_string($maxAge)) || ! preg_match('/^[1-9][0-9]{0,4}$/D', (string) $maxAge)
                 || (int) $maxAge > 86400 || $head['time']->lt(now()->subSeconds((int) $maxAge))) {
                 throw new DomainException('History chain head is stale or freshness is unconfigured.');

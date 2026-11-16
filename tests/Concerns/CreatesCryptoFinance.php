@@ -112,7 +112,7 @@ trait CreatesCryptoFinance
         $this->createCryptoFinance();
         $this->reviewer->givePermissionTo(Permissions::CRYPTO_PAYMENTS_RECONCILE);
         $this->creditedRequest->order->update(['status' => 'paid', 'normal_status' => 'paid', 'paid_at' => now()]);
-        config(['services.tatum.history_max_head_age_seconds' => 300, 'services.tatum.verification_enabled' => true, 'services.tatum.settlement_enabled' => true]);
+        $this->setCryptoSettings(['crypto.history_max_head_age_seconds' => 300, 'crypto.verification_enabled' => true, 'crypto.settlement_enabled' => true]);
         $this->refreshCryptoHistory();
     }
 

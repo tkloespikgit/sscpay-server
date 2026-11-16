@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CryptoAddress;
 use App\Models\CryptoAddressMonitor;
 use App\Support\CryptoAssetRegistry;
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -23,13 +24,15 @@ final class TatumSubscriptionClient
         return hash('sha256', $this->key($environment));
     }
 
+    public function assertCredentialsConfigured(string $environment): void
+    {
+        $this->key($environment);
+        $this->hmacSecret($environment);
+    }
+
     public function enableHmac(string $environment): void
     {
-        $secret = config('services.tatum.'.$environment.'_hmac_secret');
-        if (! is_string($secret) || strlen($secret) < 16 || strlen($secret) > 100) {
-            throw new DomainException('Tatum HMAC secret is not configured.');
-        }
-        $response = $this->request('PUT', '/v4/subscription', $environment, ['hmacSecret' => $secret]);
+        $response = $this->request('PUT', '/v4/subscription', $environment, ['hmacSecret' => $this->hmacSecret($environment)]);
         if ($response->status() !== 204) {
             throw new DomainException('Tatum HMAC setup failed.');
         }
@@ -141,12 +144,22 @@ final class TatumSubscriptionClient
         if (! in_array($environment, ['mainnet', 'testnet'], true)) {
             throw new DomainException('Unsupported Tatum credential environment.');
         }
-        $key = config($environment === 'mainnet' ? 'services.tatum.api_key' : 'services.tatum.testnet_key');
+        $key = CryptoRuntimeSettings::get($environment === 'mainnet' ? 'api_key' : 'testnet_key');
         if (! is_string($key) || trim($key) === '') {
             throw new DomainException('Tatum subscription credentials are missing.');
         }
 
         return $key;
+    }
+
+    private function hmacSecret(string $environment): string
+    {
+        $secret = CryptoRuntimeSettings::get($environment.'_hmac_secret');
+        if (! is_string($secret) || strlen($secret) < 16 || strlen($secret) > 100) {
+            throw new DomainException('Tatum HMAC secret is not configured.');
+        }
+
+        return $secret;
     }
 
     private function address(CryptoAddressMonitor $monitor): string

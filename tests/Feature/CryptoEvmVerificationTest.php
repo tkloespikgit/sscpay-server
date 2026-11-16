@@ -366,7 +366,7 @@ class CryptoEvmVerificationTest extends TestCase
     {
         [$monitor, $receipt, $rpc] = $this->arrangeReceipt('USDT');
         $monitor->paymentRequest->paymentMethod->update(['config' => ['contract_address' => '0x'.str_repeat('9', 40)]]);
-        config(['services.tatum.evm_min_confirmations.ethereum-sepolia' => '1000']);
+        $this->setCryptoSettings(['crypto.evm_min_confirmations.ethereum-sepolia' => '1000']);
         $rpc['receipt']['logs'] = [$this->tokenLog()];
         $this->fakeRpc($rpc);
 
@@ -422,10 +422,10 @@ class CryptoEvmVerificationTest extends TestCase
     {
         [, $receipt, $rpc] = $this->arrangeReceipt();
         $this->fakeRpc($rpc);
-        config(['services.tatum.verification_enabled' => false]);
+        $this->setCryptoSettings(['crypto.verification_enabled' => false]);
         $this->artisan('crypto:verify-receipts')->assertSuccessful();
         Http::assertNothingSent();
-        config(['services.tatum.verification_enabled' => true]);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true]);
 
         $this->artisan('crypto:verify-receipts', ['--limit' => 0])->assertExitCode(2);
         $this->artisan('crypto:verify-receipts')->assertSuccessful();
@@ -463,7 +463,7 @@ class CryptoEvmVerificationTest extends TestCase
         $quote['verification_policy'] = ['version' => 'evm-finalized-v1', 'minimum_confirmations' => $minimum];
         $monitor = $this->createCryptoMonitor(['asset' => $asset, 'decimals' => $asset === 'ETH' ? 18 : 6,
             'quote_snapshot' => $quote, 'due_units' => $quote['due_units'], 'fee_units' => $quote['fee_units'], 'net_units' => $quote['net_units']]);
-        config(['services.tatum.verification_enabled' => true]);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true]);
         Http::preventStrayRequests();
         $receipt = app(TatumWebhookService::class)->receive($monitor, ['subscriptionType' => 'ADDRESS_EVENT', 'txId' => self::TX,
             'address' => $monitor->address->address, 'amount' => '9999999999999999999999999999'], 'signed test fixture', 'raw');

@@ -84,7 +84,7 @@ class CryptoConfigurationTest extends TestCase
         $service = app(CryptoPaymentConfigurationService::class);
         $config = array_replace(self::publicConfig(), ['network' => 'ethereum-mainnet', 'asset' => 'USDT', 'contract_address' => '0xdAC17F958D2ee523a2206206994597C13D831ec7']);
         $this->assertSame($config, $service->validateConfig($config));
-        config(['services.tatum.test_tokens.ethereum-sepolia' => '0x'.str_repeat('c', 40)]);
+        $this->setCryptoSettings(['crypto.test_tokens.ethereum-sepolia' => '0x'.str_repeat('c', 40)]);
         $config['network'] = 'ethereum-sepolia';
         $config['contract_address'] = '0x'.str_repeat('c', 40);
         $this->assertSame($config, $service->validateConfig($config));

@@ -28,7 +28,7 @@ class PrepareCryptoCheckouts extends Command
      */
     public function handle(CryptoCheckoutService $service): int
     {
-        if (! CryptoCheckoutGuard::enabled()) {
+        if (! CryptoCheckoutGuard::operational()) {
             $this->info('Crypto checkout is disabled.');
 
             return self::SUCCESS;

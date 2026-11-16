@@ -28,7 +28,7 @@ final class CryptoCheckoutService
 
     public function initialize(Order $order): void
     {
-        if (! CryptoCheckoutGuard::available($order)) {
+        if (! CryptoCheckoutGuard::enabled() || ! CryptoCheckoutGuard::available($order)) {
             throw new DomainException('Crypto checkout is unavailable.');
         }
         $method = PaymentMethod::query()->forMerchant($order->merchant_id)->findOrFail($order->payment_method_id);
@@ -76,7 +76,7 @@ final class CryptoCheckoutService
 
     public function process(int $merchantId, int $orderId): void
     {
-        if (! CryptoCheckoutGuard::enabled()) {
+        if (! CryptoCheckoutGuard::operational()) {
             return;
         }
         $lock = Cache::lock('crypto-checkout:'.$orderId, 600);

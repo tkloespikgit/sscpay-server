@@ -10,6 +10,7 @@ use App\Models\CryptoWebhookReceipt;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\SystemConfig;
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +26,7 @@ final class CryptoAddressMonitorService
         $request = CryptoPaymentRequest::query()->forMerchant($merchantId)->findOrFail($requestId);
 
         return DB::transaction(function () use ($merchantId, $request, $historyOnly): CryptoAddressMonitor {
+            CryptoRuntimeSettings::lockCredentials(str_ends_with($request->network, '-mainnet') ? 'mainnet' : 'testnet');
             Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($merchantId);
             $order = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchantId)->lockForUpdate()->findOrFail($request->order_id);
             $fresh = CryptoPaymentRequest::query()->forMerchant($merchantId)->where('order_id', $order->id)->lockForUpdate()->findOrFail($request->id);
@@ -54,9 +56,10 @@ final class CryptoAddressMonitorService
                 throw new DomainException('Payment request is not eligible for subscription preparation.');
             }
             $environment = str_ends_with($fresh->network, '-mainnet') ? 'mainnet' : 'testnet';
+            $this->tatum->assertCredentialsConfigured($environment);
             $ttl = $this->ttl($fresh);
             $uuid = (string) Str::uuid();
-            $base = config('services.tatum.webhook_base_url');
+            $base = CryptoRuntimeSettings::get('webhook_base_url');
             $parts = is_string($base) ? parse_url($base) : false;
             if (! is_array($parts) || ($parts['scheme'] ?? null) !== 'https' || empty($parts['host'])
                 || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
@@ -180,7 +183,7 @@ final class CryptoAddressMonitorService
 
     private function cancelExpired(CryptoAddressMonitor $monitor): bool
     {
-        if (! config('services.tatum.history_enabled')) {
+        if (! CryptoRuntimeSettings::get('history_enabled')) {
             $this->failure($monitor, 'history_scanner_disabled');
 
             return false;
@@ -262,7 +265,7 @@ final class CryptoAddressMonitorService
 
     private function assertEnabled(): void
     {
-        if (! config('services.tatum.subscriptions_enabled')) {
+        if (! CryptoRuntimeSettings::get('subscriptions_enabled')) {
             throw new DomainException('Tatum subscriptions are disabled.');
         }
     }

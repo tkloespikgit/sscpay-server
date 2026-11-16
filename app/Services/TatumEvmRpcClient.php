@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -20,7 +21,7 @@ final class TatumEvmRpcClient
                 'eth_getLogs', 'debug_traceTransaction', 'debug_traceBlockByNumber'], true)) {
             throw new DomainException('Unsupported read-only EVM RPC request.');
         }
-        $key = config($network === 'ethereum-mainnet' ? 'services.tatum.api_key' : 'services.tatum.testnet_key');
+        $key = CryptoRuntimeSettings::get($network === 'ethereum-mainnet' ? 'api_key' : 'testnet_key');
         if (! is_string($key) || trim($key) === '') {
             throw new DomainException('Tatum RPC credentials are missing.');
         }

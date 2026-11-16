@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\SystemConfig;
 use App\Support\CryptoAmount;
 use App\Support\CryptoAssetRegistry;
+use App\Support\CryptoRuntimeSettings;
 use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
@@ -29,7 +30,7 @@ final class CryptoMarketPriceService
             return $cached;
         }
 
-        $lease = max(30, (int) config('services.tatum.timeout', 10) * 2 + 5);
+        $lease = max(30, (int) CryptoRuntimeSettings::get('timeout', 10) * 2 + 5);
 
         return Cache::lock($key.':lock', $lease)->block(5, function () use ($assetKey, $key, $maxAge): array {
             $cached = Cache::get($key);

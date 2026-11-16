@@ -93,6 +93,10 @@ trait ConfiguresSharedPanelSettings
             )
             ->renderHook(
                 PanelsRenderHook::HEAD_END,
+                fn (): string => view('filament.components.responsive-content-width')->render(),
+            )
+            ->renderHook(
+                PanelsRenderHook::HEAD_END,
                 fn (): string => '
                 <style>
                 /* 未选中时的菜单文字与图标颜色 */

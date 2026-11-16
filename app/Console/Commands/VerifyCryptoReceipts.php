@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\CryptoWebhookReceipt;
 use App\Services\CryptoReceiptVerificationService;
+use App\Support\CryptoRuntimeSettings;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -15,7 +16,7 @@ class VerifyCryptoReceipts extends Command
 
     public function handle(CryptoReceiptVerificationService $service): int
     {
-        if (! config('services.tatum.verification_enabled')) {
+        if (! CryptoRuntimeSettings::get('verification_enabled')) {
             $this->info('Crypto receipt verification is disabled.');
 
             return self::SUCCESS;

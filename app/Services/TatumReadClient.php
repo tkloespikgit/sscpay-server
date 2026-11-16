@@ -6,6 +6,7 @@ use App\Models\SystemConfig;
 use App\Support\CryptoAmount;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoPublicKey;
+use App\Support\CryptoRuntimeSettings;
 use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
@@ -79,14 +80,14 @@ final class TatumReadClient
      */
     private function get(string $path, array $query = [], bool $testnet = false): array
     {
-        $key = config($testnet ? 'services.tatum.testnet_key' : 'services.tatum.api_key');
+        $key = CryptoRuntimeSettings::get($testnet ? 'testnet_key' : 'api_key');
         if (! is_string($key) || trim($key) === '') {
             throw new DomainException('Tatum credentials are not configured for this environment.');
         }
         try {
             $response = Http::acceptJson()->withHeaders(['x-api-key' => $key])
-                ->connectTimeout((int) config('services.tatum.connect_timeout', 3))
-                ->timeout((int) config('services.tatum.timeout', 10))
+                ->connectTimeout((int) CryptoRuntimeSettings::get('connect_timeout', 3))
+                ->timeout((int) CryptoRuntimeSettings::get('timeout', 10))
                 ->withoutRedirecting()->retry(2, 200, fn (?Throwable $exception): bool => $exception instanceof ConnectionException
                     || ($exception instanceof RequestException && ($exception->response->serverError() || $exception->response->status() === 429)))
                 ->get('https://api.tatum.io'.$path, $query)->throw();

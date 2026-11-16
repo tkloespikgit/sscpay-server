@@ -40,9 +40,9 @@ class CryptoPaymentFoundationTest extends TestCase
     public function test_preparation_is_idempotent_and_never_publishes_an_unmonitored_address(): void
     {
         [$order, $method] = $this->arrangeOrder();
-        config(['services.tatum.evm_min_confirmations.ethereum-sepolia' => '12']);
+        $this->setCryptoSettings(['crypto.evm_min_confirmations.ethereum-sepolia' => '12']);
         $request = $this->prepare($order, $method);
-        config(['services.tatum.evm_min_confirmations.ethereum-sepolia' => '100']);
+        $this->setCryptoSettings(['crypto.evm_min_confirmations.ethereum-sepolia' => '100']);
         $repeated = $this->prepare($order, $method);
 
         $this->assertSame($request->id, $repeated->id);
@@ -51,7 +51,7 @@ class CryptoPaymentFoundationTest extends TestCase
         $this->assertSame('40392000000000000', $request->net_units);
         $this->assertSame('0.500000', $request->quote_snapshot['fiat_usd_rate']);
         $this->assertSame('12', $repeated->quote_snapshot['verification_policy']['minimum_confirmations']);
-        $this->assertSame(['network' => 'ethereum-sepolia', 'asset' => 'ETH'], $request->quote_snapshot['payment_config_snapshot']);
+        $this->assertEquals(['network' => 'ethereum-sepolia', 'asset' => 'ETH'], $request->quote_snapshot['payment_config_snapshot']);
         $this->assertDatabaseCount('crypto_addresses', 1);
         $this->assertDatabaseCount('crypto_payment_requests', 1);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);

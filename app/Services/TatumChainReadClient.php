@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -58,7 +59,7 @@ final class TatumChainReadClient
      */
     private function post(string $network, string $path, array $body, bool $allowList = false): array
     {
-        $key = config(str_ends_with($network, '-mainnet') ? 'services.tatum.api_key' : 'services.tatum.testnet_key');
+        $key = CryptoRuntimeSettings::get(str_ends_with($network, '-mainnet') ? 'api_key' : 'testnet_key');
         if (! is_string($key) || trim($key) === '') {
             throw new DomainException('Tatum read credentials are missing.');
         }

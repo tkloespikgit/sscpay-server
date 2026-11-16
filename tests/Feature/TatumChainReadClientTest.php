@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Services\TatumChainReadClient;
 use App\Support\CryptoVerificationPolicy;
 use DomainException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
@@ -13,10 +14,12 @@ use Tests\TestCase;
 
 class TatumChainReadClientTest extends TestCase
 {
+    use RefreshDatabase;
+
     #[DataProvider('networks')]
     public function test_read_uses_fixed_host_and_network_credential(string $network, bool $tron): void
     {
-        config(['services.tatum.api_key' => 'mainnet-key', 'services.tatum.testnet_key' => 'testnet-key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'mainnet-key', 'crypto.testnet_key' => 'testnet-key']);
         Http::preventStrayRequests();
         Http::fake(['*' => Http::response($tron ? '{}' : ['id' => 1, 'result' => null, 'error' => null])]);
         $client = app(TatumChainReadClient::class);
@@ -67,7 +70,7 @@ class TatumChainReadClientTest extends TestCase
     #[DataProvider('badEnvelopes')]
     public function test_invalid_rpc_response_cannot_be_used_as_utxo_facts(mixed $body, int $status): void
     {
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         Http::fake(['*' => Http::response($body, $status, ['Location' => 'https://untrusted.example/'])]);
         try {
             app(TatumChainReadClient::class)->utxo('bitcoin-mainnet', 'getblockchaininfo');
@@ -88,7 +91,7 @@ class TatumChainReadClientTest extends TestCase
 
     public function test_missing_transaction_rpc_error_is_pending_but_other_rpc_errors_are_not_swallowed(): void
     {
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         Http::fake(['*' => Http::response(['id' => 1, 'result' => null, 'error' => ['code' => -5, 'message' => 'not found']])]);
 
         $this->assertNull(app(TatumChainReadClient::class)->utxo('bitcoin-mainnet', 'getrawtransaction', [str_repeat('a', 64), true]));
@@ -98,7 +101,7 @@ class TatumChainReadClientTest extends TestCase
 
     public function test_http_200_with_tron_error_is_still_a_failure(): void
     {
-        config(['services.tatum.testnet_key' => 'key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'key']);
         Http::fake(['*' => Http::response(['Error' => 'provider-secret'])]);
         $this->expectException(DomainException::class);
 
@@ -107,7 +110,7 @@ class TatumChainReadClientTest extends TestCase
 
     public function test_safe_read_retries_only_transient_failures(): void
     {
-        config(['services.tatum.testnet_key' => 'key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'key']);
         Sleep::fake();
         Http::fake(['*' => Http::sequence()->push([], 429)->push('{}')]);
 
@@ -118,7 +121,7 @@ class TatumChainReadClientTest extends TestCase
 
     public function test_missing_credentials_fail_without_http(): void
     {
-        config(['services.tatum.testnet_key' => null]);
+        $this->setCryptoSettings(['crypto.testnet_key' => null]);
         Http::preventStrayRequests();
         try {
             app(TatumChainReadClient::class)->utxo('litecoin-testnet', 'getblockhash', [0]);
@@ -132,9 +135,9 @@ class TatumChainReadClientTest extends TestCase
     public function test_policy_snapshot_pins_each_network_before_later_configuration_changes(string $network, bool $tron): void
     {
         $prefix = $tron ? 'tron' : 'utxo';
-        config(['services.tatum.'.$prefix.'_min_confirmations.'.$network => '6', 'services.tatum.genesis_hashes.'.$network => str_repeat('a', 64)]);
+        $this->setCryptoSettings(['crypto.'.$prefix.'_min_confirmations.'.$network => '6', 'crypto.genesis_hashes.'.$network => str_repeat('a', 64)]);
         $snapshot = CryptoVerificationPolicy::snapshot($network);
-        config(['services.tatum.'.$prefix.'_min_confirmations.'.$network => '12', 'services.tatum.genesis_hashes.'.$network => str_repeat('b', 64)]);
+        $this->setCryptoSettings(['crypto.'.$prefix.'_min_confirmations.'.$network => '12', 'crypto.genesis_hashes.'.$network => str_repeat('b', 64)]);
 
         $this->assertSame(['version' => $tron ? 'tron-solidified-v1' : 'utxo-canonical-v1', 'minimum_confirmations' => '6', 'genesis_hash' => str_repeat('a', 64)], $snapshot);
     }

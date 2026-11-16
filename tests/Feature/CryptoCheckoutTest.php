@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
+use App\Models\SystemConfig;
 use App\Services\CryptoCheckoutService;
 use App\Services\CryptoHistoryScanService;
 use App\Services\OrderCreationService;
@@ -28,6 +29,25 @@ class CryptoCheckoutTest extends TestCase
 {
     use CreatesCryptoCheckout;
     use RefreshDatabase;
+
+    public function test_disabling_new_checkouts_keeps_existing_payment_pages_backfill_verification_and_settlement_running(): void
+    {
+        [$checkout, $monitor, $rpc] = $this->checkoutFixture(withPayment: true);
+        SystemConfig::set('crypto.checkout_enabled', false);
+        $fiatBefore = $this->merchant->fresh()->only(['balance', 'frozen_balance', 'pending_settlement_balance']);
+        $order = $monitor->paymentRequest->order;
+        $this->fakeCheckoutProvider($rpc);
+        $this->get('/payment/'.$order->payment_link_token)->assertOk();
+        $this->artisan('crypto:prepare-checkouts')->assertSuccessful();
+        $this->assertDatabaseCount('crypto_webhook_receipts', 1);
+        $this->artisan('crypto:verify-receipts')->assertSuccessful();
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
+        $this->getJson($this->endpoint($order))->assertJsonPath('state', 'paid');
+        $this->assertDatabaseCount('crypto_ledger_entries', 1);
+        $this->assertSame($fiatBefore, $this->merchant->fresh()->only(array_keys($fiatBefore)));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/v4/subscription'));
+    }
 
     public function test_preparation_requires_pre_subscription_and_post_subscription_history_before_showing_address(): void
     {

@@ -172,7 +172,7 @@ class CryptoUtxoVerificationTest extends TestCase
 
     public function test_frozen_utxo_policy_contains_network_pin_and_does_not_inherit_evm_settings(): void
     {
-        config(['services.tatum.utxo_min_confirmations.bitcoin-mainnet' => '6', 'services.tatum.genesis_hashes.bitcoin-mainnet' => self::GENESIS]);
+        $this->setCryptoSettings(['crypto.utxo_min_confirmations.bitcoin-mainnet' => '6', 'crypto.genesis_hashes.bitcoin-mainnet' => self::GENESIS]);
 
         $this->assertSame(['version' => 'utxo-canonical-v1', 'minimum_confirmations' => '6', 'genesis_hash' => self::GENESIS], CryptoVerificationPolicy::snapshot('bitcoin-mainnet'));
     }
@@ -221,7 +221,7 @@ class CryptoUtxoVerificationTest extends TestCase
                 'litecoin-mainnet' => 'LanMaxB2DnDe8m7tC5sqw6uxJDYEv7SxvB',
                 default => 'mw5McnxAx9Qqf4uLjWrvV14WwzmfgiQ9PX',
             }]);
-        config(['services.tatum.verification_enabled' => true]);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true]);
         $previous = $this->raw(str_repeat('1', 64), [$selfChange ? self::SCRIPT : self::OTHER_SCRIPT], [200000000]);
         $prevId = $this->txid($previous);
         $stripped = $this->raw($prevId, [self::SCRIPT, self::SCRIPT], [$options['units'] ?? 100000001, 2], $options['inputs'] ?? 1);

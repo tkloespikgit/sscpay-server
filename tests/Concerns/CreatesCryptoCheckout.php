@@ -17,8 +17,8 @@ trait CreatesCryptoCheckout
     protected function checkoutFixture(bool $withPayment = false, array $requestOverrides = []): array
     {
         [$monitor, $rpc] = $this->historyFixture(requestOverrides: $requestOverrides);
-        config(['app.url' => 'http://localhost', 'services.tatum.checkout_enabled' => true,
-            'services.tatum.evm_min_confirmations.ethereum-sepolia' => '3']);
+        $this->setCryptoSettings(['app.url' => 'http://localhost', 'crypto.checkout_enabled' => true,
+            'crypto.evm_min_confirmations.ethereum-sepolia' => '3']);
         $this->withoutVite();
         SystemConfig::set('crypto.quote_ttl_seconds', '900');
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');

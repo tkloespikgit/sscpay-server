@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\SystemConfig;
 use App\Support\CryptoAmount;
 use App\Support\CryptoCheckoutGuard;
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Support\Facades\DB;
 
@@ -21,7 +22,7 @@ final class CryptoSettlementService
 
     public function settle(int $merchantId, int $requestId): string
     {
-        if (! config('services.tatum.settlement_enabled') || ! config('services.tatum.verification_enabled') || ! config('services.tatum.history_enabled')) {
+        if (! CryptoRuntimeSettings::get('settlement_enabled') || ! CryptoRuntimeSettings::get('verification_enabled') || ! CryptoRuntimeSettings::get('history_enabled')) {
             throw new DomainException('Automatic crypto settlement is disabled.');
         }
         $snapshot = CryptoPaymentRequest::query()->forMerchant($merchantId)->findOrFail($requestId);
@@ -87,7 +88,7 @@ final class CryptoSettlementService
             if (! is_string($interval) || ! preg_match('/^[1-9][0-9]{0,6}$/D', $interval)) {
                 throw new DomainException('Missing history health interval.');
             }
-            $maxAge = config('services.tatum.history_max_head_age_seconds');
+            $maxAge = CryptoRuntimeSettings::get('history_max_head_age_seconds');
             if ((! is_int($maxAge) && ! is_string($maxAge)) || ! preg_match('/^[1-9][0-9]{0,4}$/D', (string) $maxAge) || (int) $maxAge > 86400) {
                 throw new DomainException('Missing chain head freshness policy.');
             }

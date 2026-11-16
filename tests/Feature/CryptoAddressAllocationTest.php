@@ -144,7 +144,7 @@ class CryptoAddressAllocationTest extends TestCase
     {
         $this->createMerchantAndApplication();
         $this->seed(CryptoPaymentTemplatesSeeder::class);
-        config(['services.tatum.testnet_key' => 'test-key', 'services.tatum.api_key' => 'price-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'test-key', 'crypto.api_key' => 'price-key']);
         $method = PaymentMethod::create([
             'merchant_id' => $this->merchant->id, 'method_code' => 'eth', 'method_name' => 'ETH', 'payment_type' => 'crypto',
             'is_active' => true, 'config_map_id' => PaymentMethodConfigMap::query()->where('name', 'Crypto / Ethereum')->sole()->id,

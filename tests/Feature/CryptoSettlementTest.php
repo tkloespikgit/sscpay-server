@@ -265,10 +265,10 @@ class CryptoSettlementTest extends TestCase
     public function test_disabled_settlement_and_invalid_batch_size_do_not_change_funds(): void
     {
         $this->historyFixture();
-        config(['services.tatum.settlement_enabled' => false]);
+        $this->setCryptoSettings(['crypto.settlement_enabled' => false]);
         Http::preventStrayRequests();
         $this->artisan('crypto:settle-payments')->assertSuccessful();
-        config(['services.tatum.settlement_enabled' => true]);
+        $this->setCryptoSettings(['crypto.settlement_enabled' => true]);
         $this->artisan('crypto:settle-payments', ['--limit' => 501])->assertExitCode(2);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);
         Http::assertNothingSent();
@@ -286,8 +286,8 @@ class CryptoSettlementTest extends TestCase
         CryptoChainEvent::factory()->create(['merchant_id' => $request->merchant_id, 'crypto_payment_request_id' => $request->id,
             'network' => $network, 'asset' => $asset, 'amount_units' => $request->due_units, 'block_height' => 100,
             'block_time' => now(), 'verified_at' => now(), 'confirmed_at' => now()]);
-        config(['services.tatum.verification_enabled' => true, 'services.tatum.settlement_enabled' => true,
-            'services.tatum.history_max_head_age_seconds' => '300']);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true, 'crypto.settlement_enabled' => true,
+            'crypto.history_max_head_age_seconds' => '300']);
         Queue::fake();
         Http::preventStrayRequests();
 

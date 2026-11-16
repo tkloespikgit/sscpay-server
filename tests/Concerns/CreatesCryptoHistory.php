@@ -20,8 +20,8 @@ trait CreatesCryptoHistory
         $quote['verification_policy'] = ['version' => 'evm-finalized-v1', 'minimum_confirmations' => '3', 'internal_transfers' => true];
         $monitor = $this->createCryptoMonitor(['asset' => $asset, 'decimals' => $asset === 'ETH' ? 18 : 6,
             'quote_snapshot' => $quote, 'due_units' => $quote['due_units'], 'fee_units' => $quote['fee_units'], 'net_units' => $quote['net_units'], ...$requestOverrides]);
-        config(['services.tatum.verification_enabled' => true, 'services.tatum.history_enabled' => true, 'services.tatum.settlement_enabled' => true,
-            'services.tatum.history_max_head_age_seconds' => '300']);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true, 'crypto.history_enabled' => true, 'crypto.settlement_enabled' => true,
+            'crypto.history_max_head_age_seconds' => '300']);
         $rpc = ['head' => 102, 'finalized' => 102, 'chain' => '0xaa36a7', 'blocks' => [], 'logs' => [], 'receipts' => [], 'traces' => []];
         foreach (range(99, 105) as $height) {
             $rpc['blocks'][$height] = ['number' => '0x'.dechex($height), 'hash' => $this->historyHash($height),

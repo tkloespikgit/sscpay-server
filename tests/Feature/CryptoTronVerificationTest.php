@@ -210,7 +210,7 @@ class CryptoTronVerificationTest extends TestCase
         $monitor = $this->createCryptoMonitor(['network' => $network, 'asset' => 'USDT', 'decimals' => 6, 'quote_snapshot' => $quote,
             'due_units' => $quote['due_units'], 'fee_units' => $quote['fee_units'], 'net_units' => $quote['net_units']],
             ['network' => $network, 'address' => self::ADDRESS]);
-        config(['services.tatum.verification_enabled' => true]);
+        $this->setCryptoSettings(['crypto.verification_enabled' => true]);
         $raw = '0a02abcd';
         $txid = hash('sha256', hex2bin($raw));
         $receipt = app(TatumWebhookService::class)->receive($monitor, ['subscriptionType' => 'ADDRESS_EVENT', 'txId' => $txid,

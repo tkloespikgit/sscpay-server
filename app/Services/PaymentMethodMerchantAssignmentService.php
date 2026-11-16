@@ -16,38 +16,48 @@ use Illuminate\Support\Facades\DB;
 
 class PaymentMethodMerchantAssignmentService
 {
-    public static function canManage(?User $actor, PaymentMethod $method): bool
+    public static function canManage(?User $actor, ?PaymentMethod $method = null): bool
     {
         $actor = $actor === null ? null : User::query()->find($actor->getKey());
+
+        if ($actor === null || ! $actor->status || ! $actor->isPlatformStaff()
+            || ! $actor->can(Permissions::PAYMENT_METHODS_MANAGE)) {
+            return false;
+        }
+
+        if ($method === null) {
+            return true;
+        }
+
         $method = PaymentMethod::query()->withoutGlobalScope(MerchantScope::class)->find($method->getKey());
 
-        return $actor !== null && $actor->status && $actor->isPlatformStaff()
-            && $actor->can(Permissions::PAYMENT_METHODS_MANAGE)
-            && $method !== null && $method->isSystemLevel()
+        return $method !== null && $method->isSystemLevel()
             && ($actor->is_super_admin || $method->owner_id === $actor->id);
     }
 
     /** @return Collection<int, Merchant> */
-    public function merchants(User $actor, PaymentMethod $method): Collection
+    public function merchants(User $actor, ?PaymentMethod $method = null): Collection
     {
         if (! self::canManage($actor, $method)) {
             throw new AuthorizationException;
         }
 
-        $method = PaymentMethod::query()->withoutGlobalScope(MerchantScope::class)->findOrFail($method->getKey());
-        $owner = $method->owner;
+        $method = $method === null ? null : PaymentMethod::query()->withoutGlobalScope(MerchantScope::class)->findOrFail($method->getKey());
+        $owner = $method === null ? User::query()->findOrFail($actor->getKey()) : $method->owner;
+        $ownerId = $method === null ? $owner->id : $method->owner_id;
 
         return Merchant::query()->where('status', true)
-            ->where(function (Builder $query) use ($method, $owner): void {
-                if ($method->owner_id === null) {
+            ->where(function (Builder $query) use ($ownerId, $owner): void {
+                if ($ownerId === null) {
                     $query->whereNull('owner_id');
                 } else {
-                    $query->where('owner_id', $method->owner_id)
+                    $query->where('owner_id', $ownerId)
                         ->when($owner?->is_super_admin, fn (Builder $direct): Builder => $direct->orWhereNull('owner_id'));
                 }
             })
-            ->withExists(['assignedPaymentMethods as is_assigned' => fn (Builder $assigned): Builder => $assigned
-                ->withoutGlobalScope(MerchantScope::class)->where('payment_methods.id', $method->id)])
+            ->when($method !== null, fn (Builder $query): Builder => $query
+                ->withExists(['assignedPaymentMethods as is_assigned' => fn (Builder $assigned): Builder => $assigned
+                    ->withoutGlobalScope(MerchantScope::class)->where('payment_methods.id', $method->id)]))
             ->orderBy('name')->orderBy('id')->get();
     }
 

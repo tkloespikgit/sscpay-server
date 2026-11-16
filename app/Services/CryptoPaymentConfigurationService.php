@@ -6,6 +6,7 @@ use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoPublicKey;
+use App\Support\CryptoRuntimeSettings;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -96,7 +97,7 @@ final class CryptoPaymentConfigurationService
             $expected = match ($asset['network']) {
                 'ethereum-mainnet' => '0xdac17f958d2ee523a2206206994597c13d831ec7',
                 'tron-mainnet' => 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
-                default => config('services.tatum.test_tokens.'.$asset['network']),
+                default => CryptoRuntimeSettings::get('test_tokens.'.$asset['network']),
             };
             $actual = $config['contract_address'] ?? '';
             $equal = is_string($expected) && $expected !== '' && ($family === 'ethereum' ? strtolower($actual) === strtolower($expected) : $actual === $expected);

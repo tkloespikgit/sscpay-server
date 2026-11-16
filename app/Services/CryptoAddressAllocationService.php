@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoPublicKey;
+use App\Support\CryptoRuntimeSettings;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -29,7 +30,7 @@ final class CryptoAddressAllocationService
         if ($allocation->status === 'derived') {
             return $allocation;
         }
-        $lockSeconds = max(30, 6 * (int) config('services.tatum.timeout', 10) + 15);
+        $lockSeconds = max(30, 6 * (int) CryptoRuntimeSettings::get('timeout', 10) + 15);
 
         return Cache::lock('crypto-derive:'.$allocation->id, $lockSeconds)->block(5, function () use ($merchantId, $allocation): CryptoAddressAllocation {
             $fresh = CryptoAddressAllocation::query()->forMerchant($merchantId)->findOrFail($allocation->id);

@@ -27,6 +27,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\ViewField;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
@@ -34,7 +35,6 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
-use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
@@ -49,6 +49,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Unique;
 
 /**
@@ -131,43 +132,38 @@ class PaymentMethodResource extends Resource
                         ->disabled(fn (?PaymentMethod $record): bool => ! $canPickMerchant || $record !== null)
                         ->default(fn () => $canPickMerchant ? null : $viewer->merchant_id)
                         ->dehydrated()
+                        ->afterStateUpdated(function (Set $set, string $operation): void {
+                            if ($operation === 'create') {
+                                $set('assignedMerchants', []);
+                            }
+                        })
                         ->columnSpanFull(),
                     Section::make(__('admin.payment_method.authorization.action'))
-                        ->description(__('admin.payment_method.authorization.description'))
-                        ->visible(fn (Get $get, ?PaymentMethod $record): bool => $record !== null
-                            && blank($get('merchant_id'))
+                        ->description(fn (string $operation): string => __('admin.payment_method.authorization.'.($operation === 'create' ? 'create_description' : 'description')))
+                        ->contained(false)
+                        ->visible(fn (Get $get, ?PaymentMethod $record): bool => blank($get('merchant_id'))
                             && PaymentMethodMerchantAssignmentService::canManage(auth()->user(), $record))
                         ->schema([
-                            View::make('filament.resources.payment-method-resource.merchant-authorization')
-                                ->viewData(function (?PaymentMethod $record, PaymentMethodMerchantAssignmentService $service): array {
-                                    $merchants = $record === null ? collect() : $service->merchants(auth()->user(), $record);
+                            ViewField::make('assignedMerchants')
+                                ->label(__('admin.payment_method.fields.assigned_merchants'))
+                                ->hiddenLabel()
+                                ->view('filament.resources.payment-method-resource.merchant-authorization')
+                                ->default([])
+                                ->rules(fn (string $operation, PaymentMethodMerchantAssignmentService $service): array => $operation === 'create'
+                                    ? ['array', 'list', Rule::in($service->merchants(auth()->user())->modelKeys())]
+                                    : [])
+                                ->dehydrated(fn (string $operation): bool => $operation === 'create')
+                                ->viewData(function (Get $get, ?PaymentMethod $record, PaymentMethodMerchantAssignmentService $service): array {
+                                    $merchants = $service->merchants(auth()->user(), $record);
+                                    $selectedIds = (array) ($get('assignedMerchants') ?? []);
 
                                     return ['columns' => [
-                                        'unassigned' => $merchants->where('is_assigned', false),
-                                        'assigned' => $merchants->where('is_assigned', true),
+                                        'unassigned' => $record === null ? $merchants->whereNotIn('id', $selectedIds) : $merchants->where('is_assigned', false),
+                                        'assigned' => $record === null ? $merchants->whereIn('id', $selectedIds) : $merchants->where('is_assigned', true),
                                     ]];
                                 })
                                 ->columnSpanFull(),
                         ])
-                        ->columnSpanFull(),
-                    Select::make('assignedMerchants')
-                        ->label(__('admin.payment_method.fields.assigned_merchants'))
-                        ->helperText(__('admin.payment_method.help.assigned_merchants'))
-                        ->relationship(
-                            'assignedMerchants',
-                            'name',
-                            // relationship() 的选项查询会 left join 中间表 merchant_payment_methods
-                            // 做去重/排除已选，中间表自己也有 id 主键列，不加 merchants. 前缀会导致
-                            // "Column 'id' in where clause is ambiguous"。
-                            modifyQueryUsing: fn ($query) => $query->where('merchants.status', true)
-                                ->where(fn (Builder $merchants): Builder => $merchants->where('merchants.owner_id', $viewer->id)
-                                    ->when($isViewerSuperAdmin, fn (Builder $direct): Builder => $direct->orWhereNull('merchants.owner_id'))),
-                        )
-                        ->multiple()
-                        ->searchable()
-                        ->preload()
-                        ->visible(fn (Get $get, string $operation): bool => $operation === 'create' && $canPickMerchant && blank($get('merchant_id')))
-                        ->dehydrated(fn (Get $get, string $operation): bool => $operation === 'create' && $canPickMerchant && blank($get('merchant_id')))
                         ->columnSpanFull(),
                     Textarea::make('remark')
                         ->label(__('admin.payment_method.fields.remark'))
@@ -526,40 +522,6 @@ class PaymentMethodResource extends Resource
                         : __('admin.payment_method.sync_statuses.not_synced')))
                     ->color(fn (bool $state) => $state ? 'success' : 'gray')
                     ->action(static::viewSyncStatusAction()),
-                TextColumn::make('max_amount_per_transaction')->label(__('admin.payment_method.columns.per_transaction_limit'))->money('usd'),
-                TextColumn::make('max_amount_per_day')->label(__('admin.payment_method.columns.daily_limit'))->money('usd'),
-                TextColumn::make('max_amount_per_month')->label(__('admin.payment_method.columns.monthly_limit'))->money('usd'),
-                TextColumn::make('consecutive_failed_times')
-                    ->label(__('admin.payment_method.fields.consecutive_failed_times'))
-                    ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'refund_fee', $livewire->financialMerchant))
-                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'chargeback_fee', $livewire->financialMerchant))
-                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_percent', $livewire->financialMerchant))
-                    ->suffix('%')->toggleable(),
-                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_fixed', $livewire->financialMerchant))
-                    ->money('usd')->toggleable(),
-                TextColumn::make('reserve_percent')->label(__('payment_finance.reserve_percent'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_percent', $livewire->financialMerchant))
-                    ->suffix('%')->toggleable(),
-                TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_days', $livewire->financialMerchant))
-                    ->suffix(__('payment_finance.days'))->toggleable(),
-                TextColumn::make('settlement_mode')->label(__('settlement.fields.mode'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_mode', $livewire->financialMerchant))
-                    ->formatStateUsing(fn (?string $state): ?string => $state === null ? null : __('settlement.modes.'.$state))
-                    ->visible(fn (Pages\ListPaymentMethods $livewire): bool => $livewire->financialMerchant !== null)
-                    ->toggleable(),
-                TextColumn::make('settlement_days')->label(__('settlement.fields.cycle_days'))
-                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_days', $livewire->financialMerchant))
-                    ->suffix(__('settlement.days'))
-                    ->visible(fn (Pages\ListPaymentMethods $livewire): bool => $livewire->financialMerchant !== null)
-                    ->toggleable(),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),

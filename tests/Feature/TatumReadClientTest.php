@@ -19,7 +19,7 @@ class TatumReadClientTest extends TestCase
     public function test_market_price_explicitly_requests_usd_and_preserves_decimal_string_and_provider_time(): void
     {
         $this->freezeTime();
-        config(['services.tatum.api_key' => 'test-mainnet-key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'test-mainnet-key']);
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');
         Http::preventStrayRequests();
         Http::fake(['https://api.tatum.io/v4/data/rate/symbol*' => Http::response([
@@ -37,7 +37,7 @@ class TatumReadClientTest extends TestCase
     public function test_rejects_wrong_pair_missing_timestamp_float_or_stale_prices(array $changes): void
     {
         $this->freezeTime();
-        config(['services.tatum.api_key' => 'key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'key']);
         SystemConfig::set('crypto.max_market_price_age_seconds', '60');
         Http::preventStrayRequests();
         Http::fake(['https://api.tatum.io/v4/data/rate/symbol*' => Http::response(array_replace([
@@ -61,7 +61,7 @@ class TatumReadClientTest extends TestCase
 
     public function test_testnet_derivation_uses_testnet_key_and_no_secret_or_signing_endpoint(): void
     {
-        config(['services.tatum.api_key' => 'mainnet', 'services.tatum.testnet_key' => 'testnet']);
+        $this->setCryptoSettings(['crypto.api_key' => 'mainnet', 'crypto.testnet_key' => 'testnet']);
         Http::preventStrayRequests();
         Http::fake(['https://api.tatum.io/v3/ethereum/address/*/2*' => Http::response(['address' => '0x'.str_repeat('c', 40)])]);
 
@@ -74,7 +74,7 @@ class TatumReadClientTest extends TestCase
 
     public function test_read_failure_is_sanitized_and_does_not_leak_key_or_public_wallet_url(): void
     {
-        config(['services.tatum.testnet_key' => 'sensitive-api-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'sensitive-api-key']);
         Http::preventStrayRequests();
         Http::fake(['https://api.tatum.io/v3/ethereum/address/*' => Http::response(['error' => 'sensitive-api-key'], 401)]);
 
@@ -90,7 +90,7 @@ class TatumReadClientTest extends TestCase
 
     public function test_retries_safe_reads_on_rate_limit(): void
     {
-        config(['services.tatum.testnet_key' => 'key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'key']);
         Http::preventStrayRequests();
         Sleep::fake();
         Http::fake(['https://api.tatum.io/v3/ethereum/address/*' => Http::sequence()->push([], 429)->push(['address' => '0x'.str_repeat('c', 40)])]);
@@ -102,7 +102,7 @@ class TatumReadClientTest extends TestCase
 
     public function test_read_redirect_is_rejected_without_following_or_throwing_a_type_error(): void
     {
-        config(['services.tatum.testnet_key' => 'key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'key']);
         Http::preventStrayRequests();
         Http::fake(['*' => Http::response('', 302, ['Location' => 'https://untrusted.example/'])]);
 

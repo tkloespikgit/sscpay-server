@@ -208,10 +208,10 @@ class CryptoHistoryScanTest extends TestCase
     {
         [$monitor, $rpc] = $this->historyFixture();
         $this->fakeHistoryRpc($rpc);
-        config(['services.tatum.history_enabled' => false]);
+        $this->setCryptoSettings(['crypto.history_enabled' => false]);
         $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
         Http::assertNothingSent();
-        config(['services.tatum.history_enabled' => true]);
+        $this->setCryptoSettings(['crypto.history_enabled' => true]);
         $lock = Cache::lock('crypto:history:ethereum-sepolia', 600);
         $lock->get();
         try {

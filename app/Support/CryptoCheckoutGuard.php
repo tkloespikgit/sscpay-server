@@ -16,14 +16,20 @@ final class CryptoCheckoutGuard
 {
     public static function enabled(): bool
     {
-        return (bool) config('services.tatum.checkout_enabled') && (bool) config('services.tatum.subscriptions_enabled')
-            && (bool) config('services.tatum.history_enabled') && (bool) config('services.tatum.verification_enabled')
-            && (bool) config('services.tatum.settlement_enabled');
+        return (bool) CryptoRuntimeSettings::get('checkout_enabled') && self::operational();
+    }
+
+    /** Existing orders continue processing when only new checkout creation is disabled. */
+    public static function operational(): bool
+    {
+        return (bool) CryptoRuntimeSettings::get('subscriptions_enabled')
+            && (bool) CryptoRuntimeSettings::get('history_enabled') && (bool) CryptoRuntimeSettings::get('verification_enabled')
+            && (bool) CryptoRuntimeSettings::get('settlement_enabled');
     }
 
     public static function available(Order $order): bool
     {
-        return self::enabled() && $order->payment_type === 'crypto' && $order->status === 'pending' && $order->paid_at === null
+        return self::operational() && $order->payment_type === 'crypto' && $order->status === 'pending' && $order->paid_at === null
             && $order->created_at->gt(now()->subDays((int) SystemConfig::get('payment_link.expire_days', 7)))
             && (bool) $order->merchant?->status && (bool) $order->application?->status
             && PaymentMethod::query()->forMerchant($order->merchant_id)->whereKey($order->payment_method_id)
@@ -48,7 +54,7 @@ final class CryptoCheckoutGuard
     public static function covered(CryptoPaymentRequest $request, ?CarbonInterface $since = null): bool
     {
         $interval = SystemConfig::get('crypto.history_scan_interval_seconds');
-        $maxAge = config('services.tatum.history_max_head_age_seconds');
+        $maxAge = CryptoRuntimeSettings::get('history_max_head_age_seconds');
         if (! is_string($interval) || ! preg_match('/^[1-9][0-9]{0,6}$/D', $interval)
             || ! preg_match('/^[1-9][0-9]{0,4}$/D', (string) $maxAge) || (int) $maxAge > 86400) {
             return false;

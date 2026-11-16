@@ -397,6 +397,7 @@ return [
         'model_label' => 'Payment Method',
         'model_label_plural' => 'Payment Methods',
         'authorization' => [
+            'create_description' => 'Click a merchant on the left to select it, or on the right to remove it. Authorizations take effect when the payment method is created. Only active merchants under the same administrator are listed.',
             'action' => 'Authorize merchants',
             'description' => 'Click a merchant to grant or revoke access immediately. Only active merchants under the same administrator are listed. Revoking removes group references and financial overrides.',
             'unassigned' => 'Available merchants',
@@ -581,9 +582,14 @@ return [
         'help' => [
             'fields' => 'Define which config fields this payment type needs (e.g. Stripe needs a Publishable Key and a Secret Key). You can add fields or rename them, but a saved template cannot be deleted — that would break any payment method already using it.',
             'payment_config_tag' => 'Use the plugin payment type name (e.g. stripe, paypal).',
+            'options' => 'Enter each option’s stored value and display name. Save the main form to apply these changes.',
         ],
         'actions' => [
             'add_field' => 'Add Field',
+            'edit_options' => 'Edit options',
+        ],
+        'validation' => [
+            'options_required' => 'Click “Edit options” and add at least one option.',
         ],
     ],
 
@@ -1486,6 +1492,7 @@ return [
             'logistics' => 'Logistics Tracking',
         ],
         'value_types' => [
+            'secret' => 'Encrypted secret',
             'string' => 'String',
             'number' => 'Number',
             'json' => 'JSON',

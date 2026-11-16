@@ -156,7 +156,7 @@ class CryptoBlockHistoryTest extends TestCase
     #[DataProvider('listMethods')]
     public function test_rpc_object_is_not_mistaken_for_a_successful_empty_history_list(string $family, string $method): void
     {
-        config(['services.tatum.testnet_key' => 'test-fixture-key']);
+        $this->setCryptoSettings(['crypto.testnet_key' => 'test-fixture-key']);
         Http::preventStrayRequests();
         Http::fake(['*.gateway.tatum.io/*' => Http::response($family === 'evm'
             ? ['jsonrpc' => '2.0', 'id' => 1, 'result' => (object) []] : '{}')]);
@@ -188,7 +188,7 @@ class CryptoBlockHistoryTest extends TestCase
 
     private function fakeUtxo(string $network, array $block, string $genesis): void
     {
-        config(['services.tatum.api_key' => 'main-fixture-key', 'services.tatum.testnet_key' => 'test-fixture-key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'main-fixture-key', 'crypto.testnet_key' => 'test-fixture-key']);
         Http::preventStrayRequests();
         Http::fake(function (Request $request) use ($network, $block, $genesis) {
             $this->assertSame('https://'.$network.'.gateway.tatum.io/', $request->url());
@@ -221,7 +221,7 @@ class CryptoBlockHistoryTest extends TestCase
 
     private function fakeTron(string $network, array $block, array $infos, array $genesis): void
     {
-        config(['services.tatum.api_key' => 'main-fixture-key', 'services.tatum.testnet_key' => 'test-fixture-key']);
+        $this->setCryptoSettings(['crypto.api_key' => 'main-fixture-key', 'crypto.testnet_key' => 'test-fixture-key']);
         Http::preventStrayRequests();
         Http::fake(function (Request $request) use ($network, $block, $infos, $genesis) {
             $this->assertStringStartsWith('https://'.$network.'.gateway.tatum.io/wallet/', $request->url());

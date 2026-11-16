@@ -394,6 +394,7 @@ return [
         'model_label_plural' => '支付方式',
         'authorization' => [
             'action' => '授权商户',
+            'create_description' => '点击左侧商户加入授权列表，点击右侧撤销选择；创建支付方式后生效。仅列出同一管理员名下的启用商户。',
             'description' => '点击商户即可即时授权或撤销，无需保存主表单。仅列出同一管理员名下的启用商户；撤销将清理支付组引用与独立财务配置。',
             'unassigned' => '未授权商户',
             'assigned' => '已授权商户',
@@ -577,9 +578,14 @@ return [
         'help' => [
             'fields' => '定义该支付类型需要填哪些配置项（如 Stripe 需要 Publishable Key、Secret Key）。允许新增字段、改名，但不允许删除已保存的模板，避免正在使用它的支付方式丢失配置。',
             'payment_config_tag' => '填写插件识别的支付类型名（如 stripe、paypal）。',
+            'options' => '填写选项的保存值和展示名称。确认后需保存主表单才会生效。',
         ],
         'actions' => [
             'add_field' => '添加配置项',
+            'edit_options' => '编辑配置',
+        ],
+        'validation' => [
+            'options_required' => '请点击「编辑配置」，至少添加一个下拉选项。',
         ],
     ],
 
@@ -1487,6 +1493,7 @@ return [
             'logistics' => '物流跟踪',
         ],
         'value_types' => [
+            'secret' => '加密密钥',
             'string' => '字符串',
             'number' => '数值',
             'json' => 'JSON',

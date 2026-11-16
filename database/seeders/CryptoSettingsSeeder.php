@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\SystemConfig;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoSettings;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Cache;
@@ -26,6 +27,15 @@ class CryptoSettingsSeeder extends Seeder
                 'description' => $description, 'created_at' => now(), 'updated_at' => now(),
             ]);
             Cache::forget('system_config:'.$key);
+        }
+        foreach (CryptoRuntimeSettings::definitions() as $name => $definition) {
+            DB::table('system_configs')->insertOrIgnore([
+                'config_key' => 'crypto.'.$name, 'config_value' => $definition['default'],
+                'value_type' => $definition['type'], 'group' => 'crypto',
+                'description' => __('crypto.settings.runtime', [], 'zh_CN')[$name],
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            SystemConfig::forget('crypto.'.$name);
         }
     }
 }

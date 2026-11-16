@@ -170,6 +170,138 @@ sudo -u www-data /usr/bin/php artisan queue:restart
 
 实现采用 Telegram 官方的 [深链接机制](https://core.telegram.org/bots/features#deep-linking) 和 [webhook Secret Header](https://core.telegram.org/bots/api#setwebhook)。平台凭证不会发给商户浏览器，未绑定的商户不会自动使用平台机器人。
 
+
+### 3.2 区块链系统配置与升级
+
+2026-11-16 起，区块链平台参数统一在「系统配置 → 区块链收款」维护。`APP_URL` 继续保留 `.env`；商户扩展公钥、核对地址及资产网络仍保存在支付方式模板的 JSON 中。服务端不保存钱包私钥。
+
+此次升级新增两份迁移：`2026_11_16_163325_add_secret_value_to_system_configs_table` 和 `2026_11_16_163325_move_crypto_runtime_settings_to_system_configs`。部署代码后先执行迁移，再重新生成配置缓存及重载任务：
+
+```bash
+php artisan migrate --force --no-interaction
+php artisan config:cache
+php artisan queue:restart
+php artisan schedule:interrupt
+```
+
+首次升级前保留原 `.env` 和旧配置缓存供一次性导入；迁移优先使用旧有效 `services.tatum` 缓存，缓存不存在的键再读环境／环境文件。已存在的数据库值不会被覆盖，包含明确关闭和清空。新安装五个开关默认关闭，凭证及确认策略默认空。迁移不调用 Tatum、不创建支付方式、不重算原订单／账本。完成后核对后台配置，可移除旧 `TATUM_*`／`CRYPTO_*` 环境变量；运行时不再使用它们。保留原 `APP_KEY`，不能重新生成，否则已加密数据无法解密。
+
+日常改后台参数无需再次运行 `config:cache` 或重启队列，后续操作读取新值。密钥输入留空表示保留，列表只显示“已设置（加密）”；清除需显式打开“明确清除此密钥”。不同环境分别配置，尽量使用独立 API Key。正在使用的订阅凭证不可直接替换；应先关闭新下单、保持后台任务运行，等待订阅有完整扫描覆盖并安全转冷后更换。新订阅创建前自动同步新 HMAC。回调域名改变不会重写已有订阅 URL，原域名需继续可达。配置数据回滚保留值，存在密文时列迁移拒绝回滚删除。
+
+先填齐并核对该环境的 API Key 与 HMAC，再开放新下单；本地缺少任一凭证时不会创建监控记录。凭证更换保护也包含准备中、失败待重试等尚未确认安全退订的记录，不能仅凭“当前没有活跃订阅”绕过。
+
+BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 2 和 3600 仅为测试示例，不是生产确认策略：
+
+| 后台配置键 | BTC 测试填写 |
+| --- | --- |
+| `crypto.api_key` | 有 BTC/USD 行情权限的 Tatum Key，加密保存 |
+| `crypto.testnet_key` | 测试网 RPC／派生／订阅 Key，加密保存 |
+| `crypto.testnet_hmac_secret` | 独立随机 HMAC，16–100 字符，加密保存 |
+| `crypto.webhook_base_url` | 公网 HTTPS origin，不带回调路径 |
+| `crypto.utxo_min_confirmations.bitcoin-testnet` | `2` |
+| `crypto.genesis_hashes.bitcoin-testnet` | 与实际 Tatum 测试 RPC 核对的 64 位创世块哈希 |
+| `crypto.history_max_head_age_seconds` | `3600` |
+| `crypto.quote_markup_percent` | `0`，首轮不加报价上浮 |
+| `crypto.quote_ttl_seconds` | `3600`，报价有效一小时 |
+| `crypto.max_market_price_age_seconds` | `300`，行情最多五分钟旧 |
+| `crypto.subscription_ttl_seconds` | `7200`，订阅两小时，实际期限至少覆盖报价 |
+| `crypto.subscription_ttl_overrides` | `{}`，使用全局订阅时长，不能填 `[]` |
+| `crypto.subscription_reopen_max_renewals` | `3` |
+| `crypto.history_scan_interval_seconds` | `300`，补查健康窗口；不是定时任务执行间隔 |
+| `crypto.timeout` | `10`，地址派生／行情请求超时秒数 |
+| `crypto.connect_timeout` | `3`，地址派生／行情连接超时秒数 |
+| `crypto.subscriptions_enabled` | 开启订阅及回调 |
+| `crypto.verification_enabled` | 开启核验 |
+| `crypto.history_enabled` | 开启补查 |
+| `crypto.settlement_enabled` | 开启入账 |
+| `crypto.checkout_enabled` | 其余配置核对后开启新建单 |
+
+其余网络的确认数在 `crypto.evm_min_confirmations.*`／`crypto.utxo_min_confirmations.*`／`crypto.tron_min_confirmations.*` 下；BTC／LTC／TRON 链身份在 `crypto.genesis_hashes.*` 下；测试代币合约在 `crypto.test_tokens.ethereum-sepolia` 和 `crypto.test_tokens.tron-shasta`。`crypto.timeout` 和 `crypto.connect_timeout` 控制地址派生／行情请求超时，其他链查询仍保留各适配器的短超时预算。
+
+初次配置仍需初始化支付模板和权限（有需要时运行 `CryptoPaymentTemplatesSeeder`／`PermissionSeeder`），本次迁移不授权商户。测试步骤和验收结果记录沿用[开发方案第 13 节](../docs/blockchain-payment-plan.md#13-测试容量与实施顺序)。仅关闭 `crypto.checkout_enabled` 会停止新建链上订单，已有订单继续处理；其余开关是独立的运维控制，关闭会停止对应监听／核验／补查／入账能力。
+
+#### 3.2.1 BTC 测试网络、钱包和平台凭证
+
+以下按当前代码整理，使用独立测试数据库、缓存、商户和钱包；不是已完成真实链验收的记录。
+
+1. `APP_URL` 填测试付款站点的完整 HTTPS origin。`crypto.webhook_base_url` 填 Tatum 能访问的公网 HTTPS origin，可与付款站点相同，只填域名，不附加 `/api/...`。系统会生成 `/api/webhooks/tatum/testnet/{监控UUID}`；该路径须能接收外部 POST，反向代理保留原始请求体和签名头，不能出现登录／人机验证页。
+2. 准备有 BTC/USD 行情权限的 Key 填 `crypto.api_key`，有测试 RPC、v3 公钥地址派生、v4 订阅管理权限的 Key 填 `crypto.testnet_key`。即使收测试币，当前代码仍用前者获取 BTC/USD 参考报价。独立随机 HMAC 填 `crypto.testnet_hmac_secret`，16–100 字符；例如在本地用 `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` 生成 64 位十六进制字符串。系统创建订阅前会同步 HMAC。只测试 BTC 时，主网 HMAC、其他链确认参数及测试代币合约可留空。
+3. 用测试 Key 调用 [Tatum 支持网络接口](https://docs.tatum.io/reference/getsupportedalertchains) `GET /v4/subscription/chains`，确认目标测试网络列有 `ADDRESS_EVENT`。官方说明该列表不按 Key／套餐过滤，仍要由后续订单验证实际创建权限；不能只凭列表判断账号已具备权限。
+4. 当前代码的 BTC 测试网络键是 `bitcoin-testnet`，RPC 固定指向 `https://bitcoin-testnet.gateway.tatum.io/`。Tatum 另列独立 Testnet4 与 Signet 网关，不能直接把模板改成 `bitcoin-testnet4` 或把 Testnet4 创世哈希填到现有配置中当作切网。见 [Tatum Bitcoin 网络列表](https://tatum.io/chain/bitcoin)。在所用 RPC 分别提交以下 JSON，检查 `chain`、`initialblockdownload=false`、链头进度和创世哈希：
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]}
+```
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"getblockhash","params":[0]}
+```
+
+如果确认为 Bitcoin Testnet3，`crypto.genesis_hashes.bitcoin-testnet` 应与下面的 [Bitcoin Core Testnet3 标识](https://github.com/bitcoin/bitcoin/blob/v28.0/src/kernel/chainparams.cpp)逐字一致；不一致先查网络映射，不直接接受供应商返回的任意哈希：
+
+```text
+000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943
+```
+
+5. 在同一测试网络准备发送钱包和商户收款派生钱包。测试币先领到发送钱包，留足链上手续费，之后精确转入订单地址；入口可查 [Tatum 测试币索引](https://docs.tatum.io/docs/testnet-faucets)，逐一确认具体网络。不要把水龙头直接转入金额不可控的订单地址当作正常付款测试。
+6. 收款钱包在本地备份／恢复后，导出与 Tatum v3 兼容的扩展公钥和索引 0、1 的地址。Tatum 公布的通用测试分支是 `m/44'/1'/0'/0`，两个校验地址为该分支下的 `/0`、`/1`；账户层 `m/44'/1'/0'` 与接收分支多差一层，不能直接混用。脚本类型也须与实际派生结果一致。见 [Tatum 派生规则](https://docs.tatum.io/docs/mnemonic-derivation-path)、[BTC 公钥派生接口](https://docs.tatum.io/reference/btcgenerateaddress)。服务端仅接受 `xpub`／`tpub`，不接受 `ypub`／`zpub`／`vpub`、普通收款地址或私钥。助记词及私钥仅由本地钱包保管；不能提交到后台或在线转换网页。
+
+#### 3.2.2 支付方式配置填写表
+
+若模板列表没有 `Crypto / Bitcoin`，先在该测试环境执行 `php artisan db:seed --class=CryptoPaymentTemplatesSeeder --force --no-interaction`；它只补缺失模板，已有同名模板不会被覆盖。权限按现有角色管理流程分配，系统配置仍仅超级管理员可编辑。
+
+新建测试支付方式，首轮直接归属测试商户；若使用管理员共享渠道，则先授权给该商户。名称可填“BTC 测试收款”，唯一代码例如 `btc_test`；支付类型选“区块链支付”，模板选 `Crypto / Bitcoin` 并启用。已有法币渠道不能直接切换支付类型。模板的网络默认主网，必须主动切换到测试网络。
+
+| 页面字段／JSON 键 | 填写内容 |
+| --- | --- |
+| 配置版本 `config_version` | `1` |
+| 网络 `network` | `bitcoin-testnet` |
+| 资产 `asset` | `BTC` |
+| 只读扩展公钥 `extended_public_key` | 上一步本地准备并核对的测试收款分支 `tpub...`／兼容 `xpub...`，不能填写示例占位文本 |
+| 派生兼容方案 `derivation_profile` | `tatum-v3-bitcoin-v1`，不是填写 HD 路径的输入框 |
+| 本地恢复校验地址 `recovery_address_0` | 同一分支的索引 0 地址 |
+| 本地恢复校验地址 `recovery_address_1` | 同一分支的索引 1 地址，必须与索引 0 不同 |
+| 确认策略引用 `confirmation_policy` | `bitcoin-configured-v1`；确认数 `2` 填在系统配置，不填在这里 |
+| 代币合约 `contract_address` | BTC 不填写；标准 Bitcoin 模板不会提供此字段 |
+
+这些字段保存到支付方式 `config` JSON；Tatum Key、HMAC、报价有效期、创世哈希不应添加到模板 JSON。校验地址是本地恢复能力的核对样本，不是所有订单重复收款的地址。新公钥源首次分配订单地址从索引 2 开始；已使用的公钥源继续既有全局计数，不因新增渠道或商户重置。
+
+费用区域首轮填交易百分比费 `0`、固定费 `0`；第二轮改百分比费为 `1`（即 1%，不是 `0.01`）、固定费仍为 `0`，创建新订单验证净额。若该商户有独立费用覆盖，以商户生效配置为准。固定费的单位是 USD，会按冻结币价折算 BTC。链上钱包实际收到总 BTC，平台账本记录扣服务费后的净 BTC；本系统不会链上分走服务费。
+
+建一个仅含此渠道的测试支付组，启用支付组及渠道关联，将测试应用绑定该组；首轮关闭该组的组合付款，单笔限额允许测试金额，避免误路由到法币渠道。保留正常商户、应用、渠道权限与启用校验。
+
+#### 3.2.3 从下单到到账的测试顺序
+
+1. 按 3.2 完成迁移并核对后台值；本节测试值只用于隔离环境。填齐凭证、网络策略及支付方式后，依次开启订阅、核验、历史补查、入账，最后开启 `crypto.checkout_enabled`。日常保存配置无需再执行 `config:cache`；旧订单确认策略、费率和报价仍取原快照，改配置后用新订单测试。
+2. 保持调度和队列运行。本地测试可在两个终端分别执行 `php artisan schedule:work`、`php artisan queue:work`；服务器已有调度／Supervisor 时沿用原运行方式。链上准备、订阅、历史扫描、核验、入账由 Scheduler 调用，单独启动 Queue Worker 不会启动这些定时命令；Worker 用于异步通知等任务。
+3. 从现有统一下单入口创建一笔 `USD 10.00` 订单，使用测试应用和仅含 BTC 渠道的支付组，商户订单号每笔唯一。提交的仍是法币金额／币种，不将 API 的 `currency` 改为 BTC。先用 USD 验证收款，再用 AUD／GBP 等验证法币原始汇率快照与数量上浮。订单金额须满足现有渠道限额。
+4. 打开返回的付款链接，等待公钥核对、地址派生、报价、历史补查、订阅及交接补查完成。付款页应展示 `bitcoin-testnet`、BTC 应付数量、独立地址和报价到期时间。Tatum 中应有该地址的有效订阅。没有通过核对前页面不显示可付款地址；不要向两个校验地址付款。
+5. 报价有效时，从发送钱包将页面要求的 BTC **精确足额**转到该订单地址，发送手续费另付，不勾选从收款金额扣除矿工费。保存订单号、地址、报价数量、txid、上链高度与时间。当前迟到判定看规范区块时间，报价到期前广播不保证到期前上链。
+6. 达到两次确认并完成核验、完整历史补查后，检查订单支付成功、「虚拟币资金」中 `bitcoin-testnet / BTC` 的净余额和入账凭证，以及服务费。首次零费时净额等于应付；第二轮 1% 费用时按聪向上舍入服务费后扣除。例：应付 `0.00010000 BTC`、1%、固定费 0 时，服务费为 `0.00000100 BTC`，净额 `0.00009900 BTC`。实际应付以冻结报价为准，法币余额不应增加。
+7. 同时核对真实 Tatum 投递成功和本系统验签接收记录。只靠历史补查到账只能证明补查可用，不能把 webhook 标为通过。反复刷新付款页及重复运行核验／入账后，余额与原始收入凭证应只增加一次；再建第二单确认地址不同。
+
+需要定位后台处理阶段时，可在该隔离测试环境逐项运行以下现有命令；不要以命令退出成功替代订单／链上结果核对，部分命令存在下一次重试时间，链上确认仍须真实出块：
+
+```bash
+php artisan crypto:prepare-checkouts --limit=5 --no-interaction
+php artisan crypto:scan-history bitcoin-testnet --limit=100 --no-interaction
+php artisan crypto:maintain-subscriptions --limit=5 --no-interaction
+php artisan crypto:verify-receipts --limit=25 --no-interaction
+php artisan crypto:settle-payments --limit=100 --no-interaction
+```
+
+首轮成功后再做异常测试：
+
+| 用例 | 预期结果 |
+| --- | --- |
+| 少付／多付 | 不按正常足额款直接完成入账；核验及补查后进入对应状态或人工复核 |
+| 报价过期后转入旧地址 | 找回原订单，按迟到款处理，不命中新订单 |
+| 测试环境短暂阻断回调、保持扫描 | 真实款通过历史补查发现；记录线索来源，区分回调重投和补查 |
+| 过期链接重新打开／重新报价 | 先补查旧地址；有款先核验处理，无款且覆盖完整、链头已越过到期时间后才允许显式重新报价及新地址 |
+| 单独关闭新下单开关 | 新建链上单停止，已有单的发现、核验和入账继续 |
+
+测订阅到期时，可对**新测试订单**使用报价 `300` 秒、订阅 `600` 秒等短值，并继续历史扫描；订阅实际期限至少覆盖报价，补查未接管或有待核验线索时会延迟取消。BTC 若长时间不出块，历史完整性／新鲜度条件可能暂不成立，不能据此要求立即退订或绕过安全检查。退款／取款依旧是人工审核核销，真实钱包归集另测，不属于本次自动到账验证。
+
 ---
 
 ## 4. Crontab 定时任务

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\CryptoAddressMonitor;
 use App\Models\CryptoWebhookReceipt;
 use App\Models\User;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\TatumWebhookSignature;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -70,7 +71,7 @@ class TatumWebhookTest extends TestCase
         $monitor = $this->createCryptoMonitor();
         $raw = json_encode($this->payload($monitor));
         $this->call('POST', $this->path($monitor), [], [], [], ['CONTENT_TYPE' => 'application/json'], $raw)->assertStatus(401);
-        $signature = base64_encode(hash_hmac('sha512', $raw, config('services.tatum.testnet_hmac_secret'), true));
+        $signature = base64_encode(hash_hmac('sha512', $raw, CryptoRuntimeSettings::get('testnet_hmac_secret'), true));
 
         $this->call('POST', $this->path($monitor), [], [], [], ['CONTENT_TYPE' => 'application/json', 'HTTP_X_PAYLOAD_HASH' => $signature], str_replace('999', '998', $raw))->assertStatus(401);
 
@@ -81,7 +82,7 @@ class TatumWebhookTest extends TestCase
     {
         $monitor = $this->createCryptoMonitor();
         $raw = json_encode($this->payload($monitor));
-        $signature = base64_encode(hash_hmac('sha512', $raw, config('services.tatum.mainnet_hmac_secret'), true));
+        $signature = base64_encode(hash_hmac('sha512', $raw, CryptoRuntimeSettings::get('mainnet_hmac_secret'), true));
 
         $this->call('POST', $this->path($monitor), [], [], [], ['CONTENT_TYPE' => 'application/json', 'HTTP_X_PAYLOAD_HASH' => $signature], $raw)->assertStatus(401);
 
@@ -143,11 +144,11 @@ class TatumWebhookTest extends TestCase
     public function test_disabled_receiver_and_unknown_monitor_do_not_create_receipts(): void
     {
         $monitor = $this->createCryptoMonitor();
-        config(['services.tatum.subscriptions_enabled' => false]);
+        $this->setCryptoSettings(['crypto.subscriptions_enabled' => false]);
         $this->deliver($monitor, json_encode($this->payload($monitor)))->assertStatus(503);
-        config(['services.tatum.subscriptions_enabled' => true]);
+        $this->setCryptoSettings(['crypto.subscriptions_enabled' => true]);
         $raw = json_encode($this->payload($monitor));
-        $signature = base64_encode(hash_hmac('sha512', $raw, config('services.tatum.testnet_hmac_secret'), true));
+        $signature = base64_encode(hash_hmac('sha512', $raw, CryptoRuntimeSettings::get('testnet_hmac_secret'), true));
         $this->call('POST', '/api/webhooks/tatum/testnet/11111111-1111-4111-8111-111111111111', [], [], [],
             ['CONTENT_TYPE' => 'application/json', 'HTTP_X_PAYLOAD_HASH' => $signature], $raw)->assertNotFound();
         $this->assertDatabaseCount('crypto_webhook_receipts', 0);
@@ -155,7 +156,7 @@ class TatumWebhookTest extends TestCase
 
     public function test_official_hmac_vector_and_whitespace_policy_preserve_strings_and_integer_lexemes(): void
     {
-        config(['services.tatum.testnet_hmac_secret' => 'c354b83b-d31b-4dda-9bab-d6a67715a1ed']);
+        $this->setCryptoSettings(['crypto.testnet_hmac_secret' => 'c354b83b-d31b-4dda-9bab-d6a67715a1ed']);
         $raw = '{"address":"TJG7iciLGjsib9qhe6U6F7M2vxYJuDjWNM","amount":"20","counterAddress":"TVf3RVEtzKtMfqQaCAWs9d4HKbC4bZGaWP","asset":"TRON","blockNumber":44087791,"txId":"93442189d7bccbe009f8ab594831ff9d7d258cab712d74a404cd3dccdc4c6d69","type":"native","tokenId":null,"chain":"tron-testnet","subscriptionType":"ADDRESS_EVENT"}';
         $header = 'WdhYQft+qP8LpYAdeOMncUzIZ7DSUWX9JVSjeGH3F4mCreUxtIpTl2VYigm+qUvkfSQ0lWmTrzADm4mGxSVcxA==';
         $verifier = app(TatumWebhookSignature::class);
@@ -167,9 +168,9 @@ class TatumWebhookTest extends TestCase
 
     public function test_signature_compaction_preserves_escaped_quotes_string_spaces_and_large_numeric_tokens(): void
     {
-        config(['services.tatum.testnet_hmac_secret' => 'test-testnet-webhook-secret-123456']);
+        $this->setCryptoSettings(['crypto.testnet_hmac_secret' => 'test-testnet-webhook-secret-123456']);
         $raw = '{"blockNumber":123456789012345678901234567890,"note":"keep  space and \\" quote"}';
-        $header = base64_encode(hash_hmac('sha512', $raw, config('services.tatum.testnet_hmac_secret'), true));
+        $header = base64_encode(hash_hmac('sha512', $raw, CryptoRuntimeSettings::get('testnet_hmac_secret'), true));
         $pretty = str_replace('{', "{\n  ", $raw);
         $verifier = app(TatumWebhookSignature::class);
 
@@ -190,7 +191,7 @@ class TatumWebhookTest extends TestCase
 
     private function deliver(CryptoAddressMonitor $monitor, string $raw): TestResponse
     {
-        $header = base64_encode(hash_hmac('sha512', $raw, config('services.tatum.testnet_hmac_secret'), true));
+        $header = base64_encode(hash_hmac('sha512', $raw, CryptoRuntimeSettings::get('testnet_hmac_secret'), true));
 
         return $this->call('POST', $this->path($monitor), [], [], [], ['CONTENT_TYPE' => 'application/json', 'HTTP_X_PAYLOAD_HASH' => $header], $raw);
     }
