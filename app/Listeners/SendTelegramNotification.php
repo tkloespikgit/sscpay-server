@@ -44,7 +44,7 @@ class SendTelegramNotification implements ShouldQueue
             ['order_no' => $event->order->order_no, 'currency' => $event->order->currency, 'amount' => $event->order->amount],
             (int) $event->order->merchant_id,
             $event->order->paymentMethodConfig(),
-            summary: OrderTelegramSummary::forOrder($event->order),
+            orderDetails: OrderTelegramSummary::details($event->order),
         );
     }
 
@@ -63,7 +63,7 @@ class SendTelegramNotification implements ShouldQueue
             ],
             (int) $order->merchant_id,
             $order->paymentMethodConfig(),
-            summary: OrderTelegramSummary::forOrder($order),
+            orderDetails: OrderTelegramSummary::details($order),
         );
     }
 
@@ -90,7 +90,7 @@ class SendTelegramNotification implements ShouldQueue
             $event->details,
             $event->merchantId,
             paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
-            summary: OrderTelegramSummary::render($event->details),
+            orderDetails: $event->details,
         );
     }
 
@@ -102,7 +102,7 @@ class SendTelegramNotification implements ShouldQueue
             ['event_no' => $event->eventNo, 'due_at' => $event->dueAt],
             $event->merchantId,
             paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
-            summary: OrderTelegramSummary::render($event->details),
+            orderDetails: $event->details,
         );
     }
 
@@ -120,7 +120,7 @@ class SendTelegramNotification implements ShouldQueue
     private function sendDesignatedOrderPaidMessages(Order $order): void
     {
         $settings = $this->telegramRoutes->settings(TelegramNotificationKind::OrderPaid);
-        $summary = OrderTelegramSummary::forOrder($order);
+        $orderDetails = OrderTelegramSummary::details($order);
 
         for ($i = 0; $i < $settings['repeat_count']; $i++) {
             $this->telegramRoutes->sendNotification(
@@ -134,7 +134,7 @@ class SendTelegramNotification implements ShouldQueue
                 ],
                 (int) $order->merchant_id,
                 $order->paymentMethodConfig(),
-                summary: $summary,
+                orderDetails: $orderDetails,
             );
         }
     }

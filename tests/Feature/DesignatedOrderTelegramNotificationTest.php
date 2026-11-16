@@ -196,11 +196,16 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
 
     public function test_source_payment_uses_the_configured_template_repeat_count_and_enabled_switch(): void
     {
+        $this->app->setLocale('en');
         Http::preventStrayRequests();
         Http::fake(['api.telegram.org/*' => Http::response(['ok' => true])]);
         $order = $this->designatedPaidOrder();
+        $order->update(['transaction_id' => 'TX-CUSTOM']);
         $settings = app(TelegramNotificationSettings::class);
-        $rule = ['enabled' => false, 'template' => 'Received :order_no / :amount :currency', 'repeat_count' => 2];
+        $rule = [
+            'enabled' => false, 'template' => 'Received :order_no / :amount :currency', 'repeat_count' => 2,
+            'order_template' => "Transaction: :transaction_id\nShop order: :merchant_order_no",
+        ];
         $settings->save(TelegramNotificationKind::OrderPaid, $rule);
         $event = new OrderStatusChanged($order, 'pending', 'paid');
 
@@ -212,7 +217,8 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
 
         Http::assertSentCount(2);
         Http::assertSent(fn ($request): bool => str_contains($request['text'], 'Received SSC-PAID / 100.00 USD')
-            && str_contains($request['text'], 'M-PAID'));
+            && str_contains($request['text'], "Transaction: TX-CUSTOM\nShop order: M-PAID")
+            && ! str_contains($request['text'], 'System order:'));
     }
 
     /** @return array<string, array{string}> */

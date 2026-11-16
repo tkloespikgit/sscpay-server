@@ -475,6 +475,6 @@
 
 **后台：** 超级管理员在「Telegram 通知管理」按两类查看、搜索和筛选，每条单独维护启用状态、正文、变量预览与适用策略。源网站付款成功次数默认 5（允许 1–5），无可用通道冷却默认 10 分钟、争议审核网关状态提醒冷却默认 1440 分钟，争议到期提醒默认提前 24 小时，未发货提醒默认超 10 天且系统时区每天 10:00。这些是通知参数，不修改下单、资金或物流异常判定阈值。恢复默认只影响当前项，实际接收人预览不发送消息、不暴露 Token 或 Chat ID。
 
-**正文与存储：** 白名单变量仅做字符串替换和 HTML 转义，不执行代码；订单摘要/批次明细继续自动追加。新设置保存在 `system_configs.telegram.notification_settings`，首次保存创建并按项合并；无新增表或迁移。旧路由选择失效，仅在尚未保存新设置时继承旧 `none` 停发状态。用户明确不需要发送记录，因此不新增通知历史表或页面；已有物流重试状态、争议提醒去重和运行错误日志继续保留。
+**正文与存储：** 白名单变量仅做字符串替换和 HTML 转义，不执行代码；订单信息在消息内容编辑区单独展示，允许按通知调整字段、顺序和文案，预览与发送共用模板。该区块追加在正文后，汇总消息对每笔订单重复渲染；留空恢复默认订单信息。配置 `order_template` 最大 1000 字符，替换后的订单信息同样限长，给正文保留消息长度预算；历史配置缺少此项时使用默认，不改写已有正文。新设置保存在 `system_configs.telegram.notification_settings`，首次保存创建并按项合并；无新增表或迁移。旧路由选择失效，仅在尚未保存新设置时继承旧 `none` 停发状态。用户明确不需要发送记录，因此不新增通知历史表或页面；已有物流重试状态、争议提醒去重和运行错误日志继续保留。
 
 **依据：** [通知类型](../app/Support/TelegramNotificationKind.php)、[配置](../app/Services/TelegramNotificationSettings.php)、[模板](../app/Services/TelegramMessageTemplate.php)、[发送路由](../app/Services/TelegramNotificationRouter.php)、[后台](../app/Filament/Pages/TelegramNotificationRoutes.php)、[配置回归](../tests/Feature/TelegramNotificationSettingsTest.php)、[调度回归](../tests/Feature/TelegramNotificationScheduleTest.php)。

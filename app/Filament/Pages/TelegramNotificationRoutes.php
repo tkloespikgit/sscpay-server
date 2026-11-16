@@ -130,7 +130,16 @@ class TelegramNotificationRoutes extends Page implements HasTable
                     ->authorize(fn (): bool => static::canAccess())
                     ->slideOver()
                     ->modalHeading(fn (array $record): string => $record['label'])
-                    ->fillForm(fn (array $record): array => $this->settings->get(TelegramNotificationKind::from($record['kind'])))
+                    ->fillForm(function (array $record): array {
+                        $kind = TelegramNotificationKind::from($record['kind']);
+                        $data = $this->settings->get($kind);
+
+                        if ($kind->hasOrderSummary() && blank($data['order_template'])) {
+                            $data['order_template'] = OrderTelegramSummary::defaultTemplate();
+                        }
+
+                        return $data;
+                    })
                     ->schema(fn (array $record): array => $this->editSchema(TelegramNotificationKind::from($record['kind'])))
                     ->action(function (array $record, array $data, Action $action): void {
                         abort_unless(static::canAccess(), 403);
@@ -234,13 +243,30 @@ class TelegramNotificationRoutes extends Page implements HasTable
 
                         $set('insert_variable', null);
                     }),
+                ...($kind->hasOrderSummary() ? [
+                    Textarea::make('order_template')->label(__('admin.telegram_routes.order_template'))
+                        ->rows(7)->maxLength(OrderTelegramSummary::MAX_LENGTH)
+                        ->helperText(__('admin.telegram_routes.order_template_help'))
+                        ->live(onBlur: true),
+                    Select::make('insert_order_variable')->label(__('admin.telegram_routes.insert_order_variable'))
+                        ->options(array_combine(OrderTelegramSummary::variables(), array_map(fn (string $variable): string => ':'.$variable, OrderTelegramSummary::variables())))
+                        ->dehydrated(false)->live()
+                        ->afterStateUpdated(function (Get $get, Set $set, ?string $state): void {
+                            if ($state !== null && in_array($state, OrderTelegramSummary::variables(), true)) {
+                                $template = $get('order_template') ?: OrderTelegramSummary::defaultTemplate();
+                                $set('order_template', $template.' :'.$state);
+                            }
+
+                            $set('insert_order_variable', null);
+                        }),
+                ] : []),
                 TextEntry::make('preview')->label(__('admin.telegram_routes.preview'))
-                    ->state(fn (Get $get): HtmlString => $this->messagePreview($kind, (string) ($get('template') ?? ''), $get('unshipped_days'))),
+                    ->state(fn (Get $get): HtmlString => $this->messagePreview($kind, (string) ($get('template') ?? ''), (string) ($get('order_template') ?? ''), $get('unshipped_days'))),
             ]),
         ];
     }
 
-    private function messagePreview(TelegramNotificationKind $kind, string $template, mixed $unshippedDays = null): HtmlString
+    private function messagePreview(TelegramNotificationKind $kind, string $template, string $orderTemplate, mixed $unshippedDays = null): HtmlString
     {
         $variables = $this->templates->sampleVariables($kind);
 
@@ -250,12 +276,12 @@ class TelegramNotificationRoutes extends Page implements HasTable
 
         $message = $this->templates->render($kind, $variables, $template);
 
-        if (! in_array($kind, [TelegramNotificationKind::LogisticsImportCompleted, TelegramNotificationKind::SiteProductsSyncCompleted, TelegramNotificationKind::SiteProductsSyncFailed], true)) {
-            $message .= "\n\n".OrderTelegramSummary::render([
+        if ($kind->hasOrderSummary()) {
+            $message .= "\n\n".$this->templates->renderOrderSummary($kind, [
                 'order_no' => 'SYS-DEMO-001', 'merchant_order_no' => 'SHOP-DEMO-001', 'transaction_id' => 'TX-DEMO-001',
                 'payment_method_name' => __('admin.telegram_routes.sample_channel'), 'paid_at' => '2026-11-16 10:00:00',
                 'currency' => 'USD', 'amount' => '100.00',
-            ]);
+            ], $orderTemplate);
         }
 
         return new HtmlString(nl2br($message));

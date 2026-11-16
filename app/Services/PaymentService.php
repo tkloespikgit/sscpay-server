@@ -6,7 +6,6 @@ use App\Exceptions\NoAvailablePaymentMethodException;
 use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -168,7 +167,7 @@ class PaymentService
             'group_key' => $group->group_key,
             'amount' => number_format((float) $amountUsd, 2),
             'reason' => $reason,
-        ], (int) $group->merchant_id, summary: OrderTelegramSummary::render($orderDetails));
+        ], (int) $group->merchant_id, orderDetails: $orderDetails);
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 
 final readonly class TelegramMessageTemplate
@@ -30,6 +31,14 @@ final readonly class TelegramMessageTemplate
         }
 
         return htmlspecialchars(mb_substr(strtr($template, $replacements), 0, 3000), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    /** @param array<string, string> $details */
+    public function renderOrderSummary(TelegramNotificationKind $kind, array $details, ?string $template = null): string
+    {
+        $template ??= (string) ($this->settings->get($kind)['order_template'] ?? '');
+
+        return OrderTelegramSummary::render($details, $template);
     }
 
     /** @return array<string, string> */

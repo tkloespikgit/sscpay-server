@@ -304,7 +304,8 @@ class MerchantShipmentSyncService
         $orders = $syncs->map(fn (OrderShipmentSync $sync): ?Order => $sync->order)
             ->filter(fn (?Order $order): bool => $order !== null && (int) $order->merchant_id === $merchantId)
             ->unique('id')->values();
-        $summaries = OrderTelegramSummary::forOrders($orders);
+        $orderTemplate = (string) $this->telegramRoutes->settings(TelegramNotificationKind::ShipmentSyncFailed)['order_template'];
+        $summaries = OrderTelegramSummary::forOrders($orders, $orderTemplate);
 
         foreach ($syncs as $sync) {
             $application = Application::query()->forMerchant($merchantId)->find($sync->application_id);
@@ -317,7 +318,7 @@ class MerchantShipmentSyncService
             ];
             $details = array_map(fn (string $value): string => htmlspecialchars(mb_substr($value, 0, 50), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $details);
             $summary = $summaries[(int) $sync->order_id]
-                ?? OrderTelegramSummary::render(['merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? '')]);
+                ?? OrderTelegramSummary::render(['merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? '')], $orderTemplate);
             $line = __('admin.merchant_shipment_sync.telegram_line', $details)."\n".$summary;
 
             if (count($ids) >= 5 || ($ids !== [] && mb_strlen($message."\n\n".$line) > 4000)) {

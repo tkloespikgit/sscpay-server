@@ -50,7 +50,7 @@ erDiagram
 
 独立查看权限 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view` 复用现有 `permissions` 和角色关联表，无表结构迁移。`PermissionSeeder` 幂等补齐权限及平台商户级管理员；「角色权限分配」保存时也会补齐权限并按勾选同步商户默认角色。已有模板按保存值生效，不自动扩权；后三项原有 `manage` 权限仍包含查看能力。
 
-Telegram 通知管理复用 `system_configs`，不新增表。`telegram.notification_settings` 为 JSON，首次保存时创建；按通知枚举值保存 `enabled`、`template` 和该项适用的参数（`repeat_count`、`cooldown_minutes`、`reminder_hours`、`unshipped_days`、`send_time`）。保存时锁定配置行，仅合并当前通知项并刷新缓存；空正文使用语言文件默认模板。接收人按事件/通道当前归属计算，不存入此 JSON，不新增发送记录。
+Telegram 通知管理复用 `system_configs`，不新增表。`telegram.notification_settings` 为 JSON，首次保存时创建；按通知枚举值保存 `enabled`、`template`、订单相关通知的 `order_template` 和该项适用的参数（`repeat_count`、`cooldown_minutes`、`reminder_hours`、`unshipped_days`、`send_time`）。保存时锁定配置行，仅合并当前通知项并刷新缓存；空正文或空订单信息使用语言文件默认模板，旧 JSON 缺少 `order_template` 时直接读取默认，无需迁移。接收人按事件/通道当前归属计算，不存入此 JSON，不新增发送记录。
 
 旧 `telegram.notification_routes` 保留。迁移 `2026_11_16_173651_add_telegram_notification_routes_to_system_configs` 仅补缺失行、回滚保留配置；新设置尚未保存的通知仅继承旧值 `none` 对应的停发状态，其余旧接收人选择不再参与路由。上述两条配置都从通用系统配置编辑器隐藏，只允许超级管理员在「Telegram 通知管理」维护新设置。无需为此改造执行新增迁移，见 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
 

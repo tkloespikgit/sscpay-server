@@ -14,8 +14,10 @@ use App\Models\PaymentGroup;
 use App\Models\TelegramBot;
 use App\Services\MerchantShipmentSyncService;
 use App\Services\OrderShippingService;
+use App\Services\TelegramNotificationSettings;
 use App\Support\ShipmentSyncEndpoint;
 use App\Support\SignatureCanonicalizer;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
@@ -741,6 +743,10 @@ class MerchantShipmentSyncTest extends TestCase
     public function test_failure_digest_splits_escaped_order_details_without_losing_pending_alerts(): void
     {
         $firstOrder = $this->prepareOrder();
+        app(TelegramNotificationSettings::class)->save(TelegramNotificationKind::ShipmentSyncFailed, [
+            'enabled' => true, 'template' => '',
+            'order_template' => "Transaction :transaction_id\nChannel :payment_method_name\nOrder :order_no\nReference :merchant_order_no\nPaid :paid_at\nAmount :currency :amount",
+        ]);
         $method = $this->makePaymentMethod('long-notice');
         $method->update(['method_name' => str_repeat('"', 80)]);
         $this->application->update(['name' => str_repeat('"', 50)]);
@@ -777,6 +783,7 @@ class MerchantShipmentSyncTest extends TestCase
             $this->assertLessThanOrEqual(4000, mb_strlen($message));
         }
         $text = $messages->implode("\n");
+        $this->assertStringContainsString('Transaction &quot;', $text);
         foreach ($syncs as $index => $sync) {
             $this->assertSame('sent', $sync->refresh()->alert_status);
             $this->assertStringContainsString('TX-LONG-'.($index + 1), $text);

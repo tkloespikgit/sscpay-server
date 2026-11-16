@@ -17,12 +17,12 @@ class PaymentChannelTelegramNotifier
     /** @param array<string, scalar|null> $variables */
     public function notify(TelegramNotificationKind $kind, PaymentMethod $method, array $variables, ?Order $order = null): void
     {
-        $summary = '';
+        $orderDetails = null;
 
         if ($order !== null && ($method->merchant_id === null || (int) $order->merchant_id === (int) $method->merchant_id)) {
-            $summary = OrderTelegramSummary::forOrder($order);
+            $orderDetails = OrderTelegramSummary::details($order);
         }
 
-        $this->routes->sendNotification($kind, $variables, $order?->merchant_id !== null ? (int) $order->merchant_id : null, $method, summary: $summary);
+        $this->routes->sendNotification($kind, $variables, $order?->merchant_id !== null ? (int) $order->merchant_id : null, $method, orderDetails: $orderDetails);
     }
 }

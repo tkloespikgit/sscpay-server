@@ -47,14 +47,14 @@ class NotifyUnshippedOverdueCommand extends Command
 
         $sent = 0;
 
-        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($routes, $hours, &$sent): void {
+        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($routes, $hours, $settings, &$sent): void {
             $heading = $routes->message(TelegramNotificationKind::UnshippedOverdue, [
                 'count' => $group->count(),
                 'hours' => $hours,
             ]);
             $message = $heading;
             $notified = false;
-            $summaries = OrderTelegramSummary::forOrders($group);
+            $summaries = OrderTelegramSummary::forOrders($group, (string) $settings['order_template']);
 
             foreach ($group as $order) {
                 $summary = $summaries[(int) $order->id];

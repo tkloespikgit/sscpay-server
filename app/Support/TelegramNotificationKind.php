@@ -44,6 +44,11 @@ enum TelegramNotificationKind: string
         return $this->group() === 'channel' ? 'channel_owner' : 'merchant';
     }
 
+    public function hasOrderSummary(): bool
+    {
+        return ! in_array($this, [self::LogisticsImportCompleted, self::SiteProductsSyncCompleted, self::SiteProductsSyncFailed], true);
+    }
+
     /**
      * @return array<string, int|string>
      */

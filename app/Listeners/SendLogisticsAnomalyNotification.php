@@ -4,7 +4,6 @@ namespace App\Listeners;
 
 use App\Events\LogisticsAnomalyDetected;
 use App\Services\TelegramNotificationRouter;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
@@ -45,7 +44,7 @@ class SendLogisticsAnomalyNotification implements ShouldQueueAfterCommit
             $details,
             $event->merchantId,
             paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
-            summary: OrderTelegramSummary::render($event->details),
+            orderDetails: $event->details,
         );
 
         if ($delivery->sent || $delivery->suppressed || ! $delivery->anyUsable) {

@@ -35,19 +35,22 @@ class TelegramNotificationRouter
         return $this->templates->render($kind, $variables);
     }
 
-    /** @param array<string, scalar|null> $variables */
+    /**
+     * @param  array<string, scalar|null>  $variables
+     * @param  array<string, string>|null  $orderDetails
+     */
     public function sendNotification(
         TelegramNotificationKind $kind,
         array $variables,
         ?int $merchantId = null,
         ?PaymentMethod $method = null,
         ?int $paymentMethodId = null,
-        string $summary = '',
+        ?array $orderDetails = null,
     ): TelegramDelivery {
         $message = $this->message($kind, $variables);
 
-        if ($summary !== '') {
-            $message .= "\n\n".$summary;
+        if ($orderDetails !== null && $kind->hasOrderSummary()) {
+            $message .= "\n\n".$this->templates->renderOrderSummary($kind, $orderDetails);
         }
 
         return $this->send($kind, $message, $merchantId, $method, $paymentMethodId);

@@ -34,10 +34,22 @@ class TelegramNotificationSettingsTest extends TestCase
         $settings->save(TelegramNotificationKind::OrderPaid, ['enabled' => false, 'template' => 'Paid :order_no', 'repeat_count' => 2]);
         $settings->save(TelegramNotificationKind::NoAvailablePaymentMethod, ['enabled' => true, 'template' => '', 'cooldown_minutes' => 3]);
 
-        $this->assertSame(['enabled' => false, 'template' => 'Paid :order_no', 'repeat_count' => 2], $settings->get(TelegramNotificationKind::OrderPaid));
+        $this->assertSame(['enabled' => false, 'template' => 'Paid :order_no', 'order_template' => '', 'repeat_count' => 2], $settings->get(TelegramNotificationKind::OrderPaid));
         $stored = SystemConfig::getArray(TelegramNotificationSettings::CONFIG_KEY);
         $this->assertSame(3, $stored['no_available_payment_method']['cooldown_minutes']);
         $this->assertSame(2, $stored['order_paid']['repeat_count']);
+    }
+
+    public function test_existing_saved_rules_use_default_order_information_without_overwriting_the_message(): void
+    {
+        $existing = ['enabled' => true, 'template' => 'Existing :order_no', 'repeat_count' => 2];
+        SystemConfig::set(TelegramNotificationSettings::CONFIG_KEY, ['order_paid' => $existing]);
+
+        $rule = app(TelegramNotificationSettings::class)->get(TelegramNotificationKind::OrderPaid);
+
+        $this->assertSame('', $rule['order_template']);
+        $this->assertSame('Existing :order_no', $rule['template']);
+        $this->assertSame($existing, SystemConfig::getArray(TelegramNotificationSettings::CONFIG_KEY)['order_paid']);
     }
 
     #[DataProvider('invalidSettings')]
@@ -59,6 +71,10 @@ class TelegramNotificationSettingsTest extends TestCase
     {
         return [
             'unsupported variable' => [TelegramNotificationKind::OrderPaid, ['template' => ':bot_token'], 'template'],
+            'unsupported order variable' => [TelegramNotificationKind::OrderPaid, ['order_template' => ':bot_token'], 'order_template'],
+            'event variable in order information' => [TelegramNotificationKind::OrderDisputeOpened, ['order_template' => ':event_no'], 'order_template'],
+            'long order template' => [TelegramNotificationKind::OrderPaid, ['order_template' => str_repeat('a', 1001)], 'order_template'],
+            'batch without order information' => [TelegramNotificationKind::SiteProductsSyncCompleted, ['order_template' => ':order_no'], 'enabled'],
             'unknown recipient setting' => [TelegramNotificationKind::OrderPaid, ['recipients' => ['super_admins']], 'enabled'],
             'empty enabled' => [TelegramNotificationKind::OrderPaid, ['enabled' => null], 'enabled'],
             'too many repeats' => [TelegramNotificationKind::OrderPaid, ['repeat_count' => 6], 'repeat_count'],

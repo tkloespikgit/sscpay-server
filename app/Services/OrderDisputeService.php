@@ -156,7 +156,7 @@ class OrderDisputeService
             ],
             (int) $event->merchant_id,
             $order->paymentMethodConfig(),
-            summary: OrderTelegramSummary::forOrder($order),
+            orderDetails: OrderTelegramSummary::details($order),
         );
 
         $event->update(['reminded_at' => now()]);

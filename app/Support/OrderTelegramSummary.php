@@ -9,6 +9,19 @@ use Illuminate\Support\Collection;
 
 final class OrderTelegramSummary
 {
+    public const MAX_LENGTH = 1000;
+
+    /** @return list<string> */
+    public static function variables(): array
+    {
+        return ['order_no', 'merchant_order_no', 'transaction_id', 'payment_method_name', 'paid_at', 'currency', 'amount'];
+    }
+
+    public static function defaultTemplate(): string
+    {
+        return __('admin.telegram_notification.order_summary');
+    }
+
     /** @return array<string, string> */
     public static function details(Order $order): array
     {
@@ -28,7 +41,7 @@ final class OrderTelegramSummary
      * @param  Collection<int, Order>  $orders
      * @return array<int, string>
      */
-    public static function forOrders(Collection $orders): array
+    public static function forOrders(Collection $orders, ?string $template = null): array
     {
         $summaries = [];
 
@@ -48,7 +61,7 @@ final class OrderTelegramSummary
                 $method = $order->payment_method_id
                     ? $methodsById->get($order->payment_method_id)
                     : $methodsByCode->get($order->payment_method);
-                $summaries[(int) $order->id] = self::render(self::buildDetails($order, $method?->method_name));
+                $summaries[(int) $order->id] = self::render(self::buildDetails($order, $method?->method_name), $template);
             }
         }
 
@@ -71,11 +84,12 @@ final class OrderTelegramSummary
     }
 
     /** @param array<string, string> $details */
-    public static function render(array $details): string
+    public static function render(array $details, ?string $template = null): string
     {
+        $template = filled($template) ? $template : self::defaultTemplate();
         $replacements = [];
 
-        foreach (['order_no', 'merchant_order_no', 'transaction_id', 'payment_method_name', 'paid_at', 'currency', 'amount'] as $field) {
+        foreach (self::variables() as $field) {
             $value = trim((string) ($details[$field] ?? ''));
 
             if ($value === '') {
@@ -84,14 +98,14 @@ final class OrderTelegramSummary
                     : 'admin.telegram_notification.order_detail_unavailable');
             }
 
-            $replacements[$field] = htmlspecialchars(mb_substr($value, 0, 100), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $replacements[':'.$field] = mb_substr($value, 0, 100);
         }
 
-        return __('admin.telegram_notification.order_summary', $replacements);
+        return htmlspecialchars(mb_substr(strtr($template, $replacements), 0, self::MAX_LENGTH), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
-    public static function forOrder(Order $order): string
+    public static function forOrder(Order $order, ?string $template = null): string
     {
-        return self::render(self::details($order));
+        return self::render(self::details($order), $template);
     }
 }

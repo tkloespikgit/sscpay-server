@@ -403,7 +403,7 @@ class OrderPaymentStatusService
                 'order_no' => $order->order_no,
                 'status' => __('admin.order.statuses.'.$targetStatus),
                 'error' => $exception->getMessage(),
-            ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
+            ], (int) $order->merchant_id, $order->paymentMethodConfig(), orderDetails: OrderTelegramSummary::details($order));
         }
     }
 
@@ -441,7 +441,7 @@ class OrderPaymentStatusService
             'gateway_amount' => (string) $payloadAmount,
             'order_amount' => (string) $order->amount,
             'currency' => strtoupper((string) $order->currency),
-        ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
+        ], (int) $order->merchant_id, $order->paymentMethodConfig(), orderDetails: OrderTelegramSummary::details($order));
     }
 
     /** 网关确认已支付不关闭人工审核；按审核事件去重提醒人工核对。 */
@@ -459,6 +459,6 @@ class OrderPaymentStatusService
         $this->telegramRoutes->sendNotification(TelegramNotificationKind::DisputeReviewGatewayStatusIgnored, [
             'order_no' => $order->order_no,
             'status' => __('admin.order.statuses.'.$targetStatus),
-        ], (int) $order->merchant_id, $order->paymentMethodConfig(), summary: OrderTelegramSummary::forOrder($order));
+        ], (int) $order->merchant_id, $order->paymentMethodConfig(), orderDetails: OrderTelegramSummary::details($order));
     }
 }
