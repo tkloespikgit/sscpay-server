@@ -58,7 +58,7 @@ trait ConfiguresSharedPanelSettings
         FilamentTimezone::set(fn () => auth()->user()?->merchant?->timezone ?: config('app.timezone', 'UTC'));
 
         return $panel
-            ->profile(EditProfile::class)
+            ->profile(EditProfile::class, isSimple: false)
             ->login(Login::class)
             ->colors([
                 'primary' => Color::Amber,
@@ -87,6 +87,10 @@ trait ConfiguresSharedPanelSettings
             ->authMiddleware([
                 Authenticate::class,
             ])
+            ->renderHook(
+                PanelsRenderHook::USER_MENU_BEFORE,
+                fn (): string => view('filament.account-settings-link')->render(),
+            )
             ->renderHook(
                 PanelsRenderHook::HEAD_END,
                 fn (): string => '

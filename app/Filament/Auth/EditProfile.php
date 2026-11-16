@@ -7,16 +7,74 @@ use Filament\Auth\Pages\EditProfile as BaseEditProfile;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Component;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Schema;
+use Filament\Support\Enums\Width;
 
 /**
  * 后台已经改成"账号登录"（见 App\Filament\Auth\Login / User::emailForAccount()），
- * 个人资料页不应该再让用户自己改登录用的邮箱：把邮箱输入框换成只读展示的账号，
+ * 账号设置页不应该再让用户自己改登录用的邮箱：把邮箱输入框换成只读展示的账号，
  * disabled() + dehydrated(false) 双重保证——即使前端被绕过，save() 时这个字段
  * 也不会出现在提交的 $data 里，不可能被改掉。
  */
 class EditProfile extends BaseEditProfile
 {
+    protected static bool $shouldRegisterNavigation = false;
+
+    protected Width|string|null $maxWidth = Width::ThreeExtraLarge;
+
+    public static function getLabel(): string
+    {
+        return __('admin.account_settings.label');
+    }
+
+    public function defaultForm(Schema $schema): Schema
+    {
+        return parent::defaultForm($schema)->inlineLabel(false);
+    }
+
+    public function form(Schema $schema): Schema
+    {
+        return $schema
+            ->components([
+                Section::make(__('admin.account_settings.sections.profile'))
+                    ->schema([
+                        $this->getNameFormComponent(),
+                        $this->getEmailFormComponent(),
+                    ]),
+                Section::make(__('admin.account_settings.sections.password'))
+                    ->schema([
+                        $this->getPasswordFormComponent(),
+                        $this->getPasswordConfirmationFormComponent(),
+                        $this->getCurrentPasswordFormComponent(),
+                    ]),
+            ]);
+    }
+
+    protected function getNameFormComponent(): Component
+    {
+        return parent::getNameFormComponent()
+            ->label(__('admin.user.fields.name'));
+    }
+
+    protected function getPasswordFormComponent(): Component
+    {
+        return parent::getPasswordFormComponent()
+            ->belowContent(__('admin.user.help.password_edit'));
+    }
+
+    public function getMultiFactorAuthenticationContentComponent(): ?Component
+    {
+        $component = parent::getMultiFactorAuthenticationContentComponent();
+
+        if ($component instanceof Section) {
+            $component->label(__('admin.account_settings.sections.two_factor'));
+        }
+
+        return $component;
+    }
+
     protected function mutateFormDataBeforeFill(array $data): array
     {
         $data['account'] = User::accountFromEmail($data['email'] ?? null);
