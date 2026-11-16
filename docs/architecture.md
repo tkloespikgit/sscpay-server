@@ -47,7 +47,7 @@ flowchart TD
 | 观察者 `/observer` | `app/Providers/Filament/ObserverPanelProvider.php` | 独立 `Observer` 模型及 `observer` guard，按渠道授权只读 |
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
-| `/api/webhooks/telegram` | `TelegramWebhookController` | POST，以 `X-Telegram-Bot-Api-Secret-Token` 校验平台机器人回调；一次性链接定位商户并重新检查绑定发起人的权限 |
+| `/api/webhooks/telegram` | `TelegramWebhookController` | POST，以 `X-Telegram-Bot-Api-Secret-Token` 校验平台机器人回调；一次性链接定位商户或管理员，并重新检查绑定发起人的权限 |
 | 接口文档 `/docs/api/{locale?}?version=1.0\|2.0` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读，支持 `zh_CN` / `en` 和独立的 1.0 / 2.0 文档，未指定版本默认 2.0；不查询商户应用或展示真实凭证 |
 | `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
@@ -59,11 +59,11 @@ flowchart TD
 
 商户配置分组的“服务配置”由 `ServiceSettings` 统一提供时区、物流跟踪与 Telegram 三个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。时区区块对能打开页面的用户都可见，只更新所选商户的 `merchants.timezone`，留空回退系统时区。物流和 Telegram 仍只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载三个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
 
-Telegram 支持平台机器人快速绑定与原有自建机器人两种模式。平台在部署配置中设置 Token、用户名和回调密钥，运行 `telegram:register-webhook` 注册 HTTPS 回调；商户通过个人聊天的 `start` 或群聊的 `startgroup` 链接完成绑定，不接触平台 Token。`TelegramBindingService` 生成 10 分钟有效的一次性随机令牌，数据库只存摘要，每个商户只保留一个当前请求；重新生成、保存 Telegram 配置或解除绑定会使旧链接失效。回调在商户行锁内重新检查发起账号启用状态、`telegram.manage`、当前商户归属和商户启用状态，再保存聊天目标并消费令牌；群聊另通过 Telegram API 检查发送者是否群主或管理员，查询失败返回 503 供 Telegram 重试。已消费令牌的重放不修改记录。
+Telegram 支持平台机器人快速绑定与原有自建机器人两种模式。平台在部署配置中设置 Token、用户名和回调密钥，运行 `telegram:register-webhook` 注册 HTTPS 回调；商户通过个人聊天的 `start` 或群聊的 `startgroup` 链接完成绑定，不接触平台 Token。`TelegramBindingService` 生成 10 分钟有效的一次性随机令牌，数据库只存摘要，每个商户只保留一个当前请求；重新生成、保存 Telegram 配置或解除绑定会使旧链接失效。回调在商户行锁内重新检查发起账号启用状态、`telegram.manage`、当前商户归属和商户启用状态，再保存聊天目标并消费令牌。超级管理员和商户级管理员在账号设置页给自己保存同样的两种模式，配置单独保存，不随姓名和密码提交。链接只能由本人生成。回调锁定这名管理员，并复查发起人仍是这名启用中的平台账号。自建配置只写入这名管理员的记录。普通商户用户不在账号设置里绑定个人机器人。群聊另通过 Telegram API 检查发送者是否群主或管理员，查询失败返回 503 供 Telegram 重试。已消费令牌的重放不修改记录。
 
-每商户仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
+每商户和每名管理员仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
 
-订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；渠道禁用广播仅向订单所属商户追加完整摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
+订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；商户自有渠道被自动禁用时，默认只通知该商户，并在订单属于该商户时追加完整摘要。系统渠道默认通知归属管理员；没有归属管理员时通知所有启用的超级管理员，并附上触发订单摘要，不向正在使用该渠道的商户逐个广播。超级管理员可在平台管理的「通知接收人」按模板改接收人，未保存的模板沿用上述默认，见 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
 
 静态配置演示不落库、不提交。`StaticConfigShowcase::screensFor()` 决定可见屏：平台管理员（超管）和商户级管理员可见入驻向导、商户配置、支付方式配置；商户管理员和支付通道管理员仅在账号与所属商户启用时可见支付方式配置，且必须是该商户名下的这两个默认角色，单独授予支付方式权限不够。页面不挂全局 auth 中间件（项目没有 `login` 路由），未登录直接 403。入驻向导、商户创建/编辑的页头入口链到当前域名的 `/showcase#对应屏`。支付方式演示入口只在支付方式列表页页头。
 
@@ -143,7 +143,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 连续建单失败保护由 `OrderCreationService::createPayment()` 调用 [PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php) 的 `recordFailure()` / `recordSuccess()` 统一记录：网关建单或明确的商品准备最终失败时，针对当前渠道累计一次 `consecutive_failed_times`；一次创建内部的多次 HTTP 连接重试只计一次。成功保存有效 `pay_url` 才清零；已有链接的幂等命中、金额/授权校验或风控拒绝既不计数也不清零。计数按支付方式 ID 跨商户持久化，事务中先锁原订单、再锁渠道，核对原商户、当前渠道/引用及收款/链接状态，过期结果不计入其他尝试。直接调用底层网关客户端的工具操作不在该统计入口内。
 
-系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后通过原有 `TelegramNotificationService` 发提醒给原订单商户及该渠道关联的全部商户（共享渠道包括所有分配商户，去重），未配置/未启用机器人或触发限流时沿用原服务的跳过规则；通知异常不覆盖建单失败，原来逐次网关建单失败的提醒继续保留。部署新增字段及配置补缺的规则见 [数据库说明](database.md#2-租户身份和渠道)，决策见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用)。
+系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后按当前通知接收人配置发 Telegram。默认仍是渠道归属：商户自有渠道发给该商户，系统渠道发给归属管理员，没有归属管理员时发给所有启用的超级管理员。未配置、未启用或限流时跳过；一名管理员发送失败不影响其他管理员。通知异常不覆盖建单失败。原来逐次网关建单失败的提醒默认继续发给下单商户，也可以在同一页面改接收人。部署补齐 `telegram.notification_routes` 的规则见 [数据库说明](database.md#2-租户身份和渠道)，决策见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用)、[D-44](decisions.md#d-44-管理员-telegram-与支付通道通知归属) 与 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。
 
 人工核验渠道恢复后，通过 `PaymentMethod` 模型将停用渠道重新启用（`is_active: false → true`）时，同次保存自动将 `consecutive_failed_times` 清零，开始新一轮计数。普通编辑但启用状态未变时不清零；运行中的成功/失败计数使用 `saveQuietly()`，不触发该模型事件。编辑页只提交主动修改的启用状态，在事务内重新锁定并读取渠道后保存，避免旧页面恢复自动停用状态或重复清掉新计数；保存后同步页面的启用状态。此补充无需新增字段或迁移。
 

@@ -446,3 +446,21 @@
 **实现与运维：** 商户行锁串行化配置变化，目标更新与令牌消费同事务；重复回调不重复改绑，群管理员查询失败返回 503 等待上游重试。页面轮询只更新 Telegram 区块。平台通过 `telegram:register-webhook` 校验机器人用户名和群组能力后注册回调，不丢弃既有待投递消息。部署需执行新增迁移并完成平台机器人配置，操作见 [部署手册](../doc/deployment.md#31-telegram-快速绑定)。
 
 **依据：** [绑定服务](../app/Services/TelegramBindingService.php)、[回调控制器](../app/Http/Controllers/TelegramWebhookController.php)、[通知服务](../app/Services/TelegramNotificationService.php)、[配置页面](../app/Filament/Pages/ServiceSettings.php)、[绑定回归](../tests/Feature/TelegramBindingTest.php)、[页面回归](../tests/Feature/Filament/ServiceSettingsTest.php)、[注册命令回归](../tests/Feature/TelegramWebhookRegistrationTest.php)。
+
+## D-44 管理员 Telegram 与支付通道通知归属
+
+**状态：按用户确认采用（2026-11-16）。** 超级管理员和商户级管理员在账号设置页给自己保存 Telegram 接收目标，不在「平台管理 → 管理员」编辑页。可选平台机器人的个人或群聊快速绑定，也可填写自建 Bot Token 和 Chat ID。规则与商户服务配置相同：每名管理员只有一个接收目标，保存自建配置会替换快速绑定；快速绑定未完成时不能只保存平台模式。链接只能由本人生成和完成。账号停用或不再是平台账号后，未完成链接失效。这块配置与姓名、密码分开保存。普通商户用户仍使用服务配置里的商户机器人。
+
+**通知：** 支付通道因网关账号不可用或连续建单失败被自动禁用时，默认仍按通道归属发送：商户自有通道只通知该商户；系统通道通知 `owner_id` 对应管理员。没有归属管理员时通知所有启用的超级管理员。订单、物流和支付组无可用通道的通知默认仍发给商户。接收人可以在「通知接收人」页面改掉，见 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。未绑定或未启用则跳过。
+
+**依据：** [账号设置](../app/Filament/Auth/EditProfile.php)、[绑定服务](../app/Services/TelegramBindingService.php)、[通道通知](../app/Services/PaymentChannelTelegramNotifier.php)、[回归](../tests/Feature/AdminTelegramBindingTest.php)。
+
+## D-45 Telegram 通知接收人可配置
+
+**状态：按用户确认采用（2026-11-16）。** 超级管理员在平台管理的「通知接收人」页面，为每一种正在发送的 Telegram 通知勾选接收人。全平台共用一套规则，商户和商户级管理员不能改。可选：事件所属商户、通道归属、使用该通道的商户、全部已启用超级管理员、不发送。「不发送」不能和其他选项同时选择。没有对应通道的通知不能选通道归属或使用该通道的商户。
+
+**默认与未配置：** 没保存过的模板沿用原来的接收人。通道自动禁用发给通道归属；站点商品同步发给使用该通道的商户；其余订单、退款拒付、争议、物流和没有可用通道发给事件所属商户。无效或空的保存值回退到这个默认，不因此停发。付款链接邮件和绑定测试消息不进入这个页面。
+
+**发送：** `TelegramNotificationRouter` 在各通知入口解析接收人。同一条消息里的订单内容会发给每一个被勾选的对象。同一商户或同一管理员只发一次。没有可用机器人、已关闭或触发限流时跳过，不影响原业务结果。物流异常在有可用接收人但发送失败时继续重试；物流回传失败没有可用接收人时仍标为 `unavailable`，选择不发送则结束这批提醒，避免反复重试。
+
+**依据：** [接收人页面](../app/Filament/Pages/TelegramNotificationRoutes.php)、[路由](../app/Services/TelegramNotificationRouter.php)、[回归](../tests/Feature/TelegramNotificationRouterTest.php)、[页面回归](../tests/Feature/Filament/TelegramNotificationRoutesPageTest.php)。
