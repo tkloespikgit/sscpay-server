@@ -24,6 +24,15 @@ class PaymentGroupMethodService
         return self::authorizedGroup($actor, $group) !== null;
     }
 
+    public static function canEnableCombinedPayments(?User $actor, ?Merchant $merchant): bool
+    {
+        $actor = self::authorizedActor($actor);
+
+        return $actor !== null && $merchant !== null
+            && ($actor->is_super_admin
+                || ($actor->isMerchantManager() && (int) $merchant->owner_id === (int) $actor->id));
+    }
+
     /**
      * @return Collection<int, PaymentMethod>
      */
@@ -61,8 +70,10 @@ class PaymentGroupMethodService
             throw new AuthorizationException;
         }
 
-        $validated = Validator::make(['merchant_id' => $data['merchant_id'] ?? null, 'paymentMethods' => $members], [
+        $validated = Validator::make(Arr::only($data, ['merchant_id', 'is_combine_payment_enabled', 'max_combined_amount']) + ['paymentMethods' => $members], [
             'merchant_id' => ['required', 'integer', 'min:1'],
+            'is_combine_payment_enabled' => ['sometimes', 'boolean'],
+            'max_combined_amount' => ['required_if:is_combine_payment_enabled,true', 'nullable', 'numeric', 'decimal:0,2', 'min:0.01', 'max:9999999999999.99'],
             'paymentMethods' => ['array', 'list'],
             'paymentMethods.*' => ['required', 'array:id,priority'],
             'paymentMethods.*.id' => ['required', 'integer', 'min:1', 'distinct'],
@@ -83,6 +94,10 @@ class PaymentGroupMethodService
                 throw new AuthorizationException;
             }
 
+            if (($validated['is_combine_payment_enabled'] ?? false) && ! self::canEnableCombinedPayments($actor, $merchant)) {
+                throw new AuthorizationException(__('combined.enable_restricted'));
+            }
+
             $members = $validated['paymentMethods'];
             $methodIds = array_map(fn (array $member): int => (int) $member['id'], $members);
             $availableIds = PaymentMethod::query()
@@ -98,7 +113,7 @@ class PaymentGroupMethodService
                 ]);
             }
 
-            $attributes = Arr::only($data, ['group_key', 'group_name', 'logo_path', 'description', 'timezone', 'is_active']);
+            $attributes = Arr::only($data, ['group_key', 'group_name', 'logo_path', 'description', 'timezone', 'is_active', 'is_combine_payment_enabled', 'max_combined_amount']);
             $attributes['merchant_id'] = $merchant->id;
             $group = PaymentGroup::query()->create($attributes);
             $weights = [];

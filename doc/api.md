@@ -661,7 +661,7 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 | 项目 | 本系统 `/api/order/ship` | 附件 `/api/fulfillment/shipment` |
 |---|---|---|
 | 调用方向 | 商户/ERP → 本系统 | 本系统 → 商户站点 |
-| 订单号 | `merchant_order_no` | 同一建单时的 `merchant_order_no` |
+| 订单号 | `merchant_order_no`，组合单使用子商户号 | 同一建单时的 `merchant_order_no`，组合单使用父级原商户号，子商户号另放 `child_merchant_order_no` |
 | 承运商 | `logistics_company`，系统已启用的承运商代码 | `carrier` 必填自由文本，`carrier_code` 可选 |
 | 发货时间 | `shipped_at` 必填，可解析日期，推荐 ISO 8601 | `shipped_at` 可选 ISO 8601，省略取站点收到时间 |
 | 多次提交 | 覆盖同一订单的物流记录，不保留多批历史 | 按订单号 + 运单号去重；不同运单号记录新批次并通知客户，同号重试不重复通知 |
@@ -677,13 +677,17 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 
 ## 组合付款与 V2 通知
 
-组合付款只使用法币支付渠道。应用开启组合付款后，独立区块链订单仍可正常下单、查询和收款，返回 `order_type=single`、`payment_type=crypto` 及公开的 `crypto_payment` 状态；不会被拆为法币子单，币种余额不计入法币父单。混合支付组判定普通单额度时，链上渠道按原始法币汇率折算 USD；链上收款关闭时不参与候选。
+组合付款只使用法币支付渠道。支付组开启组合付款后，独立区块链订单仍可正常下单、查询和收款，返回 `order_type=single`、`payment_type=crypto` 及公开的 `crypto_payment` 状态；不会被拆为法币子单，币种余额不计入法币父单。混合支付组判定普通单额度时，链上渠道按原始法币汇率折算 USD；链上收款关闭时不参与候选。
 
-### 应用开关与创建
+### 支付组开关、金额上限与创建
 
-应用管理增加「允许组合付款」和支付通知版本。默认关闭、V1 保持原通知体；开启后自动使用 V2。关闭开关仅停止新组合订单，已有组合订单仍按父单保存的 V2 协议继续付款。商户需先完成 V2 验签、进度处理及物流对接，再开启。
+仅超级管理员或该商户当前的直属管理员（具有支付组管理权限）可以开启组合付款。普通商户即使具有支付组管理权限也不能开启；仍可关闭已经开启的组合付款，关闭后须由上述管理员重新开启。
 
-所有入口仍复用统一建单服务。未指定 `payment_method_key`，且原支付组中所有启用、商户有权使用的渠道都存在有限单笔上限、订单 USD 总额超过这些上限时，尝试创建组合单。因日/月余额不足而无法普通付款不会单独触发拆单。指定渠道入口保持原语义，不转为组合单。
+支付组管理提供「允许组合付款」和「组合订单最高金额（USD）」。开关默认关闭；开启时必须填写大于 0、最多两位小数的上限。上限比较整笔订单按实际汇率（含汇损）折算后的 USD 总应付金额，等于上限允许创建，超过上限返回 HTTP 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不保存父子单、不发起远端支付。缺失或非正数上限不代表无限额，不能创建组合单。普通单仍走原单笔支付规则。
+
+应用不再提供组合付款或通知协议版本的设置。通知版本由建单时所选支付组自动确定：开启组合付款时，本组新订单统一使用 V2（包含普通单）；关闭时，新普通单使用 V1。版本保存在订单上，后续开关变更不改变已有订单的首次通知、重试或幂等重提格式。组合父单固定 V2，后续子单沿用父单版本。商户需先完成 V2 验签、进度处理及物流对接，再开启支付组的组合付款。关闭开关或降低上限只影响新建，已有父单可按原总额继续付清。
+
+所有入口仍复用统一建单服务。当前支付组开启组合付款、未指定 `payment_method_key`，且组内所有启用、商户有权使用的渠道都存在有限单笔上限、订单 USD 总额超过这些上限时，校验支付组的组合金额上限后尝试创建组合单。同一应用下，各支付组独立配置。因日/月余额不足而无法普通付款不会单独触发拆单。指定渠道入口保持原语义，不转为组合单。
 
 组合付款的商品匹配模式仅支持 `MATCH` / `VIRTUAL`，`COPY` / `CREATE` 不能参与任何一笔，包括余额一次付清。若没有模式和额度均合格的组合渠道，返回 `409 COMBINE_PAYMENT_UNAVAILABLE`，不会创建父单。普通单仍可使用 `COPY` / `CREATE`；若普通渠道可承接全额，仍走原普通下单规则。
 
@@ -725,6 +729,8 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 ```
 
 组合单的 `payment_url` 和 `pay_url` 都是独立收银台，商户只需引导客户进入此地址。收银台保存短期报价，只有点击付款才创建当前真实子单及远端订单；刷新/重复点击沿用同一笔。未来笔数和金额不预定。发送付款邮件时只发送父单收银台。
+
+组合收银台仅提供英文界面，不再提供语言切换。每个子单支付后的回跳仍返回组合收银台；全部付清后显示 “Your order has been paid in full.”，不显示返回商户链接，也不自动跳转到商户 `return_url`。商户通过 webhook 和查询确认原订单状态。
 
 ### 每轮金额与渠道
 
@@ -875,11 +881,32 @@ if (! $appId || ! $timestamp || ! $nonce || ! hash_equals($expected, $sign)) {
 }
 ```
 
-成功响应保留原物流字段并增加 `order_type=combine`、`parent_order_no`、`parent_merchant_order_no` 与 `sync_status`。每个子单通过自己的渠道同步物流；父单不写物流记录。商户网站物流回传同样使用子商户号，并额外带父单引用，接收方需按完整通知体验签。
+成功响应保留原物流字段并增加 `order_type=combine`、`parent_order_no`、`parent_merchant_order_no` 与 `sync_status`。每个子单通过自己的渠道同步物流；父单不写物流记录。
+
+**商户网站物流回传使用父级原商户订单号。** 回传的 `merchant_order_no` 为父单原号，便于商户直接定位原订单；新增 `child_merchant_order_no` 保留本次子商户号。`order_no` 仍为子单系统号，`parent_order_no` / `parent_merchant_order_no` 继续携带父单引用。例如：
+
+```json
+{
+  "merchant_order_no": "M20261113001",
+  "child_merchant_order_no": "M20261113001-S001",
+  "order_type": "combine",
+  "order_no": "ORD202611130001",
+  "parent_order_no": "CMB202611130001",
+  "parent_merchant_order_no": "M20261113001",
+  "carrier": "DHL",
+  "carrier_code": "DHL",
+  "tracking_number": "REAL-TRACKING-001",
+  "shipped_at": "2026-11-14T12:00:00+08:00",
+  "sign": "SIGNATURE_PLACEHOLDER"
+}
+```
+
+每个子单仍分别回传；接收方按 `merchant_order_no + tracking_number` 去重，同一父单的多个子单共用真实运单时只记录一次发货、避免重复通知客户。新增字段参与完整通知体验签。普通订单回传保持原格式；商户上传 `/order/ship` 仍使用子商户号。调整前已保存的回传快照保持原样，如需使用新格式，可在订单详情手动推送生成新快照，并停止该子单旧的待发或重试任务。
 
 | HTTP | 错误码 | 处理 |
 |---|---|---|
 | 409 | COMBINE_PAYMENT_UNAVAILABLE | 目前没有满足拆单条件的渠道，保留已付款进度，稍后重试 |
+| 422 | COMBINE_AMOUNT_LIMIT_EXCEEDED | 整笔订单折算 USD 总额超过支付组的组合付款上限，调整订单或支付组配置后重试 |
 | 409 | CHILD_NUMBER_CONFLICT | 父子号命名空间冲突，建单时换一个原商户订单号 |
 | 422 | CHILD_ORDER_REQUIRED | 将父单原号换成真实子商户号 |
 | 409 | COMBINE_ORDER_NOT_PAID | 等待原组合订单全部付清 |

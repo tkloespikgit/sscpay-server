@@ -59,7 +59,8 @@ flowchart TD
 | `/api/order/create`、`query`、`ship` | [routes/api.php](../routes/api.php) | POST，受 `API_DOMAIN` 限制，`api.auth` 验签，身份从 Application 取得 |
 | `/api/webhooks/payment-gateway/status` | `PaymentGatewayWebhookController` | POST，不限制域名，独立 `X-PGA-Signature` 原始 body 验签，允许收款链接自定义域名回调 |
 | `/api/webhooks/tatum/{environment}/{monitor}` | `TatumWebhookController` | POST，独立主／测试网 HMAC 与代次 UUID，速率及 64 KiB 限制；默认关闭，仅持久化待核验线索 |
-| 接口文档 `/docs/api/{locale?}` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读的通用协议页，支持 `zh_CN` / `en` 与固定章节锚点；不查询商户应用或展示真实凭证 |
+| `/api/webhooks/telegram` | `TelegramWebhookController` | POST，以 `X-Telegram-Bot-Api-Secret-Token` 校验平台机器人回调；一次性链接定位商户并重新检查绑定发起人的权限 |
+| 接口文档 `/docs/api/{locale?}?version=1.0\|2.0` | `ApiDocumentationController`、`resources/views/api-documentation.blade.php` | 公开只读，支持 `zh_CN` / `en` 和独立的 1.0 / 2.0 文档，未指定版本默认 2.0；不查询商户应用或展示真实凭证 |
 | `/combine-payment/{token}` | `CombinedPaymentController` | 独立组合收银台；token + Host 校验，状态 GET、报价/付款 POST 受 CSRF 与限流保护 |
 | `/payment/{token}` | [routes/web.php](../routes/web.php)、`PaymentPageController` | 已存在订单的付款链接 |
 | `/c/{slug}` | [routes/checkout.php](../routes/checkout.php)、`CheckoutLinkController` | 可反复建单的公开收款链接，使用 web/session/CSRF 中间件 |
@@ -69,6 +70,10 @@ flowchart TD
 平台日志页仅由 `AdminPanelProvider` 注册并限制超级管理员访问。`RecentLogProvider` 复用日志插件解析器，在请求内缓存结果，绕过插件全量 Redis 缓存；按文件修改时间优先选择符合插件单文件上限且累计不超过 2 MiB 的日志，保留其中最新 1000 条。页面筛选和统计只覆盖这部分记录，完整历史仍在服务器日志中。`LogViewer` 关闭自动发现，避免被共享页面扫描加入商户后台。
 
 商户配置分组的“服务配置”由 `ServiceSettings` 统一提供时区、物流跟踪与 Telegram 三个区块，共用商户选择器，分别校验和提交；保存一个区块不会提交另一区块的改动。时区区块对能打开页面的用户都可见，只更新所选商户的 `merchants.timezone`，留空回退系统时区。物流和 Telegram 仍只向具备对应权限的用户展示并加载凭证，所有保存、测试消息和回调令牌轮换再次检查对应权限及商户范围。切换商户重载三个区块；旧 `LogisticsTrackingSettings` / `TelegramSettings` 地址保留权限检查并跳转新页，不再显示独立菜单。
+
+Telegram 支持平台机器人快速绑定与原有自建机器人两种模式。平台在部署配置中设置 Token、用户名和回调密钥，运行 `telegram:register-webhook` 注册 HTTPS 回调；商户通过个人聊天的 `start` 或群聊的 `startgroup` 链接完成绑定，不接触平台 Token。`TelegramBindingService` 生成 10 分钟有效的一次性随机令牌，数据库只存摘要，每个商户只保留一个当前请求；重新生成、保存 Telegram 配置或解除绑定会使旧链接失效。回调在商户行锁内重新检查发起账号启用状态、`telegram.manage`、当前商户归属和商户启用状态，再保存聊天目标并消费令牌；群聊另通过 Telegram API 检查发送者是否群主或管理员，查询失败返回 503 供 Telegram 重试。已消费令牌的重放不修改记录。
+
+每商户仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-54](decisions.md#d-54-telegram-平台机器人快速绑定)。
 
 订单相关 Telegram 通知通过 `OrderTelegramSummary` 统一追加系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。空值显示暂无，未付款显示未付款；动态字段限长并 HTML 转义。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，由既有队列订阅器通知订单商户；事务回滚不发通知，派发异常不改变已成功的冻结结果。未发货和商户物流回传失败汇总按完整订单区块分条，避免超出消息长度；渠道禁用广播仅向订单所属商户追加完整摘要。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入完成等批次通知不关联单笔订单。
 
@@ -108,7 +113,7 @@ flowchart TD
 
 订单列表的物流模板导出沿用当前筛选与搜索条件，不要求平台账号选定单个商户；超管可跨商户导出，其他用户限定在 `manageableMerchantIds()` 范围。物流上传仍绑定登录用户所属商户。订单支付方式筛选及观察者账户的渠道分配包含软删除渠道，保留渠道的租户可见性过滤；观察者关联也包含软删除渠道，以便回显和保留已有分配。
 
-API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。文案存于 `lang/zh_CN/api_docs.php` 和 `lang/en/api_docs.php`，按执行代码与 [API 手册](../doc/api.md) 同步维护；目录锚点在两种语言中保持一致，语言切换保留当前章节，不改变后台会话语言。首页、应用列表及创建/编辑表单提供“API 文档”入口。正文提供币种、platform 和全部订单状态的附录跳转；`ApiDocumentationReferenceService` 只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
+API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。两种语言分别由 `api_docs_v1.php`、`api_docs_v2.php` 保存版本独立的接口正文，`api_docs.php` 只保存共享文案、签名及参考附录，按执行代码与 [API 手册](../doc/api.md) 同步维护。语言按钮右侧的版本按钮切换 `?version=1.0|2.0`，省略参数打开最新 2.0，未知或非字符串版本返回 404；1.0 不显示组合付款内容，2.0 的普通单和组合单示例均使用 V2 通知。两种语言与版本的章节锚点保持一致，切换保留语言、版本及当前章节，不改变后台会话语言或支付配置。首页、应用列表及创建/编辑表单仍使用默认文档入口。`ApiDocumentationReferenceService` 为两版只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
 
 商户网站物流回传由应用的 `is_shipment_sync_enabled` 开关与完整 HTTPS `shipment_sync_url` 配置，默认关闭；地址保留路径和 query，发送时读取该应用当前地址及 `app_id` / `api_key`，复用 `SignatureCanonicalizer`。`OrderShippingService::record()` 在物流保存后调用 `MerchantShipmentSyncService`，新增独立物流快照并提交后派发 `SyncMerchantShipmentJob`。本地改单仍覆盖 `order_shippings`；已有待发、待重试或暂停的旧版本标为 `superseded`，只尝试最新物流。历史物流不自动回填，具备订单查看、物流权限及租户访问权限的用户可在订单详情手动推送当前物流。
 
@@ -280,7 +285,9 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 
 ## 组合付款链路（2026-11-13，当前工作区）
 
-应用开关启用、有法币渠道且所有可选普通渠道单笔限额都不足时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。应用切回关闭不阻止已有组合父单继续收款。
+组合付款启用权限独立于普通支付组管理权限：只有启用的超级管理员，或具有支付组管理权限且等于商户当前 `owner_id` 的商户级管理员可以开启。表单复用 `PaymentGroupMethodService::canEnableCombinedPayments()`；创建服务及编辑保存入口在商户行锁内核对归属，普通商户伪造开关、使用旧表单重新开启都被拒绝。普通商户仍可维护已有配置或关闭组合付款，关闭后不能自行重开。此处不增加数据库字段，见 [D-52](decisions.md#d-52-组合付款仅允许超管或直属管理员开启)。
+
+支付组 `is_combine_payment_enabled` 启用、各渠道单笔限额都不足且整笔折算 USD 应付金额不超过组内 `max_combined_amount` 时，`OrderCreationService` 返回 `CombinedOrder` 父单；普通单仍返回 `Order`。API、手工下单与收款链接均使用此入口。保存父单前按商户→支付组加锁，复查组启用状态、组合开关和金额上限；超限返回 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不落单或调用网关。父单只保存总额、原始资料、汇率和当前进度，不预建远端支付或未来子单。组合开关关闭或上限降低不阻止已有父单续付，见 [D-50](decisions.md#d-50-支付组控制组合付款开关与最高金额)。应用不再有组合开关或通知协议设置：建单时支付组开启组合，则新普通单使用 V2，否则 V1；`orders.webhook_version` 保存版本，通知服务只读该快照。组合父单固定 V2，子单沿用父单版本，见 [D-51](decisions.md#d-51-通知协议随支付组自动确定并按订单保存)。
 
 链上支付保留独立 `Order`、原始法币汇率与 `CryptoCheckout` 流程，开启组合功能不改变它的币种账本。组合子单只使用法币渠道，不能把链上金额累计到法币父单；混合支付组的普通单额度判断对 crypto 使用原始汇率 USD 金额，关闭链上收款时排除 crypto 候选。独立链上订单及法币子单均通过 `PaymentCapacityService` 计算已付和未决占用；链上核验入账时同步将占用标记为 consumed。边界见 [D-47](decisions.md#d-47-链上支付与法币组合付款的合并边界)。
 
@@ -290,10 +297,12 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 
 `CombinedPaymentRouter` 优先沿用当前报价渠道，没有报价时按子单序号取最近已付子单的渠道。该渠道可以收清余额就收清，否则仍按其上限的 70%～90% 随机拆付；其他渠道能收清或限额更高不会触发切换。只有首次未选渠道或原渠道不可用时，才按原规则先找一次付清渠道，否则从完整上限可被日/月余额容纳的最高三个渠道随机选一。报价过期仍记住已选渠道，切换后不会仅因旧渠道恢复而回切，见 [D-45](decisions.md#d-45-组合付款优先沿用已选支付渠道)。`CombinedOrderService` 保存五分钟报价，发起支付时按商户→父单→渠道锁序复查并创建一个真实 `Order`；提交后使用原下单服务远端建单。当前子单未决时只复用此单，失败不切渠道或换远端引用。商品准备沿用合格渠道模式；回跳固定回组合收银台。
 
+组合收银台由 `CombinedPaymentController` 固定使用英文，包括报价和付款错误，旧 `lang` 参数及 `combined_locale` 偏好不再切换语言。最后一笔确认后显示订单已全部付清，隐藏后续付款提示和操作，不提供返回商户链接或自动回跳。收银台状态不再下发父单 `return_url`；父单仍保留原建单快照，子单网关回跳地址仍为组合收银台。见 [D-48](decisions.md#d-48-组合收银台仅英文且完成后不返回商户)。
+
 `PaymentCapacityService` 统一计算渠道跨商户的已成交及未决占用。新普通订单也持有未决占用，使其与组合子单共享额度；待处理旧订单不自动回填。真实建单在渠道行锁下再检查，金额不经浮点数记账。
 
 `CombinedPaymentStatusService` 在状态事务内校验已付金额/币种并原子累计；`OrderApiPayload` 统一父单查询、收银台与 webhook 结构。每笔首次成功创建原通知尝试，业务快照与付款同事务提交；投递独立重试，pending/processing 丢失任务由原通知扫描恢复。V1 通知保持；开启组合使用 V2 完整 JSON 验签、event_id 去重及 version 防乱序。详细协议仅维护在 [商户 API](../doc/api.md#组合付款与-v2-通知) 与中英文网页文案。
 
-账务仍只有子单经过 `BalanceService`；父单未付清阻止子单结算释放，广告转化只在付清时按父单总额触发。物流仍按实际子单保存并同步其原渠道，父单原号上传拒绝，未付清拒绝；商户网站物流回传携带子单和父单引用。插件同运单跨订单能力不在本仓库实现。
+账务仍只有子单经过 `BalanceService`；父单未付清阻止子单结算释放，广告转化只在付清时按父单总额触发。物流仍按实际子单保存并同步其原渠道，父单原号上传拒绝，未付清拒绝；商户网站物流回传的 `merchant_order_no` 使用父级原商户号，另带 `child_merchant_order_no` 和原有父子系统号引用，详见 [D-49](decisions.md#d-49-组合物流回传用父级原商户号定位订单)。插件同运单跨订单能力不在本仓库实现。
 
 后台只读组合订单列表/详情使用独立的 `combined_orders.view` 权限与 MerchantScope，不注册到观察者面板；实际子单从现有订单页面查询网关、核对资金及物流，仍需对应订单权限。到期/核对记录保留已付与未决数据，不自动退款。核心回归见 `CombinedPaymentTest`、`CombinedPaymentRoutingTest`、`CombinedPaymentAdminTest`。

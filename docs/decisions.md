@@ -487,7 +487,7 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **状态：当前工作区实现，未提交（2026-11-13，按用户确认的最新方案）。** 仅新增父单表，不创建子单草稿，不提前创建所有远端支付；每次客户发起当前付款才创建真实 orders 子单。此方案替代讨论中的预拆草稿和全程固定支付方式方案：每轮允许重新选择原支付组内有权使用的渠道，已发起的一笔仍锁定原渠道和远端引用。
 
-后续修订：每轮重新选渠道的规则已由 [D-45](#d-45-组合付款优先沿用已选支付渠道) 替代，改为原渠道可用时持续沿用；其余父子单、金额和通知规则保留。
+后续修订：每轮重新选渠道的规则已由 [D-45](#d-45-组合付款优先沿用已选支付渠道) 替代，改为原渠道可用时持续沿用。应用级开关及开启后修改应用通知版本的规则已由 [D-50](#d-50-支付组控制组合付款开关与最高金额) 替代，改为支付组独立开关和整单上限，组合单固定 V2；其余父子单、拆分金额和通知规则保留。
 
 **原因与影响：** 单笔限额不足时进入独立组合收银台；本轮优先一次付清余额，否则在最高三个合格上限中随机选渠道，并随机收取上限的 70%～90%。日/月可用额度须能覆盖完整上限，真实订单占用在渠道锁内复查；不保证未来付款额度。父单锁和当前子单指针限制为串行付款，网络失败不可用新号替代未决订单。
 
@@ -525,6 +525,68 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **原因与实现：** 现有组合父单保存两位法币总额，通过网关状态汇总；链上核验按最小币单位入账，不存在对应的父单累计协议。`CombinedPaymentRouter` 在报价、复用、建子单和续付入口排除 crypto；普通路由仍可选链上渠道，组合开关不阻止独立链上支付。混合组是否需拆单按各渠道实际口径判断：法币使用现有汇损汇率，crypto 使用原始汇率 USD；链上开关关闭时排除对应候选。
 
-**额度与通知：** 保留组合分支新增的未决额度锁定读，并为 crypto 使用相同原始汇率金额；链上原子入账同步更新 consumed 状态。API 同时保留父子身份和链上公开状态；V2 应用的链上通知仍是独立 `single` 事件，不产生法币结算。公开组合页的四种请求各自限流，状态轮询不消耗付款配额。
+后续修订：组合开关移至支付组，通知版本按订单保存，见 [D-50](#d-50-支付组控制组合付款开关与最高金额) 与 [D-51](#d-51-通知协议随支付组自动确定并按订单保存)；链上与法币账务边界保持。
+
+**额度与通知：** 保留组合分支新增的未决额度锁定读，并为 crypto 使用相同原始汇率金额；链上原子入账同步更新 consumed 状态。API 同时保留父子身份和链上公开状态；V2 订单的链上通知仍是独立 `single` 事件，不产生法币结算。公开组合页的四种请求各自限流，状态轮询不消耗付款配额。
 
 **依据：** [统一下单](../app/Services/OrderCreationService.php)、[渠道路由](../app/Services/PaymentService.php)、[组合路由](../app/Services/CombinedPaymentRouter.php)、[共存回归](../tests/Feature/CryptoCombinedPaymentCompatibilityTest.php)、[链上补查回归](../tests/Feature/CryptoCheckoutTest.php)。不新增数据库迁移，不改变钱包签名／归集和审核取款边界。
+
+## D-48 组合收银台仅英文且完成后不返回商户
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 组合付款的客户收银台只显示英文，移除语言切换入口；旧中文参数和会话语言偏好不再生效，报价及发起付款的错误提示也固定英文。
+
+**完成行为：** 订单付清后显示 “Your order has been paid in full.”，不提供返回商户链接，不自动跳转商户页面。首次加载已付清订单和轮询确认最后一笔均使用该提示，并隐藏付款说明及操作；后续短暂网络错误不覆盖已经确认的付清提示。原币累计金额和付款记录仍可查看。
+
+**接口边界：** 收银台状态接口不再下发 `return_url`，父单保存的商户地址不删除；发送给 WordPress 的子单回跳仍指向组合收银台。商户以原 webhook 和查询协议确认成功。此决定仅调整组合收银台，不修改普通付款流程、后台及 API 文档的语言支持，无数据库迁移。依据见 [入口](../app/Http/Controllers/CombinedPaymentController.php)、[页面](../resources/views/payment/combined.blade.php)、[交互](../resources/js/combined-payment.js)、[页面回归](../tests/Feature/CombinedPaymentTest.php)、[前端状态回归](../tests/JavaScript/combined-payment.test.mjs)。
+
+## D-49 组合物流回传用父级原商户号定位订单
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-13）。** 商户网站物流接收端通常只认识原商户订单号，因此组合子单的物流回传将 `merchant_order_no` 改为父级原号，另用 `child_merchant_order_no` 保存真实子商户号。子单系统号 `order_no` 及原有父单引用继续保留，完整请求体参与原 HMAC 验签；具体字段与示例见 [API 协议](../doc/api.md#商户物流上传与回传)。
+
+**边界与兼容：** 每个子单仍独立保存物流、生成回传快照和重试；商户可按原商户号 + 真实运单号去重。普通订单回传、商户上传物流的子商户号、支付站点物流同步和支付结果 webhook 不变。无表结构变更，既有审计快照不重写；需要更新旧回传时，通过订单详情手动推送生成新格式快照，同时停止该子单旧待发或重试任务。依据见 [回传服务](../app/Services/MerchantShipmentSyncService.php)、[物流回传回归](../tests/Feature/MerchantShipmentSyncTest.php)。
+
+## D-50 支付组控制组合付款开关与最高金额
+
+**状态：按用户明确要求采用，当前工作区实现，未提交（2026-11-14）。** 组合付款开关从应用移到支付组，支付组另设整笔组合订单的 USD 最高金额。开启必须填写正数、最多两位小数；按实际汇率（含汇损）折算后的总应付金额比较，等于上限允许，超过则返回 422 / `COMBINE_AMOUNT_LIMIT_EXCEEDED`，不保存父子单或创建远端支付。缺失或非正数上限不表示无限额。
+
+后续修订：下述“应用通知版本控制普通单”的规则已由 [D-51](#d-51-通知协议随支付组自动确定并按订单保存) 替代，应用不再提供协议选择；支付组组合开关自动决定新普通单的 V1/V2，并在订单上保存。
+
+**生效范围：** 同一应用下，各支付组独立配置。统一下单服务在商户→支付组锁内复查开关和上限，API、手工下单与公开收款链接共用。上限仅控制新组合单；普通单和指定渠道保留原规则，已建父单可幂等获取并继续付清，后续关闭组合开关或降低上限不截断付款。
+
+**通知与结构：** 移除应用开关及保存时强制 V2 的逻辑，应用通知版本仅控制普通单；组合父单始终固定 V2，不修改应用设置。支付组新增布尔开关（默认关闭）及可空 decimal(15,2) 上限，应用删除原开关字段。按用户说明当前尚未上线，仅做结构调整，不搬迁旧应用配置、不回填、不保留旧字段兼容。此决定替代 D-43 的开关归属和应用通知联动约定。
+
+**依据：** [下单服务](../app/Services/OrderCreationService.php)、[支付组表单](../app/Filament/Resources/PaymentGroupResource.php)、[组创建服务](../app/Services/PaymentGroupMethodService.php)、[字段迁移](../database/migrations/2026_11_14_143454_move_combined_payment_settings_to_payment_groups.php)、[创建回归](../tests/Feature/CombinedPaymentTest.php)、[后台回归](../tests/Feature/CombinedPaymentAdminTest.php)。协议见 [API 手册](../doc/api.md#支付组开关金额上限与创建)。
+
+## D-51 通知协议随支付组自动确定并按订单保存
+
+**状态：按用户提出的简化规则采用，当前工作区实现，未提交（2026-11-14）。** 应用移除通知协议选择及 `webhook_version` 字段。支付组开启组合付款时，该组新普通单与组合单都使用 V2；关闭时新普通单使用 V1，无额外配置开关。
+
+**订单快照：** `OrderCreationService` 在普通单建单时写入 `orders.webhook_version`，组合父单固定 V2，子单继承父单版本。首次通知读订单版本，重试继续使用原通知快照；后续切换组开关、幂等重提、关闭组合后的子单续付都不改变已经确定的协议。字段扩展和验签规则本身不变。
+
+**结构与范围：** 新增 orders 的 unsigned tinyint 版本列（默认 1），删除应用版本列；按当前测试阶段要求不迁移旧配置、不增加旧字段兼容读取。该决定替代 D-50 中应用为普通单单独选择协议的部分。依据见 [下单服务](../app/Services/OrderCreationService.php)、[通知服务](../app/Services/OrderNotificationService.php)、[结构迁移](../database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php)、[协议及签名回归](../tests/Feature/CombinedPaymentTest.php)、[后台回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-52 组合付款仅允许超管或直属管理员开启
+
+**状态：按用户要求采用，当前工作区实现，未提交（2026-11-14）。** 创建启用组合付款的支付组，或将现有支付组从关闭改为开启，只允许启用的超级管理员，或商户当前 `owner_id` 指定且具有支付组管理权限的商户级管理员。绑定具体商户的普通账号即使具有支付组管理权限，也不能开启；其他商户的管理员同样没有授权。
+
+**执行与范围：** 表单禁用无权限的启用入口，创建和编辑保存时在商户行锁内另行校验；不信任传入开关或页面首次加载时的归属。普通商户保留原有支付组管理能力，可以保存已经开启的状态或关闭，但关闭后不能重新开启，旧页面也不能恢复已经关闭的开关。关闭后既有组合父单续付、订单通知协议快照仍沿用 D-50 / D-51，无新增表字段或权限项。
+
+**依据：** [权限与创建服务](../app/Services/PaymentGroupMethodService.php)、[支付组表单](../app/Filament/Resources/PaymentGroupResource.php)、[编辑保存校验](../app/Filament/Resources/PaymentGroupResource/Pages/EditPaymentGroup.php)、[权限与伪造提交回归](../tests/Feature/CombinedPaymentAdminTest.php)。
+
+## D-53 API 文档按协议版本独立展示
+
+**状态：按用户要求采用，当前工作区实现，未提交（2026-11-14）。** `/docs/api` 默认显示最新 2.0，语言切换右侧提供版本按钮，通过 `?version=1.0|2.0` 选择。两种语言都使用各自独立的 `api_docs_v1.php` / `api_docs_v2.php` 接口正文，共享签名和附录由原 `api_docs.php` 提供。版本由固定白名单映射到语言文件，非法值返回 404。
+
+**内容与边界：** 1.0 展示普通订单和 V1 支付通知，不夹杂组合付款字段、示例和错误码；2.0 展示普通单与组合付款，普通单示例也采用完整 V2 通知。两版仍说明当前共用的 API 路径，切换只影响文档，不改变订单协议或后台配置。语言切换保留所选版本，版本切换保留语言，两者都保留稳定章节锚点。公开配置附录和不读取私有应用凭证的约束保留，无数据库变更。
+
+**依据：** [入口](../app/Http/Controllers/ApiDocumentationController.php)、[页面](../resources/views/api-documentation.blade.php)、[中文 1.0](../lang/zh_CN/api_docs_v1.php)、[中文 2.0](../lang/zh_CN/api_docs_v2.php)、[英文 1.0](../lang/en/api_docs_v1.php)、[英文 2.0](../lang/en/api_docs_v2.php)、[版本与示例回归](../tests/Feature/ApiDocumentationTest.php)、[双版公开配置附录](../tests/Feature/ApiDocumentationReferenceTest.php)。
+
+## D-54 Telegram 平台机器人快速绑定
+
+**状态：按用户提出的简化需求实现，当前工作区未提交（2026-11-16）。** 商户不再需要各自创建机器人和查找 Chat ID。平台统一配置一个机器人，商户在服务配置页选择个人或群聊，通过 Telegram 深链接完成绑定；原有自建机器人仍可使用。当前沿用每商户一个接收目标，个人与群聊二选一，新绑定成功才替换旧目标并启用通知。
+
+**权限与凭证：** 平台 Token 只由服务端部署配置持有。未绑定或已关闭通知的商户不自动收到通知，自建模式不回退平台凭证。绑定链接 10 分钟有效、仅可消费一次；重新生成、保存 Telegram 配置或解除绑定都会撤销旧链接，避免旧请求覆盖后续设置。数据库仅保存令牌摘要。生成和回调都检查账号、商户启用与当前管理权限，商户转交后原管理员的链接失效；群聊另校验 Telegram 群主/管理员。回调独立验证 Telegram Secret Header，不复用商户 API 签名或后台登录态。
+
+**实现与运维：** 商户行锁串行化配置变化，目标更新与令牌消费同事务；重复回调不重复改绑，群管理员查询失败返回 503 等待上游重试。页面轮询只更新 Telegram 区块。平台通过 `telegram:register-webhook` 校验机器人用户名和群组能力后注册回调，不丢弃既有待投递消息。部署需执行新增迁移并完成平台机器人配置，操作见 [部署手册](../doc/deployment.md#31-telegram-快速绑定)。
+
+**依据：** [绑定服务](../app/Services/TelegramBindingService.php)、[回调控制器](../app/Http/Controllers/TelegramWebhookController.php)、[通知服务](../app/Services/TelegramNotificationService.php)、[配置页面](../app/Filament/Pages/ServiceSettings.php)、[绑定回归](../tests/Feature/TelegramBindingTest.php)、[页面回归](../tests/Feature/Filament/ServiceSettingsTest.php)、[注册命令回归](../tests/Feature/TelegramWebhookRegistrationTest.php)。

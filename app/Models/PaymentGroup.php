@@ -26,6 +26,8 @@ class PaymentGroup extends Model
         'description',
         'timezone',
         'is_active',
+        'is_combine_payment_enabled',
+        'max_combined_amount',
     ];
 
     protected static function booted(): void
@@ -43,6 +45,8 @@ class PaymentGroup extends Model
     {
         return [
             'is_active' => 'boolean',
+            'is_combine_payment_enabled' => 'boolean',
+            'max_combined_amount' => 'decimal:2',
         ];
     }
 

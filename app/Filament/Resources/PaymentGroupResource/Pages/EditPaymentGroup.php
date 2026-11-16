@@ -58,6 +58,10 @@ class EditPaymentGroup extends EditRecord
                 ]);
             }
 
+            if (($data['is_combine_payment_enabled'] ?? false) && ! $locked->is_combine_payment_enabled) {
+                abort_unless(PaymentGroupMethodService::canEnableCombinedPayments($actor, $merchant), 403, __('combined.enable_restricted'));
+            }
+
             unset($data['merchant_id']);
             $this->record = $locked;
 

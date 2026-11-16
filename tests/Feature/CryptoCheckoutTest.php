@@ -20,6 +20,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesCryptoCheckout;
 use Tests\TestCase;
 
@@ -89,12 +90,19 @@ class CryptoCheckoutTest extends TestCase
         Http::assertNotSent(fn ($request) => str_contains($request->url(), '/v4/subscription'));
     }
 
-    public function test_combined_enabled_application_keeps_crypto_backfill_credit_and_v2_notification_independent(): void
+    #[DataProvider('notificationVersions')]
+    public function test_crypto_backfill_credits_once_and_uses_the_order_notification_version_after_group_changes(int $webhookVersion): void
     {
         [$checkout, $monitor, $rpc] = $this->checkoutFixture(withPayment: true);
-        $this->application->update(['is_combine_payment_enabled' => true]);
         $order = $monitor->paymentRequest->order;
-        $order->update(['notify_url' => 'https://shop.example.com/notify', 'risk_reservation_status' => 'held']);
+        $group = PaymentGroup::create([
+            'merchant_id' => $order->merchant_id, 'group_key' => 'crypto-test', 'group_name' => 'Crypto test',
+            'is_active' => true, 'is_combine_payment_enabled' => $webhookVersion === 2, 'max_combined_amount' => '10000.00',
+        ]);
+        $group->paymentMethods()->attach($order->payment_method_id);
+        $order->update(['notify_url' => 'https://shop.example.com/notify', 'risk_reservation_status' => 'held',
+            'payment_group_id' => $group->id, 'webhook_version' => $webhookVersion]);
+        $group->update(['is_combine_payment_enabled' => $webhookVersion === 1]);
         $monitor->update(['status' => 'cold', 'cancelled_at' => now()->subMinute()]);
         $fiatBalances = $this->merchant->fresh()->only(['balance', 'frozen_balance', 'pending_settlement_balance']);
         Queue::fake();
@@ -113,11 +121,22 @@ class CryptoCheckoutTest extends TestCase
         $this->assertDatabaseCount('merchant_balance_transactions', 0);
         $this->assertSame($fiatBalances, $this->merchant->fresh()->only(array_keys($fiatBalances)));
         $notification = OrderNotificationAttempt::sole();
-        $this->assertSame('single', $notification->request_payload['order_type']);
         $this->assertSame('paid', $notification->request_payload['status']);
-        $this->assertSame([], $notification->request_payload['children']);
-        $this->assertNotEmpty($notification->event_id);
+        if ($webhookVersion === 2) {
+            $this->assertSame('single', $notification->request_payload['order_type']);
+            $this->assertSame([], $notification->request_payload['children']);
+            $this->assertNotEmpty($notification->event_id);
+        } else {
+            $this->assertArrayNotHasKey('order_type', $notification->request_payload);
+            $this->assertArrayNotHasKey('children', $notification->request_payload);
+            $this->assertNull($notification->event_id);
+        }
         $this->assertNull($notification->combined_order_id);
+    }
+
+    public static function notificationVersions(): array
+    {
+        return ['V1' => [1], 'V2' => [2]];
     }
 
     public function test_expired_quote_requires_explicit_action_and_uses_new_address_with_frozen_service_fee(): void

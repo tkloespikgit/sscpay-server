@@ -31,15 +31,18 @@ class CryptoCombinedPaymentCompatibilityTest extends TestCase
             'services.tatum.verification_enabled' => true, 'services.tatum.settlement_enabled' => true]);
     }
 
-    public function test_combined_enabled_application_can_create_and_query_a_single_crypto_order_at_the_raw_rate(): void
+    #[DataProvider('combinedGroupSettings')]
+    public function test_crypto_orders_use_the_raw_rate_and_preserve_the_group_notification_version(bool $combinedEnabled, int $webhookVersion): void
     {
+        $this->group->update(['is_combine_payment_enabled' => $combinedEnabled]);
         $this->combinedMethod(limit: '60.00');
         $crypto = $this->cryptoMethod(['max_amount_per_transaction' => '66.00']);
         ExchangeRate::create(['base_currency' => 'USD', 'target_currency' => 'AUD', 'rate' => '0.650000', 'fetched_at' => now()]);
         SystemConfig::set('exchange.surcharge_type', 'percent');
         SystemConfig::set('exchange.surcharge_percent', '10');
 
-        $response = $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00', 'currency' => 'AUD'])
+        $data = ['amount' => '100.00', 'subtotal' => '100.00', 'currency' => 'AUD'];
+        $response = $this->createCombined($data)
             ->assertOk()->assertJsonPath('data.order_type', 'single')->assertJsonPath('data.payment_type', 'crypto')
             ->assertJsonPath('data.converted_amount', '65.00')->assertJsonPath('data.exchange_rate', '0.650000')
             ->assertJsonPath('data.crypto_payment.state', 'checking');
@@ -49,7 +52,11 @@ class CryptoCombinedPaymentCompatibilityTest extends TestCase
         $this->assertSame('0.00', $order->settlement_amount);
         $this->assertSame('0.00', $order->surcharge_fee);
         $this->assertNull($order->combined_order_id);
+        $this->assertSame($webhookVersion, $order->webhook_version);
         $this->assertSame('1.0000', CryptoCheckout::sole()->fee_snapshot['fee_percent']);
+        $this->group->update(['is_combine_payment_enabled' => ! $combinedEnabled]);
+        $this->createCombined($data)->assertOk()->assertJsonPath('data.order_no', $order->order_no);
+        $this->assertSame($webhookVersion, $order->fresh()->webhook_version);
         $this->signedCombinedRequest('/api/order/query', ['order_no' => $order->order_no])->assertOk()
             ->assertJsonPath('data.order_type', 'single')->assertJsonPath('data.payment_type', 'crypto')
             ->assertJsonPath('data.crypto_payment.state', 'checking')->assertJsonPath('data.parent_order_no', null);
@@ -58,6 +65,11 @@ class CryptoCombinedPaymentCompatibilityTest extends TestCase
         $this->assertDatabaseCount('combined_orders', 0);
         $this->assertDatabaseCount('crypto_payment_requests', 0);
         Http::assertNothingSent();
+    }
+
+    public static function combinedGroupSettings(): array
+    {
+        return ['ordinary group' => [false, 1], 'combined group' => [true, 2]];
     }
 
     public function test_unpaid_crypto_orders_reserve_the_raw_usd_amount_without_using_combination_to_bypass_capacity(): void

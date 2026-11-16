@@ -87,8 +87,10 @@ class MerchantShipmentSyncService
             ];
             if ($order->combined_order_id) {
                 $parent = $order->combinedOrder()->forMerchant($order->merchant_id)->firstOrFail();
+                $payload['merchant_order_no'] = (string) $parent->merchant_order_no;
                 $payload += [
                     'order_type' => 'combine', 'order_no' => $order->order_no,
+                    'child_merchant_order_no' => (string) $order->merchant_order_no,
                     'parent_order_no' => $parent->order_no,
                     'parent_merchant_order_no' => $parent->merchant_order_no,
                 ];

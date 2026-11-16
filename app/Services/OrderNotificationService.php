@@ -166,7 +166,7 @@ class OrderNotificationService
                 'occurred_at' => now()->toIso8601String(),
             ];
         }
-        $extra = (int) $order->application?->webhook_version >= 2 ? [
+        $extra = $order->webhook_version >= 2 ? [
             'order_type' => 'single', 'paid_amount' => (string) $order->amount,
             'paid_converted_amount' => (string) $order->converted_amount, 'remaining_amount' => '0.00',
             'remaining_converted_amount' => '0.00', 'children' => [], 'event_id' => (string) Str::uuid(),

@@ -7,9 +7,11 @@ use App\Mail\PaymentLinkMail;
 use App\Models\Application;
 use App\Models\Carrier;
 use App\Models\CombinedOrder;
+use App\Models\ExchangeRate;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
+use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Services\AdConversionService;
 use App\Services\BalanceService;
@@ -51,18 +53,236 @@ class CombinedPaymentTest extends TestCase
         $this->assertDatabaseCount('orders', 0);
         $this->assertNull($parent->current_quote);
         $this->assertStringContainsString('/combine-payment/', $response->json('data.pay_url'));
-        $this->assertSame(2, $this->application->fresh()->webhook_version);
+        $this->assertSame(2, $parent->webhook_version);
         Http::assertNothingSent();
     }
 
-    public function test_disabled_application_keeps_the_existing_single_order_path(): void
+    #[DataProvider('groupWebhookVersions')]
+    public function test_single_order_webhook_version_follows_its_group_at_creation_and_survives_switch_changes(bool $enabled, int $version): void
+    {
+        $this->group->update(['is_combine_payment_enabled' => $enabled]);
+        $this->combinedMethod();
+        $this->fakeCombinedGateway();
+        $data = ['amount' => '100.00', 'subtotal' => '100.00'];
+        $this->createCombined($data)->assertOk()->assertJsonPath('data.order_type', 'single');
+        $order = Order::sole();
+        $this->assertSame($version, $order->webhook_version);
+        $this->group->update(['is_combine_payment_enabled' => ! $enabled]);
+
+        $this->createCombined($data)->assertOk()->assertJsonPath('data.order_no', $order->order_no);
+        $this->paid($order);
+
+        $attempt = OrderNotificationAttempt::sole();
+        $payload = $attempt->request_payload;
+        $this->assertSame($version, $order->fresh()->webhook_version);
+        $this->assertSame('paid', $payload['status']);
+        $this->assertSame($enabled ? 'single' : null, $payload['order_type'] ?? null);
+        $this->assertSame($enabled ? '100.00' : null, $payload['paid_amount'] ?? null);
+        $this->assertSame($enabled ? [] : null, $payload['children'] ?? null);
+        $this->assertSame($enabled, isset($payload['event_id']));
+
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Http::fake(['https://shop.example.com/notify' => Http::sequence()->push('', 503)->push('', 200)]);
+        $notifications = app(OrderNotificationService::class);
+        $notifications->attempt($attempt);
+        $this->travel(31)->seconds();
+        $retry = $notifications->dispatchRetry($attempt->fresh());
+        $this->assertNotNull($retry);
+        $notifications->attempt($retry);
+
+        $this->assertSame('success', $retry->fresh()->status);
+        Http::assertSentCount(2);
+        foreach (Http::recorded() as [$request]) {
+            $sent = $request->data();
+            unset($sent['sign']);
+            $this->assertSame($payload, $sent);
+            $this->assertSame(SignatureCanonicalizer::sign(
+                $this->application->app_id, $request->header('Timestamp')[0],
+                $request->header('X-Nonce')[0], $request->data(), $this->application->api_key,
+            ), $request['sign']);
+        }
+    }
+
+    /** @return array<string, array{bool, int}> */
+    public static function groupWebhookVersions(): array
+    {
+        return ['combined enabled' => [true, 2], 'combined disabled' => [false, 1]];
+    }
+
+    public function test_disabled_payment_group_keeps_the_existing_single_order_path(): void
     {
         $this->combinedMethod();
-        $this->application->update(['is_combine_payment_enabled' => false]);
+        $this->group->update(['is_combine_payment_enabled' => false]);
         $this->createCombined()->assertStatus(409)->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
         $this->assertDatabaseCount('combined_orders', 0);
         $this->fakeCombinedGateway();
         $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00'])->assertOk()->assertJsonPath('data.order_type', 'single');
+    }
+
+    #[DataProvider('allowedCombinedAmounts')]
+    public function test_combined_order_total_can_be_below_or_equal_to_the_group_maximum(string $amount): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['amount' => $amount, 'subtotal' => $amount])->assertOk()
+            ->assertJsonPath('data.order_type', 'combine')->assertJsonPath('data.converted_amount', $amount);
+
+        $this->assertDatabaseCount('combined_orders', 1);
+        $this->assertDatabaseCount('orders', 0);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{string}> */
+    public static function allowedCombinedAmounts(): array
+    {
+        return ['one cent below' => ['3999.99'], 'equal' => ['4000.00']];
+    }
+
+    public function test_combined_total_above_the_group_maximum_is_rejected_before_saving_or_contacting_the_gateway(): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['amount' => '4000.01', 'subtotal' => '4000.01'])->assertStatus(422)
+            ->assertJsonPath('error_code', 'COMBINE_AMOUNT_LIMIT_EXCEEDED');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 0);
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+    }
+
+    public function test_combined_group_maximum_uses_the_converted_usd_total(): void
+    {
+        ExchangeRate::updateBatchRates(['EUR' => '2.000000']);
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '4000.00']);
+
+        $this->createCombined(['currency' => 'EUR', 'amount' => '2000.01', 'subtotal' => '2000.01'])
+            ->assertStatus(422)->assertJsonPath('error_code', 'COMBINE_AMOUNT_LIMIT_EXCEEDED');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('unusableCombinedMaximums')]
+    public function test_enabling_a_group_without_a_positive_maximum_does_not_allow_unlimited_combined_orders(?string $maximum): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => $maximum]);
+
+        $this->createCombined()->assertStatus(409)->assertJsonPath('error_code', 'COMBINE_PAYMENT_UNAVAILABLE');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{?string}> */
+    public static function unusableCombinedMaximums(): array
+    {
+        return ['unset' => [null], 'zero' => ['0.00'], 'negative' => ['-1.00']];
+    }
+
+    public function test_combined_settings_are_selected_by_payment_group_within_the_same_application(): void
+    {
+        $method = $this->combinedMethod();
+        $other = PaymentGroup::create([
+            'merchant_id' => $this->merchant->id, 'group_key' => 'single-only',
+            'group_name' => 'Single payments', 'is_active' => true,
+        ]);
+        $other->paymentMethods()->attach($method->id, ['priority' => 100]);
+
+        $this->createCombined(['group_key' => $other->group_key])->assertStatus(409)
+            ->assertJsonPath('error_code', 'NO_AVAILABLE_PAYMENT_METHOD');
+        $this->createCombined()->assertOk()->assertJsonPath('data.order_type', 'combine');
+
+        $this->assertSame($this->group->id, CombinedOrder::sole()->payment_group_id);
+        Http::assertNothingSent();
+    }
+
+    public function test_the_combined_maximum_does_not_restrict_a_single_payment(): void
+    {
+        $this->combinedMethod();
+        $this->group->update(['max_combined_amount' => '50.00']);
+        $this->fakeCombinedGateway();
+
+        $this->createCombined(['amount' => '100.00', 'subtotal' => '100.00'])->assertOk()
+            ->assertJsonPath('data.order_type', 'single');
+
+        $this->assertDatabaseCount('combined_orders', 0);
+        $this->assertDatabaseCount('orders', 1);
+    }
+
+    public function test_cashier_stays_english_with_a_chinese_language_query_and_saved_preference(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent();
+        app()->setLocale('zh_CN');
+
+        $this->withSession(['combined_locale' => 'zh_CN'])->get($parent->pay_url.'?lang=zh_CN')
+            ->assertOk()->assertSee('<html lang="en">', false)
+            ->assertSee('Combined payment')->assertSee('Complete your payment in a few steps')
+            ->assertDontSee('中文')->assertDontSee('?lang=')->assertDontSee('aria-label="Language"', false)
+            ->assertDontSee('组合付款');
+        Http::assertNothingSent();
+    }
+
+    public function test_paid_cashier_confirms_completion_without_exposing_a_merchant_return_link(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent([
+            'status' => 'paid', 'paid_at' => now(),
+            'paid_amount' => '4000.00', 'paid_converted_amount' => '4000.00',
+            'remaining_amount' => '0.00', 'remaining_converted_amount' => '0.00',
+            'return_url' => 'https://merchant.example.com/order/combined-finished',
+        ]);
+
+        $this->get($parent->pay_url)->assertOk()
+            ->assertSee('Your order has been paid in full.')
+            ->assertDontSee('data-return', false)->assertDontSee('Return to merchant')
+            ->assertDontSee($parent->return_url, false)
+            ->assertViewHas('state', fn (array $state): bool => $state['status'] === 'paid'
+                && ! $state['payable'] && ! array_key_exists('return_url', $state));
+        $this->getJson($parent->pay_url.'/status')->assertOk()
+            ->assertJsonPath('data.status', 'paid')->assertJsonPath('data.payable', false)
+            ->assertJsonMissingPath('data.return_url');
+        $this->assertSame('https://merchant.example.com/order/combined-finished', $parent->fresh()->return_url);
+        Http::assertNothingSent();
+    }
+
+    public function test_cashier_hides_merchant_details_and_shows_the_public_order_reference(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent();
+
+        $this->get($parent->pay_url)->assertOk()
+            ->assertSeeText($parent->order_no)
+            ->assertSeeText('Payment progress')
+            ->assertDontSee($this->merchant->name)
+            ->assertDontSeeText($parent->merchant_order_no)
+            ->assertDontSeeText('Merchant order');
+        Http::assertNothingSent();
+    }
+
+    #[DataProvider('cashierErrorMessages')]
+    public function test_cashier_quote_and_pay_errors_are_english(string $endpoint, string $code, string $message): void
+    {
+        $parent = $this->combinedParent();
+        app()->setLocale('zh_CN');
+
+        $this->withSession(['combined_locale' => 'zh_CN'])->postJson($parent->pay_url.'/'.$endpoint.'?lang=zh_CN')
+            ->assertStatus(409)->assertJsonPath('error_code', $code)->assertJsonPath('msg', $message);
+        Http::assertNothingSent();
+    }
+
+    public static function cashierErrorMessages(): array
+    {
+        return [
+            'quote' => ['quote', 'COMBINE_PAYMENT_UNAVAILABLE', 'No payment method is available right now. Your payments are saved; please try again later.'],
+            'pay' => ['pay', 'QUOTE_EXPIRED', 'This payment offer has expired. Check the updated amount before paying.'],
+        ];
     }
 
     public function test_cashier_get_and_quote_are_safe_and_do_not_create_remote_payments(): void
@@ -113,13 +333,15 @@ class CombinedPaymentTest extends TestCase
 
         $firstMethod->update(['is_active' => false]);
         $secondMethod = $this->combinedMethod('alternative');
-        $this->application->update(['is_combine_payment_enabled' => false]);
+        $this->group->update(['is_combine_payment_enabled' => false, 'max_combined_amount' => '1.00']);
+        $this->createCombined()->assertOk()->assertJsonPath('data.order_no', $parent->order_no);
         $index = 1;
         while ($parent->refresh()->remaining_amount !== '0.00') {
             $this->assertLessThan(10, $index);
             $quote = $payments->quote($parent);
             $child = $payments->pay($parent, $quote['id']);
             $this->assertSame($secondMethod->id, $child->payment_method_id);
+            $this->assertSame(2, $child->webhook_version);
             $this->assertSame(sprintf('COMBINE-001-S%03d', ++$index), $child->merchant_order_no);
             $this->paid($child);
             $firstMethod->update(['is_active' => true]);

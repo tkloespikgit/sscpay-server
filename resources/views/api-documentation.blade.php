@@ -5,37 +5,60 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="{{ $content['page_description'] }}">
     <meta name="color-scheme" content="light dark">
-    <title>{{ $content['title'] }}</title>
-    <link rel="canonical" href="{{ route('api.documentation', ['locale' => $locale]) }}">
-    <link rel="alternate" hreflang="zh-CN" href="{{ route('api.documentation', ['locale' => 'zh_CN']) }}">
-    <link rel="alternate" hreflang="en" href="{{ route('api.documentation', ['locale' => 'en']) }}">
+    <title>{{ $content['title'] }} {{ $version }}</title>
+    <link rel="canonical" href="{{ route('api.documentation', ['locale' => $locale, 'version' => $version]) }}">
+    <link rel="alternate" hreflang="zh-CN" href="{{ route('api.documentation', ['locale' => 'zh_CN', 'version' => $version]) }}">
+    <link rel="alternate" hreflang="en" href="{{ route('api.documentation', ['locale' => 'en', 'version' => $version]) }}">
     @vite(['resources/css/app.css'])
 </head>
-<body class="min-h-screen bg-slate-50 font-sans text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100" data-api-documentation>
+<body class="min-h-screen bg-slate-50 font-sans text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100" data-api-documentation data-documentation-version="{{ $version }}">
     <a href="#documentation" class="sr-only z-50 rounded-lg bg-slate-950 px-4 py-3 text-sm font-medium text-white focus:not-sr-only focus:fixed focus:left-4 focus:top-4 dark:bg-white dark:text-slate-950">
         {{ $content['skip_to_content'] }}
     </a>
 
     <header id="top" class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/95">
-        <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <div class="mx-auto flex max-w-7xl flex-col items-start justify-between gap-3 px-4 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6 lg:px-8">
             <a href="#top" class="flex min-w-0 items-center gap-3 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-emerald-600">
                 <span class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-emerald-700 font-mono text-sm font-semibold text-white" aria-hidden="true">{ }</span>
                 <span class="truncate text-sm font-semibold tracking-tight sm:text-base">{{ $content['title'] }}</span>
             </a>
-            <nav aria-label="{{ $content['language_label'] }}" class="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 text-xs font-medium dark:border-slate-700 dark:bg-slate-900">
-                @foreach (['zh_CN' => '中文', 'en' => 'English'] as $language => $label)
-                    <a href="{{ route('api.documentation', ['locale' => $language]) }}"
-                       hreflang="{{ $language === 'en' ? 'en' : 'zh-CN' }}"
-                       lang="{{ $language === 'en' ? 'en' : 'zh-CN' }}"
-                       data-language-link
-                       @if ($language === $locale) aria-current="page" @endif
-                       @class([
-                           'rounded-md px-3 py-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600',
-                           'bg-white text-slate-950 shadow-sm dark:bg-slate-700 dark:text-white' => $language === $locale,
-                           'text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-white' => $language !== $locale,
-                       ])>{{ $label }}</a>
-                @endforeach
-            </nav>
+            <div class="flex shrink-0 items-center gap-3 self-end sm:self-auto">
+                <nav aria-label="{{ $content['language_label'] }}" class="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 text-xs font-medium dark:border-slate-700 dark:bg-slate-900">
+                    @foreach (['zh_CN' => '中文', 'en' => 'English'] as $language => $label)
+                        <a href="{{ route('api.documentation', ['locale' => $language, 'version' => $version]) }}"
+                           hreflang="{{ $language === 'en' ? 'en' : 'zh-CN' }}"
+                           lang="{{ $language === 'en' ? 'en' : 'zh-CN' }}"
+                           data-language-link
+                           @if ($language === $locale) aria-current="page" @endif
+                           @class([
+                               'rounded-md px-3 py-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600',
+                               'bg-white text-slate-950 shadow-sm dark:bg-slate-700 dark:text-white' => $language === $locale,
+                               'text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-white' => $language !== $locale,
+                           ])>{{ $label }}</a>
+                    @endforeach
+                </nav>
+                <details class="relative text-xs font-medium" data-version-switcher>
+                    <summary aria-label="{{ $content['version_label'] }}: {{ $version }}" class="flex cursor-pointer list-none items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
+                        <span>v{{ $version }}</span>
+                        <span aria-hidden="true">▾</span>
+                    </summary>
+                    <nav aria-label="{{ $content['version_label'] }}" class="absolute right-0 mt-2 flex min-w-40 flex-col gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+                        @foreach ($versions as $availableVersion)
+                            <a href="{{ route('api.documentation', ['locale' => $locale, 'version' => $availableVersion]) }}"
+                               data-version-link
+                               @if ($availableVersion === $version) aria-current="page" @endif
+                               @class([
+                                   'flex items-center justify-between gap-4 rounded-md px-3 py-2.5 focus-visible:outline-2 focus-visible:outline-emerald-600',
+                                   'bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' => $availableVersion === $version,
+                                   'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800' => $availableVersion !== $version,
+                               ])>
+                                <span>v{{ $availableVersion }}</span>
+                                @if ($availableVersion === $latestVersion)<span>{{ $content['latest_version'] }}</span>@endif
+                            </a>
+                        @endforeach
+                    </nav>
+                </details>
+            </div>
         </div>
     </header>
 
@@ -56,9 +79,9 @@
             </nav>
         </aside>
 
-        <main id="documentation" class="min-w-0 scroll-mt-24" tabindex="-1">
+        <main id="documentation" class="min-w-0 scroll-mt-40 sm:scroll-mt-24" tabindex="-1">
             <div class="mb-10 flex flex-col gap-5 border-b border-slate-200 pb-8 dark:border-slate-800 sm:mb-12">
-                <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">{{ $content['title'] }}</h1>
+                <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">{{ $content['title'] }} <span class="text-emerald-700 dark:text-emerald-400">{{ $version }}</span></h1>
                 <p class="max-w-3xl text-base leading-8 text-slate-600 dark:text-slate-400">{{ $content['subtitle'] }}</p>
             </div>
 
@@ -75,7 +98,7 @@
 
             <div class="flex flex-col gap-12 sm:gap-16">
                 @foreach ($content['sections'] as $id => $section)
-                    <section id="{{ $id }}" aria-labelledby="{{ $id }}-title" class="min-w-0 scroll-mt-28">
+                    <section id="{{ $id }}" aria-labelledby="{{ $id }}-title" class="min-w-0 scroll-mt-40 sm:scroll-mt-28">
                         <div class="mb-6 flex items-start gap-3">
                             <span class="mt-1 rounded-md bg-emerald-100 px-2 py-1 font-mono text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" aria-hidden="true">{{ str_pad((string) $loop->iteration, 2, '0', STR_PAD_LEFT) }}</span>
                             <h2 id="{{ $id }}-title" class="min-w-0 text-xl leading-9 font-semibold tracking-tight sm:text-2xl">{{ $section['title'] }}</h2>
@@ -177,16 +200,27 @@
             const root = document.querySelector('[data-api-documentation]');
             if (!root) return;
 
-            const languageLinks = root.querySelectorAll('[data-language-link]');
-            const updateLanguageLinks = () => {
-                languageLinks.forEach((link) => {
+            const documentationLinks = root.querySelectorAll('[data-language-link], [data-version-link]');
+            const updateDocumentationLinks = () => {
+                documentationLinks.forEach((link) => {
                     const destination = new URL(link.href);
                     destination.hash = window.location.hash;
                     link.href = destination.href;
                 });
             };
-            updateLanguageLinks();
-            window.addEventListener('hashchange', updateLanguageLinks);
+            updateDocumentationLinks();
+            window.addEventListener('hashchange', updateDocumentationLinks);
+
+            const versionSwitcher = root.querySelector('[data-version-switcher]');
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && versionSwitcher.open) {
+                    versionSwitcher.open = false;
+                    versionSwitcher.querySelector('summary').focus();
+                }
+            });
+            document.addEventListener('click', (event) => {
+                if (!versionSwitcher.contains(event.target)) versionSwitcher.open = false;
+            });
 
             root.querySelectorAll('[data-mobile-navigation] a').forEach((link) => {
                 link.addEventListener('click', () => link.closest('details').removeAttribute('open'));

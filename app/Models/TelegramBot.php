@@ -21,12 +21,18 @@ class TelegramBot extends Model
         'is_enabled',
         'last_sent_at',
         'test_sent_at',
+        'uses_platform_bot',
+        'chat_title',
+        'chat_type',
     ];
+
+    protected $hidden = ['bot_token'];
 
     protected function casts(): array
     {
         return [
             'is_enabled' => 'boolean',
+            'uses_platform_bot' => 'boolean',
             'last_sent_at' => 'datetime',
             'test_sent_at' => 'datetime',
             // 内置 encrypted cast：读取自动解密、写入自动加密，
@@ -41,12 +47,15 @@ class TelegramBot extends Model
     }
 
     /**
-     * 按业务决定（4.4 节的更新版）：商户未配置或未启用时，直接跳过通知，
-     * 不再回退系统默认 Bot Token。TelegramNotificationService 应该先调用
-     * 这个方法判断，为 false 就直接 return，不发起任何 HTTP 请求。
+     * 仅完成快速绑定的商户使用平台机器人；自建机器人不回退平台凭证。
      */
     public function isUsable(): bool
     {
-        return $this->is_enabled && ! empty($this->bot_token) && ! empty($this->chat_id);
+        return $this->is_enabled && filled($this->effectiveToken()) && filled($this->chat_id);
+    }
+
+    public function effectiveToken(): string
+    {
+        return (string) ($this->uses_platform_bot ? config('services.telegram.bot_token') : $this->bot_token);
     }
 }

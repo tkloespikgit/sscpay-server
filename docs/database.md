@@ -88,6 +88,12 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 
 商户网站物流回传使用 `applications.is_shipment_sync_enabled`（默认 false）和可空 `shipment_sync_url`（最长 2048 字符）；开启时必须提供完整 HTTPS 接口地址，路径及 query 原样使用。每次发送读取当前应用配置及已有加密 `api_key`，不增加独立凭证。新增字段与回传表由迁移 `2026_11_03_153030_add_merchant_shipment_sync_configuration` 引入，不自动生成历史订单回传记录。
 
+### Telegram 快速绑定（2026-11-16，当前工作区）
+
+`telegram_bots` 新增 `uses_platform_bot`（默认 false）、`chat_title` 和 `chat_type`（可空）。已有 `merchant_id_uniq` 生成列及唯一索引保持不变，每商户仍最多一条未删除配置。旧记录继续使用加密的自建 `bot_token`；快速绑定记录将该字段保存为加密的空字符串，通过明确的 `uses_platform_bot=true` 在发送时读取部署配置，平台密钥不复制进商户记录，也不返回商户页面。重新绑定会替换接收对象并清空旧目标的发送时间；解除绑定沿用软删除。
+
+新增 `telegram_binding_requests` 保存每商户一个当前请求：商户/发起用户外键、唯一 `token_hash`、平台 Token 指纹 `bot_fingerprint`、目标类型 `private/group`、到期及消费时间。令牌为 32 字节安全随机数的 64 位十六进制表示，库中仅保存 SHA-256 摘要；有效期 10 分钟。生成、手动保存、解绑与回调写入都先锁商户行，回调再锁对应请求并原子保存目标/消费令牌；以一次性令牌保证绑定幂等，不依据未授权的商户 ID 或仅依赖全局 scope。请求不保存 Telegram 原始消息或平台密钥，数量受商户唯一约束限制。新迁移不改历史配置、不执行数据回填；MySQL 上的既有生成列约束继续保留。
+
 ## 3. 订单及金额快照
 
 `orders` / [Order](../app/Models/Order.php) 是中心模型：
@@ -187,7 +193,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `order_dispute_events` | 人工审核事件，`processing`/`closed`、冻结金额快照、到期与关闭原因。`final_action` 是拟定方向，不自行退款/拒付 |
 | `order_dispute_event_replies` | 回复、操作人及凭证附件；不延长原审核期限 |
 | `order_shippings` | 每订单最多一条未删除物流记录；含 WP 插件 `sync_*`，以及中性轨迹字段（`tracking_*`）与 `logistics_anomaly*`（Webhook / 异常边沿主动查 + 每日本地重算；与 WP sync 无关） |
-| `order_shipment_syncs` | 商户网站物流回传批次；关联商户、订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态 |
+| `order_shipment_syncs` | 商户网站物流回传批次；关联商户、子单或普通订单、应用、物流记录，保存本次业务 `payload` 快照、状态、尝试次数、下次尝试时间、最近错误、成功时间及 Telegram 提醒状态；组合单回传用父级原商户号定位，子商户号另存，见 [D-49](decisions.md#d-49-组合物流回传用父级原商户号定位订单) |
 | `order_shipment_sync_attempts` | 每批回传的逐次 HTTP 请求结果；保存地址、鉴权头、HTTP 状态、响应、错误及请求时间，不保存应用 API 密钥；签名在实际发送时现算 |
 | `order_events` | 插件事件归档，按系统订单号与外部日志 ID 去重，不驱动订单状态 |
 | `order_gateway_status_events` | 网关 webhook/主动查询的标准化接收审计，记录商户、订单、网关尝试引用、来源、映射状态、事件时间、处理结果和白名单摘要；不保存凭证或完整客户 body，不等同插件日志 |
@@ -253,6 +259,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `applications.app_id_uniq` | 有效应用 ID 全局唯一 |
 | `payment_groups(merchant_id, group_key_uniq)` | 商户内有效支付组键唯一 |
 | `order_shippings.order_id_uniq` | 每订单仅一条有效物流记录 |
+| `telegram_bots.merchant_id_uniq` | 每商户仅一条有效 Telegram 配置，快速绑定与自建模式共用 |
+| `telegram_binding_requests.merchant_id`、`token_hash` | 每商户仅保留一个当前绑定请求；令牌摘要全局唯一 |
 | `order_shipment_sync_attempts(order_shipment_sync_id, attempt_number)` | 同一物流回传批次的尝试序号唯一，不同物流快照各自计数 |
 | `order_dispute_events.order_id_active_uniq` | 仅 `processing` 状态参与，同一订单最多一个处理中审核事件 |
 | `merchant_balance_transactions.idempotency_key` | 自动资金动作幂等；允许人工动作无幂等键 |
@@ -360,13 +368,14 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 | 表 | 新增或变更 |
 |---|---|
-| applications | `is_combine_payment_enabled` 默认 false；`webhook_version` 默认 1，开启组合付款时保存为 2 |
+| applications | 删除 `is_combine_payment_enabled` 和 `webhook_version`，不再配置组合付款或通知协议 |
+| payment_groups | `is_combine_payment_enabled` 默认 false；`max_combined_amount` 为可空 decimal(15,2)，开启时须为正数，限制组合订单整笔 USD 总额，包含等于上限 |
 | combined_orders 身份 | merchant/application/payment_group/可空 checkout_link 外键；系统号、原商户号、来源、币种 |
 | combined_orders 金额 | original_amount、auto_discount、amount、converted_amount、paid_amount、paid_converted_amount、remaining_amount、remaining_converted_amount 均 decimal(15,2)；汇率 decimal(15,6) |
 | combined_orders 快照 | exchange_snapshot / order_snapshot JSON；客户、商品、物流跟踪开关和建单信息，不保存应用 API Key |
 | combined_orders 进度 | status、current_order_id、next_sequence、付款 version；current_quote JSON 只缓存当前报价（金额/渠道/版本/有效期），不是预生成子单 |
 | combined_orders 链接及时间 | 不可猜 payment_link_token、checkout_host/origin、三个 URL、通知协议快照、邮件状态、首次/全部付款时间、到期时间及错误码 |
-| orders | 可空 combined_order_id / combined_sequence；risk_reservation_status / risk_reserved_at；商户号及原生成列扩至 80 |
+| orders | 可空 combined_order_id / combined_sequence；risk_reservation_status / risk_reserved_at；商户号及原生成列扩至 80；`webhook_version` 为 unsigned tinyint，普通单按建单时支付组组合开关保存 1/2，子单沿用父单版本 |
 | order_notification_attempts | 可空 combined_order_id、event_id、event_version；沿用原尝试表保存逐笔付款时的不可变业务快照 |
 
 父单系统号、token 唯一；未软删除的 merchant_id + merchant_order_no 通过生成列唯一约束；子单 (combined_order_id, combined_sequence) 唯一；通知 (event_id, attempt_number) 唯一。原 orders 生成列唯一约束保持，原号建单仍校验 64，物流上传允许 80。
@@ -379,4 +388,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 父单累计是已确认毛收款，不是净结算额；子单手续费与结算快照照常保存，父单不参与余额入账及成交统计。累计 USD 以累计原币折算差额分配舍入尾差。子单退款/争议保留曾收款事实，父单转 review；本功能不自动执行退款。
 
-回滚第二个迁移会移除关联和开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。
+开关迁移到支付组使用 [字段调整迁移](../database/migrations/2026_11_14_143454_move_combined_payment_settings_to_payment_groups.php)：仅调整结构，不搬迁应用旧配置、不回填上限；测试阶段按新规则为支付组重新配置。回滚该迁移会移除组设置并恢复默认关闭的应用字段，不恢复历史值。组合父单始终保存 V2 通知快照，开关或上限的后续变更只控制新建。
+
+通知版本通过 [订单快照迁移](../database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php) 从应用配置移到 `orders.webhook_version`：数据库默认 1，统一建单服务按支付组开关明确写入 1/2，组合子单取父单的 2。无旧配置回填或兼容读取；既有通知尝试仍沿用业务快照。回滚移除订单版本字段并恢复应用默认 1，不还原旧配置值。
+
+回滚原关联字段迁移会移除关联和原开关，但保留 80 字符长度防截断。已有真实组合收款后应前向修复，不应通过回滚迁移删除父子关系或金融审计。
