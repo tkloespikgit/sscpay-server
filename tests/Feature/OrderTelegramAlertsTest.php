@@ -89,11 +89,16 @@ class OrderTelegramAlertsTest extends TestCase
     }
 
     #[DataProvider('sharedChannelDisableTriggers')]
-    public function test_shared_channel_disable_notices_only_include_private_order_details_for_its_merchant(string $trigger): void
+    public function test_system_channel_disable_notices_go_to_the_owning_admin_with_the_order_summary(string $trigger): void
     {
+        $owner = User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]);
         $otherMerchant = Merchant::create(['name' => 'Other recipient']);
         $this->createBot($otherMerchant, 'other-merchant');
-        $this->paymentMethod->update(['merchant_id' => null, 'max_failed_times' => 1]);
+        TelegramBot::query()->create([
+            'user_id' => $owner->id, 'merchant_id' => null, 'bot_token' => 'admin-alert-token',
+            'chat_id' => 'channel-owner', 'is_enabled' => true,
+        ]);
+        $this->paymentMethod->update(['merchant_id' => null, 'owner_id' => $owner->id, 'max_failed_times' => 1]);
         $this->paymentMethod->assignedMerchants()->sync([$this->merchant->id, $otherMerchant->id]);
         $order = $trigger === 'forbidden' ? $this->paidOrder() : $this->paidOrder([
             'status' => 'pending', 'paid_at' => null,
@@ -107,12 +112,9 @@ class OrderTelegramAlertsTest extends TestCase
         }
 
         $messages = Http::recorded(fn (Request $request): bool => str_contains($request->url(), 'api.telegram.org/'));
-        $this->assertCount(2, $messages);
-        $byRecipient = $messages->mapWithKeys(fn (array $entry): array => [$entry[0]['chat_id'] => $entry[0]['text']]);
-        $this->assertOrderSummary($byRecipient['order-merchant'], $order);
-        foreach ([$order->merchant_order_no, $order->transaction_id, 'EUR', '87.65', '原始交易金额：', '付款时间：'] as $privateValue) {
-            $this->assertStringNotContainsString($privateValue, $byRecipient['other-merchant']);
-        }
+        $this->assertCount(1, $messages);
+        $this->assertSame('channel-owner', $messages->first()[0]['chat_id']);
+        $this->assertOrderSummary($messages->first()[0]['text'], $order);
         $this->assertFalse($this->paymentMethod->refresh()->is_active);
     }
 

@@ -19,6 +19,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -124,12 +125,8 @@ class PaymentMethodCreationFailureTest extends TestCase
         $otherGroup->paymentMethods()->attach($method->id, ['priority' => 100]);
         Event::fake([PaymentLinkCreationFailed::class]);
         $telegram = $this->mock(TelegramNotificationService::class);
-        foreach ([$this->merchant->id, $other->id] as $recipientId) {
-            $telegram->shouldReceive('send')->once()
-                ->withArgs(fn (int $merchantId, string $message): bool => $merchantId === $recipientId
-                    && str_contains($message, $method->method_code) && str_contains($message, '2'))
-                ->andReturn(true);
-        }
+        $telegram->shouldReceive('send')->never();
+        $telegram->shouldReceive('sendToUser')->never();
         Http::preventStrayRequests();
         Http::fake([self::PAY_URL => Http::response(['code' => 10011, 'message' => 'Channel unavailable'], 400)]);
 
@@ -371,26 +368,25 @@ class PaymentMethodCreationFailureTest extends TestCase
         Event::assertDispatchedTimes(PaymentLinkCreationFailed::class, 1);
     }
 
-    public function test_a_shared_channel_disable_notification_continues_after_one_merchants_notification_throws(): void
+    public function test_a_system_channel_disable_does_not_notify_merchants_using_it(): void
     {
         $method = $this->routedMethod();
         $other = Merchant::create(['name' => 'Other Notification Merchant']);
-        $method->update(['merchant_id' => null, 'max_failed_times' => 1]);
+        $method->update(['merchant_id' => null, 'owner_id' => null, 'max_failed_times' => 1]);
         $method->assignedMerchants()->sync([$this->merchant->id, $other->id]);
         $order = $this->contextOrder($method, 'NOTIFY');
         $telegram = $this->mock(TelegramNotificationService::class);
-        $telegram->shouldReceive('send')->once()
-            ->withArgs(fn (int $merchantId, string $message): bool => $merchantId === $this->merchant->id
-                && str_contains($message, $method->method_code))
-            ->andThrow(new RuntimeException('The first merchant notification failed'));
-        $telegram->shouldReceive('send')->once()
-            ->withArgs(fn (int $merchantId, string $message): bool => $merchantId === $other->id
-                && str_contains($message, $method->method_code))
-            ->andReturn(true);
+        $telegram->shouldReceive('send')->never();
+        $telegram->shouldReceive('sendToUser')->never();
         Http::preventStrayRequests();
+        $logged = [];
+        Log::listen(function (object $event) use (&$logged): void {
+            $logged[] = $event->message;
+        });
 
         app(PaymentMethodFailureService::class)->recordFailure($order, $method, $order->gatewayOrderReference());
 
+        $this->assertContains('支付通道禁用提醒已跳过：管理员未绑定可用的 Telegram', $logged);
         $this->assertSame(1, $method->refresh()->consecutive_failed_times);
         $this->assertFalse($method->is_active);
         Http::assertNothingSent();
