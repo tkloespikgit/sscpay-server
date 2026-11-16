@@ -223,7 +223,7 @@ class CombinedPaymentTest extends TestCase
 
         $this->withSession(['combined_locale' => 'zh_CN'])->get($parent->pay_url.'?lang=zh_CN')
             ->assertOk()->assertSee('<html lang="en">', false)
-            ->assertSee('Combined payment')->assertSee('Complete each payment in sequence.')
+            ->assertSee('Combined payment')->assertSee('Complete your payment in a few steps')
             ->assertDontSee('中文')->assertDontSee('?lang=')->assertDontSee('aria-label="Language"', false)
             ->assertDontSee('组合付款');
         Http::assertNothingSent();
@@ -249,6 +249,20 @@ class CombinedPaymentTest extends TestCase
             ->assertJsonPath('data.status', 'paid')->assertJsonPath('data.payable', false)
             ->assertJsonMissingPath('data.return_url');
         $this->assertSame('https://merchant.example.com/order/combined-finished', $parent->fresh()->return_url);
+        Http::assertNothingSent();
+    }
+
+    public function test_cashier_hides_merchant_details_and_shows_the_public_order_reference(): void
+    {
+        $this->withoutVite();
+        $parent = $this->combinedParent();
+
+        $this->get($parent->pay_url)->assertOk()
+            ->assertSeeText($parent->order_no)
+            ->assertSeeText('Payment progress')
+            ->assertDontSee($this->merchant->name)
+            ->assertDontSeeText($parent->merchant_order_no)
+            ->assertDontSeeText('Merchant order');
         Http::assertNothingSent();
     }
 
