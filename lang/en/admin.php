@@ -1490,6 +1490,7 @@ return [
             'security' => 'Security',
             'notify' => 'Notifications',
             'logistics' => 'Logistics Tracking',
+            'telegram' => 'Telegram',
         ],
         'value_types' => [
             'secret' => 'Encrypted secret',
@@ -1723,6 +1724,8 @@ return [
             'unavailable' => 'Quick connection is not available yet. Contact your platform administrator or use a custom bot.',
             'quick_binding' => 'No bot creation or Chat ID lookup needed. For a private chat, open the link and press Start. For a group, its owner or an administrator selects the group and adds the bot with permission to send messages. Each merchant has one recipient. A new connection replaces the previous recipient and enables notifications.',
             'binding_pending' => 'Your link is ready. Use the button below to finish in Telegram; this page updates automatically. The link expires in 10 minutes and works once. Do not forward it. Generating a new link invalidates the previous one.',
+            'admin_quick_binding' => 'Connect your own platform bot in a private chat or group. When a system payment channel you own is disabled automatically, the notice comes here instead of to merchants using the channel. Finish the link yourself in Telegram.',
+            'admin_unavailable' => 'The platform bot is not configured, so quick connection is unavailable. Add the bot token, username, and webhook secret to the deployment configuration. A custom bot can still be used.',
         ],
         'modes' => [
             'platform' => 'Quick Connection (Platform Bot)',
@@ -1735,6 +1738,7 @@ return [
             'bind_group' => 'Connect Group',
             'open_telegram' => 'Finish Connection in Telegram',
             'disconnect' => 'Disconnect',
+            'disable' => 'Disable notifications',
         ],
         'notifications' => [
             'saved' => 'Telegram settings saved',
@@ -1810,6 +1814,8 @@ return [
     ],
 
     'telegram_notification' => [
+        'site_products_sync_completed' => "✅ Site product sync completed: :domain\nTotal :total (created :created / updated :updated / deleted :deleted / skipped zero-price :skipped)",
+        'site_products_sync_failed' => "❌ Site product sync failed: :domain (:method_name)\n:error",
         'order_summary' => "System order: :order_no\nMerchant order: :merchant_order_no\nThird-party transaction: :transaction_id\nPayment method name: :payment_method_name\nPaid at: :paid_at\nOriginal transaction amount: :currency :amount",
         'order_detail_unavailable' => 'Unavailable',
         'order_not_paid' => 'Not paid',
@@ -1836,6 +1842,158 @@ return [
         'no_available_payment_method_reasons' => [
             'no_active_method' => 'This payment group has no enabled payment methods',
             'risk_control_blocked' => 'All payment methods in the group were blocked by risk-control thresholds (per-transaction/per-day amount/per-day count/per-month amount)',
+        ],
+    ],
+
+    'telegram_routes' => [
+        'title' => 'Telegram notifications',
+        'description' => 'Manage merchant and payment-channel notifications, messages and delivery policies. Merchant notifications go to the event merchant; channel notifications go to the channel owner. Recipients without an enabled Telegram connection are skipped.',
+        'save' => 'Save',
+        'saved' => 'Notification settings saved',
+        'groups' => [
+            'merchant' => 'Merchant notifications',
+            'channel' => 'Payment channel notifications',
+        ],
+        'recipients' => [
+            'merchant' => 'Merchant for the event',
+            'channel_owner' => 'Channel owner',
+        ],
+        'notification' => 'Notification',
+        'enabled' => 'Enabled',
+        'on' => 'Enabled',
+        'off' => 'Disabled',
+        'edit' => 'Edit',
+        'recipient_rule' => 'Recipient rule',
+        'strategy' => 'Delivery policy',
+        'inspect_recipient' => 'Inspect recipient',
+        'reset' => 'Restore defaults',
+        'reset_description' => 'Restore the default message and delivery policy, and enable this notification.',
+        'basic' => 'Notification settings',
+        'message' => 'Message content',
+        'template' => 'Custom message',
+        'template_help' => 'Leave blank to use the default message. Variables use event data. Where applicable, edit the order information below and see the complete preview.',
+        'order_template' => 'Order information',
+        'order_template_help' => 'Edit fields, their order and wording. This block follows the message; digests repeat it for each order. Leave blank to use the default order information.',
+        'insert_order_variable' => 'Append an order information variable',
+        'insert_variable' => 'Insert variable (append to message)',
+        'preview' => 'Example preview (no message is sent)',
+        'invalid_setting' => 'This notification contains an unsupported setting.',
+        'invalid_variables' => 'The message contains unsupported variables. Use the variable selector below.',
+        'timezone' => 'Sent in the system timezone: :timezone.',
+        'choose_channel' => 'Select a payment channel',
+        'choose_merchant' => 'Select the merchant for the event',
+        'actual_recipient' => 'Resolved recipient',
+        'choose_context' => 'Search and select an item to see its current recipient and Telegram status.',
+        'repeat_summary' => ':count messages on first payment',
+        'cooldown_summary' => 'Once per event subject every :minutes minutes',
+        'reminder_summary' => ':hours hours before the deadline',
+        'unshipped_summary' => 'After :days days, daily at :time',
+        'on_event' => 'When the event occurs',
+        'sample_channel' => 'Example payment channel',
+        'sample_group' => 'Example payment group',
+        'sample_error' => 'Example error; check configuration',
+        'sample_status' => 'Processing',
+        'fields' => [
+            'repeat_count' => 'Message count (1–5)',
+            'cooldown_minutes' => 'Cooldown (minutes)',
+            'reminder_hours' => 'Remind before deadline (hours)',
+            'unshipped_days' => 'Unshipped reminder after payment (days)',
+            'send_time' => 'Daily summary time',
+        ],
+        'rule_descriptions' => [
+            'merchant' => 'Send to the merchant owning the order, payment group or task. Batch notifications are grouped by merchant.',
+            'channel_owner' => 'Merchant-owned channels notify that merchant. System channels notify the owning administrator. A missing administrator is a configuration issue and delivery is skipped.',
+        ],
+        'recipient_statuses' => [
+            'ready' => 'Telegram connected and enabled',
+            'unbound' => 'Telegram is not connected',
+            'disabled' => 'Telegram notifications are disabled',
+            'incomplete' => 'Bot configuration is incomplete',
+            'missing_owner' => 'Configuration issue: system channel has no administrator',
+            'missing_channel' => 'Payment channel not found',
+            'inactive_recipient' => 'Recipient does not exist or is disabled',
+        ],
+        'kinds' => [
+            'payment_method_forbidden' => [
+                'label' => 'Payment channel automatically disabled',
+                'description' => 'The gateway reports that the provider account cannot create payments, and the channel is disabled.',
+            ],
+            'payment_method_creation_failed_disabled' => [
+                'label' => 'Channel disabled after repeated creation failures',
+                'description' => 'Consecutive payment-link failures reach the threshold and the channel is disabled.',
+            ],
+            'payment_link_creation_failed' => [
+                'label' => 'Payment link creation failed',
+                'description' => 'Creating a payment link for an order failed.',
+            ],
+            'no_available_payment_method' => [
+                'label' => 'No available payment channel',
+                'description' => 'A payment group has no usable channel. Notify the merchant owning the group.',
+            ],
+            'designated_order_created' => [
+                'label' => 'Source-site order created',
+                'description' => 'A designated-channel order has been saved locally.',
+            ],
+            'order_paid' => [
+                'label' => 'Source-site payment received',
+                'description' => 'The first successful payment of a source-site designated-channel order. Notify the channel owner; ordinary orders do not trigger this notification.',
+            ],
+            'order_disputing' => [
+                'label' => 'Payment dispute',
+                'description' => 'The gateway marks the order as in dispute.',
+            ],
+            'order_refund_gateway' => [
+                'label' => 'Gateway refund',
+                'description' => 'The gateway starts a refund.',
+            ],
+            'order_chargeback_gateway' => [
+                'label' => 'Chargeback',
+                'description' => 'The gateway starts a chargeback.',
+            ],
+            'gateway_reversal_settle_failed' => [
+                'label' => 'Automatic refund or chargeback posting failed',
+                'description' => 'The status was updated, but the amount was not deducted from the merchant balance.',
+            ],
+            'gateway_reversal_amount_mismatch' => [
+                'label' => 'Gateway amount differs from the order',
+                'description' => 'The order amount was posted.',
+            ],
+            'dispute_review_gateway_status_ignored' => [
+                'label' => 'Gateway status during dispute review',
+                'description' => 'The gateway sends another status while a manual dispute review is open, and the system does not apply it automatically.',
+            ],
+            'order_dispute_opened' => [
+                'label' => 'Dispute review opened',
+                'description' => 'A dispute review is opened in the admin.',
+            ],
+            'order_dispute_due_soon' => [
+                'label' => 'Dispute review due soon',
+                'description' => 'A dispute review is close to its deadline. After the deadline it closes and releases the frozen funds.',
+            ],
+            'logistics_import_completed' => [
+                'label' => 'Logistics import completed',
+                'description' => 'A logistics file has finished importing.',
+            ],
+            'logistics_anomaly' => [
+                'label' => 'Logistics anomaly',
+                'description' => 'A shipment tracking anomaly is detected.',
+            ],
+            'unshipped_overdue' => [
+                'label' => 'Unshipped overdue',
+                'description' => 'Paid orders still have no shipment after the configured time, grouped by merchant.',
+            ],
+            'shipment_sync_failed' => [
+                'label' => 'Shipment sync failed',
+                'description' => 'Sending shipment status back to the merchant site failed.',
+            ],
+            'site_products_sync_completed' => [
+                'label' => 'Site product sync completed',
+                'description' => 'Product sync for a payment channel finished.',
+            ],
+            'site_products_sync_failed' => [
+                'label' => 'Site product sync failed',
+                'description' => 'Product sync for a payment channel exhausted its retries.',
+            ],
         ],
     ],
 

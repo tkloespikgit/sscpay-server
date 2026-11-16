@@ -1491,6 +1491,7 @@ return [
             'security' => '安全',
             'notify' => '通知',
             'logistics' => '物流跟踪',
+            'telegram' => 'Telegram',
         ],
         'value_types' => [
             'secret' => '加密密钥',
@@ -1724,6 +1725,8 @@ return [
             'unavailable' => '平台尚未开通快速绑定，请联系管理员。也可以选择自建机器人。',
             'quick_binding' => '无需创建机器人或查询 Chat ID。个人聊天：打开链接后点 Start；群聊：由群主或管理员选择群并添加机器人，请确保机器人可以发言。每个商户只接收至一个聊天，完成新绑定后替换原目标并开启通知。',
             'binding_pending' => '链接已生成，请点击下方按钮前往 Telegram 完成绑定。本页会自动更新。链接 10 分钟内有效、仅可使用一次，请勿转发；重新生成会使旧链接失效。',
+            'admin_quick_binding' => '绑定你自己的平台机器人个人聊天或群聊。你名下的系统支付通道被自动禁用时，通知发到这里，不发给正在使用该通道的商户。链接需由你本人在 Telegram 中完成。',
+            'admin_unavailable' => '平台机器人尚未配置，快速绑定暂不可用。请在部署配置中填写机器人 Token、用户名和回调密钥。当前可以选择自建机器人。',
         ],
         'modes' => [
             'platform' => '快速绑定（平台机器人）',
@@ -1736,6 +1739,7 @@ return [
             'bind_group' => '绑定群聊',
             'open_telegram' => '前往 Telegram 完成绑定',
             'disconnect' => '解除绑定',
+            'disable' => '关闭通知',
         ],
         'notifications' => [
             'saved' => 'Telegram 配置已保存',
@@ -1811,6 +1815,8 @@ return [
     ],
 
     'telegram_notification' => [
+        'site_products_sync_completed' => "✅ 站点商品同步完成：:domain\n共同步 :total 个商品（新增 :created / 更新 :updated / 清理 :deleted / 跳过 0 价 :skipped）",
+        'site_products_sync_failed' => "❌ 站点商品同步失败：:domain（:method_name）\n:error",
         'order_summary' => "系统订单号：:order_no\n商户订单号：:merchant_order_no\n三方交易号：:transaction_id\n支付方式名称：:payment_method_name\n付款时间：:paid_at\n原始交易金额：:currency :amount",
         'order_detail_unavailable' => '暂无',
         'order_not_paid' => '未付款',
@@ -1818,7 +1824,7 @@ return [
         'logistics_anomaly' => "⚠️ 物流异常提醒\n\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n物流单号：:tracking_number\n物流状态：:status\n异常原因：:reason\n\n请在后台核实物流轨迹并及时处理。",
         'payment_link_creation_failed' => "❌ 创建支付链接失败\n\n商户 ID：:merchant_id\n系统订单号：:order_no\n商户订单号：:merchant_order_no\n来源：:source\n金额：:currency :amount（折算 USD :converted_amount）\n支付渠道：:payment_method（ID :payment_method_id）\n支付站点：:gateway_host\nHTTP 状态：:http_status\n网关错误码：:pga_code\n失败原因：:error\n\n本地订单已保留，请核实渠道与网关错误后重试补建支付链接。",
         'logistics_import_completed' => "📦 物流导入完成\n\n文件：:file_name\n总记录：:total\n成功：:success\n失败：:failed",
-        'order_paid' => "✅ 支付成功通知\n\n订单号：:order_no\n金额：:currency:amount（≈ \$:converted_amount）\n支付方式：:payment_method",
+        'order_paid' => "✅ 源网站付款成功\n\n订单号：:order_no\n金额：:currency:amount（≈ \$:converted_amount）\n支付方式：:payment_method",
         'designated_order_created' => "🛒 源网站订单已创建\n\n订单号：:order_no\n商户订单号：:merchant_order_no\n客户邮箱：:customer_email\n金额：:currency:amount\n支付方式：:payment_method",
         'order_dispute_resolved' => "✅ 争议已解决，订单恢复为已支付\n\n订单号：:order_no",
         'order_shipped' => "🚚 订单已发货\n\n订单号：:order_no",
@@ -1837,6 +1843,158 @@ return [
         'no_available_payment_method_reasons' => [
             'no_active_method' => '该支付组下没有任何启用的支付方式',
             'risk_control_blocked' => '组内所有支付方式都被风控阈值挡住（单笔/单日金额/单日笔数/单月金额）',
+        ],
+    ],
+
+    'telegram_routes' => [
+        'title' => 'Telegram 通知管理',
+        'description' => '统一配置商户通知和支付通道通知的开关、正文及发送策略。商户通知发给事件所属商户；通道通知按通道所属人发送。未绑定或关闭 Telegram 的对象会跳过。',
+        'save' => '保存',
+        'saved' => '通知配置已保存',
+        'groups' => [
+            'merchant' => '商户通知',
+            'channel' => '支付通道通知',
+        ],
+        'recipients' => [
+            'merchant' => '事件所属商户',
+            'channel_owner' => '通道所属人',
+        ],
+        'notification' => '通知',
+        'enabled' => '启用',
+        'on' => '已启用',
+        'off' => '已关闭',
+        'edit' => '编辑',
+        'recipient_rule' => '接收规则',
+        'strategy' => '发送策略',
+        'inspect_recipient' => '查看接收对象',
+        'reset' => '恢复默认',
+        'reset_description' => '恢复该通知的默认正文、发送参数并启用通知。',
+        'basic' => '通知设置',
+        'message' => '消息内容',
+        'template' => '自定义正文',
+        'template_help' => '留空使用系统默认正文。变量会替换为事件数据；有订单信息的通知可在下方继续编辑，并查看完整预览。',
+        'order_template' => '订单信息',
+        'order_template_help' => '可修改字段、顺序和文案，发送时追加在正文后；汇总通知对每笔订单使用此格式。留空使用默认订单信息。',
+        'insert_order_variable' => '插入订单变量（追加到订单信息末尾）',
+        'insert_variable' => '插入变量（追加到正文末尾）',
+        'preview' => '示例预览（不会发送消息）',
+        'invalid_setting' => '包含不支持的通知配置项。',
+        'invalid_variables' => '正文包含当前通知不支持的变量，请使用下方变量选择器。',
+        'timezone' => '按系统时区 :timezone 发送。',
+        'choose_channel' => '选择支付通道',
+        'choose_merchant' => '选择事件所属商户',
+        'actual_recipient' => '实际接收对象',
+        'choose_context' => '搜索并选择对象后，显示当前接收人和绑定状态。',
+        'repeat_summary' => '首次付款发送 :count 条',
+        'cooldown_summary' => '同一事件对象 :minutes 分钟内一次',
+        'reminder_summary' => '到期前 :hours 小时提醒',
+        'unshipped_summary' => '超过 :days 天，每天 :time 汇总',
+        'on_event' => '事件触发时发送',
+        'sample_channel' => '示例支付通道',
+        'sample_group' => '示例支付组',
+        'sample_error' => '示例异常，请核查配置',
+        'sample_status' => '处理中',
+        'fields' => [
+            'repeat_count' => '发送次数（1–5）',
+            'cooldown_minutes' => '冷却时间（分钟）',
+            'reminder_hours' => '提前提醒（小时）',
+            'unshipped_days' => '支付后未发货提醒天数',
+            'send_time' => '每日汇总时间',
+        ],
+        'rule_descriptions' => [
+            'merchant' => '发送给订单、支付组或任务所属商户，汇总消息按商户分别发送。',
+            'channel_owner' => '商户专属通道发送给所属商户；系统级通道发送给归属管理员。缺少归属管理员时跳过并提示配置异常。',
+        ],
+        'recipient_statuses' => [
+            'ready' => 'Telegram 已绑定并启用',
+            'unbound' => '尚未绑定 Telegram',
+            'disabled' => 'Telegram 接收已关闭',
+            'incomplete' => '机器人配置不完整',
+            'missing_owner' => '配置异常：系统通道缺少归属管理员',
+            'missing_channel' => '未找到支付通道',
+            'inactive_recipient' => '接收对象不存在或已停用',
+        ],
+        'kinds' => [
+            'payment_method_forbidden' => [
+                'label' => '支付通道已自动禁用',
+                'description' => '网关标明三方账号不能下单，通道被自动停用。',
+            ],
+            'payment_method_creation_failed_disabled' => [
+                'label' => '连续建单失败，支付通道已自动禁用',
+                'description' => '连续建单失败达到阈值，通道被自动停用。',
+            ],
+            'payment_link_creation_failed' => [
+                'label' => '创建支付链接失败',
+                'description' => '某一笔订单向网关创建支付链接失败。',
+            ],
+            'no_available_payment_method' => [
+                'label' => '没有可用的支付通道',
+                'description' => '支付组里没有能用的通道，订单没有建成，提醒支付组所属商户。',
+            ],
+            'designated_order_created' => [
+                'label' => '源网站订单已创建',
+                'description' => '指定渠道订单在本地保存后。',
+            ],
+            'order_paid' => [
+                'label' => '源网站付款成功',
+                'description' => '源网站指定渠道订单第一次支付成功，提醒通道所属人；普通订单不触发此通知。',
+            ],
+            'order_disputing' => [
+                'label' => '支付争议',
+                'description' => '网关把订单标成争议中。',
+            ],
+            'order_refund_gateway' => [
+                'label' => '网关退款',
+                'description' => '网关发起退款。',
+            ],
+            'order_chargeback_gateway' => [
+                'label' => '拒付',
+                'description' => '网关发起拒付。',
+            ],
+            'gateway_reversal_settle_failed' => [
+                'label' => '退款或拒付自动入账失败',
+                'description' => '状态已更新，但款项没有从商户余额扣下。',
+            ],
+            'gateway_reversal_amount_mismatch' => [
+                'label' => '网关金额与订单金额不一致',
+                'description' => '已按订单金额入账。',
+            ],
+            'dispute_review_gateway_status_ignored' => [
+                'label' => '争议审核期间的网关状态',
+                'description' => '人工争议审核未结束时，网关又推了状态，系统没有自动处理。',
+            ],
+            'order_dispute_opened' => [
+                'label' => '争议审核已开立',
+                'description' => '后台开立争议审核。',
+            ],
+            'order_dispute_due_soon' => [
+                'label' => '争议审核即将到期',
+                'description' => '争议审核快到期，逾期会结束并释放冻结资金。',
+            ],
+            'logistics_import_completed' => [
+                'label' => '物流导入完成',
+                'description' => '物流文件导入结束。',
+            ],
+            'logistics_anomaly' => [
+                'label' => '物流异常',
+                'description' => '物流轨迹出现异常。',
+            ],
+            'unshipped_overdue' => [
+                'label' => '超期未发货',
+                'description' => '支付后超过规定时间仍未录入物流，按商户汇总。',
+            ],
+            'shipment_sync_failed' => [
+                'label' => '物流回传失败',
+                'description' => '发货状态回传商户网站失败。',
+            ],
+            'site_products_sync_completed' => [
+                'label' => '站点商品同步完成',
+                'description' => '支付通道的站点商品同步完成。',
+            ],
+            'site_products_sync_failed' => [
+                'label' => '站点商品同步失败',
+                'description' => '支付通道的站点商品同步重试耗尽。',
+            ],
         ],
     ],
 

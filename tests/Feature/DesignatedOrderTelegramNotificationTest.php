@@ -13,6 +13,8 @@ use App\Models\PaymentMethodConfigMap;
 use App\Models\TelegramBot;
 use App\Services\OrderCreationService;
 use App\Services\OrderPaymentStatusService;
+use App\Services\TelegramNotificationSettings;
+use App\Support\TelegramNotificationKind;
 use Database\Seeders\PermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -148,7 +150,7 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
 
         $paidMessages = $telegramRequests->filter(
             fn ($pair) => str_contains((string) $pair[0]['text'], 'Payment received')
-                || str_contains((string) $pair[0]['text'], '支付成功通知')
+                || str_contains((string) $pair[0]['text'], '源网站付款成功')
         );
 
         $this->assertCount(5, $paidMessages);
@@ -190,6 +192,33 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         app(SendTelegramNotification::class)->handleOrderStatusChanged(new OrderStatusChanged($order, 'pending', $status, firstPayment: true));
 
         Http::assertSentCount(5);
+    }
+
+    public function test_source_payment_uses_the_configured_template_repeat_count_and_enabled_switch(): void
+    {
+        $this->app->setLocale('en');
+        Http::preventStrayRequests();
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true])]);
+        $order = $this->designatedPaidOrder();
+        $order->update(['transaction_id' => 'TX-CUSTOM']);
+        $settings = app(TelegramNotificationSettings::class);
+        $rule = [
+            'enabled' => false, 'template' => 'Received :order_no / :amount :currency', 'repeat_count' => 2,
+            'order_template' => "Transaction: :transaction_id\nShop order: :merchant_order_no",
+        ];
+        $settings->save(TelegramNotificationKind::OrderPaid, $rule);
+        $event = new OrderStatusChanged($order, 'pending', 'paid');
+
+        app(SendTelegramNotification::class)->handleOrderStatusChanged($event);
+        Http::assertNothingSent();
+
+        $settings->save(TelegramNotificationKind::OrderPaid, [...$rule, 'enabled' => true]);
+        app(SendTelegramNotification::class)->handleOrderStatusChanged($event);
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request): bool => str_contains($request['text'], 'Received SSC-PAID / 100.00 USD')
+            && str_contains($request['text'], "Transaction: TX-CUSTOM\nShop order: M-PAID")
+            && ! str_contains($request['text'], 'System order:'));
     }
 
     /** @return array<string, array{string}> */
@@ -234,7 +263,10 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
             'is_enabled' => true,
         ]);
 
+        $method = $this->makePaymentMethod('test_method');
+
         return $this->makeOrder('SSC-PAID', 'M-PAID', [
+            'payment_method_id' => $method->id,
             'status' => 'paid',
             'designated_payment_method_key' => 'test_method',
         ]);

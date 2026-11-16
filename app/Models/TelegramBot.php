@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToMerchant;
+use App\Models\Scopes\MerchantScope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -16,6 +18,7 @@ class TelegramBot extends Model
 
     protected $fillable = [
         'merchant_id',
+        'user_id',
         'bot_token',
         'chat_id',
         'is_enabled',
@@ -44,6 +47,18 @@ class TelegramBot extends Model
     public function merchant(): BelongsTo
     {
         return $this->belongsTo(Merchant::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function scopeForUser(Builder $query, int $userId): Builder
+    {
+        return $query->withoutGlobalScope(MerchantScope::class)
+            ->where($this->getTable().'.user_id', $userId)
+            ->whereNull($this->getTable().'.merchant_id');
     }
 
     /**

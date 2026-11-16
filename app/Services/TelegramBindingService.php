@@ -109,6 +109,110 @@ class TelegramBindingService
         });
     }
 
+    /**
+     * @return array{token: string, url: string, expires_at: string}
+     */
+    public function createAdminLink(User $actor, User $target, string $chatType): array
+    {
+        Validator::make(['chat_type' => $chatType], ['chat_type' => ['required', 'in:private,group']])->validate();
+
+        return DB::transaction(function () use ($actor, $target, $chatType): array {
+            $target = User::query()->lockForUpdate()->find($target->id);
+            $this->assertCanBindAdmin($actor, $target);
+
+            if (! TelegramBotClient::platformIsConfigured()) {
+                throw ValidationException::withMessages(['telegram' => __('admin.telegram.help.admin_unavailable')]);
+            }
+
+            $token = bin2hex(random_bytes(32));
+            $expiresAt = now()->addMinutes(10);
+
+            TelegramBindingRequest::query()->forAdmin($target->id)->updateOrCreate(
+                ['target_user_id' => $target->id],
+                [
+                    'merchant_id' => null,
+                    'user_id' => $actor->id,
+                    'token_hash' => hash('sha256', $token),
+                    'bot_fingerprint' => $this->botFingerprint(),
+                    'chat_type' => $chatType,
+                    'expires_at' => $expiresAt,
+                    'consumed_at' => null,
+                ],
+            );
+
+            return [
+                'token' => $token,
+                'url' => 'https://t.me/'.config('services.telegram.bot_username').'?'.($chatType === 'group' ? 'startgroup' : 'start').'='.$token,
+                'expires_at' => $expiresAt->toIso8601String(),
+            ];
+        });
+    }
+
+    public function adminStatus(User $actor, User $target, string $token): string
+    {
+        $this->assertCanBindAdmin($actor, $target->fresh());
+        $binding = TelegramBindingRequest::query()->forAdmin($target->id)
+            ->where('token_hash', hash('sha256', $token))->first();
+
+        if ($binding?->consumed_at !== null) {
+            return 'bound';
+        }
+
+        return $binding && $this->isCurrent($binding) ? 'pending' : 'expired';
+    }
+
+    public function disconnectAdmin(User $actor, User $target): void
+    {
+        DB::transaction(function () use ($actor, $target): void {
+            $target = User::query()->lockForUpdate()->find($target->id);
+            $this->assertCanBindAdmin($actor, $target);
+            TelegramBot::query()->forUser($target->id)->delete();
+            TelegramBindingRequest::query()->forAdmin($target->id)->delete();
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function saveAdmin(User $actor, User $target, array $data): void
+    {
+        $data = Validator::make(['telegramData' => $data], [
+            'telegramData.mode' => ['required', 'in:platform,custom'],
+            'telegramData.is_enabled' => ['required', 'boolean'],
+            'telegramData.bot_token' => ['exclude_unless:telegramData.mode,custom', 'required', 'string', 'max:255'],
+            'telegramData.chat_id' => ['exclude_unless:telegramData.mode,custom', 'required', 'string', 'regex:/^-?\d+$/', 'max:100'],
+        ])->validate()['telegramData'];
+
+        DB::transaction(function () use ($actor, $target, $data): void {
+            $target = User::query()->lockForUpdate()->find($target->id);
+            $this->assertCanBindAdmin($actor, $target);
+
+            if ($data['mode'] === 'platform') {
+                $bot = TelegramBot::query()->forUser($target->id)->first();
+
+                if (! $bot?->uses_platform_bot) {
+                    throw ValidationException::withMessages(['telegramData.mode' => __('admin.telegram.validation.bind_first')]);
+                }
+
+                $bot->update(['is_enabled' => $data['is_enabled']]);
+                TelegramBindingRequest::query()->forAdmin($target->id)->delete();
+
+                return;
+            }
+
+            TelegramBot::query()->forUser($target->id)->updateOrCreate(['user_id' => $target->id], [
+                'merchant_id' => null,
+                'bot_token' => $data['bot_token'],
+                'chat_id' => $data['chat_id'],
+                'is_enabled' => $data['is_enabled'],
+                'uses_platform_bot' => false,
+                'chat_title' => null,
+                'chat_type' => null,
+            ]);
+            TelegramBindingRequest::query()->forAdmin($target->id)->delete();
+        });
+    }
+
     public function disconnect(User $actor, int $merchantId): void
     {
         DB::transaction(function () use ($actor, $merchantId): void {
@@ -154,6 +258,10 @@ class TelegramBindingService
             return __('admin.telegram.replies.group_admin_required');
         }
 
+        if ($binding->target_user_id !== null) {
+            return $this->completeAdminBinding($binding, $tokenHash, $chat, $isPrivate);
+        }
+
         return DB::transaction(function () use ($binding, $tokenHash, $chat, $isPrivate): ?string {
             $merchant = Merchant::query()->lockForUpdate()->find($binding->merchant_id);
             $current = TelegramBindingRequest::query()->forMerchant($binding->merchant_id)
@@ -187,6 +295,60 @@ class TelegramBindingService
 
             return __('admin.telegram.replies.bound');
         });
+    }
+
+    /**
+     * @param  array{id: int|string, type: string, title?: string, first_name?: string, last_name?: string, username?: string}  $chat
+     */
+    private function completeAdminBinding(TelegramBindingRequest $binding, string $tokenHash, array $chat, bool $isPrivate): ?string
+    {
+        return DB::transaction(function () use ($binding, $tokenHash, $chat, $isPrivate): ?string {
+            $target = User::query()->lockForUpdate()->find($binding->target_user_id);
+            $current = TelegramBindingRequest::query()->forAdmin((int) $binding->target_user_id)
+                ->where('token_hash', $tokenHash)->lockForUpdate()->first();
+
+            if (! $current || $current->consumed_at !== null) {
+                return null;
+            }
+
+            $actor = User::query()->find($current->user_id);
+            if (! $this->isCurrent($current) || $target === null || $actor?->id !== $target->id || ! $this->canBindOwnAdminBot($actor)) {
+                $current->delete();
+
+                return __('admin.telegram.replies.expired');
+            }
+
+            $title = $isPrivate
+                ? trim(($chat['first_name'] ?? '').' '.($chat['last_name'] ?? ''))
+                : ($chat['title'] ?? '');
+
+            TelegramBot::query()->forUser($target->id)->updateOrCreate(['user_id' => $target->id], [
+                'merchant_id' => null,
+                'uses_platform_bot' => true,
+                'bot_token' => '',
+                'chat_id' => (string) $chat['id'],
+                'chat_type' => $chat['type'],
+                'chat_title' => Str::limit($title ?: ($chat['username'] ?? (string) $chat['id']), 255, ''),
+                'is_enabled' => true,
+                'last_sent_at' => null,
+                'test_sent_at' => null,
+            ]);
+            $current->update(['consumed_at' => now()]);
+
+            return __('admin.telegram.replies.bound');
+        });
+    }
+
+    private function assertCanBindAdmin(User $actor, ?User $target): void
+    {
+        if ($target === null || $actor->id !== $target->id || ! $this->canBindOwnAdminBot($actor)) {
+            throw new AuthorizationException;
+        }
+    }
+
+    private function canBindOwnAdminBot(?User $user): bool
+    {
+        return $user !== null && $user->status && $user->merchant_id === null && $user->isPlatformStaff();
     }
 
     private function isCurrent(TelegramBindingRequest $binding): bool

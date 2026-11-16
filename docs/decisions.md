@@ -602,3 +602,35 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 新增迁移一次性读取旧有效配置缓存或环境，优先保留数据库已有值；新安装保持关闭。完成迁移后 `.env` 旧键失效，不作为运行回退。数据回滚保留配置，有密文时禁止删除密钥列。未执行真实供应商请求或业务库迁移。
 
 **依据：** [读取入口](../app/Support/CryptoRuntimeSettings.php)、[安全保存](../app/Services/CryptoRuntimeSettingsService.php)、[配置模型](../app/Models/SystemConfig.php)、[迁移](../database/migrations/2026_11_16_163325_move_crypto_runtime_settings_to_system_configs.php)、[密钥测试](../tests/Feature/CryptoSecretSettingsTest.php)、[运行配置测试](../tests/Feature/CryptoRuntimeSettingsTest.php)、[部署说明](../doc/deployment.md#32-区块链系统配置与升级)。
+
+## D-56 管理员 Telegram 与支付通道通知归属
+
+**后续修订：** 下述通知接收人和无归属时广播规则由 [D-46](#d-46-telegram-按业务归属统一管理) 替代；管理员绑定能力保留。
+
+**状态：按用户确认采用（2026-11-16）。** 超级管理员和商户级管理员在账号设置页给自己保存 Telegram 接收目标，不在「平台管理 → 管理员」编辑页。可选平台机器人的个人或群聊快速绑定，也可填写自建 Bot Token 和 Chat ID。规则与商户服务配置相同：每名管理员只有一个接收目标，保存自建配置会替换快速绑定；快速绑定未完成时不能只保存平台模式。链接只能由本人生成和完成。账号停用或不再是平台账号后，未完成链接失效。这块配置与姓名、密码分开保存。普通商户用户仍使用服务配置里的商户机器人。
+
+**通知：** 支付通道因网关账号不可用或连续建单失败被自动禁用时，默认仍按通道归属发送：商户自有通道只通知该商户；系统通道通知 `owner_id` 对应管理员。没有归属管理员时通知所有启用的超级管理员。订单、物流和支付组无可用通道的通知默认仍发给商户。接收人可以在「通知接收人」页面改掉，见 [D-45](decisions.md#d-45-telegram-通知接收人可配置)。未绑定或未启用则跳过。
+
+**依据：** [账号设置](../app/Filament/Auth/EditProfile.php)、[绑定服务](../app/Services/TelegramBindingService.php)、[通道通知](../app/Services/PaymentChannelTelegramNotifier.php)、[回归](../tests/Feature/AdminTelegramBindingTest.php)。
+
+## D-57 Telegram 通知接收人可配置
+
+**已替代：** 接收人选择方案由 [D-46](#d-46-telegram-按业务归属统一管理) 替代，以下保留为历史记录。
+
+**状态：按用户确认采用（2026-11-16）。** 超级管理员在平台管理的「通知接收人」页面，为每一种正在发送的 Telegram 通知勾选接收人。全平台共用一套规则，商户和商户级管理员不能改。可选：事件所属商户、通道归属、使用该通道的商户、全部已启用超级管理员、不发送。「不发送」不能和其他选项同时选择。没有对应通道的通知不能选通道归属或使用该通道的商户。
+
+**默认与未配置：** 没保存过的模板沿用原来的接收人。通道自动禁用发给通道归属；站点商品同步发给使用该通道的商户；其余订单、退款拒付、争议、物流和没有可用通道发给事件所属商户。无效或空的保存值回退到这个默认，不因此停发。付款链接邮件和绑定测试消息不进入这个页面。
+
+**发送：** `TelegramNotificationRouter` 在各通知入口解析接收人。同一条消息里的订单内容会发给每一个被勾选的对象。同一商户或同一管理员只发一次。没有可用机器人、已关闭或触发限流时跳过，不影响原业务结果。物流异常在有可用接收人但发送失败时继续重试；物流回传失败没有可用接收人时仍标为 `unavailable`，选择不发送则结束这批提醒，避免反复重试。
+
+**依据：** [接收人页面](../app/Filament/Pages/TelegramNotificationRoutes.php)、[路由](../app/Services/TelegramNotificationRouter.php)、[回归](../tests/Feature/TelegramNotificationRouterTest.php)、[页面回归](../tests/Feature/Filament/TelegramNotificationRoutesPageTest.php)。
+
+## D-58 Telegram 按业务归属统一管理
+
+**状态：按用户确认的归属规则实现，当前工作区未提交（2026-11-16）。** 仅完善 Telegram，分为商户通知 13 项和支付通道通知 7 项。商户通知按订单/事件/任务/支付组所属商户发送；支付通道通知包含禁用、连续失败禁用、支付链接创建失败、源网站建单、源网站付款成功和商品同步完成/失败，均按当前通道归属发送。商户专属通道发给商户，系统通道发给 `owner_id` 对应管理员；源网站两项不经商户反查管理员。系统通道缺少归属时跳过，不回退其他管理员，不广播已分配商户。
+
+**后台：** 超级管理员在「Telegram 通知管理」按两类查看、搜索和筛选，每条单独维护启用状态、正文、变量预览与适用策略。源网站付款成功次数默认 5（允许 1–5），无可用通道冷却默认 10 分钟、争议审核网关状态提醒冷却默认 1440 分钟，争议到期提醒默认提前 24 小时，未发货提醒默认超 10 天且系统时区每天 10:00。这些是通知参数，不修改下单、资金或物流异常判定阈值。恢复默认只影响当前项，实际接收人预览不发送消息、不暴露 Token 或 Chat ID。
+
+**正文与存储：** 白名单变量仅做字符串替换和 HTML 转义，不执行代码；订单信息在消息内容编辑区单独展示，允许按通知调整字段、顺序和文案，预览与发送共用模板。该区块追加在正文后，汇总消息对每笔订单重复渲染；留空恢复默认订单信息。配置 `order_template` 最大 1000 字符，替换后的订单信息同样限长，给正文保留消息长度预算；历史配置缺少此项时使用默认，不改写已有正文。新设置保存在 `system_configs.telegram.notification_settings`，首次保存创建并按项合并；无新增表或迁移。旧路由选择失效，仅在尚未保存新设置时继承旧 `none` 停发状态。用户明确不需要发送记录，因此不新增通知历史表或页面；已有物流重试状态、争议提醒去重和运行错误日志继续保留。
+
+**依据：** [通知类型](../app/Support/TelegramNotificationKind.php)、[配置](../app/Services/TelegramNotificationSettings.php)、[模板](../app/Services/TelegramMessageTemplate.php)、[发送路由](../app/Services/TelegramNotificationRouter.php)、[后台](../app/Filament/Pages/TelegramNotificationRoutes.php)、[配置回归](../tests/Feature/TelegramNotificationSettingsTest.php)、[调度回归](../tests/Feature/TelegramNotificationScheduleTest.php)。

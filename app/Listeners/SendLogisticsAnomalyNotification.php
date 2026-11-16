@@ -3,9 +3,8 @@
 namespace App\Listeners;
 
 use App\Events\LogisticsAnomalyDetected;
-use App\Models\TelegramBot;
-use App\Services\TelegramNotificationService;
-use App\Support\OrderTelegramSummary;
+use App\Services\TelegramNotificationRouter;
+use App\Support\TelegramNotificationKind;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
 use Illuminate\Queue\InteractsWithQueue;
@@ -16,7 +15,7 @@ class SendLogisticsAnomalyNotification implements ShouldQueueAfterCommit
 
     public int $backoff = 60;
 
-    public function __construct(private readonly TelegramNotificationService $telegram) {}
+    public function __construct(private readonly TelegramNotificationRouter $telegramRoutes) {}
 
     public function retryUntil(): DateTimeInterface
     {
@@ -38,22 +37,20 @@ class SendLogisticsAnomalyNotification implements ShouldQueueAfterCommit
             'status' => $statusLabel === $statusKey ? $status : $statusLabel,
             'reason' => $reasonLabel === $reasonKey ? $reason : $reasonLabel,
         ];
-        $details = array_map(
-            fn (string $value): string => htmlspecialchars(mb_substr($value, 0, 100), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+        $details = array_map(fn (string $value): string => mb_substr($value, 0, 100), $details);
+        $methodId = $event->details['payment_method_id'] ?? null;
+        $delivery = $this->telegramRoutes->sendNotification(
+            TelegramNotificationKind::LogisticsAnomaly,
             $details,
+            $event->merchantId,
+            paymentMethodId: is_numeric($methodId) ? (int) $methodId : null,
+            orderDetails: $event->details,
         );
 
-        $message = __('admin.telegram_notification.logistics_anomaly', $details)
-            ."\n\n".OrderTelegramSummary::render($event->details);
-
-        if ($this->telegram->send($event->merchantId, $message)) {
+        if ($delivery->sent || $delivery->suppressed || ! $delivery->anyUsable) {
             return;
         }
 
-        $bot = TelegramBot::query()->forMerchant($event->merchantId)->first();
-
-        if ($bot?->isUsable()) {
-            $this->release(60);
-        }
+        $this->release(60);
     }
 }

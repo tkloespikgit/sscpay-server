@@ -516,7 +516,7 @@ class OrderCreationService
             return $order;
         });
 
-        // 指定渠道（源网站直连）下单，落库成功即提醒商户——不等远程建支付单
+        // 指定渠道（源网站直连）下单，落库成功即提醒通道所属人——不等远程建支付单
         // 这步（下面第 9 步，可能失败）结束，保持跟"订单已创建"的语义一致。
         if (filled($order->designated_payment_method_key)) {
             event(new DesignatedOrderCreated($order));

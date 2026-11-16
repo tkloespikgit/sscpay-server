@@ -106,6 +106,18 @@ class OrderTelegramSummaryTest extends TestCase
         $this->assertStringNotContainsString('<b>', $message);
     }
 
+    public function test_custom_order_information_escapes_the_template_and_caps_expanded_text(): void
+    {
+        $message = OrderTelegramSummary::render(
+            ['transaction_id' => '<script>value</script>', 'merchant_order_no' => 'M&001'],
+            "<b>:transaction_id</b>\nReference :merchant_order_no",
+        );
+
+        $this->assertSame("&lt;b&gt;&lt;script&gt;value&lt;/script&gt;&lt;/b&gt;\nReference M&amp;001", $message);
+        $longMessage = OrderTelegramSummary::render(['order_no' => str_repeat('X', 100)], str_repeat(':order_no ', 100));
+        $this->assertLessThanOrEqual(1000, mb_strlen(html_entity_decode($longMessage, ENT_QUOTES, 'UTF-8')));
+    }
+
     public function test_batch_summaries_load_payment_method_names_once_per_merchant_and_preserve_tenant_boundaries(): void
     {
         $this->app->setLocale('en');

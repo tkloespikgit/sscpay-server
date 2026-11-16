@@ -107,7 +107,7 @@ class OrderDisputeTelegramNotificationTest extends TestCase
         $event = app(OrderDisputeService::class)->open($order, $operator, $this->input());
         $order->delete();
 
-        app(OrderDisputeService::class)->sendDueReminder($event, app(TelegramNotificationService::class));
+        app(OrderDisputeService::class)->sendDueReminder($event);
 
         $this->assertNotNull($event->refresh()->reminded_at);
         Http::assertSentCount(2);

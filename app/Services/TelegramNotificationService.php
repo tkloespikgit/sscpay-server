@@ -32,7 +32,7 @@ class TelegramNotificationService
             return false;
         }
 
-        if (! $this->withinRateLimit($merchantId)) {
+        if (! $this->withinRateLimit((string) $merchantId)) {
             Log::warning('Telegram notification skipped: rate limit exceeded', ['merchant_id' => $merchantId]);
 
             return false;
@@ -42,6 +42,40 @@ class TelegramNotificationService
 
         if ($sent) {
             $bot->forceFill(['last_sent_at' => now()])->save();
+        }
+
+        return $sent;
+    }
+
+    public function sendToUser(int $userId, string $message, array $options = []): bool
+    {
+        $bot = TelegramBot::query()->forUser($userId)->first();
+
+        if (! $bot || ! $bot->isUsable()) {
+            return false;
+        }
+
+        if (! $this->withinRateLimit('user:'.$userId)) {
+            Log::warning('Telegram notification skipped: rate limit exceeded', ['user_id' => $userId]);
+
+            return false;
+        }
+
+        $sent = $this->sendMessage($bot->effectiveToken(), $bot->chat_id, $message, $options);
+
+        if ($sent) {
+            $bot->forceFill(['last_sent_at' => now()])->save();
+        }
+
+        return $sent;
+    }
+
+    public function sendTestToUser(int $userId): bool
+    {
+        $sent = $this->sendToUser($userId, '✅ 这是一条测试消息，用于验证 Telegram 通知配置是否正确。');
+
+        if ($sent) {
+            TelegramBot::query()->forUser($userId)->first()?->forceFill(['test_sent_at' => now()])->save();
         }
 
         return $sent;
@@ -75,9 +109,9 @@ class TelegramNotificationService
         }
     }
 
-    private function withinRateLimit(int $merchantId): bool
+    private function withinRateLimit(string $bucket): bool
     {
-        $key = "telegram_rate_limit:{$merchantId}:".now()->format('YmdHi');
+        $key = "telegram_rate_limit:{$bucket}:".now()->format('YmdHi');
         $count = Cache::increment($key);
 
         if ($count === 1) {

@@ -1,5 +1,7 @@
 <?php
 
+use App\Services\TelegramNotificationSettings;
+use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 
@@ -58,8 +60,13 @@ Schedule::command('logistics-imports:prune --days=90')->dailyAt('03:10')->withou
 // 物流异常：按系统阈值重算；首次异常且配置可用时主动查一次，确认后派发 Telegram 提醒。
 Schedule::command('logistics-tracking:reflag-anomalies')->dailyAt('06:00')->withoutOverlapping();
 
-// 支付超 10 天仍未发货：按商户汇总 Telegram 提醒。
-Schedule::command('orders:notify-unshipped-overdue')->dailyAt('10:00')->withoutOverlapping();
+// 每分钟读取当前提醒时间，按系统时区在配置的时刻汇总。
+Schedule::command('orders:notify-unshipped-overdue')->everyMinute()
+    ->when(fn (): bool => now()->format('H:i') === app(TelegramNotificationSettings::class)
+        ->get(TelegramNotificationKind::UnshippedOverdue)['send_time'])
+    ->withoutOverlapping()
+    ->onOneServer()
+    ->onFailure(fn () => logger()->error('超期未发货 Telegram 提醒调度失败'));
 
 Schedule::command('crypto:maintain-subscriptions --limit=5')
     ->everyMinute()->runInBackground()->withoutOverlapping(30)->onOneServer()
