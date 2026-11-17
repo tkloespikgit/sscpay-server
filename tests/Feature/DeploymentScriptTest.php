@@ -284,6 +284,7 @@ class DeploymentScriptTest extends TestCase
     {
         $this->prepareDeployment();
         chmod($this->directory.'/.env', 0400);
+        chmod($this->directory.'/bootstrap/cache/.gitignore', 0444);
 
         $process = $this->deploy(['--check']);
 
@@ -359,6 +360,31 @@ class DeploymentScriptTest extends TestCase
             $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
         } finally {
             chmod($this->directory.'/.env', 0644);
+        }
+    }
+
+    public function test_shared_runtime_symlinks_are_checked_for_existing_file_permissions(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('此权限回归需要非 root 的实际测试进程。');
+        }
+        $this->prepareDeployment();
+        $shared = $this->directory.'/shared-cache';
+        File::moveDirectory($this->directory.'/bootstrap/cache', $shared);
+        symlink($shared, $this->directory.'/bootstrap/cache');
+        File::put($shared.'/config.php', 'original cache');
+        chmod($shared.'/config.php', 0444);
+
+        try {
+            $process = $this->deploy();
+
+            $this->assertSame(1, $process->getExitCode());
+            $this->assertStringContainsString('bootstrap/cache/config.php', $process->getErrorOutput());
+            $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+            $this->assertSame('original cache', File::get($shared.'/config.php'));
+            $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+        } finally {
+            chmod($shared.'/config.php', 0644);
         }
     }
 
