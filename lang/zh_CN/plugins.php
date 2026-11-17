@@ -1,0 +1,25 @@
+<?php
+
+return [
+    'title' => '插件下载',
+    'intro' => '按电商平台获取 SSCPay 支付插件、安装说明和版本更新。',
+    'platform_navigation' => '电商平台',
+    'platforms' => ['wordpress' => 'WordPress', 'opencart' => 'OpenCart', 'zencart' => 'Zen Cart', 'innoshop' => 'InnoShop'],
+    'navigation_hint' => '选择您的商城平台，查看对应插件及安装指引。',
+    'plugin_count' => ':count 个插件',
+    'planned' => '规划中',
+    'not_available' => ':platform 插件尚未发布',
+    'planned_description' => '后续将在这里提供该平台的支付插件、安装包与配置说明。',
+    'resources' => '开发者资源',
+    'skip_to_content' => '跳到插件下载内容',
+    'back_to_top' => '返回顶部',
+    'home' => '返回主页',
+    'download' => '下载 :version',
+    'unpublished' => '安装包尚未发布',
+    'requirements' => '环境要求',
+    'install' => '安装与配置',
+    'instructions' => '在 WordPress 后台的「插件 → 安装插件 → 上传插件」上传 ZIP 并启用。在「WooCommerce → 设置 → 付款」填写订单系统地址、App-ID、API Key 和支付组。已有安装可直接通过后台更新，原配置保留。',
+    'combined' => '使用组合付款时，请清空插件的「指定支付渠道」，并在对应支付组开启组合付款。部分付款会保存累计进度，整单付清后才确认商城订单付款成功。',
+    'docs' => '查看 v2 接口文档',
+    'changes' => '更新内容',
+];

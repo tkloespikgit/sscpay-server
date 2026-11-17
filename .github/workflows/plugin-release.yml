@@ -1,0 +1,109 @@
+name: Publish plugin
+
+on:
+  push:
+    tags:
+      - 'plugins/sscpay-payment-paypal/v*'
+      - 'plugins/sscpay-payment-creditcard/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing plugin tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/plugins.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plugin-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      PLUGIN_TAG: ${{ inputs.tag || github.ref_name }}
+      APP_ENV: production
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      PLUGIN_RELEASE_DISK: oss
+      OSS_ACCESS_KEY_ID: ${{ secrets.PLUGIN_OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.PLUGIN_OSS_ACCESS_KEY_SECRET }}
+      OSS_BUCKET: ${{ vars.PLUGIN_OSS_BUCKET }}
+      OSS_ENDPOINT: ${{ vars.PLUGIN_OSS_ENDPOINT }}
+      OSS_PREFIX: ${{ vars.PLUGIN_OSS_PREFIX }}
+      GH_TOKEN: ${{ github.token }}
+      LEGACY_TOKEN: ${{ secrets.LEGACY_PLUGIN_RELEASE_TOKEN }}
+      LEGACY_OWNER: ${{ vars.LEGACY_PLUGIN_OWNER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath, zip, gd, intl
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Validate tag and build
+        shell: bash
+        run: |
+          if [[ ! "$PLUGIN_TAG" =~ ^plugins/(sscpay-payment-(paypal|creditcard))/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo '::error::Invalid plugin release tag'
+            exit 1
+          fi
+          slug="${BASH_REMATCH[1]}"
+          version="${BASH_REMATCH[3]}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$PLUGIN_TAG^{commit}")"
+          echo "PLUGIN_SLUG=$slug" >> "$GITHUB_ENV"
+          echo "PLUGIN_VERSION=$version" >> "$GITHUB_ENV"
+          php artisan plugins:build "$slug" --tag="$PLUGIN_TAG" --no-interaction
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_SLUG }}-${{ env.PLUGIN_VERSION }}
+          path: storage/app/plugin-builds/${{ env.PLUGIN_SLUG }}/${{ env.PLUGIN_VERSION }}/
+      - name: Publish stable package to plugin storage
+        shell: bash
+        run: |
+          if [[ -z "$OSS_ACCESS_KEY_ID" || -z "$OSS_ACCESS_KEY_SECRET" || -z "$OSS_BUCKET" || -z "$OSS_ENDPOINT" ]]; then
+            echo '::error::Configure PLUGIN_OSS credentials and bucket variables before publishing.'
+            exit 1
+          fi
+          php artisan plugins:publish "$PLUGIN_SLUG" --tag="$PLUGIN_TAG" --no-interaction
+      - name: Attach installable package to GitHub release
+        shell: bash
+        run: |
+          package="storage/app/plugin-builds/$PLUGIN_SLUG/$PLUGIN_VERSION"
+          jq -r '.changelog' "$package/release.json" > "$RUNNER_TEMP/plugin-release-notes.txt"
+          if ! gh release view "$PLUGIN_TAG" >/dev/null 2>&1; then
+            gh release create "$PLUGIN_TAG" "$package/$PLUGIN_SLUG.zip" "$package/release.json" --verify-tag --latest=false --title "$PLUGIN_SLUG $PLUGIN_VERSION" --notes-file "$RUNNER_TEMP/plugin-release-notes.txt"
+          else
+            gh release download "$PLUGIN_TAG" --pattern "$PLUGIN_SLUG.zip" --dir "$RUNNER_TEMP/main-release"
+            checksum="$(jq -r '.sha256' "$package/release.json")"
+            echo "$checksum  $RUNNER_TEMP/main-release/$PLUGIN_SLUG.zip" | sha256sum --check
+          fi
+      - name: Mirror compatibility package for existing WordPress installations
+        if: env.LEGACY_TOKEN != '' && env.LEGACY_OWNER != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.LEGACY_PLUGIN_RELEASE_TOKEN }}
+        run: |
+          repo="$LEGACY_OWNER/$PLUGIN_SLUG"
+          package="storage/app/plugin-builds/$PLUGIN_SLUG/$PLUGIN_VERSION"
+          if ! gh release view "v$PLUGIN_VERSION" --repo "$repo" >/dev/null 2>&1; then
+            gh release create "v$PLUGIN_VERSION" "$package/$PLUGIN_SLUG.zip" --repo "$repo" --latest --title "$PLUGIN_SLUG $PLUGIN_VERSION" --notes-file "$RUNNER_TEMP/plugin-release-notes.txt"
+          else
+            gh release download "v$PLUGIN_VERSION" --pattern "$PLUGIN_SLUG.zip" --repo "$repo" --dir "$RUNNER_TEMP/legacy-release"
+            checksum="$(jq -r '.sha256' "$package/release.json")"
+            echo "$checksum  $RUNNER_TEMP/legacy-release/$PLUGIN_SLUG.zip" | sha256sum --check
+          fi

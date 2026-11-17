@@ -1,0 +1,25 @@
+<?php
+
+return [
+    'title' => 'Plugins',
+    'intro' => 'Find SSCPay payment plugins, installation guides and release notes for your commerce platform.',
+    'platform_navigation' => 'Commerce platforms',
+    'platforms' => ['wordpress' => 'WordPress', 'opencart' => 'OpenCart', 'zencart' => 'Zen Cart', 'innoshop' => 'InnoShop'],
+    'navigation_hint' => 'Choose your commerce platform to find its plugins and setup instructions.',
+    'plugin_count' => ':count plugins',
+    'planned' => 'Planned',
+    'not_available' => ':platform plugin not published yet',
+    'planned_description' => 'Payment plugins, installation packages and setup instructions for this platform will appear here when available.',
+    'resources' => 'Developer resources',
+    'skip_to_content' => 'Skip to plugin downloads',
+    'back_to_top' => 'Back to top',
+    'home' => 'Back to home',
+    'download' => 'Download :version',
+    'unpublished' => 'Package not published yet',
+    'requirements' => 'Requirements',
+    'install' => 'Installation and setup',
+    'instructions' => 'Upload the ZIP through Plugins → Add New → Upload Plugin in WordPress, then activate it. Under WooCommerce → Settings → Payments, enter your order system URL, App-ID, API Key and payment group. Existing installations can update from the dashboard and keep their settings.',
+    'combined' => 'To use combined payments, leave the specified payment channel blank and enable combined payments on the payment group. Partial payments retain their progress; the store order is marked paid only after the full amount has been collected.',
+    'docs' => 'Read the v2 API documentation',
+    'changes' => 'Release notes',
+];

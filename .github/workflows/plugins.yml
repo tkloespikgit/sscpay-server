@@ -1,0 +1,63 @@
+name: Plugin protocol checks
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: testing
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      PLUGIN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath, zip, pdo_sqlite, gd, intl
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Check protocol and plugin versions
+        shell: bash
+        run: |
+          if [[ -n "$PLUGIN_BASE" && ! "$PLUGIN_BASE" =~ ^0+$ ]]; then
+            php artisan plugins:check --base="$PLUGIN_BASE" --no-interaction
+          else
+            php artisan plugins:check --no-interaction
+          fi
+      - name: Test plugin behavior and distribution
+        run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php
+      - name: Test server v2 contract
+        run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderNotificationRetryTest.php
+
+  php-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          coverage: none
+      - name: Check WordPress minimum PHP version
+        run: find plugins/wordpress -type f -name '*.php' -print0 | xargs -0 -n1 php -l

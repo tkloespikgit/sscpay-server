@@ -1,0 +1,15 @@
+{
+    "slug": "sscpay-payment-creditcard",
+    "name": "SSCPay Payment — Credit Card",
+    "version": "1.1.0",
+    "platform": "wordpress",
+    "api_version": "2.0",
+    "protocol_hash": "213d97741a3dbcd78770d7b23bb33b64ec14f0ea60c6fd5eb20f9c4000615b0e",
+    "requires": "6.0",
+    "requires_php": "7.4",
+    "tested": "",
+    "wc_requires": "8.0",
+    "description": "WooCommerce 信用卡支付插件，支持普通订单与组合付款。",
+    "changelog": "支持 API v2、组合付款进度、通知幂等和物流回传去重；改用 SSCPay 更新服务；保留原配置与订单引用。",
+    "imported_commit": "fed84f30ef50ce9fd2dd7d31ce0bf8089775d08b"
+}

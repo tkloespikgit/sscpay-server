@@ -1,0 +1,30 @@
+.sscpay-image-upload__input {
+	min-width: 320px;
+	max-width: 100%;
+	vertical-align: middle;
+}
+
+.sscpay-image-upload__select,
+.sscpay-image-upload__remove {
+	margin-left: 6px !important;
+	vertical-align: middle;
+}
+
+.sscpay-image-upload__preview {
+	margin-top: 10px;
+}
+
+.sscpay-image-upload__preview img {
+	max-width: 220px;
+	max-height: 80px;
+	width: auto;
+	height: auto;
+	padding: 6px 10px;
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+}
+
+.sscpay-blocks-description {
+	padding: 4px 0;
+}
