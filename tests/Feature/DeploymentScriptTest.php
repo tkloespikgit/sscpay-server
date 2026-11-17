@@ -36,6 +36,8 @@ class DeploymentScriptTest extends TestCase
         $this->assertStringContainsString('git pull --ff-only', $trace);
         $this->assertStringContainsString('composer install --no-dev', $trace);
         $this->assertStringContainsString('npm run build', $trace);
+        $this->assertStringContainsString('npm ci --include=dev --engine-strict', $trace);
+        $this->assertBefore('node --version', 'php artisan down', $trace);
         $this->assertStringContainsString('plugins:check --base='.str_repeat('a', 40), $trace);
         $this->assertBefore('filament:upgrade', 'config:cache', $trace);
         $this->assertBefore('plugins:sync --dry-run', 'migrate --force', $trace);
@@ -297,6 +299,7 @@ class DeploymentScriptTest extends TestCase
         $this->assertStringNotContainsString('git pull', $trace);
         $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
         $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
+        $this->assertDirectoryDoesNotExist($this->directory.'/storage/app/deploy-cache');
     }
 
     public static function inaccessiblePaths(): array
@@ -311,6 +314,9 @@ class DeploymentScriptTest extends TestCase
             'plugin build directory' => ['storage/app/plugin-builds/plugin/1.0.0', true],
             'local plugin index' => ['storage/app/private/plugin-releases/plugin/stable.json', false],
             'Filament generated CSS' => ['public/css/filament/existing.css', false],
+            'npm cache directory' => ['storage/app/deploy-cache/npm', true],
+            'npm cache append index' => ['storage/app/deploy-cache/npm/_cacache/index-v5/aa/index', false],
+            'npm debug log' => ['storage/app/deploy-cache/npm/_logs/existing.log', false],
         ];
     }
 
@@ -423,6 +429,163 @@ class DeploymentScriptTest extends TestCase
         $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
     }
 
+    public static function nodeVersions(): array
+    {
+        return [
+            'reported Node 18' => ['v18.19.1', false],
+            'Node 20 below minimum' => ['v20.18.3', false],
+            'Node 20 minimum' => ['v20.19.0', true],
+            'Node 20 later patch' => ['v20.19.5', true],
+            'unsupported Node 21' => ['v21.7.3', false],
+            'Node 22 below minimum' => ['v22.11.0', false],
+            'Node 22 minimum' => ['v22.12.0', true],
+            'reported root Node 22' => ['v22.23.4', true],
+            'Node 24' => ['v24.11.0', true],
+            'Node 26' => ['v26.0.0', true],
+            'prerelease' => ['v22.12.0-rc.1', false],
+            'unknown version' => ['unknown', false],
+        ];
+    }
+
+    #[DataProvider('nodeVersions')]
+    public function test_node_compatibility_is_checked_before_maintenance(string $version, bool $supported): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], ['DEPLOY_TEST_NODE_VERSION' => $version]);
+
+        $this->assertSame($supported ? 0 : 1, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString($version, $process->getOutput().$process->getErrorOutput());
+        $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+        $this->assertDirectoryDoesNotExist($this->directory.'/storage/app/deploy-cache');
+    }
+
+    public function test_missing_node_stops_deployment_while_npm_is_present(): void
+    {
+        $this->prepareDeployment();
+        File::delete($this->directory.'/bin/node');
+
+        $process = $this->deploy([], ['PATH' => $this->directory.'/bin']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('无法使用 Node/npm 工具目录', $process->getErrorOutput());
+        $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_node_preflight_failure_preserves_maintenance_left_by_an_earlier_failed_deployment(): void
+    {
+        $this->prepareDeployment();
+        File::put($this->directory.'/storage/framework/down', 'existing maintenance');
+
+        $process = $this->deploy([], ['DEPLOY_TEST_NODE_VERSION' => 'v18.19.1']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertSame('existing maintenance', File::get($this->directory.'/storage/framework/down'));
+        $this->assertStringNotContainsString('php artisan up', File::get($this->directory.'/trace'));
+    }
+
+    public function test_deployment_overrides_legacy_home_cache_settings_without_changing_the_old_cache(): void
+    {
+        $this->prepareDeployment();
+        $legacyCache = $this->directory.'/storage/app/legacy-npm';
+        File::ensureDirectoryExists($legacyCache);
+        File::put($legacyCache.'/original', 'legacy cache');
+        chmod($legacyCache, 0555);
+
+        try {
+            $process = $this->deploy([], ['npm_config_cache' => $legacyCache, 'NPM_CONFIG_CACHE' => $legacyCache]);
+
+            $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+            $this->assertStringContainsString('npm 缓存：'.$this->directory.'/storage/app/deploy-cache/npm', $process->getOutput());
+            $this->assertSame('legacy cache', File::get($legacyCache.'/original'));
+            $this->assertDirectoryExists($this->directory.'/storage/app/deploy-cache/npm');
+        } finally {
+            chmod($legacyCache, 0755);
+        }
+    }
+
+    public function test_read_only_npm_content_blobs_are_accepted_while_mutable_indexes_remain_writable(): void
+    {
+        $this->prepareDeployment();
+        $cache = $this->directory.'/storage/app/deploy-cache/npm';
+        File::ensureDirectoryExists($cache.'/_cacache/content-v2/sha512/aa');
+        File::ensureDirectoryExists($cache.'/_cacache/index-v5/aa');
+        File::put($cache.'/_cacache/content-v2/sha512/aa/blob', 'cached package');
+        File::put($cache.'/_cacache/index-v5/aa/index', 'cache index');
+        chmod($cache.'/_cacache/content-v2/sha512/aa/blob', 0444);
+
+        $process = $this->deploy(['--check']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertSame('cached package', File::get($cache.'/_cacache/content-v2/sha512/aa/blob'));
+        $this->assertSame('cache index', File::get($cache.'/_cacache/index-v5/aa/index'));
+    }
+
+    public function test_site_node_tools_take_precedence_over_an_old_system_node_and_keep_npm_on_the_same_path(): void
+    {
+        $this->prepareDeployment();
+        $tools = $this->directory.'/storage/app/deploy-tools/node/bin';
+        $this->prepareNodeTools($tools);
+
+        $process = $this->deploy([], ['DEPLOY_NODE_BIN' => '', 'DEPLOY_TEST_NODE_VERSION' => 'v18.19.1']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('Node.js v22.23.4（'.realpath($tools).'/node）', $process->getOutput());
+        $this->assertStringContainsString('npm 命令：'.realpath($tools).'/npm', $process->getOutput());
+        $this->assertStringContainsString('npm ci --include=dev --engine-strict', File::get($this->directory.'/trace'));
+    }
+
+    public function test_root_handoff_keeps_an_explicitly_selected_accessible_node_directory(): void
+    {
+        $this->prepareDeployment();
+        $tools = $this->directory.'/storage/app/custom-node/bin';
+        $this->prepareNodeTools($tools);
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_NODE_BIN' => $tools, 'DEPLOY_TEST_NODE_VERSION' => 'v18.19.1',
+        ]);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('Node.js v22.23.4', $process->getOutput());
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_an_incomplete_node_directory_does_not_silently_fall_back_to_the_system_tools(): void
+    {
+        $this->prepareDeployment();
+        $tools = $this->directory.'/storage/app/deploy-tools/node/bin';
+        $this->prepareNodeTools($tools);
+        File::delete($tools.'/npm');
+
+        $process = $this->deploy([], ['DEPLOY_NODE_BIN' => '']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('无法使用 Node/npm 工具目录：'.$tools, $process->getErrorOutput());
+        $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+    }
+
+    private function prepareNodeTools(string $directory): void
+    {
+        File::ensureDirectoryExists($directory);
+        File::put($directory.'/node', <<<'BASH'
+#!/bin/bash
+export DEPLOY_TEST_NODE_VERSION=v22.23.4
+exec "$DEPLOY_TEST_DIRECTORY/bin/node" "$@"
+BASH);
+        File::put($directory.'/npm', <<<'BASH'
+#!/bin/bash
+if [[ "$(node --version)" != v22.23.4 ]]; then
+    printf 'npm selected a different Node runtime\n' >&2
+    exit 96
+fi
+exec "$DEPLOY_TEST_DIRECTORY/bin/npm" "$@"
+BASH);
+        chmod($directory.'/node', 0755);
+        chmod($directory.'/npm', 0755);
+    }
+
     private function prepareDeployment(): void
     {
         foreach (['app', 'bin', 'vendor', 'storage/framework', 'storage/logs', 'bootstrap/cache'] as $directory) {
@@ -431,6 +594,8 @@ class DeploymentScriptTest extends TestCase
         File::copy(base_path('deploy.sh'), $this->directory.'/deploy.sh');
         File::copy(base_path('storage/framework/.gitignore'), $this->directory.'/storage/framework/.gitignore');
         File::copy(base_path('bootstrap/cache/.gitignore'), $this->directory.'/bootstrap/cache/.gitignore');
+        File::ensureDirectoryExists($this->directory.'/storage/app');
+        File::copy(base_path('storage/app/.gitignore'), $this->directory.'/storage/app/.gitignore');
         File::put($this->directory.'/.gitignore', File::get(base_path('.gitignore'))."\n/bin/\n/trace\n");
         File::put($this->directory.'/.env', 'APP_ENV=production');
         File::put($this->directory.'/app/Example.php', '<?php');
@@ -452,6 +617,13 @@ if [[ "$action" == "${DEPLOY_TEST_FAILURE:-}" ]]; then
     exit 23
 fi
 case "$tool" in
+    node)
+        if [[ "$1" == --version ]]; then
+            printf '%s\n' "$DEPLOY_TEST_NODE_VERSION"
+        else
+            exit 93
+        fi
+        ;;
     id)
         case "$1" in
             -un|-nu)
@@ -522,11 +694,17 @@ case "$tool" in
             exit 94
         fi
         ;;
-    npm|flock) ;;
+    npm)
+        if [[ "${npm_config_cache:-}" != "$DEPLOY_TEST_DIRECTORY/storage/app/deploy-cache/npm" || "${NPM_CONFIG_CACHE:-}" != "$npm_config_cache" || ! -d "$npm_config_cache" ]]; then
+            printf 'npm cache is not prepared for the site account\n' >&2
+            exit 95
+        fi
+        ;;
+    flock) ;;
     *) exit 92 ;;
 esac
 BASH;
-        foreach (['site-php', 'composer', 'npm', 'git', 'flock', 'id', 'runuser', 'sudo', 'stat', 'ps'] as $tool) {
+        foreach (['site-php', 'composer', 'node', 'npm', 'git', 'flock', 'id', 'runuser', 'sudo', 'stat', 'ps'] as $tool) {
             $path = $this->directory.'/bin/'.$tool;
             File::put($path, $runner);
             chmod($path, 0755);
@@ -554,6 +732,8 @@ BASH;
             'DEPLOY_TEST_CACHE_UID' => '',
             'DEPLOY_TEST_PROJECT_UID' => '1001',
             'DEPLOY_TEST_FPM' => '',
+            'DEPLOY_TEST_NODE_VERSION' => 'v24.11.0',
+            'DEPLOY_NODE_BIN' => $this->directory.'/bin',
             'DEPLOY_USER' => '',
             ...$environment,
         ]);

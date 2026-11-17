@@ -588,6 +588,10 @@ bash deploy.sh --no-pull
 
 权限预检在切换后的实际账号下执行：`.env`、部署脚本和 PHP 自动加载文件必须可读；源码的目录链和 Git 目录必须可读、可写、可进入；依赖树检查目录可操作且文件可读；框架缓存、日志、插件构建/本地发布及前端生成目录还会检查已有文件可写。检查覆盖 Git 公共目录、已有部署锁和嵌套目录，缺失目录检查最近的已有父目录，错误输出具体路径。`.env` 仅需读取，Git 对象及依赖文件可保持只读；运行目录中的 `.gitignore` 也仅需读取。此前 root 运行产生的属主问题按第 2 节核对，预检只报告问题，不修改属主、模式或 ACL。
 
+前端工具在切换账号后选择：显式 `DEPLOY_NODE_BIN` 优先，否则依次检查本站 `storage/app/deploy-tools/node/bin`、共享 `/opt/sscpay-node/bin`，均未配置时使用原 PATH。所选目录必须同时提供可执行的 `node` 与 `npm`，脚本将其加入本次部署的 PATH 开头并打印实际路径。Node 版本在维护模式前按 `^20.19.0 || >=22.12.0` 检查，与 `package.json` / 锁文件的根 `engines.node` 保持一致；不兼容版本直接停止，安装依赖另加 `--engine-strict`。调整最低版本时同步维护三处声明及 `check_node_runtime()`。
+
+npm 缓存固定为本站 `storage/app/deploy-cache/npm`，通过大小写两种 npm 配置环境变量覆盖原缓存位置，避免站点账号依赖不可写的 HOME 缓存。预检检查缓存目录、索引及日志可写，允许 `_cacache/content-v*/` 中的内容文件保持只读；正式部署在维护模式前创建缓存目录，`--check` 只检查而不创建。该目录由现有 `storage/app/.gitignore` 忽略，不随 Git 提交。
+
 `--check` 执行上述预检及 Git 工作区/上游分支检查后退出，不创建部署锁、拉取代码、进入维护模式、执行迁移或发布文件；Git 状态检查关闭可选索引锁。正式部署也会自动执行同样的预检，失败时站点保持原访问状态。预检反映当前文件系统权限，后续磁盘空间、外部存储或并发变更造成的失败仍按部署错误处理。
 
 脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由/视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
@@ -600,6 +604,30 @@ bash deploy.sh --no-pull
 
 - `queue:restart` 对**所有** Worker 生效，依赖 Redis 连通性；若 Redis 认证失败（如 `WRONGPASS`）则不生效，此时改用 `sudo supervisorctl restart sscpay-server-worker-fast:* sscpay-server-worker-slow:*`。
 - `--max-time` 是兜底：即使漏跑 `queue:restart`，Worker 也会在运行满设定秒数后自动重启加载新代码。
+
+### 登录账号与部署账号使用不同的 Node
+
+root 执行 `node -v` 不能代表站点账号所用的版本。例如 root 的 `/root/.nvm/versions/node/v22.23.4/bin/node` 与 `www-data` 的 `/usr/bin/node`（18.x）是两套环境，22.23.4 已满足构建要求。将既有 Node 与配套 npm 放到站点可访问的共享目录即可；下面以首次设置 `/opt/sscpay-node` 为例，在服务器用 root 执行，来源路径按实际 nvm 版本调整：
+
+```bash
+(
+    set -e
+    deploy_node_source=/root/.nvm/versions/node/v22.23.4
+    deploy_node_target=/opt/sscpay-node
+    if [ -e "$deploy_node_target" ] || [ -L "$deploy_node_target" ]; then
+        echo '共享目录已存在，请先核对其中的 Node/npm，避免覆盖现有运行时。' >&2
+        exit 1
+    fi
+    install -d -m 755 "$deploy_node_target/bin" "$deploy_node_target/lib/node_modules"
+    install -m 755 "$deploy_node_source/bin/node" "$deploy_node_target/bin/node"
+    cp -a "$deploy_node_source/lib/node_modules/npm" "$deploy_node_target/lib/node_modules/"
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js "$deploy_node_target/bin/npm"
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js "$deploy_node_target/bin/npx"
+    chmod -R a+rX,go-w "$deploy_node_target"
+)
+```
+
+随后同步新版脚本，在项目目录执行 `bash deploy.sh --check`，确认打印的 Node 是共享目录中的 22.23.4，npm 路径也来自同一目录，再执行 `bash deploy.sh`。脚本会自动选择共享目录，后续无需每次指定 `DEPLOY_NODE_BIN`，也不需要给站点账号开放 root 家目录。若前一次失败已留下维护模式，完成整次部署后才会自动恢复访问。
 
 ### 收款页报错：Vite manifest 缺少 checkout.js
 

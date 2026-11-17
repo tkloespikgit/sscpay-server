@@ -10,6 +10,7 @@ usage() {
 --check    仅检查账号、工具、Git 工作区和目录权限。
 
 可选环境变量：DEPLOY_PHP（默认 php）、DEPLOY_COMPOSER（默认 composer 的 PHP/PHAR 文件）。
+Node 优先使用本站 storage/app/deploy-tools/node/bin 或 /opt/sscpay-node/bin；DEPLOY_NODE_BIN 可显式覆盖。
 root 启动时自动识别站点账号并切换；DEPLOY_USER 可用于特殊环境覆盖。
 现有 .env、APP_KEY、数据库和 OSS 配置需已就绪。
 HELP
@@ -98,9 +99,47 @@ check_directory_access() {
     fi
 }
 
+check_node_runtime() {
+    local node_version node_major node_minor
+    node_version="$(node --version)" || return "$?"
+    if [[ ! "$node_version" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        printf '无法识别 Node.js 版本：%s（%s）。\n' "$node_version" "$(command -v node)" >&2
+        return 1
+    fi
+    node_major="${BASH_REMATCH[1]}"
+    node_minor="${BASH_REMATCH[2]}"
+    # 与 package.json engines.node 及锁定的 Vite / Laravel Vite Plugin 要求一致。
+    if [[ "$node_major" -gt 22 || ( "$node_major" -eq 22 && "$node_minor" -ge 12 ) || ( "$node_major" -eq 20 && "$node_minor" -ge 19 ) ]]; then
+        printf 'Node.js %s（%s）。\n' "$node_version" "$(command -v node)"
+        return 0
+    fi
+    printf 'Node.js %s 不满足构建要求：^20.19.0 || >=22.12.0（当前：%s）。请让部署账号使用可访问的 Node 22.12+；root 私有 nvm 的版本不会自动提供给其他账号。\n' "$node_version" "$(command -v node)" >&2
+    return 1
+}
+
+select_node_tools() {
+    local node_bin="${DEPLOY_NODE_BIN:-}" candidate_bin
+    if [[ -z "$node_bin" ]]; then
+        for candidate_bin in "$deploy_directory/storage/app/deploy-tools/node/bin" /opt/sscpay-node/bin; do
+            if [[ -e "$candidate_bin" || -L "$candidate_bin" ]]; then
+                node_bin="$candidate_bin"
+                break
+            fi
+        done
+    fi
+    if [[ -n "$node_bin" ]]; then
+        if [[ ! -d "$node_bin" || ! -x "$node_bin/node" || ! -x "$node_bin/npm" || ! -r "$node_bin/npm" ]]; then
+            printf '站点账号无法使用 Node/npm 工具目录：%s。请核对目录访问权限及两个可执行文件。\n' "$node_bin" >&2
+            return 1
+        fi
+        node_bin="$(cd -- "$node_bin" && pwd -P)" || return "$?"
+        export PATH="$node_bin:$PATH"
+    fi
+}
+
 check_tree_access() {
     local tree_path="$1" tree_mode="$2" tree_requirement='读取文件、读写并进入目录'
-    if [[ "$tree_mode" == writable ]]; then
+    if [[ "$tree_mode" == writable || "$tree_mode" == npm ]]; then
         tree_requirement='读写文件、读写并进入目录'
     elif [[ "$tree_mode" == directories ]]; then
         tree_requirement='读写并进入目录'
@@ -116,8 +155,15 @@ check_tree_access() {
                 if [[ -r "$checked_path" && -w "$checked_path" && -x "$checked_path" ]]; then
                     continue
                 fi
-            elif [[ "$tree_mode" == directories || ( -r "$checked_path" && ( "$tree_mode" != writable || "${checked_path##*/}" == .gitignore || -w "$checked_path" ) ) ]]; then
+            elif [[ "$tree_mode" == directories ]]; then
                 continue
+            elif [[ -r "$checked_path" ]]; then
+                if [[ "$tree_mode" == readable || "${checked_path##*/}" == .gitignore || -w "$checked_path" ]]; then
+                    continue
+                fi
+                if [[ "$tree_mode" == npm && "$checked_path" == "$tree_path"/_cacache/content-v*/* ]]; then
+                    continue
+                fi
             fi
             printf '权限不足（需%s）：%s\n' "$tree_requirement" "$checked_path" >&2
             problems=$((problems + 1))
@@ -148,6 +194,7 @@ check_deployment_permissions() {
     for permission_path in storage/app storage/app/private public; do
         check_directory_access "$permission_path" || problems=1
     done
+    check_tree_access "$deploy_npm_cache" npm || problems=1
     [[ "$problems" -eq 0 ]]
 }
 
@@ -212,9 +259,9 @@ if [[ "$(id -u)" -eq 0 ]]; then
     fi
     printf '当前以 root 启动，切换到站点账号 %s 执行部署。\n' "$deploy_user"
     if command -v runuser >/dev/null 2>&1; then
-        exec runuser -u "$deploy_user" -- env PATH="$PATH" DEPLOY_USER="$deploy_user" DEPLOY_PHP="$deploy_php" DEPLOY_COMPOSER="${DEPLOY_COMPOSER:-composer}" bash "$deploy_directory/deploy.sh" "$@"
+        exec runuser -u "$deploy_user" -- env PATH="$PATH" DEPLOY_USER="$deploy_user" DEPLOY_NODE_BIN="${DEPLOY_NODE_BIN:-}" DEPLOY_PHP="$deploy_php" DEPLOY_COMPOSER="${DEPLOY_COMPOSER:-composer}" bash "$deploy_directory/deploy.sh" "$@"
     elif command -v sudo >/dev/null 2>&1; then
-        exec sudo -n -H -u "$deploy_user" -- env PATH="$PATH" DEPLOY_USER="$deploy_user" DEPLOY_PHP="$deploy_php" DEPLOY_COMPOSER="${DEPLOY_COMPOSER:-composer}" bash "$deploy_directory/deploy.sh" "$@"
+        exec sudo -n -H -u "$deploy_user" -- env PATH="$PATH" DEPLOY_USER="$deploy_user" DEPLOY_NODE_BIN="${DEPLOY_NODE_BIN:-}" DEPLOY_PHP="$deploy_php" DEPLOY_COMPOSER="${DEPLOY_COMPOSER:-composer}" bash "$deploy_directory/deploy.sh" "$@"
     else
         printf '未找到 runuser 或 sudo，请先切换到站点账号再执行本脚本。\n' >&2
         exit 1
@@ -250,13 +297,20 @@ if [[ -n "${DEPLOY_USER:-}" ]]; then
     fi
 fi
 printf '部署账号：%s（UID %s）。\n' "$deploy_current_user" "$deploy_current_uid"
+deploy_npm_cache="$deploy_directory/storage/app/deploy-cache/npm"
+export npm_config_cache="$deploy_npm_cache"
+export NPM_CONFIG_CACHE="$deploy_npm_cache"
+printf 'npm 缓存：%s。\n' "$deploy_npm_cache"
+run_step '选择站点 Node/npm 工具' select_node_tools
 
-for deploy_command in "$deploy_php" "${DEPLOY_COMPOSER:-composer}" git npm flock find; do
+for deploy_command in "$deploy_php" "${DEPLOY_COMPOSER:-composer}" git node npm flock find; do
     if ! command -v "$deploy_command" >/dev/null 2>&1; then
         printf '缺少命令：%s\n' "$deploy_command" >&2
         exit 1
     fi
 done
+run_step '检查 Node.js 构建版本' check_node_runtime
+printf 'npm 命令：%s。\n' "$(command -v npm)"
 deploy_composer="$(command -v "${DEPLOY_COMPOSER:-composer}")"
 if [[ ! -r "$deploy_composer" ]]; then
     printf '部署账号无法读取 Composer 文件：%s\n' "$deploy_composer" >&2
@@ -300,6 +354,7 @@ if ! flock -n 9; then
     printf '另一个部署正在执行，请等待其完成。\n' >&2
     exit 1
 fi
+run_step '准备站点 npm 缓存' mkdir -p -m 700 "$deploy_npm_cache"
 
 run_step '进入维护模式' "$deploy_php" artisan down --retry=60 --no-interaction
 deploy_maintenance=1
@@ -308,7 +363,7 @@ if [[ "$deploy_pull" -eq 1 ]]; then
     run_step '更新当前分支代码' git pull --ff-only
 fi
 run_step '安装生产 PHP 依赖' "$deploy_php" "$deploy_composer" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
-run_step '安装前端构建依赖' npm ci --include=dev
+run_step '安装前端构建依赖' npm ci --include=dev --engine-strict
 run_step '构建前端资源' npm run build
 run_step '更新 Filament 资源' "$deploy_php" artisan filament:upgrade --no-interaction
 run_step '缓存当前环境配置' "$deploy_php" artisan config:cache --no-interaction

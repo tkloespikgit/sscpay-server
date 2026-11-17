@@ -666,6 +666,8 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **执行身份：** root 启动时自动识别账号：优先采用本站运行目录的唯一非 root 属主，其次采用项目目录与 `.env` 的唯一非 root 属主，均无证据时才参考 PHP-FPM worker 的唯一非 root UID；每级出现冲突、无候选或 UID 无系统账号时停止。非 root 启动沿用当前账号；`DEPLOY_USER` 保留为显式覆盖，不能与实际执行身份不符。通过 `runuser` 或非交互 `sudo` 切换后，先检查代码、Git、依赖、缓存、插件及前端目录和已有文件的实际权限，再创建锁并部署。`--check` 仅预检，不进入维护模式；权限不足报告路径，不自动修改属主或 ACL。此方式使普通部署无需反复指定账号，并解决非交互 Composer 因 root 禁用插件的问题。
 
+**前端运行环境：** 登录账号与部署账号可能使用不同的 Node。按显式 `DEPLOY_NODE_BIN`、站内工具目录、`/opt/sscpay-node/bin`、原 PATH 的顺序选择可访问的配套 Node/npm，Node 兼容性在维护模式前检查；npm 安装启用严格引擎校验。缓存固定到站点私有的 `storage/app/deploy-cache/npm`，预检并准备目录，内容缓存允许只读，索引与日志需要可写。既有 nvm 运行时可由管理员一次性迁入共享目录，部署脚本不安装系统软件或修改 root 家目录权限。
+
 **影响与边界：** 脚本在维护模式下更新，并在迁移前完成协议和插件版本预检；失败停止且保留维护状态，不自动回滚数据库。相同版本内容可重试，缺失索引或 ZIP 可由相同源码补齐；版本冲突、降级仍拒绝发布。使用配置中的插件磁盘，OSS bucket/prefix 需与网页运行环境一致；本地存储需要持久化，多实例部署由平台统一调度。预检不试写远端，多个插件的稳定入口不作为一个存储事务切换。
 
 **依据：** [部署脚本](../deploy.sh)、[同步命令](../app/Console/Commands/SyncPluginReleases.php)、[发布服务](../app/Services/PluginReleaseService.php)、[命令回归](../tests/Feature/SyncPluginReleasesTest.php)、[隔离的部署流程回归](../tests/Feature/DeploymentScriptTest.php)、[部署操作](../doc/deployment.md#9-日常自动部署)。

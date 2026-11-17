@@ -57,6 +57,8 @@ WordPress 商城 PayPal / 信用卡插件已迁入 `plugins/wordpress/`，各自
 
 脚本在维护模式前自动识别并切换非 root 站点账号，优先采用本站运行目录及项目目录属主，无文件归属证据时才参考唯一的 PHP-FPM worker UID；来源冲突则停止。随后以实际账号预检代码、Git、依赖、缓存、插件与前端目录权限；`--check` 仅执行账号、权限和 Git 预检，不创建部署锁或执行上线动作。
 
+前端预检同时选择站点可访问的 Node/npm 目录并检查实际 Node 版本；优先使用站内工具目录或 `/opt/sscpay-node/bin`，支持沿用管理员 nvm 中已安装的兼容版本。npm 缓存位于 `storage/app/deploy-cache/npm`，在维护模式前检查并准备，不依赖站点账号 HOME 可写；版本声明与根 `engines.node` 同步，依赖安装严格校验引擎要求。
+
 主页的 `/plugins` 提供公开下载，`/plugins/updates/v1/{slug}` 提供按插件隔离的更新元数据，固定版本下载由 `/plugins/{slug}/{version}/download` 读取私有存储并流式输出。生产可复用 OSS，工作流与运行应用的 bucket/prefix 必须对齐；旧 GitHub Release 镜像仅用于把既有安装接到新更新器。商城插件支持 V1 与 V2 普通单、组合父单进度、完整体验签、事件去重、版本保护和逐子单物流；部分付款不确认 WooCommerce 付款成功。同单重试复用原商户订单号，状态落地通过 MySQL 连接级订单锁串行化。商户站的 `sscpay_shipment` WooCommerce API 入口按实际支付方式的凭据接收物流回传，父商户号＋运单号去重；只写配送 meta 和备注，不改变付款状态。协议联调由 `WordPressV2ContractTest` 覆盖实际服务端建单、通知、查单、发货与物流回传。发布配置见[部署说明](../doc/deployment.md#电商插件发布与更新)。
 
 路由装配在 [bootstrap/app.php](../bootstrap/app.php)。
