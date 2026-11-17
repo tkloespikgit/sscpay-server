@@ -16,7 +16,7 @@
 - [6. 日志轮转（logrotate）](#6-日志轮转logrotate)
 - [7. Nginx + PHP-FPM（www-data 运行）](#7-nginx--php-fpmwww-data-运行)
 - [8. 首次部署流程](#8-首次部署流程)
-- [9. 日常发布（零停机）](#9-日常发布零停机)
+- [9. 日常自动部署](#9-日常自动部署)
 - [10. 上线检查清单](#10-上线检查清单)
 - [11. 常见坑与排查](#11-常见坑与排查)
 
@@ -547,10 +547,10 @@ cp .env.example .env                    # 按第 3 节填写生产配置
 /usr/bin/php8.2 artisan merchants:provision-roles
 
 # 6. 生产优化缓存
+/usr/bin/php8.2 artisan filament:upgrade
 /usr/bin/php8.2 artisan config:cache
 /usr/bin/php8.2 artisan route:cache
 /usr/bin/php8.2 artisan view:cache
-/usr/bin/php8.2 artisan filament:upgrade
 /usr/bin/php8.2 artisan storage:link    # 如使用 public 磁盘
 
 # 7. 权限归位（部署过程可能产生非 www-data 文件）
@@ -564,24 +564,28 @@ sudo crontab -u www-data -e
 
 ---
 
-## 9. 日常发布（零停机）
+## 9. 日常自动部署
+
+已有站点以仓库根目录的 [deploy.sh](../deploy.sh) 作为日常上线入口。首次使用前将脚本所在版本部署到服务器，确认站点运行账号能拉取 Git、写入项目目录，并已按前文配置 `.env`、原有 `APP_KEY`、数据库、Redis 和插件存储。服务器需具备 Git、Composer、符合第 1 节要求的 Node/npm 和 `flock`（Linux 的 util-linux），PHP 还需安装 ZIP 扩展。
 
 ```bash
 cd /var/www/sscpay-server
-sudo -u www-data git pull                # 或 rsync 部署产物
+sudo -u www-data bash deploy.sh
 
-composer install --no-dev --optimize-autoloader
-npm ci --include=dev && npm run build     # 构建与本次代码一致的前端产物
+# 多 PHP 版本时指定实际 CLI；Composer 也使用所选 PHP 执行。
+sudo -u www-data env DEPLOY_PHP=/usr/bin/php8.3 bash deploy.sh
 
-/usr/bin/php8.2 artisan migrate --force
-/usr/bin/php8.2 artisan config:cache && /usr/bin/php8.2 artisan route:cache && /usr/bin/php8.2 artisan view:cache
-/usr/bin/php8.2 artisan filament:upgrade
-
-# ⚠️ 关键：改了任何 Job / 队列 / 监听器代码后，必须通知 Worker 重启，
-# 否则常驻进程仍跑旧代码。queue:restart 写时间戳到 Redis cache，
-# Worker 处理完当前 Job 后自行退出，再由 Supervisor autorestart 拉起新进程。
-/usr/bin/php8.2 artisan queue:restart
+# CI 已检出目标提交时，跳过 Git 拉取，其他上线步骤完整执行。
+sudo -u www-data bash deploy.sh --no-pull
 ```
+
+脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由/视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
+
+`plugins:sync` 自动处理 `PluginCatalog` 已接入的全部插件，当前为 WordPress PayPal、信用卡；发布使用与下载页面相同的 `PLUGIN_RELEASE_DISK`。所有包先构建并完成版本预检，再逐个发布；相同版本和内容可重复执行，保留原发布时间，缺失的索引或 ZIP 可由相同源码补齐。各插件按独立稳定入口发布，OSS 写入失败时命令返回失败；跨插件切换不提供事务。预检读取存储并在本机构建安装包，不会试写 OSS，写权限或上传故障仍会在实际发布时阻止恢复站点。
+
+任一步骤失败均返回非零退出码；进入维护模式后的失败会保留维护状态，并输出失败阶段。修复后重新执行 `bash deploy.sh`，迁移和相同内容的插件发布可重试；脚本不自动回滚数据库，也不覆盖未提交代码、不复制 `.env`、不重新生成密钥或执行种子。多实例部署需由部署平台统一调度并使用共享插件存储，本机 `flock` 只串行化同一项目目录的部署。
+
+后续功能若增加上线必需操作，须同步接入此脚本或其调用的 Artisan 命令，保证能重复运行，并补充回归和本节说明。GitHub Release 及原仓库过渡镜像继续由下文的 tag 工作流负责；日常部署直接维护本站下载与更新入口。
 
 - `queue:restart` 对**所有** Worker 生效，依赖 Redis 连通性；若 Redis 认证失败（如 `WRONGPASS`）则不生效，此时改用 `sudo supervisorctl restart sscpay-server-worker-fast:* sscpay-server-worker-slow:*`。
 - `--max-time` 是兜底：即使漏跑 `queue:restart`，Worker 也会在运行满设定秒数后自动重启加载新代码。
@@ -614,7 +618,7 @@ node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync("pu
 - [ ] `mysqldump` 在 cron 的 `PATH` 内，`db:backup:upload` 手动跑一次能上传到 OSS
 - [ ] `/etc/logrotate.d/sscpay-server` 已配置（`copytruncate` + `su www-data www-data`）
 - [ ] Nginx `root` 指向 `public/`，`.env` / `.git` 被 deny
-- [ ] `php artisan config:cache && route:cache && view:cache && filament:upgrade` 已执行
+- [ ] `deploy.sh` 已成功执行；Filament 资源更新后已重新缓存配置、路由及视图
 - [ ] 健康检查 `GET /up` 返回 200
 - [ ] 后台 `/admin` 能用超级管理员登录；`GET /sync/products/{paymentMethod}` 调试入口已按 README「12.10」移除或加权限中间件
 - [ ] `failed_jobs` 表存在，监控失败任务：`php artisan queue:failed`
@@ -636,7 +640,7 @@ php artisan plugins:build sscpay-payment-creditcard --no-interaction
 
 安装包和 `release.json` 输出到 `storage/app/plugin-builds/{slug}/{version}/`，不会打包 Laravel 源码、配置、Git 文件或测试。打包文件列表固定为插件主文件、`index.php`、`includes/`、`assets/`、`languages/`。插件继续使用 PHP 7.4 兼容语法，Laravel Pint 排除插件目录；CI 另用 PHP 7.4 检查插件语法。
 
-`plugins:publish {slug}` 会构建并上传到 `config/plugins.php` 指定的磁盘。未配置 `PLUGIN_RELEASE_DISK` 时为本地私有 `local`，只适用于本机预览；生产使用 `PLUGIN_RELEASE_DISK=oss`。文件位于磁盘的 `plugin-releases/` 前缀下。版本 ZIP 和清单均写入成功后才更新该插件的 `stable.json`；同一版本不同内容拒绝覆盖，旧版本不能替换更新的稳定版本。源码部署和插件发布分别进行；下载页从已发布记录读取版本，不把尚未发布的源码版本作为可下载版本。
+`plugins:publish {slug}` 会构建并上传单个插件；`plugins:sync` 会预检并发布全部已接入插件，已纳入日常部署脚本。两者都使用 `config/plugins.php` 指定的磁盘。未配置 `PLUGIN_RELEASE_DISK` 时为本地私有 `local`，文件实际位于执行机器的 `storage/app/private/plugin-releases/`，必须在对应服务器发布并持久保存该目录；多实例及 GitHub Actions 发布使用 `PLUGIN_RELEASE_DISK=oss`，与运行应用对齐 bucket/prefix。版本 ZIP 和清单均写入成功后才更新该插件的 `stable.json`；同一版本不同内容拒绝覆盖，旧版本不能替换更新的稳定版本。下载页始终从已发布记录读取版本；单独 `git pull` 或 `plugins:build` 不会创建线上发布记录。
 
 ### GitHub Actions 配置
 
@@ -653,14 +657,37 @@ GitHub 仓库配置：
 
 推送 tag 后，工作流先检查对应 tag 的代码，生成 Actions 安装包附件，发布 OSS 稳定版本，再将安装 ZIP 与清单附到本仓库 Release。已配置兼容镜像时，把同一 ZIP 附到原仓库的 `v{version}` Release；原仓库只承担旧更新器的分发，不再作为新源码依据。GitHub 自动生成的整仓库 Source ZIP 不能作为插件安装包。发布工作流支持手动指定已有 tag 重试，整个发布任务串行执行，避免不同版本同时切换稳定入口。
 
-### 首次迁移与后续协议更新
+### 首次迁移
 
 1. 先部署下载与更新服务，再发布新插件包，并验证运行地址的元数据和 ZIP 可访问。
 2. 将过渡版本的同一安装 ZIP 发布到原 PayPal / 信用卡仓库 Release。旧站点仍通过已有 GitHub 更新器升级；过渡版本启用后改为读取本项目。
 3. 新更新器默认使用生产 API 根地址，留空时使用沙箱根地址；可在插件设置填写独立 HTTPS 更新服务根地址，或通过 `SSCPAY_UPDATE_BASE_URL` / 对应插件的 `SSCPAY_PAYPAL_UPDATE_BASE_URL`、`SSCPAY_CREDITCARD_UPDATE_BASE_URL` 覆盖。更新过程不发送支付 API Key 或 GitHub Token。
 4. 升级保留原 slug、主文件、支付方式 ID、配置和订单引用。不要删除其他插件仍在使用的共用 GitHub Token。原仓库过渡 Release 保留，便于长期未升级的站点接入。
 
-每次修改商户 API 请求、响应、签名、通知或物流协议，必须同步检查并适配两个插件。修改源文件由 `PluginProtocol::files()` 列出；`plugins:check` 在指纹不一致时输出当前 SHA-256，完成两个插件适配、回归、版本递增后，将该值写入各自 `plugin.json.protocol_hash`，并使主文件 `Version`、版本常量和清单版本一致。CI 根据基线提交检查两个版本均已递增；`plugins:build` 和 `plugins:publish` 同样拒绝协议未同步的源码。新增协议实现文件时一并维护指纹文件列表及契约测试，不能仅改指纹绕过适配。
+### 插件开发与 API 同步规范
+
+商户 API 与已接入商城插件在同一开发任务内交付。当前同步范围是 WordPress PayPal、信用卡两个插件；后续平台接入后纳入相同流程。协议定义继续维护在 [API 手册](api.md)，本节只规定开发和交付约束。
+
+| 范围 | 开发约定 |
+|---|---|
+| 源码与职责 | 以本仓库 `plugins/{platform}/{slug}/` 为维护源，原独立仓库仅作兼容分发。插件独立安装运行，不依赖 Laravel 的 `vendor/` 或另一个 SSCPay 支付插件已启用；只负责商城数据转换、API 调用、结果验证与商城状态映射，汇率、渠道路由及账务由服务端处理。 |
+| 运行环境 | 每个平台声明并验证自己的商城、PHP 与 API 兼容版本。当前两个 WordPress 插件保持 PHP 7.4 语法，沿用相邻文件的 WordPress 风格，与 Laravel 服务端分别格式化、检查。 |
+| 升级兼容 | 保留现有 slug、主文件、支付方式 ID、配置键、订单 meta 和已公开钩子的语义。保留目前支持的 V1 / V2 格式；不兼容变更需有服务端兼容期和升级迁移安排，不能假设所有商户会立即升级。 |
+| 签名与数据 | 请求和回调遵循同一规范化签名算法，先对完整报文验证再转换字段。金额保持十进制字符串，不以浮点数判断已付金额；日志和更新请求不暴露 API Key、GitHub Token 等凭证。 |
+| 支付与物流 | 同一订单重试沿用原商户号和已保存引用；事件去重、进度版本只前进，只有原订单付清才确认商城付款。按真实子单上传物流，按父商户号与运单号去重回传，不由物流回传改变支付状态。 |
+| 测试 | 使用实际服务端报文验证每个已接入插件，覆盖完整验签、错误身份和金额、重复与乱序、部分与全部付款、同号重试及物流去重；发布检查覆盖包结构、版本和下载校验。变更行为时补充相应失败场景。 |
+| 版本与安装包 | 插件版本独立于 Laravel 版本，使用三段版本号：缺陷修复递增修订号，兼容新增功能递增次版本，不兼容升级递增主版本。插件头部 `Version`、版本常量与 `plugin.json.version` 一致，更新说明写清 API 变化与兼容范围。已发布版本包保持不可变。 |
+
+每次涉及请求字段、响应字段、错误码、签名、付款通知、查询状态或物流协议变化，按以下顺序完成：
+
+1. **确认影响。** 核对执行代码、API 文档和相关测试，逐个检查已接入插件的调用、验签、状态处理及数据保存。当前两个插件都须给出兼容性结论；无需修改运行逻辑时说明原因，不为制造代码差异改写原有行为。
+2. **同步适配。** 在本次任务中完成服务端与插件修改，保留旧订单、旧配置和兼容协议。字段新增也要检查完整体验签、金额类型和状态分支，不能仅凭 HTTP 200 判定已收款。
+3. **补充并运行回归。** 更新相关插件测试与[服务端真实报文契约测试](../tests/Feature/WordPressV2ContractTest.php)，验证旧格式与本次变化；新增行为的用例同时覆盖成功和重要失败路径。真实 WordPress 升级或 MySQL 并发未验证时在交付记录中注明。
+4. **同步版本与协议声明。** 当前指纹规则要求 API 关联文件变化后两个插件都递增版本，维护三处版本值、`api_version` 和更新说明。格式化与协议文档更新完成后，执行 `php artisan plugins:check`，按输出的当前 SHA-256 更新各自 `plugin.json.protocol_hash`，然后重新检查；不能仅改版本或指纹代替适配与测试。
+5. **检查并构建。** 执行本节的本地构建与验收命令。开发中可用 `php artisan plugins:check --base=HEAD` 比较未提交修改；CI 使用相应基线提交检查双插件升版。确认两个安装包可独立构建，并核对 ZIP 内目录、版本与校验值。
+6. **交付与发布。** 一起报告服务端变化、各插件版本、兼容性结论、验证结果和安装包位置，明确是否已经发布。版本准备、构建完成与生产发布分别记录；按兼容性安排部署服务端及发布插件，不将“API 已完成、插件尚待适配”作为默认交付状态。
+
+**检查范围与能力边界：** [PluginProtocol::files()](../app/Support/PluginProtocol.php) 当前按登记文件的完整内容计算指纹，命中的文案或格式变化也会触发同步检查。指纹只能证明登记内容与插件声明对应，语义正确性仍由代码适配、回归和审查确认。新增协议实现文件或电商平台时，一并扩充插件目录发现、指纹覆盖、参数化契约测试、运行环境检查和发布工作流；下载页出现平台名称不代表插件已接入。CI 检测不一致并执行测试，不会自动重写插件业务代码。开发任务中的同步由开发者或 AI 完成；插件发布后的商户站安装升级沿用 WordPress 的后台操作和自动更新设置。
 
 V2 使用原建单、查单和发货路径；使用组合付款时，清空插件的「指定支付渠道」，并在对应支付组开启组合付款。已有指定渠道配置不会自动清除，指定渠道下单继续原语义。组合付款按父单 `event_id` / `version` 处理，只有付清父单才确认 WooCommerce 付款完成。商城物流集成可调用插件网关的 `sync_shipping($order, $shipment)`，按真实子单上传同一运单，不向父单上传。更完整的协议定义继续以 [API 手册](api.md#组合付款与-v2-通知) 为准。
 

@@ -657,3 +657,13 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **协议同步：** 商户 API 请求、响应、签名、通知和物流实现与文档进入 `PluginProtocol` 指纹范围；变化必须同时检查两个插件、补充适配回归、更新指纹并递增版本，CI 与打包命令检查该要求。v2 仍沿用原订单 API 路径；组合付款只有父单付清才确认商城支付，部分付款、重复及乱序通知保留进度，不因重试另造商户订单号。通知事件采用完整体验签，金额以十进制字符串核对，物流映射到真实子单。
 
 **依据：** [协议检查](../app/Support/PluginProtocol.php)、[发行服务](../app/Services/PluginReleaseService.php)、[客户端状态处理](../plugins/wordpress/sscpay-payment-paypal/includes/class-sscpay-paypal-order-state.php)、[服务端与插件契约](../tests/Feature/WordPressV2ContractTest.php)、[发布操作](../doc/deployment.md#电商插件发布与更新)。
+
+## D-61 日常部署自动同步插件
+
+**状态：按用户明确要求实现，当前工作区未提交（2026-11-17），未在线上执行。** 补充 D-60 的发布入口：日常上线统一运行 `deploy.sh`，由 `plugins:sync` 自动发现、构建并发布已接入插件，使源码部署同时生成下载中心所需安装包和稳定索引。GitHub tag 发布继续负责 Release 附件和旧仓库镜像。
+
+**原因：** 只部署源码不会同步 Git 忽略的本地安装包，下载页面可能显示“安装包尚未发布”；手工记忆插件发布、缓存和队列命令容易遗漏。用户要求将后续上线必需操作统一纳入部署入口。
+
+**影响与边界：** 脚本在维护模式下更新，并在迁移前完成协议和插件版本预检；失败停止且保留维护状态，不自动回滚数据库。相同版本内容可重试，缺失索引或 ZIP 可由相同源码补齐；版本冲突、降级仍拒绝发布。使用配置中的插件磁盘，OSS bucket/prefix 需与网页运行环境一致；本地存储需要持久化，多实例部署由平台统一调度。预检不试写远端，多个插件的稳定入口不作为一个存储事务切换。
+
+**依据：** [部署脚本](../deploy.sh)、[同步命令](../app/Console/Commands/SyncPluginReleases.php)、[发布服务](../app/Services/PluginReleaseService.php)、[命令回归](../tests/Feature/SyncPluginReleasesTest.php)、[隔离的部署流程回归](../tests/Feature/DeploymentScriptTest.php)、[部署操作](../doc/deployment.md#9-日常自动部署)。

@@ -114,7 +114,7 @@ class PluginDistributionTest extends TestCase
         $build = $releases->build('sscpay-payment-paypal');
         $disk = \Mockery::mock(Filesystem::class);
         Storage::shouldReceive('disk')->with('plugin-test')->andReturn($disk);
-        $disk->shouldReceive('exists')->once()->andReturn(false);
+        $disk->shouldReceive('exists')->andReturn(false);
         $disk->shouldReceive('put')->once()->withArgs(fn (string $path, mixed $stream): bool => str_ends_with($path, '.zip') && is_resource($stream))->andReturn(false);
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('Uploading the plugin release failed');

@@ -75,20 +75,12 @@ final readonly class PluginReleaseService
     /** @param array{zip: string, manifest: string, release: array<string, mixed>} $build */
     public function publish(array $build): void
     {
-        $release = $build['release'];
+        $release = $this->publication($build);
         $disk = $this->disk();
         $prefix = $this->prefix($release['slug']);
         $versionPrefix = $prefix.'/'.$release['version'];
         $metadataPath = $versionPrefix.'/release.json';
-        if ($disk->exists($metadataPath)) {
-            $existing = json_decode($disk->get($metadataPath), true, flags: JSON_THROW_ON_ERROR);
-            if (($existing['sha256'] ?? '') !== $release['sha256']
-                || ($existing['protocol_hash'] ?? '') !== $release['protocol_hash']
-                || ($existing['api_version'] ?? '') !== $release['api_version']) {
-                throw new RuntimeException('This version is already published with different contents. Increment the plugin version.');
-            }
-            $release = $existing;
-        } else {
+        if (! $disk->exists($metadataPath) || ! $disk->exists($versionPrefix.'/'.$release['slug'].'.zip')) {
             $stream = fopen($build['zip'], 'rb');
             try {
                 if (! $disk->put($versionPrefix.'/'.$release['slug'].'.zip', $stream)
@@ -101,13 +93,50 @@ final readonly class PluginReleaseService
                 }
             }
         }
+        if (! $disk->put($prefix.'/stable.json', json_encode($release, JSON_THROW_ON_ERROR))) {
+            throw new RuntimeException('Publishing the stable release failed.');
+        }
+    }
+
+    /** @return list<array<string, mixed>> */
+    public function sync(bool $dryRun = false): array
+    {
+        $builds = [];
+        foreach ($this->catalog->all() as $plugin) {
+            $builds[] = $this->build($plugin['slug']);
+        }
+        $releases = [];
+        foreach ($builds as $build) {
+            $releases[] = $this->publication($build);
+        }
+        if (! $dryRun) {
+            foreach ($builds as $build) {
+                $this->publish($build);
+            }
+        }
+
+        return $releases;
+    }
+
+    /**
+     * @param  array{zip: string, manifest: string, release: array<string, mixed>}  $build
+     * @return array<string, mixed>
+     */
+    private function publication(array $build): array
+    {
+        $release = $build['release'];
+        $existing = $this->version($release['slug'], $release['version']);
+        if ($existing !== null && ($existing['sha256'] !== $release['sha256']
+            || ($existing['protocol_hash'] ?? '') !== $release['protocol_hash']
+            || ($existing['api_version'] ?? '') !== $release['api_version'])) {
+            throw new RuntimeException('This version is already published with different contents. Increment the plugin version.');
+        }
         $latest = $this->latest($release['slug']);
         if ($latest !== null && version_compare($latest['version'], $release['version'], '>')) {
             throw new RuntimeException('Refusing to replace the latest release with an older version.');
         }
-        if (! $disk->put($prefix.'/stable.json', json_encode($release, JSON_THROW_ON_ERROR))) {
-            throw new RuntimeException('Publishing the stable release failed.');
-        }
+
+        return $existing ?? $release;
     }
 
     /** @return array<string, mixed>|null */

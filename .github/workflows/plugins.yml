@@ -45,7 +45,7 @@ jobs:
             php artisan plugins:check --no-interaction
           fi
       - name: Test plugin behavior and distribution
-        run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php
+        run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php tests/Feature/SyncPluginReleasesTest.php tests/Feature/DeploymentScriptTest.php
       - name: Test server v2 contract
         run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderNotificationRetryTest.php
 

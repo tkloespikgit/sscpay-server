@@ -51,7 +51,9 @@ flowchart TD
 
 ## 2. 请求入口与访问边界
 
-WordPress 商城 PayPal / 信用卡插件已迁入 `plugins/wordpress/`，各自维护版本与清单，源码和服务端同仓库管理，发布使用独立 `plugins/{slug}/v{version}` tag。`PluginCatalog` 读取插件目录，`PluginProtocol` 检查商户 API 协议指纹与双插件版本，`PluginReleaseService` 构建独立 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件代码保留 PHP 7.4 兼容语法，与 Laravel PHP 运行环境分别检查。
+WordPress 商城 PayPal / 信用卡插件已迁入 `plugins/wordpress/`，各自维护版本与清单，源码和服务端同仓库管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。`PluginCatalog` 读取插件目录，`PluginProtocol` 检查商户 API 协议指纹与双插件版本，`PluginReleaseService` 构建独立 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件代码保留 PHP 7.4 兼容语法，与 Laravel PHP 运行环境分别检查。
+
+日常上线由根目录 `deploy.sh` 统一执行：维护模式下更新代码、依赖及资源，预检协议和全部插件版本，执行增量迁移与缓存、调用 `plugins:sync` 发布安装包及下载索引，再通知队列重启并恢复访问。`PluginReleaseService::sync()` 在写入前构建并预检所有已接入插件，支持 `--dry-run` 和相同版本重试；各插件分别切换稳定入口，不提供跨插件存储事务。GitHub tag 工作流继续承担 Release 附件和旧仓库过渡镜像。边界与重试见[日常自动部署](../doc/deployment.md#9-日常自动部署)。
 
 主页的 `/plugins` 提供公开下载，`/plugins/updates/v1/{slug}` 提供按插件隔离的更新元数据，固定版本下载由 `/plugins/{slug}/{version}/download` 读取私有存储并流式输出。生产可复用 OSS，工作流与运行应用的 bucket/prefix 必须对齐；旧 GitHub Release 镜像仅用于把既有安装接到新更新器。商城插件支持 V1 与 V2 普通单、组合父单进度、完整体验签、事件去重、版本保护和逐子单物流；部分付款不确认 WooCommerce 付款成功。同单重试复用原商户订单号，状态落地通过 MySQL 连接级订单锁串行化。商户站的 `sscpay_shipment` WooCommerce API 入口按实际支付方式的凭据接收物流回传，父商户号＋运单号去重；只写配送 meta 和备注，不改变付款状态。协议联调由 `WordPressV2ContractTest` 覆盖实际服务端建单、通知、查单、发货与物流回传。发布配置见[部署说明](../doc/deployment.md#电商插件发布与更新)。
 
