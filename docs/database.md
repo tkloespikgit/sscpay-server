@@ -50,9 +50,9 @@ erDiagram
 
 独立查看权限 `combined_orders.view`、`checkout_links.view`、`merchant_domains.view`、`replace_keywords.view` 复用现有 `permissions` 和角色关联表，无表结构迁移。`PermissionSeeder` 幂等补齐权限及平台商户级管理员；「角色权限分配」保存时也会补齐权限并按勾选同步商户默认角色。已有模板按保存值生效，不自动扩权；后三项原有 `manage` 权限仍包含查看能力。
 
-Telegram 通知管理复用 `system_configs`，不新增表。`telegram.notification_settings` 为 JSON，首次保存时创建；按通知枚举值保存 `enabled`、`template`、订单相关通知的 `order_template` 和该项适用的参数（`repeat_count`、`cooldown_minutes`、`reminder_hours`、`unshipped_days`、`send_time`）。保存时锁定配置行，仅合并当前通知项并刷新缓存；空正文或空订单信息使用语言文件默认模板，旧 JSON 缺少 `order_template` 时直接读取默认，无需迁移。接收人按事件/通道当前归属计算，不存入此 JSON，不新增发送记录。
+Telegram 通知管理复用 `system_configs`，不新增表。`telegram.notification_settings` 为 JSON，首次保存时创建；按通知枚举值保存 `enabled`、完整消息 `message_template` 和该项适用的参数（`repeat_count`、`cooldown_minutes`、`reminder_hours`、`unshipped_days`、`send_time`）。保存时锁定配置行，仅合并当前通知项并刷新缓存。空 `message_template` 使用当前语言的完整默认模板；旧 JSON 中的 `template`（正文）与 `order_template`（订单信息）只在读取时合成，缺省部分使用默认，读取不写库。新保存时以 `message_template` 替换该项旧模板字段，未编辑的其他通知不变，无需数据迁移。订单变量使用 `:order.*` 保留原币金额，汇总重复区与物流变量也保存在同一字符串，见 [D-59](decisions.md#d-59-telegram-完整消息统一编辑)。接收人按事件/通道当前归属计算，不存入此 JSON，不新增发送记录。
 
-旧 `telegram.notification_routes` 保留。迁移 `2026_11_16_173651_add_telegram_notification_routes_to_system_configs` 仅补缺失行、回滚保留配置；新设置尚未保存的通知仅继承旧值 `none` 对应的停发状态，其余旧接收人选择不再参与路由。上述两条配置都从通用系统配置编辑器隐藏，只允许超级管理员在「Telegram 通知管理」维护新设置。无需为此改造执行新增迁移，见 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
+旧 `telegram.notification_routes` 保留。迁移 `2026_11_16_173651_add_telegram_notification_routes_to_system_configs` 仅补缺失行、回滚保留配置；新设置尚未保存的通知仅继承旧值 `none` 对应的停发状态，其余旧接收人选择不再参与路由。上述两条配置都从通用系统配置编辑器隐藏，只允许超级管理员在「Telegram 通知管理」维护新设置。无需为此改造执行新增迁移，见 [D-58](decisions.md#d-58-telegram-按业务归属统一管理)。
 
 支付方式新增可空 `display_name`（最长 100 字符），`method_name` 保留原名称。商户交易列表及渠道筛选优先读取展示名称，空值/空白回退原名称；平台账号（含商户级管理员）继续显示原名称。自有、共享及软删除渠道沿用原授权范围；无渠道关联的订单回退已有渠道代码。迁移只新增字段，不回填或改写历史订单。
 
@@ -98,7 +98,7 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 
 `telegram_bots.merchant_id` 改为可空，并新增可空 `user_id` 与 `user_id_uniq`。一条未删除配置要么属于商户，要么属于一名平台管理员，二者互斥；管理员配置不挂商户。管理员的自建机器人同样把 Token 加密存在 `bot_token`，`uses_platform_bot` 为 false。`telegram_binding_requests.merchant_id` 改为可空并保留唯一，新增可空且唯一的 `target_user_id` 表示被绑定的管理员。商户请求仍由发起人 `user_id` 记录操作者。见 [D-44](decisions.md#d-44-管理员-telegram-与支付通道通知归属)。
 
-新增 `telegram_binding_requests` 保存每商户或每名管理员一个当前请求：商户或目标管理员、发起用户外键、唯一 `token_hash`、平台 Token 指纹 `bot_fingerprint`、目标类型 `private/group`、到期及消费时间。令牌为 32 字节安全随机数的 64 位十六进制表示，库中仅保存 SHA-256 摘要；有效期 10 分钟。生成、手动保存、解绑与回调写入都先锁商户行或目标管理员行，回调再锁对应请求并原子保存目标/消费令牌；以一次性令牌保证绑定幂等，不依据未授权的商户 ID 或仅依赖全局 scope。请求不保存 Telegram 原始消息或平台密钥。新迁移不改历史商户配置、不执行数据回填；MySQL 上的既有生成列约束继续保留。
+新增 `telegram_binding_requests` 保存每商户或每名管理员一个当前请求：商户或目标管理员、发起用户外键、唯一 `token_hash`、平台 Token 指纹 `bot_fingerprint`、目标类型 `private/group`、到期及消费时间。令牌为 32 字节安全随机数的 64 位十六进制表示，库中仅保存 SHA-256 摘要；有效期 10 分钟。生成、手动保存、解绑与回调写入都先锁商户行或目标管理员行，回调再锁对应请求并原子保存目标/消费令牌；以一次性令牌保证绑定幂等，不依据未授权的商户 ID 或仅依赖全局 scope。请求不保存 Telegram 原始消息或平台密钥。新迁移不改历史商户配置、不执行数据回填；MySQL 上的既有生成列约束继续保留。 管理员归属迁移的回滚先删除 `target_user_id` 外键，再删除其唯一索引与列；若仍有管理员配置（含软删除记录）或管理员绑定请求，则在执行任何 DDL 前拒绝回滚，避免恢复非空 `merchant_id` 时失败并丢失管理员归属。
 
 ## 3. 订单及金额快照
 

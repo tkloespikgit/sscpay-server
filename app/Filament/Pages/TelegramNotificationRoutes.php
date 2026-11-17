@@ -8,7 +8,6 @@ use App\Models\User;
 use App\Services\TelegramMessageTemplate;
 use App\Services\TelegramNotificationRouter;
 use App\Services\TelegramNotificationSettings;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
@@ -134,9 +133,7 @@ class TelegramNotificationRoutes extends Page implements HasTable
                         $kind = TelegramNotificationKind::from($record['kind']);
                         $data = $this->settings->get($kind);
 
-                        if ($kind->hasOrderSummary() && blank($data['order_template'])) {
-                            $data['order_template'] = OrderTelegramSummary::defaultTemplate();
-                        }
+                        $data['template'] = $this->templates->content($kind, (string) $data['template']);
 
                         return $data;
                     })
@@ -228,63 +225,45 @@ class TelegramNotificationRoutes extends Page implements HasTable
         return [
             Section::make(__('admin.telegram_routes.basic'))->schema($fields),
             Section::make(__('admin.telegram_routes.message'))->schema([
-                Textarea::make('template')->label(__('admin.telegram_routes.template'))->rows(8)->maxLength(1500)
+                Textarea::make('template')->label(__('admin.telegram_routes.template'))->rows(16)->maxLength(TelegramMessageTemplate::MAX_TEMPLATE_LENGTH)
                     ->placeholder($this->templates->defaultTemplate($kind))
-                    ->helperText(__('admin.telegram_routes.template_help'))
-                    ->live(onBlur: true),
+                    ->helperText(__('admin.telegram_routes.template_help').($kind->isOrderBatch() ? ' '.__('admin.telegram_routes.order_block_help') : ''))
+                    ->live(debounce: 500),
                 Select::make('insert_variable')->label(__('admin.telegram_routes.insert_variable'))
-                    ->options(array_combine($kind->variables(), array_map(fn (string $variable): string => ':'.$variable, $kind->variables())))
+                    ->options(array_combine(TelegramMessageTemplate::variables($kind), array_map(fn (string $variable): string => ':'.$variable, TelegramMessageTemplate::variables($kind))))
                     ->dehydrated(false)->live()
                     ->afterStateUpdated(function (Get $get, Set $set, ?string $state) use ($kind): void {
-                        if ($state !== null && in_array($state, $kind->variables(), true)) {
+                        if ($state !== null && in_array($state, TelegramMessageTemplate::variables($kind), true)) {
                             $template = $get('template') ?: $this->templates->defaultTemplate($kind);
-                            $set('template', $template.' :'.$state);
+
+                            if ($kind->isOrderBatch() && str_contains($state, '.')) {
+                                $template = str_contains($template, '[/orders]')
+                                    ? str_replace('[/orders]', ':'.$state."\n[/orders]", $template)
+                                    : $template."\n\n[orders]\n:{$state}\n[/orders]";
+                            } else {
+                                $template .= ' :'.$state;
+                            }
+
+                            $set('template', $template);
                         }
 
                         $set('insert_variable', null);
                     }),
-                ...($kind->hasOrderSummary() ? [
-                    Textarea::make('order_template')->label(__('admin.telegram_routes.order_template'))
-                        ->rows(7)->maxLength(OrderTelegramSummary::MAX_LENGTH)
-                        ->helperText(__('admin.telegram_routes.order_template_help'))
-                        ->live(onBlur: true),
-                    Select::make('insert_order_variable')->label(__('admin.telegram_routes.insert_order_variable'))
-                        ->options(array_combine(OrderTelegramSummary::variables(), array_map(fn (string $variable): string => ':'.$variable, OrderTelegramSummary::variables())))
-                        ->dehydrated(false)->live()
-                        ->afterStateUpdated(function (Get $get, Set $set, ?string $state): void {
-                            if ($state !== null && in_array($state, OrderTelegramSummary::variables(), true)) {
-                                $template = $get('order_template') ?: OrderTelegramSummary::defaultTemplate();
-                                $set('order_template', $template.' :'.$state);
-                            }
-
-                            $set('insert_order_variable', null);
-                        }),
-                ] : []),
                 TextEntry::make('preview')->label(__('admin.telegram_routes.preview'))
-                    ->state(fn (Get $get): HtmlString => $this->messagePreview($kind, (string) ($get('template') ?? ''), (string) ($get('order_template') ?? ''), $get('unshipped_days'))),
+                    ->state(fn (Get $get): HtmlString => $this->messagePreview($kind, (string) ($get('template') ?? ''), $get('unshipped_days'))),
             ]),
         ];
     }
 
-    private function messagePreview(TelegramNotificationKind $kind, string $template, string $orderTemplate, mixed $unshippedDays = null): HtmlString
+    private function messagePreview(TelegramNotificationKind $kind, string $template, mixed $unshippedDays = null): HtmlString
     {
-        $variables = $this->templates->sampleVariables($kind);
-
-        if ($kind === TelegramNotificationKind::UnshippedOverdue && is_numeric($unshippedDays)) {
-            $variables['hours'] = (string) ((int) $unshippedDays * 24);
+        try {
+            $messages = $this->templates->preview($kind, $template, is_numeric($unshippedDays) ? (int) $unshippedDays : null);
+        } catch (ValidationException $error) {
+            return new HtmlString(e($error->getMessage()));
         }
 
-        $message = $this->templates->render($kind, $variables, $template);
-
-        if ($kind->hasOrderSummary()) {
-            $message .= "\n\n".$this->templates->renderOrderSummary($kind, [
-                'order_no' => 'SYS-DEMO-001', 'merchant_order_no' => 'SHOP-DEMO-001', 'transaction_id' => 'TX-DEMO-001',
-                'payment_method_name' => __('admin.telegram_routes.sample_channel'), 'paid_at' => '2026-11-16 10:00:00',
-                'currency' => 'USD', 'amount' => '100.00',
-            ], $orderTemplate);
-        }
-
-        return new HtmlString(nl2br($message));
+        return new HtmlString(implode('<hr>', array_map(fn (string $message): string => nl2br($message), $messages)));
     }
 
     /** @return list<Component> */

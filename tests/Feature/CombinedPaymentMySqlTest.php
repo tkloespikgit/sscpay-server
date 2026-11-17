@@ -20,11 +20,18 @@ class CombinedPaymentMySqlTest extends TestCase
         $this->beforeRefreshingDatabase();
         $this->refreshTestDatabase();
         $this->beforeApplicationDestroyed(function (): void {
-            $this->artisan('migrate:rollback', ['--step' => 4])->assertSuccessful();
+            $this->artisan('migrate:rollback', ['--path' => [
+                'database/migrations/2026_11_13_012113_create_combined_orders_table.php',
+                'database/migrations/2026_11_13_012114_add_combined_payment_fields_to_orders_and_applications.php',
+                'database/migrations/2026_11_14_143454_move_combined_payment_settings_to_payment_groups.php',
+                'database/migrations/2026_11_14_172734_move_webhook_version_from_applications_to_orders.php',
+            ]])->assertSuccessful();
             $this->assertFalse(Schema::hasTable('combined_orders'));
             $this->assertFalse(Schema::hasColumn('orders', 'combined_order_id'));
             $this->assertFalse(Schema::hasColumn('orders', 'webhook_version'));
             $this->assertFalse(Schema::hasColumn('payment_groups', 'is_combine_payment_enabled'));
+            $this->assertTrue(Schema::hasColumn('telegram_binding_requests', 'target_user_id'));
+            $this->assertTrue(Schema::hasColumn('system_configs', 'secret_value'));
             RefreshDatabaseState::$migrated = false;
         });
     }

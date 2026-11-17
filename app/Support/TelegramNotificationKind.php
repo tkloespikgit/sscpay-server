@@ -49,6 +49,11 @@ enum TelegramNotificationKind: string
         return ! in_array($this, [self::LogisticsImportCompleted, self::SiteProductsSyncCompleted, self::SiteProductsSyncFailed], true);
     }
 
+    public function isOrderBatch(): bool
+    {
+        return in_array($this, [self::UnshippedOverdue, self::ShipmentSyncFailed], true);
+    }
+
     /**
      * @return array<string, int|string>
      */

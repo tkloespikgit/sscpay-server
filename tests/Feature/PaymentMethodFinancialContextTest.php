@@ -105,6 +105,34 @@ class PaymentMethodFinancialContextTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_financial_columns_are_hidden_by_default_and_can_be_enabled(): void
+    {
+        $this->app->setLocale('en');
+        [, $method] = $this->sharedMethodWithMerchantConfigurations();
+        $this->actingAs($this->platformStaff(true));
+        Http::preventStrayRequests();
+        $columns = ['fee_percent', 'fee_fixed', 'refund_fee', 'chargeback_fee', 'reserve_percent', 'reserve_days', 'settlement_mode', 'settlement_days'];
+
+        $page = Livewire::test(ListPaymentMethods::class)
+            ->filterTable('merchant_id', $this->merchant->id)
+            ->assertCanSeeTableRecords([$method]);
+
+        foreach ($columns as $column) {
+            $page->assertCanNotRenderTableColumn($column);
+        }
+
+        $page->toggleAllTableColumns();
+
+        foreach ($columns as $column) {
+            $page->assertCanRenderTableColumn($column);
+        }
+
+        $page->assertTableColumnFormattedStateSet('fee_percent', '14.0000%', $method)
+            ->assertTableColumnFormattedStateSet('fee_fixed', '$0.30', $method)
+            ->assertTableColumnStateSet('settlement_mode', 'shipped', $method);
+        Http::assertNothingSent();
+    }
+
     public function test_merchant_filter_tampering_does_not_change_its_financial_context(): void
     {
         [$other, $method] = $this->sharedMethodWithMerchantConfigurations();

@@ -29,10 +29,14 @@ class TelegramNotificationRouter
         return $this->settings->get($kind);
     }
 
-    /** @param array<string, scalar|null> $variables */
-    public function message(TelegramNotificationKind $kind, array $variables): string
+    /**
+     * @param  array<string, scalar|null>  $variables
+     * @param  array<int, array{order: array<string, string>, shipment?: array<string, string>}>  $rows
+     * @return list<array{ids: list<int>, message: string}>
+     */
+    public function messages(TelegramNotificationKind $kind, array $variables, array $rows): array
     {
-        return $this->templates->render($kind, $variables);
+        return $this->templates->renderBatches($kind, $variables, $rows);
     }
 
     /**
@@ -47,11 +51,7 @@ class TelegramNotificationRouter
         ?int $paymentMethodId = null,
         ?array $orderDetails = null,
     ): TelegramDelivery {
-        $message = $this->message($kind, $variables);
-
-        if ($orderDetails !== null && $kind->hasOrderSummary()) {
-            $message .= "\n\n".$this->templates->renderOrderSummary($kind, $orderDetails);
-        }
+        $message = $this->templates->render($kind, $variables, orderDetails: $orderDetails);
 
         return $this->send($kind, $message, $merchantId, $method, $paymentMethodId);
     }

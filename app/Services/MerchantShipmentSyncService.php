@@ -297,45 +297,26 @@ class MerchantShipmentSyncService
      */
     private function failureAlertBatches(Collection $syncs, int $merchantId): array
     {
-        $batches = [];
-        $ids = [];
-        $heading = $this->telegramRoutes->message(TelegramNotificationKind::ShipmentSyncFailed, ['count' => $syncs->count()]);
-        $message = $heading;
+        $rows = [];
         $orders = $syncs->map(fn (OrderShipmentSync $sync): ?Order => $sync->order)
             ->filter(fn (?Order $order): bool => $order !== null && (int) $order->merchant_id === $merchantId)
             ->unique('id')->values();
-        $orderTemplate = (string) $this->telegramRoutes->settings(TelegramNotificationKind::ShipmentSyncFailed)['order_template'];
-        $summaries = OrderTelegramSummary::forOrders($orders, $orderTemplate);
+        $details = OrderTelegramSummary::detailsForOrders($orders);
 
         foreach ($syncs as $sync) {
             $application = Application::query()->forMerchant($merchantId)->find($sync->application_id);
-            $details = [
-                'application' => (string) $application?->name,
-                'order_no' => (string) $sync->order?->order_no,
-                'merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? ''),
-                'tracking_number' => (string) ($sync->payload['tracking_number'] ?? ''),
-                'error' => (string) $sync->last_error,
+            $rows[(int) $sync->id] = [
+                'order' => $details[(int) $sync->order_id] ?? ['merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? '')],
+                'shipment' => [
+                    'application' => (string) $application?->name,
+                    'merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? ''),
+                    'tracking_number' => (string) ($sync->payload['tracking_number'] ?? ''),
+                    'error' => (string) $sync->last_error,
+                ],
             ];
-            $details = array_map(fn (string $value): string => htmlspecialchars(mb_substr($value, 0, 50), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), $details);
-            $summary = $summaries[(int) $sync->order_id]
-                ?? OrderTelegramSummary::render(['merchant_order_no' => (string) ($sync->payload['merchant_order_no'] ?? '')], $orderTemplate);
-            $line = __('admin.merchant_shipment_sync.telegram_line', $details)."\n".$summary;
-
-            if (count($ids) >= 5 || ($ids !== [] && mb_strlen($message."\n\n".$line) > 4000)) {
-                $batches[] = ['ids' => $ids, 'message' => $message];
-                $ids = [];
-                $message = $heading;
-            }
-
-            $ids[] = (int) $sync->id;
-            $message .= "\n\n".$line;
         }
 
-        if ($ids !== []) {
-            $batches[] = ['ids' => $ids, 'message' => $message];
-        }
-
-        return $batches;
+        return $this->telegramRoutes->messages(TelegramNotificationKind::ShipmentSyncFailed, ['count' => $syncs->count()], $rows);
     }
 
     private function applicationFor(Order $order): ?Application

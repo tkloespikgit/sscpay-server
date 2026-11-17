@@ -6,6 +6,7 @@ use App\Http\Controllers\CryptoPaymentPageController;
 use App\Http\Controllers\DisputeAttachmentController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PaymentPageController;
+use App\Http\Controllers\PluginDownloadController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\StaticConfigShowcaseController;
 use Illuminate\Support\Facades\Route;
@@ -48,6 +49,13 @@ Route::post('/payment/{token}/confirm', [PaymentPageController::class, 'confirm'
 Route::get('/payment/expired', fn () => view('payment.expired'))->name('payment.expired');
 
 Route::get('/', [HomeController::class, 'show'])->name('home.show');
+
+Route::get('/plugins', [PluginDownloadController::class, 'index'])->name('plugins.index');
+Route::get('/plugins/updates/v1/{slug}', [PluginDownloadController::class, 'update'])
+    ->where('slug', '[a-z0-9-]+')->middleware('throttle:240,1')->name('plugins.update');
+Route::get('/plugins/{slug}/{version}/download', [PluginDownloadController::class, 'download'])
+    ->where('slug', '[a-z0-9-]+')->where('version', '[0-9]+\.[0-9]+\.[0-9]+')
+    ->middleware('throttle:60,1')->name('plugins.download');
 
 // 静态配置演示。不挂 auth 中间件，原因同争议附件：没有全局 login 路由。
 // 未登录或无权由控制器返回 403。页面不在 public/，避免被 Web 服务器直接托管。

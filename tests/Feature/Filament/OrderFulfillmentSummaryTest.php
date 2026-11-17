@@ -82,10 +82,10 @@ class OrderFulfillmentSummaryTest extends TestCase
         $this->assertStringContainsString('1Z999', $html);
         $this->assertStringContainsString('（UPS）', $html);
         $this->assertStringContainsString('href="https://track.example.com/1Z999"', $html);
-        $this->assertStringContainsString(__('admin.order.actions_shipping.view_tracking'), $html);
-        $this->assertStringNotContainsString(__('admin.order.sections.tracking_info'), $html);
+        $this->assertStringContainsString('target="_blank" rel="noopener noreferrer">（UPS）</a>', $html);
+        $this->assertStringContainsString(__('admin.order.sections.tracking_info'), $html);
         $this->assertSame(2, substr_count($html, 'order-fulfillment-rule'));
-        $this->assertStringNotContainsString(__('admin.order.fields.tracking_status'), $html);
+        $this->assertStringContainsString(__('admin.order.fields.tracking_status'), $html);
     }
 
     public function test_missing_tracking_url_uses_the_17track_query_link(): void
@@ -107,7 +107,7 @@ class OrderFulfillmentSummaryTest extends TestCase
         );
         $this->assertStringContainsString('JD 123', $html);
         $this->assertStringContainsString('（dhl）', $html);
-        $this->assertStringContainsString(__('admin.order.actions_shipping.view_tracking'), $html);
+        $this->assertStringContainsString('target="_blank" rel="noopener noreferrer">（dhl）</a>', $html);
     }
 
     public function test_unshipped_order_shows_the_not_shipped_placeholder(): void

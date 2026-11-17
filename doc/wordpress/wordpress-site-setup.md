@@ -262,22 +262,22 @@ woocommerce-payments（停用）
 
 ## 阶段四：SSCPay 支付接入
 
-### 4.1 安装四个插件
+### 4.1 按站点用途安装插件
 
-四个插件都是独立 git 仓库，克隆到 `wp-content/plugins/` 后启用：
+商户商城的 PayPal / 信用卡插件已迁入本系统仓库，从系统主页的「插件下载」取得 ZIP，上传并启用所需支付方式。两个插件均支持 v2 组合付款，旧安装可通过过渡 Release 接入新更新服务，详见[插件发布与更新](../deployment.md#电商插件发布与更新)。
+
+`sscpay-gateway-aggregator` 和 `sscpay-products-api` 仍在原独立仓库，用于本系统调用的收款站。下面保留收款站的安装示例；普通商户商城不需要因此安装这两个服务端插件：
 
 ```bash
 cd /path/to/newsite/wp-content/plugins
 git clone <repo-url> sscpay-gateway-aggregator
-git clone <repo-url> sscpay-payment-creditcard
-git clone <repo-url> sscpay-payment-paypal
 git clone <repo-url> sscpay-products-api
 cd /path/to/newsite
-wp plugin activate sscpay-gateway-aggregator sscpay-payment-creditcard sscpay-payment-paypal sscpay-products-api
+wp plugin activate sscpay-gateway-aggregator sscpay-products-api
 ```
 
 > `sscpay-gateway-aggregator`（PGA）是订单系统反向调 WP 收银台的服务端插件；
-> 另三个分别是网关聚合客户端、信用卡渠道、PayPal 渠道与商品接口。
+> `sscpay-payment-creditcard` / `sscpay-payment-paypal` 是商户商城支付入口；`sscpay-products-api` 为收款站扩展商品接口。
 
 ### 4.2 平台侧（sscpay-server）准备
 
@@ -342,11 +342,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST https://www.ssecurepay.local/ap
 
 - 插件把 `notify_url`（`https://<商户站>/wc-api/sscpay_creditcard_notify/`）、
   `return_url`（`/wc-api/sscpay_creditcard_return/`）、`cancel_url` 一并传给订单系统；
-- 订单系统只在订单变为 `paid` 时回调，插件验签通过后改订单状态；
+- 普通单在首次确认付款时回调；组合单按每笔真实子单付款推送父单进度，插件只在父单付清后确认商城付款。字段和验签规则见 [v2 协议](../api.md#组合付款与-v2-通知)；
 - **验签算法不含 URL 路径**：`HMAC-SHA256(App-ID + "\n" + Timestamp + "\n" + X-Nonce + "\n" + 规范化请求体)`。
   所以 Base URL 路径写错只会 404，不会报「验签失败」，排障时别被误导；
-- 订单系统对 Timestamp 不做 ±5 分钟过期校验（文档明确重试间隔最长 1 小时且每次重签），
-  但插件侧仍会校验 App-ID 与签名。
+- 通知每次投递都会刷新 Timestamp、nonce 和签名；插件核对每次投递的五分钟时间窗口、App-ID 和完整通知体签名，重试间隔不会使新投递自动过期。
 
 ---
 

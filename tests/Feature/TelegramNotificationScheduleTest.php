@@ -35,8 +35,8 @@ class TelegramNotificationScheduleTest extends TestCase
         $this->makeOrder('SSC-RECENT', 'M-RECENT', ['status' => 'paid', 'paid_at' => now()->subDays(2)]);
         $settings = app(TelegramNotificationSettings::class);
         $rule = [
-            'enabled' => false, 'template' => 'Unshipped :count / :hours hours',
-            'order_template' => 'Order :order_no / :merchant_order_no', 'unshipped_days' => 3, 'send_time' => '08:45',
+            'enabled' => false, 'template' => "Unshipped :count / :hours hours\n\n[orders]\nOrder :order.order_no / :order.merchant_order_no\n[/orders]\nPlease ship soon.",
+            'unshipped_days' => 3, 'send_time' => '08:45',
         ];
         $settings->save(TelegramNotificationKind::UnshippedOverdue, $rule);
 
@@ -48,10 +48,7 @@ class TelegramNotificationScheduleTest extends TestCase
 
         Http::assertSentCount(1);
         Http::assertSent(fn ($request): bool => $request['chat_id'] === 'merchant-chat'
-            && str_contains($request['text'], 'Unshipped 2 / 72 hours')
-            && str_contains($request['text'], 'Order SSC-OLDER / M-OLDER')
-            && str_contains($request['text'], 'Order SSC-SECOND / M-SECOND')
-            && ! str_contains($request['text'], 'SSC-RECENT'));
+            && $request['text'] === "Unshipped 2 / 72 hours\n\nOrder SSC-SECOND / M-SECOND\n\nOrder SSC-OLDER / M-OLDER\nPlease ship soon.");
     }
 
     public function test_dispute_sweep_uses_the_configured_window_and_preserves_skipped_events(): void

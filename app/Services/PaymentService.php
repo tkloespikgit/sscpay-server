@@ -7,7 +7,6 @@ use App\Models\Order;
 use App\Models\PaymentGroup;
 use App\Models\PaymentMethod;
 use App\Support\CryptoCheckoutGuard;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;

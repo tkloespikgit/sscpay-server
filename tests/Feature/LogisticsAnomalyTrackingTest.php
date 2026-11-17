@@ -61,6 +61,7 @@ class LogisticsAnomalyTrackingTest extends TestCase
             'paid_at' => '',
             'currency' => 'USD',
             'amount' => '100.00',
+            'payment_method_id' => '',
             'tracking_number' => 'PROVIDER',
             'status' => $status,
             'reason' => $reason,

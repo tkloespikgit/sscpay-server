@@ -203,8 +203,8 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         $order->update(['transaction_id' => 'TX-CUSTOM']);
         $settings = app(TelegramNotificationSettings::class);
         $rule = [
-            'enabled' => false, 'template' => 'Received :order_no / :amount :currency', 'repeat_count' => 2,
-            'order_template' => "Transaction: :transaction_id\nShop order: :merchant_order_no",
+            'enabled' => false, 'repeat_count' => 2,
+            'template' => "Received :order_no / :amount :currency\n\nTransaction: :order.transaction_id\nShop order: :order.merchant_order_no",
         ];
         $settings->save(TelegramNotificationKind::OrderPaid, $rule);
         $event = new OrderStatusChanged($order, 'pending', 'paid');
@@ -216,9 +216,7 @@ class DesignatedOrderTelegramNotificationTest extends TestCase
         app(SendTelegramNotification::class)->handleOrderStatusChanged($event);
 
         Http::assertSentCount(2);
-        Http::assertSent(fn ($request): bool => str_contains($request['text'], 'Received SSC-PAID / 100.00 USD')
-            && str_contains($request['text'], "Transaction: TX-CUSTOM\nShop order: M-PAID")
-            && ! str_contains($request['text'], 'System order:'));
+        Http::assertSent(fn ($request): bool => $request['text'] === "Received SSC-PAID / 100.00 USD\n\nTransaction: TX-CUSTOM\nShop order: M-PAID");
     }
 
     /** @return array<string, array{string}> */

@@ -621,6 +621,51 @@ node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync("pu
 
 ---
 
+## 电商插件发布与更新
+
+WordPress PayPal 和信用卡插件的维护源在 `plugins/wordpress/`；原独立仓库保留作为旧安装的兼容分发入口。本项目的主页链接到 `/plugins`，更新检查接口为 `GET /plugins/updates/v1/{slug}`，下载地址为 `GET /plugins/{slug}/{version}/download`。更新服务的 `v1` 是元数据接口版本，与支付协议 `2.0` 分开编号。接口公开只读，不要求商户 API 密钥；安装包从私有磁盘流式下载，保留 SHA-256 校验。
+
+### 本地构建与验收
+
+```bash
+php artisan plugins:check --no-interaction
+php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php
+php artisan plugins:build sscpay-payment-paypal --no-interaction
+php artisan plugins:build sscpay-payment-creditcard --no-interaction
+```
+
+安装包和 `release.json` 输出到 `storage/app/plugin-builds/{slug}/{version}/`，不会打包 Laravel 源码、配置、Git 文件或测试。打包文件列表固定为插件主文件、`index.php`、`includes/`、`assets/`、`languages/`。插件继续使用 PHP 7.4 兼容语法，Laravel Pint 排除插件目录；CI 另用 PHP 7.4 检查插件语法。
+
+`plugins:publish {slug}` 会构建并上传到 `config/plugins.php` 指定的磁盘。未配置 `PLUGIN_RELEASE_DISK` 时为本地私有 `local`，只适用于本机预览；生产使用 `PLUGIN_RELEASE_DISK=oss`。文件位于磁盘的 `plugin-releases/` 前缀下。版本 ZIP 和清单均写入成功后才更新该插件的 `stable.json`；同一版本不同内容拒绝覆盖，旧版本不能替换更新的稳定版本。源码部署和插件发布分别进行；下载页从已发布记录读取版本，不把尚未发布的源码版本作为可下载版本。
+
+### GitHub Actions 配置
+
+`.github/workflows/plugins.yml` 检查协议指纹、双插件版本递增、插件行为及服务端 v2 回归；建议将 `verify` 与 `php-compatibility` 设为分支合并必需检查。发布工作流只接受 `plugins/{slug}/v{version}`，如 `plugins/sscpay-payment-paypal/v1.1.0` 和 `plugins/sscpay-payment-creditcard/v1.1.0`；两个插件各打一个 tag。
+
+GitHub 仓库配置：
+
+| 类型 | 名称 | 用途 |
+|---|---|---|
+| Secret | `PLUGIN_OSS_ACCESS_KEY_ID`、`PLUGIN_OSS_ACCESS_KEY_SECRET` | 发布账号，仅需插件对象前缀的读写权限 |
+| Variable | `PLUGIN_OSS_BUCKET`、`PLUGIN_OSS_ENDPOINT`、`PLUGIN_OSS_PREFIX` | 与应用运行时 OSS 的 bucket、endpoint、prefix 对齐；CI 使用可从 GitHub 访问的公网 endpoint |
+| Secret（兼容镜像可选） | `LEGACY_PLUGIN_RELEASE_TOKEN` | 可写两个原插件仓库 Release 的凭证，仅用于 CI |
+| Variable（兼容镜像可选） | `LEGACY_PLUGIN_OWNER` | 原插件仓库所属账号或组织；仓库名分别为两个插件 slug |
+
+推送 tag 后，工作流先检查对应 tag 的代码，生成 Actions 安装包附件，发布 OSS 稳定版本，再将安装 ZIP 与清单附到本仓库 Release。已配置兼容镜像时，把同一 ZIP 附到原仓库的 `v{version}` Release；原仓库只承担旧更新器的分发，不再作为新源码依据。GitHub 自动生成的整仓库 Source ZIP 不能作为插件安装包。发布工作流支持手动指定已有 tag 重试，整个发布任务串行执行，避免不同版本同时切换稳定入口。
+
+### 首次迁移与后续协议更新
+
+1. 先部署下载与更新服务，再发布新插件包，并验证运行地址的元数据和 ZIP 可访问。
+2. 将过渡版本的同一安装 ZIP 发布到原 PayPal / 信用卡仓库 Release。旧站点仍通过已有 GitHub 更新器升级；过渡版本启用后改为读取本项目。
+3. 新更新器默认使用生产 API 根地址，留空时使用沙箱根地址；可在插件设置填写独立 HTTPS 更新服务根地址，或通过 `SSCPAY_UPDATE_BASE_URL` / 对应插件的 `SSCPAY_PAYPAL_UPDATE_BASE_URL`、`SSCPAY_CREDITCARD_UPDATE_BASE_URL` 覆盖。更新过程不发送支付 API Key 或 GitHub Token。
+4. 升级保留原 slug、主文件、支付方式 ID、配置和订单引用。不要删除其他插件仍在使用的共用 GitHub Token。原仓库过渡 Release 保留，便于长期未升级的站点接入。
+
+每次修改商户 API 请求、响应、签名、通知或物流协议，必须同步检查并适配两个插件。修改源文件由 `PluginProtocol::files()` 列出；`plugins:check` 在指纹不一致时输出当前 SHA-256，完成两个插件适配、回归、版本递增后，将该值写入各自 `plugin.json.protocol_hash`，并使主文件 `Version`、版本常量和清单版本一致。CI 根据基线提交检查两个版本均已递增；`plugins:build` 和 `plugins:publish` 同样拒绝协议未同步的源码。新增协议实现文件时一并维护指纹文件列表及契约测试，不能仅改指纹绕过适配。
+
+V2 使用原建单、查单和发货路径；使用组合付款时，清空插件的「指定支付渠道」，并在对应支付组开启组合付款。已有指定渠道配置不会自动清除，指定渠道下单继续原语义。组合付款按父单 `event_id` / `version` 处理，只有付清父单才确认 WooCommerce 付款完成。商城物流集成可调用插件网关的 `sync_shipping($order, $shipment)`，按真实子单上传同一运单，不向父单上传。更完整的协议定义继续以 [API 手册](api.md#组合付款与-v2-通知) 为准。
+
+如启用应用的「物流回传」，将完整接收地址设置为插件 WooCommerce 配置页显示的地址，通常为商户站的 `/wc-api/sscpay_shipment/`。该入口兼容两个支付方式，按商城订单实际网关的凭据对完整 body 验签；组合子单使用父商户号与父系统号定位，并按原商户号＋运单号去重。配送记录保存为 `_sscpay_shipments` 及订单备注，不改变付款或完成状态；需要同步到其他物流扩展时接入实际支付方式的 `sscpay_paypal_shipment_received` / `sscpay_creditcard_shipment_received` 钩子。
+
 ## 11. 常见坑与排查
 
 | 现象 | 原因 | 处理 |

@@ -51,6 +51,10 @@ flowchart TD
 
 ## 2. 请求入口与访问边界
 
+WordPress 商城 PayPal / 信用卡插件已迁入 `plugins/wordpress/`，各自维护版本与清单，源码和服务端同仓库管理，发布使用独立 `plugins/{slug}/v{version}` tag。`PluginCatalog` 读取插件目录，`PluginProtocol` 检查商户 API 协议指纹与双插件版本，`PluginReleaseService` 构建独立 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件代码保留 PHP 7.4 兼容语法，与 Laravel PHP 运行环境分别检查。
+
+主页的 `/plugins` 提供公开下载，`/plugins/updates/v1/{slug}` 提供按插件隔离的更新元数据，固定版本下载由 `/plugins/{slug}/{version}/download` 读取私有存储并流式输出。生产可复用 OSS，工作流与运行应用的 bucket/prefix 必须对齐；旧 GitHub Release 镜像仅用于把既有安装接到新更新器。商城插件支持 V1 与 V2 普通单、组合父单进度、完整体验签、事件去重、版本保护和逐子单物流；部分付款不确认 WooCommerce 付款成功。同单重试复用原商户订单号，状态落地通过 MySQL 连接级订单锁串行化。商户站的 `sscpay_shipment` WooCommerce API 入口按实际支付方式的凭据接收物流回传，父商户号＋运单号去重；只写配送 meta 和备注，不改变付款状态。协议联调由 `WordPressV2ContractTest` 覆盖实际服务端建单、通知、查单、发货与物流回传。发布配置见[部署说明](../doc/deployment.md#电商插件发布与更新)。
+
 路由装配在 [bootstrap/app.php](../bootstrap/app.php)。
 
 | 入口 | 路由/代码 | 访问方式 |
@@ -77,9 +81,9 @@ Telegram 支持平台机器人快速绑定与原有自建机器人两种模式�
 
 每商户和每名管理员仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
 
-Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商户通知 13 项和支付通道通知 7 项。订单、资金、物流及支付组无可用通道的通知只发给事件所属商户；通道禁用、支付链接创建失败、源网站建单/付款成功、商品同步完成/失败按当前通道归属发送：商户专属通道发给该商户，系统级通道发给 `owner_id` 对应管理员。缺少归属管理员时跳过并提示配置异常，不广播给其他管理员或已分配商户。超级管理员在平台管理的「Telegram 通知管理」维护各项开关、正文和适用发送参数，也可只读预览实际接收人。`TelegramNotificationSettings` 保存配置；`TelegramMessageTemplate` 仅替换白名单变量并转义 HTML，不执行模板代码。不新增发送记录表或页面，见 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
+Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商户通知 13 项和支付通道通知 7 项。订单、资金、物流及支付组无可用通道的通知只发给事件所属商户；通道禁用、支付链接创建失败、源网站建单/付款成功、商品同步完成/失败按当前通道归属发送：商户专属通道发给该商户，系统级通道发给 `owner_id` 对应管理员。缺少归属管理员时跳过并提示配置异常，不广播给其他管理员或已分配商户。超级管理员在平台管理的「Telegram 通知管理」维护各项开关、正文和适用发送参数，也可只读预览实际接收人。`TelegramNotificationSettings` 保存配置；`TelegramMessageTemplate` 仅替换白名单变量并转义 HTML，不执行模板代码。不新增发送记录表或页面，见 [D-58](decisions.md#d-58-telegram-按业务归属统一管理)。
 
-订单相关 Telegram 通知通过 `OrderTelegramSummary` 构造订单信息，默认包含系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。通知编辑页在正文下方直接展示可编辑的「订单信息」，各通知独立保存字段、顺序和文案；留空使用默认。预览和发送共用渲染器，正文后追加此区块；汇总通知对每笔订单使用同一配置并按完整区块分条。模板与动态字段限长、HTML 转义，空值显示暂无，未付款显示未付款。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，事务回滚不发通知，派发异常不改变已成功的冻结结果。商户自有渠道自动禁用时，只有触发订单属于该商户才附订单信息。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入、商品同步等批次通知不关联单笔订单，也不提供订单信息编辑。
+订单相关 Telegram 通知通过 `OrderTelegramSummary` 构造订单数据，默认包含系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。通知编辑页用一个「完整消息」编辑框展示正文及订单字段，可删除、重排或改写；发送时不再隐式追加订单信息。订单变量使用 `:order.*`，与通知事件的金额等变量区分。未发货和物流回传失败汇总使用 `[orders]…[/orders]` 重复订单内容，物流回传的应用、运单号、错误原因也在模板内。预览和发送共用 `TelegramMessageTemplate` 的变量替换、HTML 转义、限长与分条逻辑；物流回传每条最多 5 笔，提醒 ID 随对应消息保留。旧正文和订单模板读取时合成完整消息，下次保存采用新字段，见 [D-59](decisions.md#d-59-telegram-完整消息统一编辑)。空订单字段显示暂无，未付款显示未付款。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，事务回滚不发通知，派发异常不改变已成功的冻结结果。商户自有渠道自动禁用时，只有触发订单属于该商户才提供其订单数据。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入、商品同步等批次通知不关联单笔订单，也不提供订单变量。
 
 静态配置演示不落库、不提交。`StaticConfigShowcase::screensFor()` 决定可见屏：平台管理员（超管）和商户级管理员可见入驻向导、商户配置、支付方式配置；商户管理员和支付通道管理员仅在账号与所属商户启用时可见支付方式配置，且必须是该商户名下的这两个默认角色，单独授予支付方式权限不够。页面不挂全局 auth 中间件（项目没有 `login` 路由），未登录直接 403。入驻向导、商户创建/编辑的页头入口链到当前域名的 `/showcase#对应屏`。支付方式演示入口只在支付方式列表页页头。
 
@@ -113,7 +117,7 @@ Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商�
 
 历史记录的“查看采购订单”在新标签页打开 `purchase-orders.show`（`/purchase-orders/{purchaseOrder}`），由 `PurchaseOrderController` 再次校验启用的超级管理员身份后查询记录，并用 `resources/views/purchase-orders/show.blade.php` 展示 1688 样式的采购页面。商品、价格、数量和时间来自进货快照，图片读取关联站点商品的当前安全 HTTP(S) 地址，供需方名称读取支付方式当前档案；没有图片时显示占位。权益词由 `PurchaseOrderService::initializePerksWords()` 在首次打开任一采购页面时随机选取 4–8 个并保存到该单的 `perks_words`；事务中锁行并再次检查，后续两页读取相同结果，已保存的空数组也不重选。首次初始化仅写权益词，不改金额、明细或订单更新时间；运费和优惠仍从后台编辑。
 
-采购页面的“订单详情”进入 `purchase-orders.details`（`/purchase-orders/{purchaseOrder}/details`），模板为 `resources/views/purchase-order-details.blade.php`，展示四步时间线、收货与卖家资料、采购明细、费用及打印区域；两个页面共享控制器的鉴权与数据构造。收货地址优先使用档案 `stock_addresses` 中首个非空字符串，再回退到 `company_address`；联系人、手机号、供应商信息读取当前档案。现有采购单不保存物流公司和运单号，详情以缺省文案展示，不发起物流、评价或支付请求。
+采购页面的“订单详情”进入 `purchase-orders.details`（`/purchase-orders/{purchaseOrder}/details`），模板为 `resources/views/purchase-orders/details/show.blade.php`，展示四步时间线、收货与卖家资料、采购明细、费用及打印区域；两个页面共享控制器的鉴权与数据构造。收货地址优先使用档案 `stock_addresses` 中首个非空字符串，再回退到 `company_address`；联系人、手机号、供应商信息读取当前档案。现有采购单不保存物流公司和运单号，详情以缺省文案展示，不发起物流、评价或支付请求。
 
 订单列表的物流模板导出沿用当前筛选与搜索条件，不要求平台账号选定单个商户；超管可跨商户导出，其他用户限定在 `manageableMerchantIds()` 范围。物流上传仍绑定登录用户所属商户。订单支付方式筛选及观察者账户的渠道分配包含软删除渠道，保留渠道的租户可见性过滤；观察者关联也包含软删除渠道，以便回显和保留已有分配。
 
@@ -159,7 +163,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 连续建单失败保护由 `OrderCreationService::createPayment()` 调用 [PaymentMethodFailureService](../app/Services/PaymentMethodFailureService.php) 的 `recordFailure()` / `recordSuccess()` 统一记录：网关建单或明确的商品准备最终失败时，针对当前渠道累计一次 `consecutive_failed_times`；一次创建内部的多次 HTTP 连接重试只计一次。成功保存有效 `pay_url` 才清零；已有链接的幂等命中、金额/授权校验或风控拒绝既不计数也不清零。计数按支付方式 ID 跨商户持久化，事务中先锁原订单、再锁渠道，核对原商户、当前渠道/引用及收款/链接状态，过期结果不计入其他尝试。直接调用底层网关客户端的工具操作不在该统计入口内。
 
-系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后按通道当前归属发 Telegram；逐次支付链接创建失败也采用相同归属。关闭通知、归属缺失、机器人不可用或发送异常不影响禁用结果，不另选其他接收人。业务阈值仍在支付通道设置中维护，通知页仅控制通知行为，见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用) 与 [D-46](decisions.md#d-46-telegram-按业务归属统一管理)。
+系统配置 `payment.max_failed_times` 默认 5，渠道 `max_failed_times` 可单独设置大于等于 1 的整数，留空由 `PaymentMethod::maxFailedTimes()` 动态继承当前系统值。连续次数达到有效阈值时将渠道 `is_active` 置为 false；不自动换通道，成功清零也不自动重新启用。仅由启用转为停用时，在计数事务后按通道当前归属发 Telegram；逐次支付链接创建失败也采用相同归属。关闭通知、归属缺失、机器人不可用或发送异常不影响禁用结果，不另选其他接收人。业务阈值仍在支付通道设置中维护，通知页仅控制通知行为，见 [D-25](decisions.md#d-25-渠道连续建单失败达到阈值自动停用) 与 [D-58](decisions.md#d-58-telegram-按业务归属统一管理)。
 
 人工核验渠道恢复后，通过 `PaymentMethod` 模型将停用渠道重新启用（`is_active: false → true`）时，同次保存自动将 `consecutive_failed_times` 清零，开始新一轮计数。普通编辑但启用状态未变时不清零；运行中的成功/失败计数使用 `saveQuietly()`，不触发该模型事件。编辑页只提交主动修改的启用状态，在事务内重新锁定并读取渠道后保存，避免旧页面恢复自动停用状态或重复清掉新计数；保存后同步页面的启用状态。此补充无需新增字段或迁移。
 
@@ -283,7 +287,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | 物流轨迹跟踪 / 异常 / 未发货 TG | `app/Services/LogisticsTracking/`、`LogisticsTrackingWebhookController`、`RegisterLogisticsTrackingJob`、`MerchantLogisticsTrackingSetting`、`ServiceSettings`、`logistics-tracking:reflag-anomalies` / `orders:notify-unshipped-overdue`；系统 `available_drivers` 枚举；商户自选驱动+base_url+密钥；Webhook `POST /api/webhooks/logistics-tracking/{driver}/{webhookToken}`；无历史回填 | `tests/Feature/SeventeenTrackWebhookTest.php`、`SeventeenTrackAnomalyAndUnshippedTest.php`、`tests/Feature/Filament/ServiceSettingsTest.php`、`LogisticsTrackingSettingsAccessTest.php` |
 | 权限、面板和用户 | `app/Models/User.php`、`app/Models/Observer.php`、`app/Models/Scopes/MerchantScope.php`、`app/Support/Permissions.php`、相关 Resource | 按功能选择 `tests/Feature/Filament/`，补充真实越权边界的断言 |
 | 静态配置演示 | `app/Support/StaticConfigShowcase.php`、`app/Http/Controllers/StaticConfigShowcaseController.php`、`app/Filament/Support/StaticConfigShowcaseAction.php`、`resources/views/showcase/merchant-admin.blade.php` | `tests/Feature/StaticConfigShowcaseTest.php` |
-| 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-order-details.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
+| 支付方式进货单 | `app/Services/PurchaseOrderService.php`、`app/Filament/Support/GeneratePurchaseOrderAction.php`、`app/Filament/Resources/PaymentMethodResource/RelationManagers/PurchaseOrdersRelationManager.php`、`app/Http/Controllers/PurchaseOrderController.php`、`resources/views/purchase-orders/show.blade.php`、`resources/views/purchase-orders/details/show.blade.php` | `tests/Feature/PurchaseOrderTest.php`、`tests/Feature/PurchaseOrderDocumentTest.php`、`tests/Feature/PurchaseOrderDetailsTest.php`、`tests/Feature/PurchaseOrderPerksTest.php`、`tests/Feature/Filament/PaymentMethodPurchaseOrdersTest.php` |
 
 这些是现有测试入口，不代表对应模块已完整覆盖或本次已运行测试。
 

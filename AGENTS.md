@@ -36,6 +36,7 @@
 - **统计口径**：曾支付成功使用 `Order::paidEver()`；风控按系统时区、渠道 ID 跨商户统计，按 `paid_at` 归窗。成交额 `converted_amount` 与净入账 `settlement_amount` 不可混用。
 - **公开收款页**：服务端构造金额、商品、回跳地址并建单，浏览器不接收应用 API 密钥；保留 Host、启用状态、Turnstile、频率和 CSRF 校验。`/c/{slug}` 与 `/payment/{token}` 各有用途。
 - **协议兼容**：商户签名复用 `SignatureCanonicalizer`；网关 webhook 对原始 body 单独验签；插件客户端当前使用 query 凭证，不能直接替换为标准 Basic Auth。
+- **商城插件同步**：修改商户 API 请求、响应、签名、通知或物流协议时，必须同时检查并适配 `plugins/wordpress/` 下 PayPal 与信用卡插件，补充协议回归、递增两个插件版本并更新各自 `plugin.json` 的 `protocol_hash`。执行 `php artisan plugins:check`；CI 以基线提交检查版本递增。插件使用 PHP 7.4 兼容语法，发布流程见 [部署说明](doc/deployment.md#电商插件发布与更新)。
 - **数据演进**：生产目标为 MySQL。修改已有表时新增迁移，保留生成列唯一约束和金融审计记录；不要将正式库重建当成日常开发步骤。
 
 ## 修改与验证

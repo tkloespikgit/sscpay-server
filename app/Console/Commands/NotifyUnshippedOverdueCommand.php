@@ -19,8 +19,6 @@ class NotifyUnshippedOverdueCommand extends Command
 
     protected $description = '汇总超期未发货订单并发送商户 Telegram 通知';
 
-    private const MESSAGE_LENGTH_LIMIT = 4000;
-
     public function handle(TelegramNotificationRouter $routes): int
     {
         $settings = $routes->settings(TelegramNotificationKind::UnshippedOverdue);
@@ -47,27 +45,19 @@ class NotifyUnshippedOverdueCommand extends Command
 
         $sent = 0;
 
-        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($routes, $hours, $settings, &$sent): void {
-            $heading = $routes->message(TelegramNotificationKind::UnshippedOverdue, [
+        $orders->groupBy('merchant_id')->each(function (Collection $group, $merchantId) use ($routes, $hours, &$sent): void {
+            $rows = array_map(fn (array $details): array => ['order' => $details], OrderTelegramSummary::detailsForOrders($group));
+            $batches = $routes->messages(TelegramNotificationKind::UnshippedOverdue, [
                 'count' => $group->count(),
                 'hours' => $hours,
-            ]);
-            $message = $heading;
+            ], $rows);
             $notified = false;
-            $summaries = OrderTelegramSummary::forOrders($group, (string) $settings['order_template']);
 
-            foreach ($group as $order) {
-                $summary = $summaries[(int) $order->id];
-
-                if ($message !== $heading && mb_strlen($message."\n\n".$summary) > self::MESSAGE_LENGTH_LIMIT) {
-                    $notified = $routes->send(TelegramNotificationKind::UnshippedOverdue, $message, (int) $merchantId)->sent || $notified;
-                    $message = $heading;
-                }
-
-                $message .= "\n\n".$summary;
+            foreach ($batches as $batch) {
+                $notified = $routes->send(TelegramNotificationKind::UnshippedOverdue, $batch['message'], (int) $merchantId)->sent || $notified;
             }
 
-            if ($routes->send(TelegramNotificationKind::UnshippedOverdue, $message, (int) $merchantId)->sent || $notified) {
+            if ($notified) {
                 $sent++;
             }
         });

@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\SystemConfig;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +18,6 @@ final class TelegramNotificationSettings
     {
         return [
             'enabled' => true, 'template' => '',
-            ...($kind->hasOrderSummary() ? ['order_template' => ''] : []),
             ...$kind->strategyDefaults(),
         ];
     }
@@ -37,6 +35,15 @@ final class TelegramNotificationSettings
             return $defaults;
         }
 
+        if (array_key_exists('message_template', $stored)) {
+            $stored['template'] = $stored['message_template'];
+        } else {
+            $body = is_string($stored['template'] ?? null) ? $stored['template'] : '';
+            $orderTemplate = is_string($stored['order_template'] ?? null) ? $stored['order_template'] : '';
+            $stored['template'] = filled($body) || filled($orderTemplate)
+                ? TelegramMessageTemplate::composeLegacyTemplate($kind, $body, $orderTemplate) : '';
+        }
+
         foreach ($defaults as $key => $default) {
             $value = $stored[$key] ?? $default;
             $rules = $this->rules($kind)[$key];
@@ -44,6 +51,12 @@ final class TelegramNotificationSettings
             if (Validator::make([$key => $value], [$key => $rules])->passes()) {
                 $defaults[$key] = is_int($default) ? (int) $value : (is_bool($default) ? (bool) $value : (string) $value);
             }
+        }
+
+        try {
+            TelegramMessageTemplate::validate($kind, $defaults['template']);
+        } catch (ValidationException) {
+            $defaults['template'] = '';
         }
 
         return $defaults;
@@ -61,15 +74,11 @@ final class TelegramNotificationSettings
 
         $validated = Validator::make($data, $rules)->validate();
         $template = trim((string) ($validated['template'] ?? ''));
-        $this->validateVariables('template', $template, $kind->variables());
-
-        $normalized = ['enabled' => (bool) $validated['enabled'], 'template' => $template];
-
-        if ($kind->hasOrderSummary()) {
-            $orderTemplate = trim((string) ($validated['order_template'] ?? ''));
-            $this->validateVariables('order_template', $orderTemplate, OrderTelegramSummary::variables());
-            $normalized['order_template'] = $orderTemplate === OrderTelegramSummary::defaultTemplate() ? '' : $orderTemplate;
-        }
+        TelegramMessageTemplate::validate($kind, $template);
+        $normalized = [
+            'enabled' => (bool) $validated['enabled'],
+            'message_template' => $template === TelegramMessageTemplate::defaultTemplate($kind) ? '' : $template,
+        ];
 
         foreach ($kind->strategyDefaults() as $key => $default) {
             $normalized[$key] = is_int($default) ? (int) $validated[$key] : $validated[$key];
@@ -80,7 +89,7 @@ final class TelegramNotificationSettings
                 'config_value' => '{}',
                 'value_type' => SystemConfig::TYPE_JSON,
                 'group' => 'telegram',
-                'description' => 'Telegram 通知开关、正文和发送参数',
+                'description' => 'Telegram 通知开关、完整消息和发送参数',
             ]);
             $record = SystemConfig::query()->where('config_key', self::CONFIG_KEY)->lockForUpdate()->firstOrFail();
             $settings = json_decode((string) $record->config_value, true);
@@ -95,11 +104,7 @@ final class TelegramNotificationSettings
     /** @return array<string, list<string>> */
     private function rules(TelegramNotificationKind $kind): array
     {
-        $rules = ['enabled' => ['required', 'boolean'], 'template' => ['nullable', 'string', 'max:1500']];
-
-        if ($kind->hasOrderSummary()) {
-            $rules['order_template'] = ['nullable', 'string', 'max:'.OrderTelegramSummary::MAX_LENGTH];
-        }
+        $rules = ['enabled' => ['required', 'boolean'], 'template' => ['nullable', 'string', 'max:'.TelegramMessageTemplate::MAX_TEMPLATE_LENGTH]];
 
         foreach ($kind->strategyDefaults() as $key => $default) {
             $rules[$key] = match ($key) {
@@ -112,15 +117,5 @@ final class TelegramNotificationSettings
         }
 
         return $rules;
-    }
-
-    /** @param list<string> $variables */
-    private function validateVariables(string $field, string $template, array $variables): void
-    {
-        preg_match_all('/(?<![a-zA-Z0-9_]):([a-z][a-z0-9_]*)/', $template, $matches);
-
-        if (array_diff($matches[1], $variables) !== []) {
-            throw ValidationException::withMessages([$field => __('admin.telegram_routes.invalid_variables')]);
-        }
     }
 }

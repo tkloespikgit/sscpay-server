@@ -744,8 +744,8 @@ class MerchantShipmentSyncTest extends TestCase
     {
         $firstOrder = $this->prepareOrder();
         app(TelegramNotificationSettings::class)->save(TelegramNotificationKind::ShipmentSyncFailed, [
-            'enabled' => true, 'template' => '',
-            'order_template' => "Transaction :transaction_id\nChannel :payment_method_name\nOrder :order_no\nReference :merchant_order_no\nPaid :paid_at\nAmount :currency :amount",
+            'enabled' => true,
+            'template' => "Custom failures :count\n\n[orders]\nTransaction :order.transaction_id\nChannel :order.payment_method_name\nOrder :order.order_no\nReference :order.merchant_order_no\nPaid :order.paid_at\nAmount :order.currency :order.amount\nTracking :shipment.tracking_number\n[/orders]\nPlease check.",
         ]);
         $method = $this->makePaymentMethod('long-notice');
         $method->update(['method_name' => str_repeat('"', 80)]);
@@ -781,12 +781,17 @@ class MerchantShipmentSyncTest extends TestCase
         $messages = $requests->map(fn ($record): string => $record[0]['text']);
         foreach ($messages as $message) {
             $this->assertLessThanOrEqual(4000, mb_strlen($message));
+            $this->assertStringStartsWith('Custom failures 5', $message);
+            $this->assertStringEndsWith('Please check.', $message);
+            $this->assertStringNotContainsString('Application:', $message);
+            $this->assertStringNotContainsString('[orders]', $message);
         }
         $text = $messages->implode("\n");
         $this->assertStringContainsString('Transaction &quot;', $text);
         foreach ($syncs as $index => $sync) {
             $this->assertSame('sent', $sync->refresh()->alert_status);
             $this->assertStringContainsString('TX-LONG-'.($index + 1), $text);
+            $this->assertStringContainsString('Tracking TRACK-LONG-'.($index + 1), $text);
         }
         $this->assertStringContainsString('&quot;', $text);
     }

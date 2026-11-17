@@ -43,6 +43,15 @@ final class OrderTelegramSummary
      */
     public static function forOrders(Collection $orders, ?string $template = null): array
     {
+        return array_map(fn (array $details): string => self::render($details, $template), self::detailsForOrders($orders));
+    }
+
+    /**
+     * @param  Collection<int, Order>  $orders
+     * @return array<int, array<string, string>>
+     */
+    public static function detailsForOrders(Collection $orders): array
+    {
         $summaries = [];
 
         foreach ($orders->groupBy('merchant_id') as $merchantId => $merchantOrders) {
@@ -61,7 +70,7 @@ final class OrderTelegramSummary
                 $method = $order->payment_method_id
                     ? $methodsById->get($order->payment_method_id)
                     : $methodsByCode->get($order->payment_method);
-                $summaries[(int) $order->id] = self::render(self::buildDetails($order, $method?->method_name), $template);
+                $summaries[(int) $order->id] = self::buildDetails($order, $method?->method_name);
             }
         }
 

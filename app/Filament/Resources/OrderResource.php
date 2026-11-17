@@ -141,7 +141,10 @@ class OrderResource extends Resource
                     ->state(fn (Order $record): ?string => $record->payment_type === 'crypto'
                         ? CryptoOrderDisplay::amount($record) : ($record->settlement_amount === null ? null : '$'.number_format((float) $record->settlement_amount, 2)))
                     ->placeholder(__('admin.order.placeholders.none'))
-                    ->description(fn (Order $record): ?string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::state($record) : null),
+                    ->description(fn (Order $record): ?string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::state($record) : null)
+                    ->sortable(query: fn (Builder $query, string $direction): Builder => $query
+                        ->orderByRaw("CASE WHEN orders.payment_type = 'crypto' THEN 1 ELSE 0 END")
+                        ->orderByRaw("CASE WHEN orders.payment_type = 'fiat' THEN orders.settlement_amount END ".($direction === 'desc' ? 'desc' : 'asc'))),
                 TextColumn::make('receipt_currency')->label(__('crypto.order.denomination'))
                     ->state(fn (Order $record): string => $record->payment_type === 'crypto' ? CryptoOrderDisplay::denomination($record) : 'USD'),
                 TextColumn::make('crypto_rate')->label(__('crypto.order.rate'))

@@ -7,8 +7,9 @@ use App\Filament\Resources\SystemConfigResource;
 use App\Models\TelegramBot;
 use App\Models\User;
 use App\Services\PlatformRoleProvisioningService;
+use App\Services\TelegramMessageTemplate;
+use App\Services\TelegramNotificationRouter;
 use App\Services\TelegramNotificationSettings;
-use App\Support\OrderTelegramSummary;
 use App\Support\TelegramNotificationKind;
 use Database\Seeders\PermissionSeeder;
 use Filament\Actions\Testing\TestAction;
@@ -68,7 +69,7 @@ class TelegramNotificationRoutesPageTest extends TestCase
             ])
             ->assertHasNoActionErrors()->assertNotified();
 
-        $this->assertSame(['enabled' => false, 'template' => 'Payment :order_no :amount :currency', 'order_template' => '', 'repeat_count' => 2],
+        $this->assertSame(['enabled' => false, 'template' => 'Payment :order_no :amount :currency', 'repeat_count' => 2],
             app(TelegramNotificationSettings::class)->get(TelegramNotificationKind::OrderPaid));
         $this->assertNull(SystemConfigResource::getEloquentQuery()->where('config_key', TelegramNotificationSettings::CONFIG_KEY)->first());
         Http::assertNothingSent();
@@ -130,39 +131,66 @@ class TelegramNotificationRoutesPageTest extends TestCase
     {
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
         $settings = app(TelegramNotificationSettings::class);
-        $settings->save(TelegramNotificationKind::OrderPaid, ['enabled' => false, 'template' => 'Custom', 'order_template' => 'Ref: :merchant_order_no', 'repeat_count' => 1]);
+        $settings->save(TelegramNotificationKind::OrderPaid, ['enabled' => false, 'template' => 'Custom Ref: :order.merchant_order_no', 'repeat_count' => 1]);
         $settings->save(TelegramNotificationKind::OrderDisputing, ['enabled' => false, 'template' => 'Dispute']);
         Livewire::test(TelegramNotificationRoutes::class)->call('setNotificationGroup', 'channel')
             ->callAction(TestAction::make('reset')->table('order_paid'))->assertNotified();
 
-        $this->assertSame(['enabled' => true, 'template' => '', 'order_template' => '', 'repeat_count' => 5], $settings->get(TelegramNotificationKind::OrderPaid));
+        $this->assertSame(['enabled' => true, 'template' => '', 'repeat_count' => 5], $settings->get(TelegramNotificationKind::OrderPaid));
         $this->assertFalse($settings->get(TelegramNotificationKind::OrderDisputing)['enabled']);
     }
 
-    public function test_order_information_is_editable_and_the_preview_uses_the_saved_format(): void
+    public function test_one_editor_controls_the_complete_preview_and_sent_message(): void
     {
         $this->app->setLocale('zh_CN');
+        $this->createMerchantAndApplication();
+        $method = $this->makePaymentMethod('complete-message');
+        TelegramBot::create(['merchant_id' => $this->merchant->id, 'bot_token' => 'preview-bot', 'chat_id' => 'preview-chat', 'is_enabled' => true]);
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
         Http::preventStrayRequests();
-        $template = "交易：:transaction_id\n客户订单：:merchant_order_no\n实收：:amount :currency";
+        $template = "交易：:order.transaction_id\n付款确认 <&>\n客户订单：:order.merchant_order_no\n实收：:order.amount :order.currency";
+        $expected = "交易：TX-DEMO-001\n付款确认 &lt;&amp;&gt;\n客户订单：SHOP-DEMO-001\n实收：100.00 USD";
 
         $page = Livewire::test(TelegramNotificationRoutes::class)->call('setNotificationGroup', 'channel')
             ->mountAction(TestAction::make('edit')->table('order_paid'))
-            ->assertFormFieldExists('order_template')
-            ->assertActionDataSet(['order_template' => OrderTelegramSummary::defaultTemplate()])
-            ->fillForm(['template' => '付款确认', 'order_template' => $template]);
+            ->assertFormFieldExists('template')
+            ->assertFormFieldDoesNotExist('order_template')
+            ->assertActionDataSet(['template' => TelegramMessageTemplate::defaultTemplate(TelegramNotificationKind::OrderPaid)])
+            ->fillForm(['template' => $template]);
 
         $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
-        $this->assertStringContainsString('交易：TX-DEMO-001', $modal);
-        $this->assertStringContainsString('客户订单：SHOP-DEMO-001', $modal);
-        $this->assertStringContainsString('实收：100.00 USD', $modal);
+        $this->assertStringContainsString(nl2br($expected), $modal);
         $this->assertStringNotContainsString('系统订单号：SYS-DEMO-001', $modal);
 
         $page->callMountedAction()->assertHasNoActionErrors()->assertNotified()
             ->mountAction(TestAction::make('edit')->table('order_paid'))
-            ->assertActionDataSet(['order_template' => $template]);
-        $this->assertSame($template, app(TelegramNotificationSettings::class)->get(TelegramNotificationKind::OrderPaid)['order_template']);
+            ->assertActionDataSet(['template' => $template]);
+        $this->assertSame($template, app(TelegramNotificationSettings::class)->get(TelegramNotificationKind::OrderPaid)['template']);
         Http::assertNothingSent();
+
+        Http::fake(['api.telegram.org/*' => Http::response(['ok' => true])]);
+        $delivery = app(TelegramNotificationRouter::class)->sendNotification(TelegramNotificationKind::OrderPaid, [], method: $method, orderDetails: [
+            'order_no' => 'SYS-DEMO-001', 'transaction_id' => 'TX-DEMO-001', 'merchant_order_no' => 'SHOP-DEMO-001', 'amount' => '100.00', 'currency' => 'USD',
+        ]);
+
+        $this->assertTrue($delivery->sent);
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request): bool => $request['chat_id'] === 'preview-chat' && $request['text'] === $expected);
+    }
+
+    public function test_digest_preview_repeats_the_edited_order_content_and_inserts_variables_inside_the_block(): void
+    {
+        $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
+        $page = Livewire::test(TelegramNotificationRoutes::class)
+            ->mountAction(TestAction::make('edit')->table('unshipped_overdue'))
+            ->fillForm(['template' => "Ship after :hours hours\n[orders]\n:order.order_no\n[/orders]\nThanks", 'unshipped_days' => 3]);
+
+        $modal = $page->instance()->getSchema('mountedActionSchema0')->toHtml();
+        $this->assertStringContainsString(nl2br("Ship after 72 hours\nSYS-DEMO-001\n\nSYS-DEMO-002\nThanks"), $modal);
+
+        $page->set('mountedActions.0.data.insert_variable', 'order.transaction_id')
+            ->assertActionDataSet(['template' => "Ship after :hours hours\n[orders]\n:order.order_no\n:order.transaction_id\n[/orders]\nThanks"])
+            ->callMountedAction()->assertHasNoActionErrors();
     }
 
     public function test_product_sync_does_not_offer_order_information_fields(): void

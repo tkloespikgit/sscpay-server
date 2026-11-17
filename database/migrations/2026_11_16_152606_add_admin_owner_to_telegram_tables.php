@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -50,9 +51,15 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::table('telegram_bots')->whereNull('merchant_id')->exists()
+            || DB::table('telegram_binding_requests')->whereNull('merchant_id')->exists()) {
+            throw new RuntimeException('Cannot roll back Telegram administrator ownership while administrator configurations or binding requests exist.');
+        }
+
         Schema::table('telegram_binding_requests', function (Blueprint $table) {
+            $table->dropForeign(['target_user_id']);
             $table->dropUnique(['target_user_id']);
-            $table->dropConstrainedForeignId('target_user_id');
+            $table->dropColumn('target_user_id');
             $table->dropForeign(['merchant_id']);
             $table->dropUnique(['merchant_id']);
         });

@@ -462,6 +462,7 @@
 {{--            <li><a href="#">Docs</a></li>--}}
 {{--        </ul>--}}
         <div class="nav-actions">
+            <a href="{{ route('plugins.index') }}" class="btn-outline">{{ __('plugins.title') }}</a>
             <a href="{{ route('api.documentation') }}" class="btn-outline docs-link">
                 <i class="fas fa-book-open" aria-hidden="true"></i>
                 {{ __('admin.application.actions.api_documentation') }}

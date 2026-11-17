@@ -522,6 +522,34 @@ class PaymentMethodResource extends Resource
                         : __('admin.payment_method.sync_statuses.not_synced')))
                     ->color(fn (bool $state) => $state ? 'success' : 'gray')
                     ->action(static::viewSyncStatusAction()),
+                TextColumn::make('refund_fee')->label(__('admin.payment_method.fields.refund_fee'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'refund_fee', $livewire->financialMerchant))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('chargeback_fee')->label(__('admin.payment_method.fields.chargeback_fee'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'chargeback_fee', $livewire->financialMerchant))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_percent')->label(__('admin.payment_method.fields.fee_percent'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_percent', $livewire->financialMerchant))
+                    ->suffix('%')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('fee_fixed')->label(__('admin.payment_method.fields.fee_fixed'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'fee_fixed', $livewire->financialMerchant))
+                    ->money('usd')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('reserve_percent')->label(__('payment_finance.reserve_percent'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_percent', $livewire->financialMerchant))
+                    ->suffix('%')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('reserve_days')->label(__('payment_finance.reserve_days'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'reserve_days', $livewire->financialMerchant))
+                    ->suffix(__('payment_finance.days'))->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('settlement_mode')->label(__('settlement.fields.mode'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_mode', $livewire->financialMerchant))
+                    ->formatStateUsing(fn (?string $state): ?string => $state === null ? null : __('settlement.modes.'.$state))
+                    ->placeholder('—')
+                    ->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('settlement_days')->label(__('settlement.fields.cycle_days'))
+                    ->state(fn (PaymentMethod $record, Pages\ListPaymentMethods $livewire) => static::displayFinancialSetting($record, 'settlement_days', $livewire->financialMerchant))
+                    ->suffix(__('settlement.days'))
+                    ->placeholder('—')
+                    ->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('sync_logistics')->label(__('admin.payment_method.columns.sync_logistics'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('allow_returned_source')->label(__('admin.payment_method.columns.allow_returned_source'))->boolean()->toggleable(isToggledHiddenByDefault: true),
                 IconColumn::make('is_active')->label(__('admin.payment_method.fields.is_active'))->boolean(),

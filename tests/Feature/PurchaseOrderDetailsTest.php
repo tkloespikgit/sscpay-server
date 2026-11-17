@@ -28,9 +28,9 @@ class PurchaseOrderDetailsTest extends TestCase
         $this->actingAs($admin)
             ->get(route('purchase-orders.details', ['purchaseOrder' => $order->id]))
             ->assertOk()
-            ->assertViewIs('purchase-order-details')
+            ->assertViewIs('purchase-orders.details.show')
             ->assertViewHas('purchaseOrder', fn (PurchaseOrder $document): bool => $document->is($order)
-                && $document->items->pluck('id')->all() === $order->items->pluck('id')->all())
+                && $document->items->map->attributesToArray()->all() === $beforeItems)
             ->assertViewHas('detailFields', [
                 'buyerContactName' => '采购法人',
                 'buyerCompany' => '深圳采购有限公司',
@@ -54,7 +54,7 @@ class PurchaseOrderDetailsTest extends TestCase
                 '采购法人', '深圳采购有限公司', '广东省深圳市仓库路88号', '13800001111', 'buyer@example.com',
                 '广州供货有限公司', '供货联系人', '13900002222', '广东省广州市供货路66号', 'supplier@example.com',
                 '采购快照商品一', '采购快照商品二', 'SNAPSHOT-SKU-17', 'SNAPSHOT-SKU-12',
-                '12.34', '25.91', '440.47', '5.00', '10.50', '126.00',
+                '25.91', '10.50',
                 '566.47', '18.23', '41.25', '543.45', '已确认收货', '人民币（CNY）',
             ])
             ->assertSee('<td>17</td>', false)
@@ -199,6 +199,7 @@ class PurchaseOrderDetailsTest extends TestCase
         Http::preventStrayRequests();
         $admin = $this->superAdmin();
         $order = $this->purchaseOrder($admin);
+        $beforeItems = $order->items()->get()->toArray();
         $order->items->first()->siteProduct->update([
             'name' => '最新商品名称', 'sku' => 'LIVE-CHANGED-SKU', 'price_min' => '999.99',
         ]);
@@ -206,7 +207,9 @@ class PurchaseOrderDetailsTest extends TestCase
         $this->actingAs($admin)
             ->get(route('purchase-orders.details', $order->id))
             ->assertOk()
-            ->assertSee(['采购快照商品一', 'SNAPSHOT-SKU-17', '12.34', '25.91', '440.47'])
+            ->assertViewHas('purchaseOrder', fn (PurchaseOrder $document): bool => $document->items->map->attributesToArray()->all() === $beforeItems)
+            ->assertSee(['采购快照商品一', 'SNAPSHOT-SKU-17', '25.91'])
+            ->assertSee('<td>17</td>', false)
             ->assertDontSee(['最新商品名称', 'LIVE-CHANGED-SKU', '999.99']);
 
         Http::assertNothingSent();

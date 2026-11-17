@@ -355,6 +355,9 @@ class OrderListFiltersTest extends TestCase
         $lowerNet = $this->makeOrder('SSC-LOW-NET', 'M-LOW-NET', [
             'converted_amount' => '110.00', 'settlement_amount' => '90.00',
         ]);
+        $crypto = $this->makeOrder('SSC-CRYPTO-NET', 'M-CRYPTO-NET', [
+            'payment_type' => 'crypto', 'settlement_amount' => '0.00',
+        ]);
         $merchantUser = User::factory()->create(['merchant_id' => $this->merchant->id]);
         $merchantUser->givePermissionTo(Permissions::ORDERS_VIEW);
         $this->actingAs($merchantUser);
@@ -364,9 +367,9 @@ class OrderListFiltersTest extends TestCase
             ->assertSuccessful()
             ->assertCanRenderTableColumn('settlement_amount')
             ->sortTable('settlement_amount')
-            ->assertCanSeeTableRecords([$lowerNet, $higherNet], inOrder: true)
+            ->assertCanSeeTableRecords([$lowerNet, $higherNet, $crypto], inOrder: true)
             ->sortTable('settlement_amount', 'desc')
-            ->assertCanSeeTableRecords([$higherNet, $lowerNet], inOrder: true);
+            ->assertCanSeeTableRecords([$higherNet, $lowerNet, $crypto], inOrder: true);
     }
 
     public function test_missing_settlement_snapshot_is_not_shown_as_zero_or_converted_amount(): void
