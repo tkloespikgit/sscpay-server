@@ -110,15 +110,304 @@ class DeploymentScriptTest extends TestCase
         $this->assertStringContainsString('另一个部署正在执行', $process->getErrorOutput());
     }
 
+    public static function userSwitchCommands(): array
+    {
+        return ['runuser' => ['runuser'], 'sudo' => ['sudo']];
+    }
+
+    #[DataProvider('userSwitchCommands')]
+    public function test_root_startup_runs_composer_and_deployment_as_the_default_site_account(string $switch): void
+    {
+        $this->prepareDeployment();
+        if ($switch === 'sudo') {
+            File::delete($this->directory.'/bin/runuser');
+        }
+
+        $process = $this->deploy([], ['DEPLOY_TEST_UID' => '0', 'PATH' => $this->directory.'/bin']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $trace = File::get($this->directory.'/trace');
+        $this->assertBefore($switch === 'sudo' ? 'sudo -n -H -u www-data --' : 'runuser -u www-data --', 'php artisan down', $trace);
+        $this->assertStringContainsString('composer install --no-dev', $trace);
+        $this->assertStringContainsString('切换到站点账号 www-data', $process->getOutput());
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
+    }
+
+    public function test_root_startup_preserves_the_selected_tools_and_arguments_for_a_custom_site_account(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--no-pull'], ['DEPLOY_TEST_UID' => '0', 'DEPLOY_USER' => 'site-user']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $trace = File::get($this->directory.'/trace');
+        $this->assertStringContainsString('runuser -u site-user --', $trace);
+        $this->assertStringContainsString('composer install --no-dev', $trace);
+        $this->assertStringContainsString('plugins:sync --no-interaction', $trace);
+        $this->assertStringNotContainsString('git pull', $trace);
+    }
+
+    public function test_root_startup_without_a_user_switch_command_stops_before_changing_the_site(): void
+    {
+        $this->prepareDeployment();
+        File::delete([$this->directory.'/bin/runuser', $this->directory.'/bin/sudo']);
+
+        $process = $this->deploy([], ['DEPLOY_TEST_UID' => '0', 'PATH' => $this->directory.'/bin']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('未找到 runuser 或 sudo', $process->getErrorOutput());
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+        $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+    }
+
+    public static function invalidDeploymentUsers(): array
+    {
+        return ['root' => ['root'], 'missing account' => ['missing-user']];
+    }
+
+    #[DataProvider('invalidDeploymentUsers')]
+    public function test_invalid_site_accounts_stop_root_startup_before_any_site_changes(string $user): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy([], ['DEPLOY_TEST_UID' => '0', 'DEPLOY_USER' => $user]);
+
+        $this->assertSame(1, $process->getExitCode());
+        $trace = File::get($this->directory.'/trace');
+        $this->assertStringNotContainsString('php artisan', $trace);
+        $this->assertStringNotContainsString('composer install', $trace);
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+        $this->assertStringContainsString('指定已存在的非 root 站点账号', $process->getErrorOutput());
+    }
+
+    public function test_root_detects_the_site_from_runtime_owners_without_a_manual_user(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], ['DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '1002']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('自动识别站点账号：site-user', $process->getOutput());
+        $this->assertStringContainsString('本站运行目录属主', $process->getOutput());
+        $this->assertStringContainsString('runuser -u site-user --', File::get($this->directory.'/trace'));
+    }
+
+    public function test_conflicting_runtime_owners_stop_detection_before_switching_accounts(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy([], ['DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_CACHE_UID' => '1002']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('站点账号识别存在冲突', $process->getErrorOutput());
+        $this->assertStringContainsString('bootstrap/cache -> UID 1002', $process->getErrorOutput());
+        $this->assertStringNotContainsString('runuser -u', File::get($this->directory.'/trace'));
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_root_can_detect_a_single_php_fpm_worker_account_when_runtime_directories_are_root_owned(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '0', 'DEPLOY_TEST_PROJECT_UID' => '0',
+            'DEPLOY_TEST_FPM' => "0 php-fpm8.3\n1002 php-fpm8.3\n1002 php-fpm8.3",
+        ]);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('自动识别站点账号：site-user（依据：PHP-FPM 进程）', $process->getOutput());
+    }
+
+    public function test_multiple_php_fpm_accounts_do_not_silently_select_another_sites_account(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '0', 'DEPLOY_TEST_PROJECT_UID' => '0',
+            'DEPLOY_TEST_FPM' => "1001 php-fpm8.2\n1002 php-fpm8.3",
+        ]);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('站点账号识别存在冲突（PHP-FPM 进程）', $process->getErrorOutput());
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_root_uses_the_project_owner_if_no_runtime_or_worker_owner_is_available(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '0', 'DEPLOY_TEST_PROJECT_UID' => '1002',
+        ]);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('自动识别站点账号：site-user（依据：项目目录与 .env 属主）', $process->getOutput());
+    }
+
+    public function test_missing_account_evidence_does_not_fall_back_to_a_guessed_default_user(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '0', 'DEPLOY_TEST_PROJECT_UID' => '0',
+        ]);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('未能识别非 root 站点账号', $process->getErrorOutput());
+        $this->assertStringNotContainsString('runuser -u', File::get($this->directory.'/trace'));
+    }
+
+    public function test_project_owner_evidence_takes_precedence_over_another_sites_global_fpm_process(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], [
+            'DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '0', 'DEPLOY_TEST_PROJECT_UID' => '1002',
+            'DEPLOY_TEST_FPM' => '1001 php-fpm8.3',
+        ]);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('自动识别站点账号：site-user（依据：项目目录与 .env 属主）', $process->getOutput());
+    }
+
+    public function test_an_orphaned_owner_uid_is_reported_instead_of_selecting_another_account(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], ['DEPLOY_TEST_UID' => '0', 'DEPLOY_TEST_RUNTIME_UID' => '9999']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('UID 9999 没有对应的系统账号', $process->getErrorOutput());
+    }
+
+    public function test_check_only_finishes_without_a_lock_maintenance_or_deployment_commands(): void
+    {
+        $this->prepareDeployment();
+        chmod($this->directory.'/.env', 0400);
+
+        $process = $this->deploy(['--check']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $trace = File::get($this->directory.'/trace');
+        $this->assertStringContainsString('账号与目录权限预检通过', $process->getOutput());
+        $this->assertStringNotContainsString('php artisan', $trace);
+        $this->assertStringNotContainsString('composer install', $trace);
+        $this->assertStringNotContainsString('npm ci', $trace);
+        $this->assertStringNotContainsString('git pull', $trace);
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
+    }
+
+    public static function inaccessiblePaths(): array
+    {
+        return [
+            'Composer package directory' => ['vendor/package/nested', true],
+            'npm package directory' => ['node_modules/package/nested', true],
+            'Git objects directory' => ['.git/objects', true],
+            'tracked source directory' => ['app', true],
+            'existing deployment lock' => ['storage/framework/deploy.lock', false],
+            'compiled configuration' => ['bootstrap/cache/config.php', false],
+            'plugin build directory' => ['storage/app/plugin-builds/plugin/1.0.0', true],
+            'local plugin index' => ['storage/app/private/plugin-releases/plugin/stable.json', false],
+            'Filament generated CSS' => ['public/css/filament/existing.css', false],
+        ];
+    }
+
+    #[DataProvider('inaccessiblePaths')]
+    public function test_inaccessible_paths_are_reported_before_maintenance_and_remain_untouched(string $relativePath, bool $isDirectory): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('此权限回归需要非 root 的实际测试进程。');
+        }
+        $this->prepareDeployment();
+        $path = $this->directory.'/'.$relativePath;
+        File::ensureDirectoryExists($isDirectory ? $path : dirname($path));
+        if (! $isDirectory) {
+            File::put($path, 'original artifact');
+        }
+        chmod($path, $isDirectory ? 0555 : 0444);
+
+        try {
+            $process = $this->deploy();
+
+            $this->assertSame(1, $process->getExitCode());
+            $this->assertStringContainsString($relativePath, $process->getErrorOutput());
+            $this->assertStringContainsString('权限', $process->getErrorOutput());
+            $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+            $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
+            if (! $isDirectory) {
+                $this->assertSame('original artifact', File::get($path));
+            }
+        } finally {
+            chmod($path, $isDirectory ? 0755 : 0644);
+        }
+    }
+
+    public function test_an_unreadable_environment_file_is_reported_without_booting_artisan(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('此权限回归需要非 root 的实际测试进程。');
+        }
+        $this->prepareDeployment();
+        chmod($this->directory.'/.env', 0000);
+
+        try {
+            $process = $this->deploy();
+
+            $this->assertSame(1, $process->getExitCode());
+            $this->assertStringContainsString('.env', $process->getErrorOutput());
+            $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+        } finally {
+            chmod($this->directory.'/.env', 0644);
+        }
+    }
+
+    public function test_a_regular_file_blocking_a_build_directory_is_reported_before_deployment(): void
+    {
+        $this->prepareDeployment();
+        File::put($this->directory.'/node_modules', 'original artifact');
+
+        $process = $this->deploy();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('node_modules', $process->getErrorOutput());
+        $this->assertSame('original artifact', File::get($this->directory.'/node_modules'));
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_git_status_errors_stop_deployment_before_maintenance(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy([], ['DEPLOY_TEST_FAILURE' => 'git status --porcelain']);
+
+        $this->assertSame(23, $process->getExitCode());
+        $this->assertStringNotContainsString('php artisan', File::get($this->directory.'/trace'));
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
+    public function test_an_explicit_user_mismatch_cannot_be_ignored_when_started_without_root(): void
+    {
+        $this->prepareDeployment();
+
+        $process = $this->deploy(['--check'], ['DEPLOY_USER' => 'site-user']);
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('与指定的站点账号 site-user 不一致', $process->getErrorOutput());
+        $this->assertFileDoesNotExist($this->directory.'/storage/framework/deploy.lock');
+    }
+
     private function prepareDeployment(): void
     {
-        foreach (['bin', 'vendor', 'storage/framework'] as $directory) {
+        foreach (['app', 'bin', 'vendor', 'storage/framework', 'storage/logs', 'bootstrap/cache'] as $directory) {
             File::ensureDirectoryExists($this->directory.'/'.$directory);
         }
         File::copy(base_path('deploy.sh'), $this->directory.'/deploy.sh');
         File::copy(base_path('storage/framework/.gitignore'), $this->directory.'/storage/framework/.gitignore');
+        File::copy(base_path('bootstrap/cache/.gitignore'), $this->directory.'/bootstrap/cache/.gitignore');
         File::put($this->directory.'/.gitignore', File::get(base_path('.gitignore'))."\n/bin/\n/trace\n");
         File::put($this->directory.'/.env', 'APP_ENV=production');
+        File::put($this->directory.'/app/Example.php', '<?php');
         File::put($this->directory.'/vendor/autoload.php', '<?php');
         $runner = <<<'BASH'
 #!/bin/bash
@@ -137,10 +426,60 @@ if [[ "$action" == "${DEPLOY_TEST_FAILURE:-}" ]]; then
     exit 23
 fi
 case "$tool" in
+    id)
+        case "$1" in
+            -un|-nu)
+                case "${2:-$DEPLOY_TEST_UID}" in
+                    0) printf 'root\n' ;;
+                    1001) printf 'www-data\n' ;;
+                    1002) printf 'site-user\n' ;;
+                    *) exit 1 ;;
+                esac
+                ;;
+            -u)
+                if [[ "$#" -eq 1 ]]; then
+                    printf '%s\n' "$DEPLOY_TEST_UID"
+                else
+                    case "$2" in
+                        root) printf '0\n' ;;
+                        www-data) printf '1001\n' ;;
+                        site-user) printf '1002\n' ;;
+                        *) exit 1 ;;
+                    esac
+                fi
+                ;;
+        esac
+        ;;
+    stat)
+        case "${!#}" in
+            bootstrap/cache) printf '%s\n' "${DEPLOY_TEST_CACHE_UID:-$DEPLOY_TEST_RUNTIME_UID}" ;;
+            "$DEPLOY_TEST_DIRECTORY"|.env) printf '%s\n' "$DEPLOY_TEST_PROJECT_UID" ;;
+            *) printf '%s\n' "$DEPLOY_TEST_RUNTIME_UID" ;;
+        esac
+        ;;
+    ps)
+        printf '%s\n' "$DEPLOY_TEST_FPM"
+        ;;
+    runuser)
+        if [[ "$2" == site-user ]]; then export DEPLOY_TEST_UID=1002; else export DEPLOY_TEST_UID=1001; fi
+        shift 3
+        exec "$@"
+        ;;
+    sudo)
+        if [[ "$4" == site-user ]]; then export DEPLOY_TEST_UID=1002; else export DEPLOY_TEST_UID=1001; fi
+        shift 5
+        exec "$@"
+        ;;
     git)
         case "$1" in
             status) exec "$DEPLOY_TEST_GIT" status --porcelain ;;
-            rev-parse) printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+            rev-parse)
+                case "$2" in
+                    --absolute-git-dir|--git-common-dir) exec "$DEPLOY_TEST_GIT" "$@" ;;
+                    *) printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+                esac
+                ;;
+            ls-files) exec "$DEPLOY_TEST_GIT" "$@" ;;
             pull) ;;
             *) exit 91 ;;
         esac
@@ -151,14 +490,23 @@ case "$tool" in
             up) rm "$DEPLOY_TEST_DIRECTORY/storage/framework/down" ;;
         esac
         ;;
-    composer|npm|flock) ;;
+    composer)
+        if [[ "$DEPLOY_TEST_UID" -eq 0 ]]; then
+            printf 'Composer was executed as root\n' >&2
+            exit 94
+        fi
+        ;;
+    npm|flock) ;;
     *) exit 92 ;;
 esac
 BASH;
-        foreach (['site-php', 'composer', 'npm', 'git', 'flock'] as $tool) {
+        foreach (['site-php', 'composer', 'npm', 'git', 'flock', 'id', 'runuser', 'sudo', 'stat', 'ps'] as $tool) {
             $path = $this->directory.'/bin/'.$tool;
             File::put($path, $runner);
             chmod($path, 0755);
+        }
+        foreach (['bash', 'dirname', 'env', 'mkdir', 'rm', 'touch', 'find'] as $tool) {
+            symlink((new ExecutableFinder)->find($tool), $this->directory.'/bin/'.$tool);
         }
         $git = (new ExecutableFinder)->find('git');
         foreach ([['init', '-q'], ['add', '.'], ['-c', 'user.name=Deployment Tests', '-c', 'user.email=deploy@example.test', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Deployment fixture']] as $arguments) {
@@ -175,6 +523,12 @@ BASH;
             'DEPLOY_TEST_DIRECTORY' => $this->directory,
             'DEPLOY_TEST_GIT' => (new ExecutableFinder)->find('git'),
             'DEPLOY_TEST_FAILURE' => '',
+            'DEPLOY_TEST_UID' => '1001',
+            'DEPLOY_TEST_RUNTIME_UID' => '1001',
+            'DEPLOY_TEST_CACHE_UID' => '',
+            'DEPLOY_TEST_PROJECT_UID' => '1001',
+            'DEPLOY_TEST_FPM' => '',
+            'DEPLOY_USER' => '',
             ...$environment,
         ]);
         $process->run();

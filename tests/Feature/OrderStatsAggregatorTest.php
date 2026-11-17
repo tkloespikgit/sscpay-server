@@ -193,6 +193,46 @@ class OrderStatsAggregatorTest extends TestCase
         $this->assertSame('100.00', (string) $row->chargeback_amount);
     }
 
+    public function test_refund_conversion_counts_a_chargeback_without_recounting_the_refunded_principal(): void
+    {
+        $this->freezeTime();
+        $order = $this->statOrder('REFUND-CONVERSION', [
+            'status' => 'paid', 'paid_at' => now(), 'chargeback_fee_snapshot' => '15.00',
+        ]);
+        $service = app(BalanceService::class);
+        $service->refund($order, '100.00', $this->operator());
+        $service->chargeback($order->refresh(), $this->operator(), '拒付拦截');
+
+        $this->aggregator->aggregateDate(now());
+
+        $row = $this->statFor(now());
+        $this->assertSame(1, $row->paid_orders);
+        $this->assertSame('100.00', $row->paid_amount);
+        $this->assertSame(1, $row->refunded_orders);
+        $this->assertSame('100.00', $row->refunded_amount);
+        $this->assertSame(1, $row->chargeback_orders);
+        $this->assertSame('0.00', $row->chargeback_amount);
+    }
+
+    public function test_partial_refund_conversion_splits_principal_between_refund_and_chargeback_metrics(): void
+    {
+        $this->freezeTime();
+        $order = $this->statOrder('PARTIAL-REFUND-CONVERSION', ['status' => 'paid', 'paid_at' => now()]);
+        $service = app(BalanceService::class);
+        $operator = $this->operator();
+        $service->refund($order, '30.00', $operator);
+        $service->chargeback($order->refresh(), $operator, '确认剩余本金拒付');
+
+        $this->aggregator->aggregateDate(now());
+
+        $row = $this->statFor(now());
+        $this->assertSame('100.00', $row->paid_amount);
+        $this->assertSame(1, $row->refunded_orders);
+        $this->assertSame('30.00', $row->refunded_amount);
+        $this->assertSame(1, $row->chargeback_orders);
+        $this->assertSame('70.00', $row->chargeback_amount);
+    }
+
     public function test_metrics_are_split_across_application_and_payment_method(): void
     {
         $otherApp = Application::createWithCredentials([

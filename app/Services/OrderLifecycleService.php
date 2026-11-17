@@ -97,13 +97,16 @@ final class OrderLifecycleService
 
     public function isBlocked(Order $order): bool
     {
+        $hasChargebackLedger = BalanceService::hasChargebackLedger($order);
+
         return ($order->combined_order_id !== null
                 && ! $order->combinedOrder()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
                     ->whereNull('deleted_at')->where('status', 'paid')->exists())
             || in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true)
             || $order->gateway_status === 'disputing'
-            || (($order->gateway_status === 'refunded' || $order->status === 'refunded') && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0)
-            || (($order->gateway_status === 'chargeback' || $order->status === 'chargeback') && ! BalanceService::hasChargebackLedger($order))
+            || (($order->gateway_status === 'refunded' || $order->status === 'refunded')
+                && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0 && ! $hasChargebackLedger)
+            || (($order->gateway_status === 'chargeback' || $order->status === 'chargeback') && ! $hasChargebackLedger)
             || $order->activeDisputeEvent()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->exists()
             || $order->accountingTasks()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
                 ->unsettledReversals()->exists();

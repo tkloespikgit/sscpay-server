@@ -664,6 +664,30 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **原因：** 只部署源码不会同步 Git 忽略的本地安装包，下载页面可能显示“安装包尚未发布”；手工记忆插件发布、缓存和队列命令容易遗漏。用户要求将后续上线必需操作统一纳入部署入口。
 
+**执行身份：** root 启动时自动识别账号：优先采用本站运行目录的唯一非 root 属主，其次采用项目目录与 `.env` 的唯一非 root 属主，均无证据时才参考 PHP-FPM worker 的唯一非 root UID；每级出现冲突、无候选或 UID 无系统账号时停止。非 root 启动沿用当前账号；`DEPLOY_USER` 保留为显式覆盖，不能与实际执行身份不符。通过 `runuser` 或非交互 `sudo` 切换后，先检查代码、Git、依赖、缓存、插件及前端目录和已有文件的实际权限，再创建锁并部署。`--check` 仅预检，不进入维护模式；权限不足报告路径，不自动修改属主或 ACL。此方式使普通部署无需反复指定账号，并解决非交互 Composer 因 root 禁用插件的问题。
+
 **影响与边界：** 脚本在维护模式下更新，并在迁移前完成协议和插件版本预检；失败停止且保留维护状态，不自动回滚数据库。相同版本内容可重试，缺失索引或 ZIP 可由相同源码补齐；版本冲突、降级仍拒绝发布。使用配置中的插件磁盘，OSS bucket/prefix 需与网页运行环境一致；本地存储需要持久化，多实例部署由平台统一调度。预检不试写远端，多个插件的稳定入口不作为一个存储事务切换。
 
 **依据：** [部署脚本](../deploy.sh)、[同步命令](../app/Console/Commands/SyncPluginReleases.php)、[发布服务](../app/Services/PluginReleaseService.php)、[命令回归](../tests/Feature/SyncPluginReleasesTest.php)、[隔离的部署流程回归](../tests/Feature/DeploymentScriptTest.php)、[部署操作](../doc/deployment.md#9-日常自动部署)。
+
+## D-62 全额退款后转拒付仅补扣拒付费
+
+部分退款的人工确认入口与剩余本金规则由 [D-63](#d-63-部分退款人工转拒付扣剩余本金及拒付费) 补充；以下全额退款规则保持。
+
+**状态：针对本次退款转拒付需求在当前工作区实现，未提交（2026-11-17）。** 拒付拦截可能先以退款通知到达；已有全额退款账务的订单可由具备拒付权限的人员在订单详情页转为拒付，只额外收取一次拒付手续费。普通退款通知不自动判定拒付，部分退款继续要求人工核对本金。
+
+**原因与影响：** 原实现禁止所有有退款金额的订单拒付，无法补扣拦截费；直接再扣全额会重复扣本金。复用 `BalanceService::chargeback()`，在商户→订单锁内重读退款金额和费用快照，保留原退款本金、退款费及结算审计，只扣拒付费。全额退款转换追加零本金的 `chargeback` 凭证，兼容既有防重、主状态推导、可靠待办和待入账筛选，零手续费也有凭证。真实网关拒付确认复用该路径；重复回调或查询不再扣费，后续 `paid/refunded` 结果不覆盖拒付事实。
+
+后台按钮使用“退款转拒付（补扣手续费）”，弹窗金额按订单 `chargeback_fee_snapshot` 展示并扣款，旧单 NULL 回退原渠道配置，显式 0 不回退。沿用 Resource 商户范围、提交时权限复查及 `FinanceSecurity` TOTP，不新增远端退款动作、迁移或历史批量转换。统计保留原退款，转换当天计一笔拒付、拒付新增本金为 0，费用仍独立记账。
+
+**依据：** [账务服务](../app/Services/BalanceService.php)、[订单详情动作](../app/Filament/Resources/OrderResource/Pages/ViewOrder.php)、[退款与拒付回归](../tests/Feature/GatewayRefundChargebackTest.php)、[后台权限与 TOTP 回归](../tests/Feature/Filament/OrderLifecycleActionsTest.php)、[结算分类回归](../tests/Feature/OrderSettlementBalanceTest.php)、[统计回归](../tests/Feature/OrderStatsAggregatorTest.php)、[MySQL 并发回归](../tests/Feature/MySqlSettlementConcurrencyTest.php)。
+
+## D-63 部分退款人工转拒付扣剩余本金及拒付费
+
+**状态：用户明确选择“剩余本金＋拒付费”；当前工作区实现，未提交（2026-11-17）。** 例如 USD 100 订单已退 USD 30、拒付费 USD 15，本次人工转拒付再扣 USD 85。补充 D-62 的全额退款转换，不将普通退款自动认定为拒付。
+
+**原因与影响：** 部分退款后再扣整单本金会重复扣款，只扣手续费又会漏掉剩余本金。后台“部分退款转拒付”展示已退本金、剩余本金、拒付费和合计，要求理由、拒付权限及 TOTP。`BalanceService::chargebackPrincipalAmount()` 在锁内按实际记账的 USD 退款计算剩余本金，核对退款单原币合计、USD 合计与本金台账；异常历史数据先核对，不猜金额。转换保留原退款和已收退款费；本金依次消耗本单待结算、本单循环保证金，再由可提现承担，拒付费直接扣可提现。
+
+网关自动拒付遇部分退款仍转人工待办，不能用无操作人的自动路径代替金额确认。人工补录凭证后可核销原待办；后续网关又报退款时，不重复扣已由退款＋拒付结清的本金。可靠待办、生命周期与资金释放查询均识别拒付凭证，避免因原退款累计未达全额而永久阻塞出款。统计按实际退款本金与拒付剩余本金分别归日，不重复计本金；不新增迁移、商户 API 协议或远端退款操作。
+
+**依据：** [账务服务](../app/Services/BalanceService.php)、[可靠记账](../app/Services/OrderAccountingService.php)、[生命周期](../app/Services/OrderLifecycleService.php)、[订单详情](../app/Filament/Resources/OrderResource/Pages/ViewOrder.php)、[退款与拒付回归](../tests/Feature/GatewayRefundChargebackTest.php)、[后台操作回归](../tests/Feature/Filament/OrderLifecycleActionsTest.php)、[MySQL 并发回归](../tests/Feature/MySqlSettlementConcurrencyTest.php)。

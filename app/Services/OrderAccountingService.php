@@ -96,7 +96,7 @@ class OrderAccountingService
                 } elseif ($fresh->type === OrderAccountingTask::TYPE_REFUND) {
                     $remaining = bcsub((string) $order->amount, (string) $order->refunded_amount, 2);
 
-                    if (bccomp($remaining, '0', 2) > 0) {
+                    if (bccomp($remaining, '0', 2) > 0 && ! BalanceService::hasChargebackLedger($order)) {
                         $this->balanceService->refund($order, $remaining, null,
                             __('admin.finance.refund.gateway_auto_reason'), "gateway_refund:{$order->id}");
                     }
@@ -148,7 +148,8 @@ class OrderAccountingService
             $accounted = match ($fresh->type) {
                 OrderAccountingTask::TYPE_PAID => $order->balanceTransactions()->withoutGlobalScopes()
                     ->where('merchant_id', $order->merchant_id)->where('type', 'order_paid')->exists(),
-                OrderAccountingTask::TYPE_REFUND => bccomp((string) $order->refunded_amount, (string) $order->amount, 2) >= 0,
+                OrderAccountingTask::TYPE_REFUND => bccomp((string) $order->refunded_amount, (string) $order->amount, 2) >= 0
+                    || BalanceService::hasChargebackLedger($order),
                 OrderAccountingTask::TYPE_CHARGEBACK => BalanceService::hasChargebackLedger($order),
                 default => false,
             };

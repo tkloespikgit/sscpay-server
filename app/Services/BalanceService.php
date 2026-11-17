@@ -220,8 +220,8 @@ class BalanceService
      */
     private const REFUNDABLE_STATUSES = ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded'];
 
-    /** 可以执行拒付的订单状态。chargeback 在列内的理由同 REFUNDABLE_STATUSES。 */
-    private const CHARGEBACKABLE_STATUSES = ['paid', 'pending_settlement', 'shipped', 'completed', 'chargeback'];
+    /** 部分退款可人工确认剩余本金；refunded 仅在退款已全额记账后补扣拒付费。 */
+    private const CHARGEBACKABLE_STATUSES = ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded', 'chargeback'];
 
     /**
      * 退款（支持部分退款）。amountOriginal 为订单原币种金额，
@@ -320,40 +320,42 @@ class BalanceService
     }
 
     /**
-     * 拒付（只能全额）。扣减 = 订单全额（USD） + 固定拒付手续费（USD）。
-     * 为避免与部分退款重复扣款，已有退款记录的订单不允许再拒付。
+     * 拒付扣减未退款的 USD 本金及固定拒付费；已全额退款时仅补扣拒付费。
+     * 部分退款经人工确认后扣剩余本金及拒付费；保留原退款记录与手续费。
      *
      * @param  ?User  $operator  操作人；网关回调自动入账时为 null（系统行为）
      * @param  ?string  $idempotencyKey  幂等键前缀，说明见 refund()
      */
     public function chargeback(Order $order, ?User $operator, ?string $reason = null, ?string $idempotencyKey = null): void
     {
-        $this->assertChargebackable($order);
+        $this->assertChargebackable($order, $operator);
 
-        $amountUsd = (string) $order->converted_amount;
-        $method = $order->paymentMethodConfig();
-        $fee = (string) ($order->chargeback_fee_snapshot ?? $method?->chargeback_fee ?? '0');
-
-        $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountUsd, $fee, $operator, $reason, $idempotencyKey) {
+        $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $operator, $reason, $idempotencyKey) {
             // 在锁内重新读取订单最新状态/退款额：等锁期间订单可能已被另一笔并发的
             // 退款/拒付改变状态，不能只信外层（加锁前）读到的旧值，否则会对同一笔
             // 订单重复扣款（如退款已发生后又被拒付扣了全额）。
             $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
 
-            $this->assertChargebackable($fresh);
+            $this->assertChargebackable($fresh, $operator);
 
             if ((int) $fresh->merchant_id !== (int) $merchant->id) {
                 throw new BalanceOperationException(__('settlement.errors.order_merchant_mismatch'));
             }
 
-            if ($fresh->settlement_mode !== null) {
+            $fullyRefunded = bccomp((string) $fresh->refunded_amount, '0', 2) > 0
+                && bccomp((string) $fresh->refunded_amount, (string) $fresh->amount, 2) === 0;
+            $amountUsd = $this->chargebackPrincipalAmount($fresh);
+            $method = $fresh->paymentMethodConfig();
+            $fee = (string) ($fresh->chargeback_fee_snapshot ?? $method?->chargeback_fee ?? '0');
+
+            if (! $fullyRefunded && $fresh->settlement_mode !== null) {
                 $this->creditForPaidOrder($fresh);
                 $merchant->refresh();
             }
-            $amountUsd = (string) $fresh->converted_amount;
-            $bucketChanges = $this->consumeOrderFunds($merchant, $fresh, $amountUsd);
+            $bucketChanges = bccomp($amountUsd, '0', 2) === 0 ? [] : $this->consumeOrderFunds($merchant, $fresh, $amountUsd);
 
-            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK, '-'.$amountUsd, array_merge($bucketChanges, [
+            // 全额退款转拒付也保留零本金凭证，统一作为防重和可靠待办的结清证据。
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK, bcsub('0', $amountUsd, 2), array_merge($bucketChanges, [
                 'order_id' => $fresh->id,
                 'operator_id' => $operator?->id,
                 'reason' => $reason,
@@ -364,6 +366,7 @@ class BalanceService
                 $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_CHARGEBACK_FEE, '-'.$fee, [
                     'order_id' => $fresh->id,
                     'operator_id' => $operator?->id,
+                    'reason' => $reason,
                     'idempotency_key' => $idempotencyKey ? $idempotencyKey.':fee' : null,
                 ]);
             }
@@ -372,6 +375,45 @@ class BalanceService
             $fresh->save();
             $this->lifecycle->sync($fresh);
         });
+    }
+
+    /**
+     * 本次拒付应扣的 USD 本金。部分退款按实际退款凭证及台账扣除，保留分次换汇的尾差。
+     * 执行扣款时调用方必须已锁商户和订单；后台也复用此方法展示扣款预览。
+     */
+    public function chargebackPrincipalAmount(Order $order): string
+    {
+        $this->assertFiatOrder($order);
+
+        if (bccomp((string) $order->refunded_amount, '0', 2) === 0) {
+            return (string) $order->converted_amount;
+        }
+
+        if (bccomp((string) $order->refunded_amount, (string) $order->amount, 2) === 0) {
+            return '0.00';
+        }
+
+        $refundedOriginal = '0.00';
+        $refundedUsd = '0.00';
+        foreach ($order->refunds()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->get() as $refund) {
+            $refundedOriginal = bcadd($refundedOriginal, (string) $refund->amount, 2);
+            $refundedUsd = bcadd($refundedUsd, (string) $refund->amount_usd, 2);
+        }
+
+        $deductedUsd = '0.00';
+        foreach ($order->balanceTransactions()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
+            ->where('type', MerchantBalanceTransaction::TYPE_REFUND)->get() as $transaction) {
+            $deductedUsd = bcsub($deductedUsd, (string) $transaction->amount, 2);
+        }
+
+        if (bccomp($refundedOriginal, (string) $order->refunded_amount, 2) !== 0
+            || bccomp($refundedUsd, $deductedUsd, 2) !== 0
+            || bccomp($refundedUsd, '0', 2) < 0
+            || bccomp($refundedUsd, (string) $order->converted_amount, 2) > 0) {
+            throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+        }
+
+        return bcsub((string) $order->converted_amount, $refundedUsd, 2);
     }
 
     /** Crypto balances must never enter the fiat balance ledger. */
@@ -404,12 +446,12 @@ class BalanceService
     }
 
     /**
-     * 订单当前是否还能拒付。只有还没落过拒付流水（即钱没扣）时才放行，
+     * 订单当前是否还能拒付。只有尚未登记拒付结清凭证时才放行，
      * 防止查询将状态纠正为 paid 后重复扣款，同时支持补录网关拒付。
      *
      * @throws BalanceOperationException
      */
-    private function assertChargebackable(Order $order): void
+    private function assertChargebackable(Order $order, ?User $operator): void
     {
         $this->assertFiatOrder($order);
 
@@ -417,8 +459,20 @@ class BalanceService
             throw new BalanceOperationException("当前订单状态「{$order->status}」不可拒付。");
         }
 
-        if (bccomp((string) $order->refunded_amount, '0', 2) > 0) {
-            throw new BalanceOperationException('该订单已发生退款，不能再做拒付，请人工处理。');
+        if (bccomp((string) $order->refunded_amount, '0', 2) > 0
+            && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0
+            && $operator === null) {
+            throw new BalanceOperationException(__('admin.finance.chargeback.partial_refund_requires_review'));
+        }
+
+        if (bccomp((string) $order->refunded_amount, '0', 2) < 0
+            || bccomp((string) $order->refunded_amount, (string) $order->amount, 2) > 0) {
+            throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+        }
+
+        if ($order->status === 'refunded' && (bccomp((string) $order->refunded_amount, '0', 2) <= 0
+            || bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0)) {
+            throw new BalanceOperationException('该订单退款尚未完成扣款，请先补录退款，再转拒付。');
         }
 
         if (self::hasChargebackLedger($order)) {
@@ -427,7 +481,7 @@ class BalanceService
     }
 
     /**
-     * 该订单是否已经落过拒付本金流水（= 钱已经扣了）。
+     * 该订单是否已经落过拒付结清凭证（全额退款转拒付的本金为零）。
      *
      * 订单状态是 chargeback 但没有这条流水，说明是网关推送过来只改了状态、
      * 没有扣款的历史数据——那种订单需要补录，见 assertChargebackable()。

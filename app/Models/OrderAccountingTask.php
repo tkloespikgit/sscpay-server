@@ -54,7 +54,9 @@ class OrderAccountingTask extends Model
         return $query->whereIn('status', [self::STATUS_PENDING, self::STATUS_MANUAL_REVIEW])
             ->where(function (Builder $query): void {
                 $query->where(fn (Builder $refund) => $refund->where('type', self::TYPE_REFUND)
-                    ->whereHas('order', fn (Builder $orders) => $orders->withoutGlobalScopes()->whereColumn('refunded_amount', '<', 'amount')))
+                    ->whereHas('order', fn (Builder $orders) => $orders->withoutGlobalScopes()->whereColumn('refunded_amount', '<', 'amount')
+                        ->whereDoesntHave('balanceTransactions', fn (Builder $transactions) => $transactions->withoutGlobalScopes()
+                            ->where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK))))
                     ->orWhere(fn (Builder $chargeback) => $chargeback->where('type', self::TYPE_CHARGEBACK)
                         ->whereHas('order', fn (Builder $orders) => $orders->withoutGlobalScopes()
                             ->whereDoesntHave('balanceTransactions', fn (Builder $transactions) => $transactions->withoutGlobalScopes()

@@ -1070,13 +1070,13 @@ class ViewOrder extends ViewRecord
     }
 
     /**
-     * 拒付（只能全额）。扣减订单全额 + 固定拒付手续费；已退款订单不可拒付。
+     * 拒付扣减未退款的本金及拒付费；全额退款后转拒付仅补扣拒付费。
      * 需 orders.chargeback 权限 + 资金操作强制 2FA。
      */
     private function chargebackAction(): Action
     {
         return Action::make('chargeback')
-            ->label(__('admin.finance.chargeback.action'))
+            ->label(fn (Order $record): string => $this->chargebackActionLabel($record))
             ->icon('heroicon-o-exclamation-triangle')
             ->color('danger')
             ->requiresConfirmation()
@@ -1085,17 +1085,45 @@ class ViewOrder extends ViewRecord
             ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record,
                 Permissions::ORDERS_CHARGEBACK))
             ->visible(fn ($record) => $this->canPerformOrderAction($record, Permissions::ORDERS_CHARGEBACK)
-                && bccomp((string) $record->refunded_amount, '0', 2) === 0
                 && ! BalanceService::hasChargebackLedger($record)
-                && (in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed'], true)
-                    || ($record->status === 'chargeback' && ! BalanceService::hasChargebackLedger($record))))
-            ->modalHeading(__('admin.finance.chargeback.action'))
-            ->modalDescription(fn ($record) => __('admin.finance.chargeback.desc', [
-                'amount' => number_format((float) $record->converted_amount, 2),
-                'fee' => number_format((float) ($record->paymentMethodConfig()->chargeback_fee ?? 0), 2),
-            ]).($record->status === 'chargeback' ? "\n\n".__('admin.finance.chargeback.settle_notice') : ''))
+                && in_array($record->status, ['paid', 'pending_settlement', 'shipped', 'completed', 'partially_refunded', 'refunded', 'chargeback'], true)
+                && bccomp((string) $record->refunded_amount, '0', 2) >= 0
+                && bccomp((string) $record->refunded_amount, (string) $record->amount, 2) <= 0
+                && ($record->status !== 'refunded' || (bccomp((string) $record->refunded_amount, '0', 2) > 0
+                    && bccomp((string) $record->refunded_amount, (string) $record->amount, 2) === 0)))
+            ->modalHeading(fn (Order $record): string => $this->chargebackActionLabel($record))
+            ->modalDescription(function (Order $record): string {
+                $feeAmount = (string) ($record->chargeback_fee_snapshot ?? $record->paymentMethodConfig()?->chargeback_fee ?? '0');
+                $fee = number_format((float) $feeAmount, 2);
+
+                if (bccomp((string) $record->refunded_amount, '0', 2) > 0) {
+                    if (bccomp((string) $record->refunded_amount, (string) $record->amount, 2) < 0) {
+                        try {
+                            $principal = app(BalanceService::class)->chargebackPrincipalAmount($record);
+                        } catch (BalanceOperationException $exception) {
+                            return $exception->getMessage();
+                        }
+
+                        return __('admin.finance.chargeback.partial_refund_conversion_desc', [
+                            'refunded' => number_format((float) bcsub((string) $record->converted_amount, $principal, 2), 2),
+                            'amount' => number_format((float) $principal, 2),
+                            'fee' => $fee,
+                            'total' => number_format((float) bcadd($principal, $feeAmount, 2), 2),
+                        ]);
+                    }
+
+                    return __('admin.finance.chargeback.refund_conversion_desc', ['fee' => $fee]);
+                }
+
+                return __('admin.finance.chargeback.desc', [
+                    'amount' => number_format((float) $record->converted_amount, 2),
+                    'fee' => $fee,
+                ]).($record->status === 'chargeback' ? "\n\n".__('admin.finance.chargeback.settle_notice') : '');
+            })
             ->schema([
-                Textarea::make('reason')->label(__('admin.finance.chargeback.reason'))->rows(2)->maxLength(500),
+                Textarea::make('reason')->label(__('admin.finance.chargeback.reason'))->rows(2)->maxLength(500)
+                    ->required(fn (Order $record): bool => bccomp((string) $record->refunded_amount, '0', 2) > 0
+                        && bccomp((string) $record->refunded_amount, (string) $record->amount, 2) < 0),
                 FinanceSecurity::codeField(),
             ])
             ->action(function (array $data) {
@@ -1113,6 +1141,17 @@ class ViewOrder extends ViewRecord
                 Notification::make()->title(__('admin.finance.chargeback.success'))->success()->send();
                 $this->record->refresh();
             });
+    }
+
+    private function chargebackActionLabel(Order $record): string
+    {
+        if (bccomp((string) $record->refunded_amount, '0', 2) <= 0) {
+            return __('admin.finance.chargeback.action');
+        }
+
+        return bccomp((string) $record->refunded_amount, (string) $record->amount, 2) < 0
+            ? __('admin.finance.chargeback.partial_refund_conversion_action')
+            : __('admin.finance.chargeback.refund_conversion_action');
     }
 
     public function getRelationManagers(): array

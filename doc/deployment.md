@@ -570,14 +570,25 @@ sudo crontab -u www-data -e
 
 ```bash
 cd /var/www/sscpay-server
-sudo -u www-data bash deploy.sh
+
+# 自动识别账号并检查权限，检查通过后再正式部署。
+bash deploy.sh --check
+bash deploy.sh
 
 # 多 PHP 版本时指定实际 CLI；Composer 也使用所选 PHP 执行。
-sudo -u www-data env DEPLOY_PHP=/usr/bin/php8.3 bash deploy.sh
+DEPLOY_PHP=/usr/bin/php8.3 bash deploy.sh
 
 # CI 已检出目标提交时，跳过 Git 拉取，其他上线步骤完整执行。
-sudo -u www-data bash deploy.sh --no-pull
+bash deploy.sh --no-pull
 ```
+
+非 root 启动时沿用当前账号。root 启动时，脚本依次从本站 `storage/`、日志/框架目录与 `bootstrap/cache/` 的非 root 属主、项目目录与 `.env` 的非 root 属主中识别账号；两级文件归属均无候选时，才参考 PHP-FPM worker 进程。每一级必须得到唯一 UID，多账号冲突会列出来源并停止；无证据或 UID 没有对应系统账号时也会停止。优先使用本站目录证据，避免仅根据另一站点的全局 PHP-FPM 进程选择账号。特殊混合属主环境仍可用 Shell 环境变量 `DEPLOY_USER` 显式覆盖。
+
+选中账号后，通过 `runuser` 切换执行；缺少 `runuser` 时使用 `sudo -n -H`。保留原参数、`PATH`、`DEPLOY_PHP` 与 `DEPLOY_COMPOSER`，全部部署命令使用该账号执行；非 root 启动但与显式 `DEPLOY_USER` 不一致时停止。账号和切换工具检查均在创建部署锁、进入维护模式及执行 Composer 前完成。Composer 在 root 非交互执行时会禁用插件，说明见 [Composer 官方文档](https://getcomposer.org/root)。
+
+权限预检在切换后的实际账号下执行：`.env`、部署脚本和 PHP 自动加载文件必须可读；源码的目录链和 Git 目录必须可读、可写、可进入；依赖树检查目录可操作且文件可读；框架缓存、日志、插件构建/本地发布及前端生成目录还会检查已有文件可写。检查覆盖 Git 公共目录、已有部署锁和嵌套目录，缺失目录检查最近的已有父目录，错误输出具体路径。`.env` 仅需读取，Git 对象及依赖文件可保持只读；运行目录中的 `.gitignore` 也仅需读取。此前 root 运行产生的属主问题按第 2 节核对，预检只报告问题，不修改属主、模式或 ACL。
+
+`--check` 执行上述预检及 Git 工作区/上游分支检查后退出，不创建部署锁、拉取代码、进入维护模式、执行迁移或发布文件；Git 状态检查关闭可选索引锁。正式部署也会自动执行同样的预检，失败时站点保持原访问状态。预检反映当前文件系统权限，后续磁盘空间、外部存储或并发变更造成的失败仍按部署错误处理。
 
 脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由/视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
 

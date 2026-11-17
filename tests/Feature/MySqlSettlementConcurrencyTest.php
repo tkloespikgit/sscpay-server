@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\TestWith;
 use RuntimeException;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
@@ -131,6 +132,69 @@ class MySqlSettlementConcurrencyTest extends TestCase
         $this->assertFalse(app(BalanceService::class)->settleOrder(OrderSettlement::findOrFail($settlementId)));
         $this->assertSame('-5.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->frozen_balance);
+    }
+
+    #[TestWith(['3.00', '-8.00', 1, '100.00', '0.00'])]
+    #[TestWith(['0.00', '-5.00', 0, '100.00', '0.00'])]
+    #[TestWith(['3.00', '-8.00', 1, '40.00', '-60.00'])]
+    #[TestWith(['0.00', '-5.00', 0, '40.00', '-60.00'])]
+    public function test_concurrent_refund_to_chargeback_conversions_only_record_one_fee(string $fee, string $expectedBalance, int $expectedFeeEntries, string $refundAmount, string $expectedPrincipal): void
+    {
+        $this->createMerchantAndApplication();
+        $order = $this->paidOrder('refund-conversion');
+        $order->update(['chargeback_fee_snapshot' => $fee]);
+        $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        app(BalanceService::class)->refund($order, $refundAmount, $operator);
+        $orderId = $order->id;
+        $operatorId = $operator->id;
+        $convert = static function () use ($orderId, $operatorId): void {
+            app(BalanceService::class)->chargeback(
+                Order::findOrFail($orderId), User::findOrFail($operatorId), 'Concurrent refund conversion',
+            );
+        };
+
+        $results = $this->concurrently([$convert, $convert, $convert, $convert]);
+
+        $this->assertSame(1, count(array_filter($results, static fn (array $result): bool => $result['status'] === 'completed')));
+        $this->assertSame(3, count(array_filter($results, static fn (array $result): bool => $result['status'] === 'rejected')));
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame($refundAmount, $order->refunded_amount);
+        $this->assertSame($expectedBalance, $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
+        $this->assertSame('0.00', $this->merchant->frozen_balance);
+        $this->assertSame($expectedBalance, $this->merchant->availableBalance());
+        $this->assertSame($expectedPrincipal, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)->sole()->amount);
+        $this->assertSame($expectedFeeEntries, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK_FEE)->count());
+    }
+
+    public function test_concurrent_additional_refund_and_partial_refund_conversion_never_deduct_principal_twice(): void
+    {
+        $this->createMerchantAndApplication();
+        $order = $this->paidOrder('refund-races-conversion');
+        $order->update(['chargeback_fee_snapshot' => '3.00']);
+        $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        app(BalanceService::class)->refund($order, '40.00', $operator);
+        $orderId = $order->id;
+        $operatorId = $operator->id;
+
+        $results = $this->concurrently([
+            static fn (): int => app(BalanceService::class)->refund(Order::findOrFail($orderId), '20.00', User::findOrFail($operatorId))->id,
+            static function () use ($orderId, $operatorId): void {
+                app(BalanceService::class)->chargeback(Order::findOrFail($orderId), User::findOrFail($operatorId), 'Confirmed remaining principal');
+            },
+        ]);
+
+        $this->assertSame('completed', $results[1]['status']);
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame('-8.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
+        $principal = '0.00';
+        foreach (MerchantBalanceTransaction::whereIn('type', [MerchantBalanceTransaction::TYPE_REFUND, MerchantBalanceTransaction::TYPE_CHARGEBACK])->get() as $transaction) {
+            $principal = bcadd($principal, $transaction->amount, 2);
+        }
+        $this->assertSame('-100.00', $principal);
+        $this->assertSame(1, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)->count());
+        $this->assertSame(1, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK_FEE)->count());
     }
 
     public function test_concurrent_dispute_replies_and_closure_complete_without_reverse_locking(): void

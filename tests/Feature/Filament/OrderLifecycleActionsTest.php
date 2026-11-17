@@ -9,8 +9,10 @@ use App\Models\Carrier;
 use App\Models\Order;
 use App\Models\OrderSettlement;
 use App\Models\User;
+use App\Services\BalanceService;
 use App\Services\OrderPaymentStatusService;
 use App\Support\Permissions;
+use Filament\Actions\Action;
 use Filament\Actions\Testing\TestAction;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Facades\Filament;
@@ -106,6 +108,130 @@ class OrderLifecycleActionsTest extends TestCase
         $this->assertDatabaseCount('order_refunds', 0);
     }
 
+    #[TestWith(['zh_CN'])]
+    #[TestWith(['en'])]
+    public function test_a_merchant_can_convert_a_fully_refunded_order_with_the_snapshotted_fee_and_totp(string $locale): void
+    {
+        app()->setLocale($locale);
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $user->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::ORDERS_CHARGEBACK]);
+        $user->saveAppAuthenticationSecret(app(AppAuthentication::class)->generateSecret());
+        $this->actingAs($user);
+        Filament::setCurrentPanel('merchant');
+        $order = $this->refundedOrder($user);
+
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->assertActionVisible('chargeback')
+            ->assertActionHasLabel('chargeback', __('admin.finance.chargeback.refund_conversion_action'))
+            ->assertActionExists('chargeback', fn (Action $action): bool => $action->getModalDescription()
+                === __('admin.finance.chargeback.refund_conversion_desc', ['fee' => '12.00']))
+            ->mountAction('chargeback')
+            ->assertActionMounted('chargeback')
+            ->fillForm([
+                'reason' => '拒付拦截补扣手续费',
+                'mfa_code' => app(AppAuthentication::class)->getCurrentCode($user, $user->getAppAuthenticationSecret()),
+            ])
+            ->call('callMountedAction')
+            ->assertHasNoFormErrors()
+            ->assertNotified(__('admin.finance.chargeback.success'))
+            ->assertActionHidden('chargeback');
+
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame('886.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseHas('merchant_balance_transactions', [
+            'merchant_id' => $this->merchant->id, 'order_id' => $order->id,
+            'type' => 'chargeback_fee', 'amount' => '-12.00',
+            'operator_id' => $user->id, 'reason' => '拒付拦截补扣手续费',
+        ]);
+        $this->assertDatabaseCount('order_refunds', 1);
+    }
+
+    public function test_refund_to_chargeback_conversion_requires_a_bound_authenticator(): void
+    {
+        $user = auth()->user();
+        $order = $this->refundedOrder($user);
+
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->callAction('chargeback', ['reason' => '拒付拦截', 'mfa_code' => '123456'])
+            ->assertNotified(__('admin.finance.security.not_bound'));
+
+        $this->assertSame('refunded', $order->refresh()->status);
+        $this->assertSame('898.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseMissing('merchant_balance_transactions', ['type' => 'chargeback']);
+    }
+
+    public function test_chargeback_permission_is_rechecked_after_opening_a_refund_conversion(): void
+    {
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $user->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::ORDERS_CHARGEBACK]);
+        $user->saveAppAuthenticationSecret(app(AppAuthentication::class)->generateSecret());
+        $this->actingAs($user);
+        Filament::setCurrentPanel('merchant');
+        $order = $this->refundedOrder($user);
+        $page = Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->mountAction('chargeback')
+            ->fillForm(['mfa_code' => app(AppAuthentication::class)->getCurrentCode($user, $user->getAppAuthenticationSecret())]);
+        $user->revokePermissionTo(Permissions::ORDERS_CHARGEBACK);
+
+        $page->call('callMountedAction')->assertSuccessful();
+
+        $this->assertSame('refunded', $order->refresh()->status);
+        $this->assertSame('898.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseMissing('merchant_balance_transactions', ['type' => 'chargeback_fee']);
+    }
+
+    #[TestWith(['refunded', '0.00'])]
+    #[TestWith(['refunded', '50.00'])]
+    #[TestWith(['partially_refunded', '150.00'])]
+    public function test_incomplete_refunds_do_not_offer_chargeback_conversion(string $status, string $refundedAmount): void
+    {
+        $order = $this->makeOrder('INCOMPLETE-REFUND', 'M-INCOMPLETE-REFUND', [
+            'status' => $status, 'refunded_amount' => $refundedAmount,
+        ]);
+
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->assertActionHidden('chargeback');
+    }
+
+    #[TestWith(['zh_CN'])]
+    #[TestWith(['en'])]
+    public function test_partial_refund_conversion_shows_remaining_principal_and_requires_a_reason(string $locale): void
+    {
+        app()->setLocale($locale);
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $user->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::ORDERS_CHARGEBACK]);
+        $user->saveAppAuthenticationSecret(app(AppAuthentication::class)->generateSecret());
+        $this->actingAs($user);
+        Filament::setCurrentPanel('merchant');
+        $order = $this->refundedOrder($user, '30.00');
+        $page = Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->assertActionVisible('chargeback')
+            ->assertActionHasLabel('chargeback', __('admin.finance.chargeback.partial_refund_conversion_action'))
+            ->assertActionExists('chargeback', fn (Action $action): bool => $action->getModalDescription()
+                === __('admin.finance.chargeback.partial_refund_conversion_desc', [
+                    'refunded' => '30.00', 'amount' => '70.00', 'fee' => '12.00', 'total' => '82.00',
+                ]))
+            ->mountAction('chargeback')
+            ->fillForm(['mfa_code' => app(AppAuthentication::class)->getCurrentCode($user, $user->getAppAuthenticationSecret())])
+            ->call('callMountedAction')
+            ->assertHasFormErrors(['reason' => 'required']);
+        $this->assertSame('968.00', $this->merchant->refresh()->balance);
+
+        $page->fillForm(['reason' => '核对后确认剩余本金拒付'])
+            ->call('callMountedAction')
+            ->assertHasNoFormErrors()
+            ->assertNotified(__('admin.finance.chargeback.success'))
+            ->assertActionHidden('chargeback');
+
+        $this->assertSame('886.00', $this->merchant->refresh()->balance);
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame('30.00', $order->refunded_amount);
+        $this->assertDatabaseHas('merchant_balance_transactions', [
+            'order_id' => $order->id, 'type' => 'chargeback', 'amount' => '-70.00',
+        ]);
+        $this->assertDatabaseCount('order_refunds', 1);
+    }
+
     public function test_actual_settlement_filter_is_independent_of_order_status_and_reversal_accounting(): void
     {
         $settled = $this->makeOrder('SETTLED-PARTIAL', 'M-SETTLED-PARTIAL', ['status' => 'partially_refunded']);
@@ -167,6 +293,21 @@ class OrderLifecycleActionsTest extends TestCase
         $this->assertDatabaseHas('order_shippings', ['order_id' => $order->id, 'tracking_number' => '1Z-COMPLETED']);
         $this->assertSame($status, $order->refresh()->status);
         Http::assertNothingSent();
+    }
+
+    private function refundedOrder(User $operator, string $refundAmount = '100.00'): Order
+    {
+        $this->merchant->update(['balance' => '1000.00']);
+        $method = $this->makePaymentMethod('refund-conversion');
+        $method->update(['chargeback_fee' => '50.00']);
+        $order = $this->makeOrder('REFUND-CONVERSION', 'M-REFUND-CONVERSION', [
+            'status' => 'paid', 'paid_at' => now(), 'payment_method_id' => $method->id,
+            'payment_method' => $method->method_code, 'refund_fee_snapshot' => '2.00',
+            'chargeback_fee_snapshot' => '12.00',
+        ]);
+        app(BalanceService::class)->refund($order, $refundAmount, $operator);
+
+        return $order->refresh();
     }
 
     private function settlement(Order $order, string $status): OrderSettlement

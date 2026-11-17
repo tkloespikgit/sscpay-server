@@ -527,12 +527,16 @@ class Order extends Model
         return $query->where(function (Builder $query): void {
             $query->whereNull('gateway_status')
                 ->orWhereNotIn('gateway_status', ['refunded', 'chargeback'])
-                ->orWhere(fn (Builder $refund) => $refund->where('gateway_status', 'refunded')->whereColumn('refunded_amount', '>=', 'amount'))
+                ->orWhere(fn (Builder $refund) => $refund->where('gateway_status', 'refunded')
+                    ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
+                        ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
                 ->orWhere(fn (Builder $chargeback) => $chargeback->where('gateway_status', 'chargeback')
                     ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
         })->where(function (Builder $query): void {
             $query->whereNotIn('status', ['refunded', 'chargeback'])
-                ->orWhere(fn (Builder $refund) => $refund->where('status', 'refunded')->whereColumn('refunded_amount', '>=', 'amount'))
+                ->orWhere(fn (Builder $refund) => $refund->where('status', 'refunded')
+                    ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
+                        ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
                 ->orWhere(fn (Builder $chargeback) => $chargeback->where('status', 'chargeback')
                     ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
         });
@@ -556,7 +560,9 @@ class Order extends Model
         return $query->where(function (Builder $q) {
             $q->where(fn (Builder $refunded) => $refunded
                 ->where('status', 'refunded')
-                ->whereColumn('refunded_amount', '<', 'amount'))
+                ->whereColumn('refunded_amount', '<', 'amount')
+                ->whereDoesntHave('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()
+                    ->where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)))
                 ->orWhere(fn (Builder $chargeback) => $chargeback
                     ->where('status', 'chargeback')
                     ->whereDoesntHave('balanceTransactions', fn (Builder $t) => $t

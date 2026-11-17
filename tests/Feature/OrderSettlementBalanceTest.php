@@ -18,6 +18,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
@@ -353,6 +354,60 @@ class OrderSettlementBalanceTest extends TestCase
 
         $this->assertBalances('-8.00', '0.00', '0.00', '0.00', '-8.00');
         $this->assertSame('cancelled', $this->settlement($order)->status);
+    }
+
+    public function test_converting_a_full_refund_only_deducts_the_fee_from_available_funds(): void
+    {
+        $order = $this->paidOrder(['chargeback_fee_snapshot' => '3.00']);
+        $other = $this->paidOrder(['order_no' => 'OTHER', 'merchant_order_no' => 'M-OTHER', 'payment_link_token' => 'tok-OTHER']);
+        $service = app(BalanceService::class);
+        $service->creditForPaidOrder($order);
+        $service->creditForPaidOrder($other);
+        $operator = $this->operator();
+        $service->refund($order, '100.00', $operator);
+        $settlementBefore = $this->settlement($order)->toArray();
+        $this->assertBalances('90.00', '95.00', '0.00', '0.00', '-5.00');
+
+        $service->chargeback($order->refresh(), $operator, '拒付拦截');
+
+        $this->assertBalances('87.00', '95.00', '0.00', '0.00', '-8.00');
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame($settlementBefore, $this->settlement($order)->toArray());
+        $this->assertSame('95.00', $this->settlement($other)->remaining_amount);
+        $this->assertSame(2, MerchantBalanceTransaction::query()->where('type', MerchantBalanceTransaction::TYPE_ORDER_PAID)->count());
+        $this->assertDatabaseHas('merchant_balance_transactions', [
+            'order_id' => $order->id, 'type' => MerchantBalanceTransaction::TYPE_CHARGEBACK,
+            'amount' => '0.00', 'pending_settlement_change' => '0.00', 'frozen_change' => '0.00',
+        ]);
+    }
+
+    #[TestWith([2, '150.00'])]
+    #[TestWith([0, '95.00'])]
+    public function test_partial_refund_conversion_consumes_only_its_remaining_principal_before_or_after_settlement(int $settlementDays, string $pendingBefore): void
+    {
+        $order = $this->paidOrder(['chargeback_fee_snapshot' => '3.00', 'settlement_days' => $settlementDays]);
+        $other = $this->paidOrder(['order_no' => 'OTHER', 'merchant_order_no' => 'M-OTHER', 'payment_link_token' => 'tok-OTHER']);
+        $service = app(BalanceService::class);
+        $service->creditForPaidOrder($order);
+        $service->creditForPaidOrder($other);
+        $operator = $this->operator();
+        $service->refund($order->refresh(), '40.00', $operator);
+        $this->assertSame('150.00', $this->merchant->refresh()->balance);
+        $this->assertSame($pendingBefore, $this->merchant->pending_settlement_balance);
+
+        $service->chargeback($order->refresh(), $operator, '确认剩余本金拒付');
+
+        $this->assertBalances('87.00', '95.00', '0.00', '0.00', '-8.00');
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame('40.00', $order->refunded_amount);
+        $this->assertSame('95.00', $this->settlement($other)->remaining_amount);
+        $this->assertDatabaseHas('merchant_balance_transactions', [
+            'order_id' => $order->id, 'type' => MerchantBalanceTransaction::TYPE_CHARGEBACK, 'amount' => '-60.00',
+        ]);
+        $this->travel(10)->days();
+        $this->artisan('orders:settle-due')->assertSuccessful();
+        $this->assertSame('chargeback', $order->refresh()->status);
+        $this->assertSame('87.00', $this->merchant->refresh()->balance);
     }
 
     public function test_legacy_order_remains_immediately_available_without_creating_a_settlement(): void
