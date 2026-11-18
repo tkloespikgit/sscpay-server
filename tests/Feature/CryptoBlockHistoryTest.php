@@ -44,6 +44,69 @@ class CryptoBlockHistoryTest extends TestCase
         return [['bitcoin-mainnet', 'BTC'], ['bitcoin-testnet', 'BTC'], ['litecoin-mainnet', 'LTC'], ['litecoin-testnet', 'LTC']];
     }
 
+    #[DataProvider('acceptedUtxoFutureTimes')]
+    public function test_utxo_head_accepts_canonical_block_time_within_two_hours(string $network, int $aheadSeconds): void
+    {
+        $this->freezeTime();
+        [$block, $genesis] = $this->utxoFixture();
+        $block['time'] = now()->getTimestamp() + $aheadSeconds;
+        $this->fakeUtxo($network, $block, $genesis);
+
+        $head = app(CryptoBlockHistoryService::class)->head($network);
+
+        $this->assertSame(100, $head['height']);
+        $this->assertSame($block['hash'], $head['hash']);
+        $this->assertSame($block['time'], $head['time']->getTimestamp());
+    }
+
+    public static function acceptedUtxoFutureTimes(): array
+    {
+        $cases = [];
+        foreach (self::utxoNetworks() as [$network]) {
+            $cases[$network.' reported offset'] = [$network, 7019];
+            $cases[$network.' two hour boundary'] = [$network, 7200];
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('utxoNetworks')]
+    public function test_utxo_head_rejects_block_time_more_than_two_hours_ahead(string $network, string $asset): void
+    {
+        $this->freezeTime();
+        [$block, $genesis] = $this->utxoFixture();
+        $block['time'] = now()->getTimestamp() + 7201;
+        $this->fakeUtxo($network, $block, $genesis);
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('Invalid history timestamp.');
+
+        app(CryptoBlockHistoryService::class)->head($network);
+    }
+
+    public function test_evm_head_still_rejects_block_time_more_than_five_minutes_ahead(): void
+    {
+        [, $rpc] = $this->historyFixture();
+        $rpc['blocks'][102]['timestamp'] = '0x'.dechex(now()->getTimestamp() + 301);
+        $this->fakeHistoryRpc($rpc);
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('Invalid history timestamp.');
+
+        app(CryptoBlockHistoryService::class)->head('ethereum-sepolia');
+    }
+
+    #[DataProvider('tronNetworks')]
+    public function test_tron_head_still_rejects_block_time_more_than_five_minutes_ahead(string $network): void
+    {
+        $this->freezeTime();
+        [$block, $infos, $genesis] = $this->tronFixture();
+        $block['block_header']['raw_data']['timestamp'] = now()->addSeconds(301)->getTimestampMs();
+        $this->fakeTron($network, $block, $infos, $genesis);
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('Invalid history timestamp.');
+
+        app(CryptoBlockHistoryService::class)->head($network);
+    }
+
     #[DataProvider('incompleteUtxo')]
     public function test_incomplete_utxo_block_never_becomes_history_coverage(string $case): void
     {

@@ -42,17 +42,26 @@ class PrepareCryptoCheckouts extends Command
         $checkouts = CryptoCheckout::query()->withoutGlobalScopes()->where('status', 'checking')
             ->where('next_attempt_at', '<=', now())->orderBy('next_attempt_at')->orderBy('id')->limit($limit)->get();
         $failed = 0;
+        $processed = 0;
         $deadline = microtime(true) + 45;
         foreach ($checkouts as $checkout) {
             if (microtime(true) >= $deadline) {
                 break;
             }
+            $processed++;
             try {
                 $service->process($checkout->merchant_id, $checkout->order_id);
+                $checkout->refresh();
+                $this->line('Crypto checkout '.$checkout->id.': '.$checkout->status.' ('.$checkout->phase.').');
             } catch (\Throwable) {
                 $failed++;
                 $this->error('Crypto checkout '.$checkout->id.' will retry.');
             }
+        }
+        $this->info('Processed '.$processed.' checkout(s); '.$failed.' failed.');
+        if ($processed === 0) {
+            $next = CryptoCheckout::query()->withoutGlobalScopes()->where('status', 'checking')->min('next_attempt_at');
+            $this->line($next === null ? 'No checkout is scheduled for preparation.' : 'Next checkout attempt: '.$next.' ('.config('app.timezone').').');
         }
 
         return $failed === 0 ? self::SUCCESS : self::FAILURE;

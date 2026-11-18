@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Support\CryptoEvm;
 use App\Support\CryptoEvmTrace;
 use App\Support\CryptoTronAddress;
+use App\Support\CryptoVerificationPolicy;
 use Carbon\CarbonImmutable;
 use DomainException;
 
@@ -267,7 +268,7 @@ final class CryptoBlockHistoryService
 
         return ['height' => $height, 'hash' => $this->hash($block['hash'] ?? null),
             'parent' => $height === 0 ? str_repeat('0', 64) : $this->hash($block['previousblockhash'] ?? null),
-            'time' => $this->timestamp($this->integer($block['time'] ?? null))];
+            'time' => $this->timestamp($this->integer($block['time'] ?? null), maxFutureSeconds: CryptoVerificationPolicy::UTXO_MAX_FUTURE_BLOCK_SECONDS)];
     }
 
     private function tronHeader(array $block): array
@@ -301,10 +302,10 @@ final class CryptoBlockHistoryService
         return $value;
     }
 
-    private function timestamp(int $value, bool $milliseconds = false): CarbonImmutable
+    private function timestamp(int $value, bool $milliseconds = false, int $maxFutureSeconds = 300): CarbonImmutable
     {
         $time = $milliseconds ? CarbonImmutable::createFromTimestampMsUTC($value) : CarbonImmutable::createFromTimestampUTC($value);
-        if ($value <= 0 || $time->gt(now()->addMinutes(5))) {
+        if ($value <= 0 || $time->gt(now()->addSeconds($maxFutureSeconds))) {
             throw new DomainException('Invalid history timestamp.');
         }
 

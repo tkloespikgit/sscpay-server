@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoUtxoTransaction;
+use App\Support\CryptoVerificationPolicy;
 use Carbon\CarbonImmutable;
 use DomainException;
 
@@ -61,7 +62,7 @@ final class CryptoUtxoVerificationService
             throw new DomainException('UTXO transaction is absent from the canonical block.');
         }
         $timestamp = $this->integer($block['time'] ?? null);
-        if ($timestamp < 1 || $timestamp > now()->getTimestamp() + 300 || $tip < $height) {
+        if ($timestamp < 1 || $timestamp > now()->getTimestamp() + CryptoVerificationPolicy::UTXO_MAX_FUTURE_BLOCK_SECONDS || $tip < $height) {
             throw new DomainException('UTXO block time or chain height is invalid.');
         }
         $observation = ['state' => 'mined', 'confirmed' => false,

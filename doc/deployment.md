@@ -280,6 +280,8 @@ BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 
 6. 达到两次确认并完成链上核验后，检查订单支付成功、「虚拟币资金」中 `bitcoin-testnet / BTC` 的净余额和入账凭证，以及服务费。首次零费时净额等于应付；第二轮 1% 费用时按聪向上舍入服务费后扣除。例：应付 `0.00010000 BTC`、1%、固定费 0 时，服务费为 `0.00000100 BTC`，净额 `0.00009900 BTC`。实际应付以冻结报价为准，法币余额不应增加。
 7. 同时核对真实 Tatum 投递成功和本系统验签接收记录。只靠历史补查到账只能证明补查可用，不能把 webhook 标为通过。反复刷新付款页及重复运行核验／入账后，余额与原始收入凭证应只增加一次；再建第二单确认地址不同。
 
+BTC／LTC 的规范区块时间允许最多提前服务器时间 7200 秒，历史读取和收款核验使用同一上限，EVM／TRON 仍为 300 秒。2026-11-18 的测试环境实测 BTC Testnet3 链头提前 7019 秒；旧版统一五分钟校验会报 `Invalid history timestamp`，付款页因此持续等待。依据见 [Bitcoin Core](https://github.com/bitcoin/bitcoin/blob/v28.0/src/chain.h) 和 [Litecoin Core](https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/chain.h)。这项修复保留原始区块时间和报价期限判断；若测试链时间提前接近两小时，前文一小时报价示例可能使后续付款转人工审核，正常足额测试应在建新单前为测试环境设置足够的报价时长，例如 `crypto.quote_ttl_seconds=14400`，并核对订阅时长。不能通过改写区块时间或延长已有报价规避审核。
+
 需要定位后台处理阶段时，可在该隔离测试环境逐项运行以下现有命令；不要以命令退出成功替代订单／链上结果核对，部分命令存在下一次重试时间，链上确认仍须真实出块：
 
 ```bash
@@ -291,6 +293,8 @@ php artisan crypto:maintain-subscriptions --limit=5 --no-interaction
 php artisan crypto:verify-receipts --limit=25 --no-interaction
 php artisan crypto:settle-payments --limit=100 --no-interaction
 ```
+
+`crypto:prepare-checkouts` 会输出本轮处理数量、每条记录的状态／阶段；没有到期任务时显示下次计划时间或没有待办，避免将静默退出误判为准备成功。已有 `checking / preparation_retry` 记录同步修复后按原重试时间继续，不需删除订单、回收派生索引或重建付款请求。
 
 首轮成功后再做异常测试：
 

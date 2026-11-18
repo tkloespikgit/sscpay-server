@@ -59,6 +59,41 @@ class CryptoUtxoVerificationTest extends TestCase
             'LTC main' => ['litecoin-mainnet', 'LTC'], 'LTC test' => ['litecoin-testnet', 'LTC']];
     }
 
+    #[DataProvider('acceptedFutureBlockTimes')]
+    public function test_canonical_utxo_future_payments_preserve_verified_evidence_and_quote_deadline_review(string $network, string $asset, int $aheadSeconds): void
+    {
+        [$monitor, $receipt, $rpc] = $this->arrangeReceipt($network, $asset);
+        $rpc['block']['time'] = now()->getTimestamp() + $aheadSeconds;
+        $this->fakeRpc($rpc, $network);
+
+        $this->assertTrue($this->process($receipt));
+        $this->assertTrue($this->process($receipt));
+
+        $this->assertSame('review', $receipt->fresh()->status);
+        $this->assertSame('manual_review_required', $receipt->fresh()->last_error_code);
+        $events = CryptoChainEvent::query()->orderBy('id')->get();
+        $this->assertSame(['100000001', '2'], $events->pluck('amount_units')->all());
+        foreach ($events as $event) {
+            $this->assertSame($rpc['block']['time'], $event->block_time->getTimestamp());
+            $this->assertNotNull($event->verified_at);
+            $this->assertNotNull($event->confirmed_at);
+        }
+        $this->assertSame('pending', $monitor->paymentRequest->order->fresh()->status);
+        $this->assertDatabaseCount('crypto_ledger_entries', 0);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+    }
+
+    public static function acceptedFutureBlockTimes(): array
+    {
+        $cases = [];
+        foreach (self::networks() as $name => [$network, $asset]) {
+            $cases[$name.' reported offset'] = [$network, $asset, 7019];
+            $cases[$name.' two hour boundary'] = [$network, $asset, 7200];
+        }
+
+        return $cases;
+    }
+
     public function test_segwit_transaction_id_excludes_witness_bytes(): void
     {
         [, $receipt, $rpc] = $this->arrangeReceipt('bitcoin-testnet', 'BTC', true);
@@ -137,7 +172,7 @@ class CryptoUtxoVerificationTest extends TestCase
             'wrong address' => $rpc['validation']['address'] = 'unexpected-other-address',
             'raw hash' => $rpc['tx']['hex'] = substr_replace($rpc['tx']['hex'], '02', 0, 2),
             'membership' => $rpc['block']['tx'] = [],
-            'future time' => $rpc['block']['time'] = now()->addHour()->getTimestamp(),
+            'future time' => $rpc['block']['time'] = now()->addSeconds(7201)->getTimestamp(),
             'height type' => $rpc['block']['height'] = 100.5,
             'previous transaction' => $rpc['previous']['hex'] = '00',
         };

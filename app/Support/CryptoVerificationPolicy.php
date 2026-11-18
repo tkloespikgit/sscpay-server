@@ -6,6 +6,9 @@ use DomainException;
 
 final class CryptoVerificationPolicy
 {
+    /** Bitcoin and Litecoin permit canonical block timestamps up to two hours ahead. */
+    public const UTXO_MAX_FUTURE_BLOCK_SECONDS = 7200;
+
     public static function version(string $network): string
     {
         return match ($network) {
