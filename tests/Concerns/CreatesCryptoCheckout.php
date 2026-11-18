@@ -54,6 +54,9 @@ trait CreatesCryptoCheckout
                 return Http::response(['value' => $rpc['price'] ?? '2500', 'timestamp' => now()->getTimestampMs(), 'basePair' => 'USD', 'symbol' => 'ETH']);
             }
             $path = parse_url($request->url(), PHP_URL_PATH);
+            if ($path === '/v4/subscription/chains') {
+                return Http::response($this->alertCapabilities());
+            }
             if ($path === '/v4/subscription') {
                 if ($request->method() === 'PUT') {
                     return Http::response('', 204);

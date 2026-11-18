@@ -12,6 +12,8 @@ if (root) {
         instructions.hidden = true;
         element('payment-address').value = '';
         element('payment-qr').removeAttribute('src');
+        element('open-wallet').hidden = true;
+        element('open-wallet').removeAttribute('href');
         clearTimeout(expiresTimer);
     }
 
@@ -36,6 +38,13 @@ if (root) {
             element('quote-markup').textContent = root.dataset.markup.replace('__PERCENT__', data.markup_percent);
             element('payment-address').value = data.address;
             element('payment-qr').src = data.qr;
+            element('payment-qr-hint').textContent = root.dataset[{
+                amount: 'qrAmount', address: 'qrAddress',
+            }[data.qr_type]] ?? '';
+            if (data.qr_type === 'amount') {
+                element('open-wallet').href = data.payment_uri;
+                element('open-wallet').hidden = false;
+            }
             instructions.hidden = false;
             expiresTimer = setTimeout(() => { hidePayment(); refresh('open'); }, Math.min(remaining, 2147483647));
         }
@@ -82,6 +91,15 @@ if (root) {
 
     element('requote').addEventListener('click', () => refresh('requote'));
     element('check-payment').addEventListener('click', () => refresh('open'));
+    element('copy-amount').addEventListener('click', async () => {
+        if (instructions.hidden || !current) return;
+        try {
+            await navigator.clipboard.writeText(current.due_amount);
+            element('payment-status').textContent = root.dataset.copied;
+        } catch {
+            element('payment-status').textContent = `${current.due_amount} ${current.asset}`;
+        }
+    });
     element('copy-address').addEventListener('click', async () => {
         if (instructions.hidden) return;
         try {

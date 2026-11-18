@@ -39,7 +39,7 @@ class CryptoAddressMonitorTest extends TestCase
         $this->assertSame('2026-11-11 12:15:00', $expiry->toDateTimeString());
         $this->assertSame($expiry->toDateTimeString(), $monitor->expires_at->toDateTimeString());
         $this->assertSame('preparing', $monitor->paymentRequest->status);
-        Http::assertSentCount(4);
+        Http::assertSentCount(5);
         Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && $r['type'] === 'ADDRESS_EVENT'
             && $r['attr']['chain'] === 'ethereum-sepolia' && $r->hasHeader('x-api-key', 'test-testnet-credential'));
     }
@@ -52,7 +52,7 @@ class CryptoAddressMonitorTest extends TestCase
         $this->assertTrue(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
 
         $this->assertSame('active', $monitor->refresh()->status);
-        Http::assertSentCount(5);
+        Http::assertSentCount(6);
         $this->assertCount(1, Http::recorded(fn (Request $r): bool => $r->method() === 'POST'));
     }
 
@@ -280,6 +280,9 @@ class CryptoAddressMonitorTest extends TestCase
         $exists = $alreadyExists;
         $alert = array_replace_recursive($this->alertData($monitor), $alertOverrides);
         Http::fake(['https://api.tatum.io/v4/subscription*' => function (Request $r) use (&$exists, $alert, $uncertainPost, $failedDelete) {
+            if (str_ends_with($r->url(), '/chains')) {
+                return Http::response($this->alertCapabilities());
+            }
             if ($r->method() === 'PUT') {
                 return Http::response('', 204);
             }

@@ -11,6 +11,7 @@ use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 
@@ -40,10 +41,14 @@ final class TatumSubscriptionClient
 
     public function create(CryptoAddressMonitor $monitor): string
     {
-        $response = $this->request('POST', '/v4/subscription', $monitor->environment, [
+        $body = [
             'type' => 'ADDRESS_EVENT',
             'attr' => ['chain' => $monitor->network, 'address' => $this->address($monitor), 'url' => $monitor->callback_url],
-        ], ['type' => $monitor->environment]);
+        ];
+        if ($this->supportsFinality($monitor)) {
+            $body['finality'] = 'final';
+        }
+        $response = $this->request('POST', '/v4/subscription', $monitor->environment, $body, ['type' => $monitor->environment]);
         if (! in_array($response->status(), [200, 201], true)) {
             throw new DomainException('Tatum subscription creation was not confirmed.', $response->status());
         }
@@ -52,6 +57,50 @@ final class TatumSubscriptionClient
         $this->validateId($id);
 
         return $id;
+    }
+
+    private function supportsFinality(CryptoAddressMonitor $monitor): bool
+    {
+        if (! str_starts_with($monitor->network, 'ethereum-') && ! str_starts_with($monitor->network, 'tron-')) {
+            return false;
+        }
+        $key = 'crypto:tatum:alert-capabilities:'.$this->credentialFingerprint($monitor->environment);
+        $chains = Cache::get($key);
+        if (! is_array($chains)) {
+            $chains = Cache::lock($key.':lock', 30)->block(5, function () use ($monitor, $key): array {
+                $cached = Cache::get($key);
+                if (is_array($cached)) {
+                    return $cached;
+                }
+                try {
+                    $response = $this->request('GET', '/v4/subscription/chains', $monitor->environment);
+                    $chains = $response->json('chains');
+                    if (! $response->successful() || ! is_array($chains) || ! array_is_list($chains)) {
+                        throw new DomainException('Tatum alert capabilities lookup failed.', $response->status());
+                    }
+                    $capabilities = [];
+                    foreach ($chains as $chain) {
+                        if (! is_array($chain) || ! is_string($chain['chain'] ?? null) || ! is_bool($chain['testnet'] ?? null)
+                            || ! is_bool($chain['finality'] ?? null) || ! is_array($chain['types'] ?? null)
+                            || isset($capabilities[$chain['chain']])) {
+                            throw new DomainException('Tatum alert capabilities are malformed.');
+                        }
+                        $capabilities[$chain['chain']] = ['testnet' => $chain['testnet'],
+                            'finality' => $chain['finality'] && in_array('ADDRESS_EVENT', $chain['types'], true)];
+                    }
+                    Cache::put($key, $capabilities, 86400);
+
+                    return $capabilities;
+                } catch (DomainException) {
+                    Cache::put($key, [], 60);
+
+                    return [];
+                }
+            });
+        }
+        $chain = $chains[$monitor->network] ?? [];
+
+        return ($chain['testnet'] ?? null) === ($monitor->environment === 'testnet') && ($chain['finality'] ?? false) === true;
     }
 
     /** @return array<string, mixed>|null */

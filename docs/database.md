@@ -331,6 +331,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 第四批 [核验跟踪迁移](../database/migrations/2026_11_11_193729_add_verification_tracking_to_crypto_webhook_receipts.php) 只为收件表增加 `verification_attempts`（默认 0）、`last_checked_at`、`next_attempt_at`、`last_error_code`（均可空）和状态＋下次时间索引。原始投递证据继续不可变；状态为 pending／confirming／verified／ignored／review，最后三者不由正常调度持续轮询，review 留待审核入口实现。迁移 down 会丢失核验重试审计字段，生产优先向前修复。
 
+2026-11-18 的核验优化沿用这些字段，不新增迁移。同商户、同请求、同交易且在本轮 RPC 前已存在的待处理收件共用观察结果，各自的 `verification_attempts` 记录参与次数；不同 body 的摘要、线索及来源保持不变。之后新到的收件不复用旧观察。未完成收件在 48 次观察或首次接收后 24 小时转 `review`／`verification_exhausted`，清空下一次时间，并将尚无其他复核原因的请求设为同名复核；零次、积压超时收件仍允许首次核查。新一轮地址补查确认成功或判定无收入时，可更新先前因耗尽预算而停止的收件结果；其他复核原因不被覆盖，请求仍须人工处理。规则和测试见 [D-67](decisions.md#d-67-回调交易核验合并与有界重试)。
+
 新准备请求的报价 JSON 增加公用配置快照与冻结的以太坊核验策略，确认数来自独立环境配置，缺配置不在消费时回填。公钥配置快照不得整体暴露到公开付款页。ETH 直接转入位置为 `native:0`，ERC20 为 `log:{全区块日志索引}`；发现规范链变化时保留原经济事件、撤销确认并标孤块，重新入块时同身份同金额可更新规范区块字段。金额冲突不覆盖原金额，转审核；第六批增加持续规范链检查，资金逆向调整和人工审核界面仍未接通。详见[方案第 6.9 节](blockchain-payment-plan.md#69-当前以太坊核验与收件消费第四批未开放收款)。
 
 第五批未改表结构。`CryptoVerificationPolicy` 为 BTC／LTC 冻结 `utxo-canonical-v1`、TRON 冻结 `tron-solidified-v1`，除确认数外还保存 `genesis_hash`；EVM 继续原版本和字段。BTC／LTC 事件位置为 `vout:{输出索引}`，数量来自原始 uint64 字节；TRC20 为 `log:{交易内日志索引}`，不同网络不会与 ERC20 混同。三种策略继续使用同一商户／请求绑定及经济事件唯一约束，不新增法币流水，也不自动改变请求的 preparing 状态。完整范围、失败限制与归档要求见[方案第 6.10 节](blockchain-payment-plan.md#610-btcltc-与-trc20-核验第五批未开放收款)。

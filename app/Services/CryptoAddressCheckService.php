@@ -227,6 +227,10 @@ final class CryptoAddressCheckService
                         if (microtime(true) >= $deadline) {
                             return false;
                         }
+                        $receipt->refresh();
+                        if ($receipt->status !== 'pending' || $receipt->next_attempt_at?->isFuture()) {
+                            continue;
+                        }
                         $this->verification->process($merchantId, $receipt->id);
                     }
                 }

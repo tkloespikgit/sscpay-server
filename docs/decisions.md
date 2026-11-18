@@ -729,3 +729,25 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **费用与边界：** 拒付费用按实际费用流水展示；零费用的本金凭证也视为已记账，防止配置变化后显示成新费用。未记账金额优先取订单快照，NULL 回退原渠道，显式 0 不回退，并标明待记账。详情保留逐次退款及退款费。展示时间不会回写资金流水或改变原统计归日；没有新增迁移、权限、API 字段、插件协议、远端退款或部署步骤，沿用既有资源发现及部署流程。
 
 **依据：** [只读查询服务](../app/Services/OrderAfterSaleService.php)、[共享列表](../app/Filament/Support/OrderAfterSaleTable.php)、[退款入口](../app/Filament/Resources/RefundOrders/RefundOrderResource.php)、[拒付入口](../app/Filament/Resources/ChargebackOrders/ChargebackOrderResource.php)、[原订单详情](../app/Filament/Resources/OrderResource/Pages/ViewOrder.php)、[展示与权限回归](../tests/Feature/OrderAfterSaleDisplayTest.php)。
+
+## D-67 回调交易核验合并与有界重试
+
+**状态：本次请求量优化的当前工作区实现，未提交、未部署（2026-11-18）。** 保留 D-35 的验签线索、RPC 核验及原请求最低确认数快照，收敛重复观察和无上限重试；不变更入账、权限或商户 API 协议。
+
+**订阅：** 新 EVM／TRON 订阅查询官方 `/v4/subscription/chains` 能力表，只有网络、环境及 `ADDRESS_EVENT` 匹配且 `finality=true` 才请求 `finality=final`。能力结果按凭证指纹加锁缓存一天；失败或结构不符时短缓存一分钟，沿用普通通知与同一套本地确认策略。BTC／LTC 不发送该选项，已有订阅不批量修改。接口能力及字段依据 [Tatum 链能力](https://docs.tatum.io/reference/getsupportedalertchains)、[创建订阅](https://docs.tatum.io/reference/createsubscriptionv4)。
+
+**核验：** 在请求互斥下固定本轮开始前已存在的同商户、同请求、同交易收件集合，共用一次链上观察并保留各份原始摘要／线索。新到的回调不被旧观察完成；后续地址补查仍重新观察规范链，不用长期缓存替代重组核查。正常调度重新读取收件状态，跳过已由同组完成的记录。
+
+**预算与恢复：** 未确认及失败观察以 BTC 600 秒、LTC 150 秒、其他网络 60 秒起步，指数退避最多一小时，下一次不越过首次接收后 24 小时。未完成记录到 48 次或 24 小时即转 `review`／`verification_exhausted` 并停止重查；积压零次记录仍先观察一次。新地址查询若查实已确认或无收入，可以更新预算耗尽收件的核验状态，其他复核原因保持。请求保留人工复核，按既有证据和 TOTP 流程处理；不自动接受迟付、冲正或释放资金。
+
+**依据与部署：** [订阅客户端](../app/Services/TatumSubscriptionClient.php)、[核验服务](../app/Services/CryptoReceiptVerificationService.php)、[核验命令](../app/Console/Commands/VerifyCryptoReceipts.php)、[地址查询](../app/Services/CryptoAddressCheckService.php)、[请求量及恢复回归](../tests/Feature/CryptoReceiptPollingTest.php)、[订阅契约回归](../tests/Feature/TatumSubscriptionClientTest.php)。无新表、字段、配置项或依赖；沿用 `deploy.sh` 的代码、队列和调度更新流程。真实供应商 finality 行为及并发规模仍待隔离环境验收。
+
+## D-68 带金额付款二维码与 TRC20 地址展示
+
+**状态：按用户最终确认的简化方案在当前工作区实现，未提交、未部署（2026-11-18）。** TRC20 保留地址、二维码与转账金额展示，撤回本轮未提交的钱包连接／确认方案。真实手机钱包扫码兼容性尚未验收。
+
+**格式与原因：** BTC／LTC 使用 `bitcoin:`／`litecoin:` 的十进制 `amount`，ETH／ERC20 使用 [EIP-681](https://eips.ethereum.org/EIPS/eip-681) 的链 ID、最小单位整数与冻结代币合约。TRC20 使用纯收款地址二维码，用户扫码填入地址、复制页面展示的精确应付数量，在钱包内完成转账，减少钱包浏览器连接和网页确认步骤。
+
+**边界：** 金额与 ERC20 合约只取请求快照，缺少合约快照时回退地址二维码和复制金额。TRC20 地址二维码不依赖合约或创世区块快照，公开状态不下发 TRON 钱包转账参数；非 ready 状态不返回地址、URI 或二维码，前端失联、过期和离开页面时隐藏付款信息。页面不连接 TRON 钱包、不构建或签署交易，到账继续走既有核验和入账服务。
+
+**依据与部署：** [付款数据](../app/Services/CryptoCheckoutPresenter.php)、[页面交互](../resources/js/crypto-payment.js)、[付款页](../resources/views/payment/crypto.blade.php)、[二维码回归](../tests/Feature/CryptoCheckoutQrTest.php)、[前端展示回归](../tests/JavaScript/crypto-payment.test.mjs)。没有新增迁移、依赖、商户 API 或商城插件协议，沿用 `deploy.sh` 现有资源构建与缓存步骤；完整二维码内容作为缓存键，旧二维码缓存不需手工清除。

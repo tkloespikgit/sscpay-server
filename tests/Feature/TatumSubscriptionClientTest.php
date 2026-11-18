@@ -23,7 +23,10 @@ class TatumSubscriptionClientTest extends TestCase
         $monitor = $this->createCryptoMonitor();
         Http::preventStrayRequests();
         Sleep::fake();
-        Http::fake(['https://api.tatum.io/v4/subscription*' => Http::response(['sensitive' => 'do-not-forward'], $status, ['Retry-After' => '1'])]);
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response($this->alertCapabilities()),
+            'https://api.tatum.io/v4/subscription*' => Http::response(['sensitive' => 'do-not-forward'], $status, ['Retry-After' => '1']),
+        ]);
 
         try {
             app(TatumSubscriptionClient::class)->create($monitor);
@@ -32,7 +35,7 @@ class TatumSubscriptionClientTest extends TestCase
             $this->assertSame('Tatum subscription creation was not confirmed.', $exception->getMessage());
             $this->assertSame($status, $exception->getCode());
             $this->assertNull($exception->getPrevious());
-            Http::assertSentCount(1);
+            Http::assertSentCount(2);
             Sleep::assertNeverSlept();
         }
     }
@@ -40,6 +43,123 @@ class TatumSubscriptionClientTest extends TestCase
     public static function uncertainCreationResponses(): array
     {
         return ['server error' => [503], 'rate limit' => [429]];
+    }
+
+    #[DataProvider('finalityNetworks')]
+    public function test_final_notifications_use_advertised_capabilities_and_cache_the_support_matrix(string $network, string $asset, int $decimals, string $address): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => $network, 'asset' => $asset, 'decimals' => $decimals],
+            ['network' => $network, 'address' => $address]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response($this->alertCapabilities()),
+            'https://api.tatum.io/v4/subscription?type=testnet' => Http::response(['id' => 'alert-1']),
+        ]);
+        $client = app(TatumSubscriptionClient::class);
+
+        $this->assertSame('alert-1', $client->create($monitor));
+        $this->assertSame('alert-1', $client->create($monitor));
+
+        Http::assertSentCount(3);
+        $this->assertCount(1, Http::recorded(fn (Request $r): bool => str_ends_with($r->url(), '/chains')));
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && $r['finality'] === 'final');
+    }
+
+    public static function finalityNetworks(): array
+    {
+        return [
+            'ethereum' => ['ethereum-sepolia', 'ETH', 18, '0x'.str_repeat('a', 40)],
+            'tron' => ['tron-shasta', 'USDT', 6, 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8'],
+        ];
+    }
+
+    #[DataProvider('unsupportedFinality')]
+    public function test_finality_is_omitted_without_exact_network_environment_and_type_support(array $chains): void
+    {
+        $monitor = $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response(['chains' => $chains]),
+            'https://api.tatum.io/v4/subscription?type=testnet' => Http::response(['id' => 'alert-1']),
+        ]);
+
+        $this->assertSame('alert-1', app(TatumSubscriptionClient::class)->create($monitor));
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && ! isset($r['finality']));
+    }
+
+    public static function unsupportedFinality(): array
+    {
+        $chain = ['chain' => 'ethereum-sepolia', 'testnet' => true, 'types' => ['ADDRESS_EVENT'], 'finality' => true];
+
+        return [
+            'unsupported flag' => [[[...$chain, 'finality' => false]]],
+            'different network' => [[[...$chain, 'chain' => 'ethereum-mainnet']]],
+            'different environment' => [[[...$chain, 'testnet' => false]]],
+            'different type' => [[[...$chain, 'types' => ['PAID_FEE']]]],
+            'network missing' => [[]],
+        ];
+    }
+
+    public function test_bitcoin_does_not_request_capabilities_or_send_a_finality_field(): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        Http::preventStrayRequests();
+        Http::fake(['https://api.tatum.io/v4/subscription?type=testnet' => Http::response(['id' => 'alert-1'])]);
+
+        $this->assertSame('alert-1', app(TatumSubscriptionClient::class)->create($monitor));
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && ! isset($r['finality']));
+    }
+
+    #[DataProvider('invalidCapabilities')]
+    public function test_unavailable_capabilities_temporarily_use_standard_notifications_without_repeated_lookups(array $body, int $status): void
+    {
+        $monitor = $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response($body, $status),
+            'https://api.tatum.io/v4/subscription?type=testnet' => Http::response(['id' => 'alert-1']),
+        ]);
+        $client = app(TatumSubscriptionClient::class);
+
+        $this->assertSame('alert-1', $client->create($monitor));
+        $this->assertSame('alert-1', $client->create($monitor));
+
+        $this->assertCount($status === 503 ? 2 : 1, Http::recorded(fn (Request $r): bool => str_ends_with($r->url(), '/chains')));
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'POST' && ! isset($r['finality']));
+    }
+
+    public static function invalidCapabilities(): array
+    {
+        return [
+            'provider unavailable' => [[], 503],
+            'list missing' => [[], 200],
+            'untyped flag' => [['chains' => [['chain' => 'ethereum-sepolia', 'testnet' => true, 'types' => ['ADDRESS_EVENT'], 'finality' => 'true']]], 200],
+        ];
+    }
+
+    public function test_capability_failure_is_rechecked_after_a_short_cooldown(): void
+    {
+        $monitor = $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::sequence()->push([])->push($this->alertCapabilities()),
+            'https://api.tatum.io/v4/subscription?type=testnet' => Http::response(['id' => 'alert-1']),
+        ]);
+        $client = app(TatumSubscriptionClient::class);
+        $this->assertSame('alert-1', $client->create($monitor));
+        $this->travel(61)->seconds();
+
+        $this->assertSame('alert-1', $client->create($monitor));
+
+        Http::assertSentCount(4);
+        $this->assertCount(1, Http::recorded(fn (Request $r): bool => $r->method() === 'POST' && ($r['finality'] ?? null) === 'final'));
+        $this->assertCount(1, Http::recorded(fn (Request $r): bool => $r->method() === 'POST' && ! isset($r['finality'])));
     }
 
     public function test_idempotent_hmac_setup_waits_for_rate_limit_and_repeats_the_same_configuration(): void
@@ -229,12 +349,15 @@ class TatumSubscriptionClientTest extends TestCase
     {
         $monitor = $this->createCryptoMonitor();
         Http::preventStrayRequests();
-        Http::fake(['https://api.tatum.io/v4/subscription*' => Http::response('', 302, ['Location' => 'https://other.example.test/'])]);
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response($this->alertCapabilities()),
+            'https://api.tatum.io/v4/subscription*' => Http::response('', 302, ['Location' => 'https://other.example.test/']),
+        ]);
         $this->expectException(DomainException::class);
         try {
             app(TatumSubscriptionClient::class)->create($monitor);
         } finally {
-            Http::assertSentCount(1);
+            Http::assertSentCount(2);
         }
     }
 }

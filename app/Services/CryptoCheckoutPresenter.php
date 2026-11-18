@@ -42,6 +42,7 @@ final class CryptoCheckoutPresenter
         }
         $amounts = $current ? $this->amounts($current) : [];
         $address = $state === 'ready' ? $current->cryptoAddress?->address : null;
+        $paymentUri = $address ? $this->paymentUri($current, $address) : null;
 
         return [
             'state' => $state, 'message' => __('crypto.checkout.states.'.$state),
@@ -53,9 +54,34 @@ final class CryptoCheckoutPresenter
             'price_usd' => $current?->quote_snapshot['price_usd'] ?? null,
             'price_at' => $current?->quote_snapshot['price_at'] ?? null,
             'address' => $address,
-            'qr' => $address ? Cache::remember('crypto-address-qr:'.hash('sha256', $address), 86400, fn () => (new QRCode)->render($address)) : null,
+            'payment_uri' => $paymentUri,
+            'qr_type' => $address ? ($paymentUri !== $address ? 'amount' : 'address') : null,
+            'qr' => $paymentUri ? Cache::remember('crypto-payment-qr:'.hash('sha256', $paymentUri), 86400, fn () => (new QRCode)->render($paymentUri)) : null,
             ...$amounts,
         ];
+    }
+
+    private function paymentUri(CryptoPaymentRequest $request, string $address): string
+    {
+        $amount = CryptoAmount::format($request->due_units, $request->decimals);
+        if ($request->asset === 'BTC' && in_array($request->network, ['bitcoin-mainnet', 'bitcoin-testnet'], true)) {
+            return 'bitcoin:'.$address.'?amount='.$amount;
+        }
+        if ($request->asset === 'LTC' && in_array($request->network, ['litecoin-mainnet', 'litecoin-testnet'], true)) {
+            return 'litecoin:'.$address.'?amount='.$amount;
+        }
+        if (in_array($request->network, ['ethereum-mainnet', 'ethereum-sepolia'], true)) {
+            $chainId = $request->network === 'ethereum-mainnet' ? '1' : '11155111';
+            if ($request->asset === 'ETH') {
+                return 'ethereum:'.$address.'@'.$chainId.'?value='.$request->due_units;
+            }
+            $contract = $request->quote_snapshot['payment_config_snapshot']['contract_address'] ?? null;
+            if ($request->asset === 'USDT' && is_string($contract) && preg_match('/^0x[0-9a-fA-F]{40}$/D', $contract)) {
+                return 'ethereum:'.$contract.'@'.$chainId.'/transfer?address='.$address.'&uint256='.$request->due_units;
+            }
+        }
+
+        return $address;
     }
 
     private function amounts(CryptoPaymentRequest $request): array

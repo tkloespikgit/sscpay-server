@@ -232,6 +232,10 @@ BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 
 
 其余网络的确认数在 `crypto.evm_min_confirmations.*`／`crypto.utxo_min_confirmations.*`／`crypto.tron_min_confirmations.*` 下；BTC／LTC／TRON 链身份在 `crypto.genesis_hashes.*` 下；测试代币合约在 `crypto.test_tokens.ethereum-sepolia` 和 `crypto.test_tokens.tron-shasta`。`crypto.timeout` 和 `crypto.connect_timeout` 控制地址派生／行情请求超时，其他链查询仍保留各适配器的短超时预算。
 
+核验优化不改变上述最低确认数或旧请求快照。新 EVM／TRON 订阅查询 `/v4/subscription/chains`，仅在对应网络、主／测试网及 `ADDRESS_EVENT` 明确支持时发送 `finality=final`；成功能力结果按凭证指纹缓存一天，查询失败或结构不符时缓存一分钟并沿用普通通知和本地核验。BTC／LTC 不查询该能力、不发送 `finality`。已有远端订阅保持原配置，后续新建或恢复出的新代次采用新逻辑；Tatum 的最终确认级别不能代替本地冻结的最低确认数。
+
+同一交易已排队回调共用一次核验；后到的新回调和新一轮地址查询仍可重新核查。未确认及失败重查以 BTC 600 秒、LTC 150 秒、其他网络 60 秒起步并退避，最多一小时，由每分钟任务到期执行。收件在 48 次观察或首次接收后 24 小时仍未完成时转 `verification_exhausted`，停止自动重查并进入异常款复核；积压的零次收件先核查一次。后台可再发起地址查询，完成后仍按现有权限／TOTP 人工核账，不凭超时入账。沿用现有 `deploy.sh` 代码更新、队列重启和调度中断，无新增迁移或手工上线命令。
+
 初次配置仍需初始化支付模板和权限（有需要时运行 `CryptoPaymentTemplatesSeeder`／`PermissionSeeder`），本次迁移不授权商户。测试步骤和验收结果记录沿用[开发方案第 13 节](../docs/blockchain-payment-plan.md#13-测试容量与实施顺序)。仅关闭 `crypto.checkout_enabled` 会停止新建链上订单，已有订单继续处理；其余开关是独立的运维控制，关闭会停止对应监听／核验／补查／入账能力。
 
 #### 3.2.1 BTC 测试网络、钱包和平台凭证

@@ -60,4 +60,12 @@ trait CreatesCryptoMonitor
             ],
         ];
     }
+
+    protected function alertCapabilities(): array
+    {
+        return ['chains' => array_map(fn (string $network): array => [
+            'chain' => $network, 'testnet' => ! str_ends_with($network, '-mainnet'),
+            'types' => ['ADDRESS_EVENT'], 'finality' => true,
+        ], ['ethereum-mainnet', 'ethereum-sepolia', 'tron-mainnet', 'tron-shasta']), 'chainAgnosticTypes' => []];
+    }
 }

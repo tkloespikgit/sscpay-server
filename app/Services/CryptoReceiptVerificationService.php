@@ -20,6 +20,10 @@ use Illuminate\Support\Facades\DB;
 /** Durable receipt consumer; never mutates order payment facts or balances. */
 final class CryptoReceiptVerificationService
 {
+    private const MAX_ATTEMPTS = 48;
+
+    private const MAX_AGE_HOURS = 24;
+
     public function __construct(
         private readonly CryptoEvmVerificationService $evm,
         private readonly CryptoUtxoVerificationService $utxo,
@@ -42,8 +46,18 @@ final class CryptoReceiptVerificationService
             if (in_array($receipt->status, ['ignored', 'review'], true) || $receipt->next_attempt_at?->isFuture()) {
                 return true;
             }
+            $request = CryptoPaymentRequest::query()->forMerchant($merchantId)->findOrFail($receipt->crypto_payment_request_id);
+            $peerIds = CryptoWebhookReceipt::query()->forMerchant($merchantId)
+                ->where('crypto_payment_request_id', $request->id)->where('transaction_hash', $receipt->transaction_hash)
+                ->where(fn ($query) => $query->whereIn('status', ['pending', 'confirming'])
+                    ->orWhere(fn ($review) => $review->where('status', 'review')->where('last_error_code', 'verification_exhausted')))
+                ->pluck('id')->all();
+            if (in_array($receipt->status, ['pending', 'confirming'], true) && $receipt->verification_attempts > 0 && $this->exhausted($receipt)) {
+                $this->defer($receipt, $request, $peerIds, exhausted: true);
+
+                return true;
+            }
             try {
-                $request = CryptoPaymentRequest::query()->forMerchant($merchantId)->findOrFail($receipt->crypto_payment_request_id);
                 $address = CryptoAddress::query()->forMerchant($merchantId)->where('order_id', $request->order_id)
                     ->where('payment_method_id', $request->payment_method_id)->where('network', $request->network)->findOrFail($request->crypto_address_id);
                 if ($receipt->signature_mode !== 'address_history' || $receipt->crypto_address_monitor_id !== null) {
@@ -77,17 +91,14 @@ final class CryptoReceiptVerificationService
                     'tron-solidified-v1' => $this->tron->observe($request->network, $address->address,
                         $receipt->transaction_hash, $config['contract_address'] ?? '', $genesis, (int) $minimum),
                 };
-                $this->persist($receipt, $request, $observation);
+                DB::transaction(function () use ($receipt, $request, $observation, $peerIds): void {
+                    $this->persist($receipt, $request, $observation);
+                    $this->shareResult($receipt->refresh(), $peerIds);
+                }, 3);
 
                 return true;
             } catch (\Throwable) {
-                $receipt->refresh()->update([
-                    'status' => $receipt->status === 'verified' ? 'confirming' : $receipt->status,
-                    'processed_at' => null,
-                    'verification_attempts' => min(4294967295, $receipt->verification_attempts + 1),
-                    'last_checked_at' => now(), 'last_error_code' => 'verification_failed',
-                    'next_attempt_at' => now()->addSeconds(min(3600, 30 * (2 ** min(7, $receipt->verification_attempts)))),
-                ]);
+                $this->defer($receipt->refresh(), $request, $peerIds);
 
                 return false;
             }
@@ -114,13 +125,14 @@ final class CryptoReceiptVerificationService
             $existing = CryptoChainEvent::query()->forMerchant($receipt->merchant_id)->where('crypto_payment_request_id', $request->id)
                 ->where('transaction_hash', $receipt->transaction_hash)->orderBy('id')->lockForUpdate()->get();
             $changes = ['verification_attempts' => min(4294967295, $receipt->verification_attempts + 1), 'last_checked_at' => now(),
-                'last_error_code' => null, 'processed_at' => null, 'next_attempt_at' => now()->addSeconds(60)];
+                'last_error_code' => null, 'processed_at' => null, 'next_attempt_at' => $this->retryAt($receipt, $request)];
             if ($observation['state'] === 'pending') {
                 foreach ($existing as $event) {
                     $event->update(['confirmed_at' => null]);
                 }
                 $receipt->update([...$changes, 'status' => $request->credited_at ? 'review' : 'pending',
                     'last_error_code' => $request->credited_at ? 'credited_transaction_unavailable' : null]);
+                $this->stopExhausted($receipt, $request);
 
                 return;
             }
@@ -132,6 +144,7 @@ final class CryptoReceiptVerificationService
             }
             if ($observation['state'] === 'reorg') {
                 $receipt->update([...$changes, 'status' => $request->credited_at ? 'review' : 'pending', 'last_error_code' => 'canonical_block_changed']);
+                $this->stopExhausted($receipt, $request);
 
                 return;
             }
@@ -171,9 +184,85 @@ final class CryptoReceiptVerificationService
             $status = $review ? 'review' : ($positions === [] ? 'ignored' : ($observation['confirmed'] ? 'verified' : 'confirming'));
             $receipt->update([...$changes, 'status' => $status, 'processed_at' => in_array($status, ['ignored', 'verified', 'review'], true) ? now() : null,
                 'next_attempt_at' => in_array($status, ['ignored', 'verified', 'review'], true) ? null
-                    : now()->addSeconds(min(300, 30 * (2 ** min(4, $receipt->verification_attempts)))),
+                    : $changes['next_attempt_at'],
                 'last_error_code' => $review ? $reviewCode : null,
             ]);
+            $this->stopExhausted($receipt, $request);
         }, 3);
+    }
+
+    private function retryAt(CryptoWebhookReceipt $receipt, CryptoPaymentRequest $request): CarbonImmutable
+    {
+        $interval = match ($request->network) {
+            'bitcoin-mainnet', 'bitcoin-testnet' => 600,
+            'litecoin-mainnet', 'litecoin-testnet' => 150,
+            default => 60,
+        };
+
+        $retryAt = now()->toImmutable()->addSeconds(min(3600, $interval * (2 ** min(7, $receipt->verification_attempts))));
+        $deadline = $receipt->received_at->addHours(self::MAX_AGE_HOURS);
+
+        return $retryAt->gt($deadline) ? $deadline : $retryAt;
+    }
+
+    private function exhausted(CryptoWebhookReceipt $receipt): bool
+    {
+        return $receipt->verification_attempts >= self::MAX_ATTEMPTS
+            || $receipt->received_at->lte(now()->subHours(self::MAX_AGE_HOURS));
+    }
+
+    /** Called under the merchant, order and request locks; never treats a timeout as payment evidence. */
+    private function stopExhausted(CryptoWebhookReceipt $receipt, CryptoPaymentRequest $request): void
+    {
+        if (! in_array($receipt->status, ['pending', 'confirming'], true) || ! $this->exhausted($receipt)) {
+            return;
+        }
+        $receipt->update(['status' => 'review', 'processed_at' => now(), 'next_attempt_at' => null, 'last_error_code' => 'verification_exhausted']);
+        if ($request->review_reason === null) {
+            $request->update(['status' => 'review', 'review_reason' => 'verification_exhausted', 'settlement_next_attempt_at' => null]);
+        }
+    }
+
+    /** @param list<int> $peerIds */
+    private function defer(CryptoWebhookReceipt $receipt, CryptoPaymentRequest $request, array $peerIds, bool $exhausted = false): void
+    {
+        DB::transaction(function () use ($receipt, $request, $peerIds, $exhausted): void {
+            Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($receipt->merchant_id);
+            Order::query()->withoutGlobalScopes()->where('merchant_id', $receipt->merchant_id)->lockForUpdate()->findOrFail($request->order_id);
+            $request = CryptoPaymentRequest::query()->forMerchant($receipt->merchant_id)->lockForUpdate()->findOrFail($request->id);
+            $receipt = CryptoWebhookReceipt::query()->forMerchant($receipt->merchant_id)->lockForUpdate()->findOrFail($receipt->id);
+            if (! $exhausted) {
+                $receipt->update([
+                    'status' => $receipt->status === 'verified' ? 'confirming' : $receipt->status,
+                    'processed_at' => null, 'next_attempt_at' => $this->retryAt($receipt, $request),
+                    'verification_attempts' => min(4294967295, $receipt->verification_attempts + 1),
+                    'last_checked_at' => now(), 'last_error_code' => 'verification_failed',
+                ]);
+            }
+            $this->stopExhausted($receipt, $request);
+            $this->shareResult($receipt, $peerIds, incrementAttempts: ! $exhausted);
+        }, 3);
+    }
+
+    /** Share only with deliveries that existed before this observation; later callbacks still trigger fresh reads.
+     * @param  list<int>  $peerIds
+     */
+    private function shareResult(CryptoWebhookReceipt $receipt, array $peerIds, bool $incrementAttempts = true): void
+    {
+        $peers = CryptoWebhookReceipt::query()->forMerchant($receipt->merchant_id)
+            ->where('crypto_payment_request_id', $receipt->crypto_payment_request_id)->where('transaction_hash', $receipt->transaction_hash)
+            ->whereIn('id', $peerIds)->whereKeyNot($receipt->id)->orderBy('id')->lockForUpdate()->get();
+        foreach ($peers as $peer) {
+            if (! in_array($peer->status, ['pending', 'confirming'], true)
+                && ! ($peer->status === 'review' && $peer->last_error_code === 'verification_exhausted'
+                    && in_array($receipt->status, ['verified', 'ignored'], true))) {
+                continue;
+            }
+            $peer->update([
+                'status' => $receipt->status, 'processed_at' => $receipt->processed_at, 'last_checked_at' => $receipt->last_checked_at,
+                'last_error_code' => $receipt->last_error_code, 'next_attempt_at' => $receipt->next_attempt_at,
+                'verification_attempts' => min(4294967295, $peer->verification_attempts + (int) $incrementAttempts),
+            ]);
+        }
     }
 }

@@ -261,7 +261,7 @@ class CryptoEvmVerificationTest extends TestCase
         $this->assertNotNull($event->orphaned_at);
         $this->assertNull($event->confirmed_at);
         $this->assertSame('canonical_block_changed', $receipt->fresh()->last_error_code);
-        $this->travel(61)->seconds();
+        $this->travelTo($receipt->fresh()->next_attempt_at->addSecond());
         $rpc['receipt']['blockHash'] = $rpc['block']['hash'];
         $rpc['tx']['blockHash'] = $rpc['block']['hash'];
         $rpc['finalized']['hash'] = $rpc['block']['hash'];

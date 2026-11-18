@@ -115,20 +115,30 @@ class CryptoUtxoVerificationTest extends TestCase
         $this->assertDatabaseCount('crypto_chain_events', 0);
     }
 
-    public function test_not_enough_confirmations_retries_and_preserves_events(): void
+    #[DataProvider('confirmationIntervals')]
+    public function test_not_enough_confirmations_retries_and_preserves_events(string $network, string $asset, int $seconds, string $nextAttempt): void
     {
-        [, $receipt, $rpc] = $this->arrangeReceipt();
+        [, $receipt, $rpc] = $this->arrangeReceipt($network, $asset);
         $rpc['head']['blocks'] = 101;
-        $this->fakeRpc($rpc);
+        $this->fakeRpc($rpc, $network);
         $this->assertTrue($this->process($receipt));
         $this->assertSame('confirming', $receipt->fresh()->status);
         $this->assertNull(CryptoChainEvent::query()->first()->confirmed_at);
-        $this->travel(61)->seconds();
+        $this->assertSame($nextAttempt, $receipt->fresh()->next_attempt_at->toDateTimeString());
+        $this->travel($seconds + 1)->seconds();
         $rpc['head']['blocks'] = 105;
 
         $this->assertTrue($this->process($receipt));
         $this->assertSame('verified', $receipt->fresh()->status);
         $this->assertDatabaseCount('crypto_chain_events', 2);
+    }
+
+    public static function confirmationIntervals(): array
+    {
+        return [
+            'bitcoin' => ['bitcoin-testnet', 'BTC', 600, '2026-11-11 12:10:00'],
+            'litecoin' => ['litecoin-testnet', 'LTC', 150, '2026-11-11 12:02:30'],
+        ];
     }
 
     public function test_unmined_or_missing_transaction_stays_pending(): void
@@ -152,7 +162,7 @@ class CryptoUtxoVerificationTest extends TestCase
         $this->assertTrue($this->process($receipt));
         $this->assertNotNull(CryptoChainEvent::query()->first()->orphaned_at);
         $this->assertNull(CryptoChainEvent::query()->first()->confirmed_at);
-        $this->travel(61)->seconds();
+        $this->travelTo($receipt->fresh()->next_attempt_at->addSecond());
         $rpc['tx']['blockhash'] = $rpc['canonical'];
         $rpc['block']['hash'] = $rpc['canonical'];
         $this->assertTrue($this->process($receipt));

@@ -2,6 +2,21 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-18：付款二维码带金额与 TRC20 简化展示（当前工作区，未部署）
+
+- 用户希望扫码自动带入付款金额，常用钱包为 TronLink／imToken。[付款展示](../app/Services/CryptoCheckoutPresenter.php)为 BTC／LTC 输出带金额 URI，为 ETH／ERC20 输出网络 ID、最小单位整数和冻结合约的 EIP-681；二维码缓存按完整内容隔离，避免沿用旧纯地址缓存。
+- TRC20 按用户后续确认的简化要求，显示收款地址、纯地址二维码和精确应付数量，保留地址与金额分别复制。撤回本轮未提交的钱包连接／确认流程及签名、广播代码；二维码不再指向订单页，公开状态不再下发 TRON 转账参数。[付款前端](../resources/js/crypto-payment.js)在状态失联或过期时隐藏付款信息，到账继续由既有服务端核验。
+- [Blade 页面](../resources/views/payment/crypto.blade.php)增加复制应付数量和中英文二维码说明；仅带金额 URI 的网络展示打开钱包入口，TRC20 直接扫码地址后在钱包填写金额。ERC20 缺少合约快照时保留地址二维码。更新架构、开发方案及 [D-68](decisions.md#d-68-带金额付款二维码与-trc20-地址展示)。无需新迁移、依赖或部署手工步骤，沿用 `deploy.sh` 的资源构建；商户 API 和插件协议无变化。
+- 验证：二维码与关联收单／报价／下单／付款页 PHPUnit 共 **70 项、1124 断言通过**（SQLite 内存库）；前端地址／金额展示、复制、入口隐藏及失效回归 **11 项通过**，全部 JavaScript 回归 **51 项通过**。`vendor/bin/pint --dirty --format agent`、Vite 构建、文档本地链接及 `git diff --check` 通过。系统 Node 缺少 ICU 库，使用已安装 Cursor Node 24.22.1 完成前端验证，未改依赖。未做真机扫码、真实链或 MySQL 验收，未部署或提交 Git；保留原有 Tatum 请求量优化改动。
+
+## 2026-11-18：减少 Tatum 重复核验并停止无上限重试（当前工作区，未部署）
+
+- 用户追问收到 webhook 后仍持续请求的原因及优化方式。保留验签线索、链上真实金额核查和原付款请求最低确认数快照；[订阅客户端](../app/Services/TatumSubscriptionClient.php)为新 EVM／TRON 订阅查询官方链能力，按网络、主／测试网及事件类型选择 `finality=final`。能力结果按凭证指纹加锁缓存一天；失败／结构不符时短缓存一分钟，继续普通通知和本地核验。BTC／LTC 不增加能力请求或 finality 字段，已有远端订阅不批量改写。
+- [核验服务](../app/Services/CryptoReceiptVerificationService.php)固定本轮 RPC 前已排队的同商户、同请求、同交易收件，共用一次观察并保留各份证据；[核验命令](../app/Console/Commands/VerifyCryptoReceipts.php)和[地址补查](../app/Services/CryptoAddressCheckService.php)重新检查状态，跳过已由同组处理的记录。RPC 过程中或之后到达的新回调仍重新观察，不用旧缓存跳过重组核查。
+- 未完成核验以 BTC 600 秒、LTC 150 秒、其他网络 60 秒起步并指数退避，最多一小时，下一次不越过首次接收后 24 小时。到 48 次或 24 小时仍未完成时转 `verification_exhausted` 人工复核并停止自动重查；延迟消费的零次收件仍先查一次，第 48 次查实成功不转复核。新地址查询可以查实并更新预算耗尽收件的结果，请求保留复核，仍走原权限／TOTP 人工核账。其他复核原因、金额和账务凭证保持。
+- 验证：[请求量与停止／恢复回归](../tests/Feature/CryptoReceiptPollingTest.php)、[订阅能力契约](../tests/Feature/TatumSubscriptionClientTest.php)、订阅维护、EVM／UTXO／TRON 核验、付款页、地址补查、历史线索、入账、人工核账及 webhook 共 **285 项、4531 断言通过**。显式 SQLite `:memory:`、空 `DB_URL`、独立配置缓存路径及测试进程 512 MiB；通过 `vendor/bin/phpunit --no-progress` 联跑上述 12 个文件。两项旧重组测试改按新的到期时间推进，保留撤销确认及重新入块恢复断言。`vendor/bin/pint --dirty --format agent`、文档本地链接及 `git diff --check` 通过。
+- 同步架构、数据语义、[D-67](decisions.md#d-67-回调交易核验合并与有界重试)及[部署说明](../doc/deployment.md#32-区块链系统配置与升级)。没有新增迁移、配置项、依赖或商户 API／插件协议变化，沿用 `deploy.sh` 的代码更新、队列重启与调度中断；未调用真实 Tatum／钱包接口、未做 MySQL 并发验收、未部署或提交 Git。
+
 ## 2026-11-18：物流批量上传支持两种订单号与三列文件（当前工作区，未部署）
 
 - 用户要求 `merchant_order_no` / `order_no` 二选一，文件只含一种订单号、`logistics_company`、`tracking_number` 三列也能上传。[导入服务](../app/Services/LogisticsImportService.php)新增商户订单号及中文、空格表头别名；逐行仍限定任务商户、可履约且没有有效物流的订单，两种订单号同时填写时须匹配同一订单，空值或冲突按行报错。发货时间留空继续取文件上传时间。说明行只在首列以 `#` 开头且其余列为空时跳过，避免 `#1001` 等商户订单号携带物流数据时被忽略。

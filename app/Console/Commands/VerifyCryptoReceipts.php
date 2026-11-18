@@ -37,6 +37,10 @@ class VerifyCryptoReceipts extends Command
             if (microtime(true) >= $deadline) {
                 break;
             }
+            $receipt->refresh();
+            if (! in_array($receipt->status, ['pending', 'confirming'], true) || $receipt->next_attempt_at?->isFuture()) {
+                continue;
+            }
             $processed++;
             try {
                 if (! $service->process((int) $receipt->merchant_id, (int) $receipt->id)) {

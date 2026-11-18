@@ -14,6 +14,9 @@
         data-status-url="{{ route('payment.crypto.status', $order->payment_link_token, false) }}"
         data-open-url="{{ route('payment.crypto.open', $order->payment_link_token, false) }}"
         data-offline="{{ __('crypto.checkout.offline') }}" data-copied="{{ __('crypto.checkout.copied') }}"
+        @foreach (['qr_amount', 'qr_address'] as $key)
+            data-{{ str_replace('_', '-', $key) }}="{{ __('crypto.checkout.'.$key) }}"
+        @endforeach
         data-markup="{{ __('crypto.checkout.markup', ['percent' => '__PERCENT__']) }}">
         <header class="flex flex-col gap-2">
             <p class="text-sm text-slate-600">{{ $order->merchant?->name }}</p>
@@ -33,11 +36,14 @@
         <section id="payment-instructions" hidden class="flex flex-col gap-5 rounded-xl border border-slate-200 bg-white p-6">
             <h2 class="text-sm text-slate-500">{{ __('crypto.checkout.due') }}</h2>
             <p id="quote-amount" class="break-all text-2xl font-semibold"></p>
+            <button id="copy-amount" type="button" class="rounded-lg border border-slate-300 px-4 py-2">{{ __('crypto.checkout.copy_amount') }}</button>
             <p id="quote-markup" class="text-sm text-slate-600"></p>
             <label for="payment-address" class="text-sm font-medium">{{ __('crypto.checkout.address') }}</label>
             <textarea id="payment-address" readonly rows="2" class="w-full resize-none rounded-lg border border-slate-300 p-3 font-mono text-sm"></textarea>
             <button id="copy-address" type="button" class="rounded-lg border border-slate-300 px-4 py-2">{{ __('crypto.checkout.copy') }}</button>
-            <img id="payment-qr" alt="{{ __('crypto.checkout.address') }}" class="mx-auto h-52 w-52" width="208" height="208">
+            <img id="payment-qr" alt="{{ __('crypto.checkout.payment_qr') }}" class="mx-auto h-52 w-52" width="208" height="208">
+            <p id="payment-qr-hint" class="text-sm leading-6 text-slate-600"></p>
+            <a id="open-wallet" hidden class="rounded-lg bg-slate-900 px-4 py-3 text-center font-semibold text-white">{{ __('crypto.checkout.open_wallet') }}</a>
             <p class="text-sm leading-6 text-slate-600">{{ __('crypto.checkout.instructions') }}</p>
         </section>
         <div class="flex flex-wrap gap-3">

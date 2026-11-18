@@ -207,7 +207,10 @@ return [
         'copy' => 'Copy', 'copied' => 'Copied', 'requote' => 'Get a new quote and address', 'check' => 'Check payment',
         'return' => 'Return to merchant', 'changed' => 'The quote changed or payment is unavailable. Refresh the status.',
         'offline' => 'Unable to check payment. Payment instructions are hidden. Please retry.',
-        'instructions' => 'Use only the displayed network and asset. Send the exact amount; cover withdrawal fees separately. The QR code contains the address only. Do not use an address from an expired quote.',
+        'instructions' => 'Use only the displayed network and asset. Send the exact amount; cover network or withdrawal fees separately. Verify the recipient, asset and amount in your wallet before confirming. Do not use an address from an expired quote.',
+        'copy_amount' => 'Copy amount', 'payment_qr' => 'Payment QR code', 'open_wallet' => 'Open wallet to pay',
+        'qr_amount' => 'The QR code includes the recipient, asset and amount. Compatible wallets fill these in automatically. If the amount is not recognized, copy the amount above.',
+        'qr_address' => 'This QR code contains the address only. Select the displayed network and asset, and copy the amount above.',
         'markup' => 'The amount includes a :percent% quote adjustment. This adjustment belongs to the merchant.',
         'no_js' => 'Enable JavaScript to check payment safely and obtain the current payment instructions.',
         'states' => [
