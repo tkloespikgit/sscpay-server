@@ -12,6 +12,7 @@ use App\Services\OrderAfterSaleService;
 use App\Support\OrderStatusColor;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DateTimePicker;
+use Filament\Forms\Components\TextInput;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Filters\Filter;
@@ -68,6 +69,10 @@ final class OrderAfterSaleTable
                     ->sortable()->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
+                self::textFilter('order_no'),
+                self::textFilter('merchant_order_no'),
+                self::textFilter('transaction_id'),
+                self::textFilter('customer_email'),
                 SelectFilter::make('merchant_id')->label(__('admin.order.filters.merchant'))
                     ->visible(fn (): bool => (bool) auth()->user()?->isPlatformStaff())
                     ->options(function (): array {
@@ -91,24 +96,14 @@ final class OrderAfterSaleTable
                             ->mapWithKeys(fn (PaymentMethod $method): array => [$method->method_code => $user?->isPlatformStaff()
                                 ? $method->method_name : $method->merchantDisplayName()])->all();
                     }),
-                Filter::make('after_sale_from')->label(__('admin.order.after_sale.time_from', ['event' => $timeLabel]))
-                    ->schema([
-                        DateTimePicker::make('after_sale_from')->label(__('admin.order.after_sale.time_from', ['event' => $timeLabel]))
-                            ->native(false)->seconds()->displayFormat('Y-m-d H:i:s')->timezone(config('app.timezone')),
-                    ])
-                    ->query(fn (Builder $query, array $data, OrderAfterSaleService $afterSales): Builder => $query->when(
-                        filled($data['after_sale_from'] ?? null),
-                        fn (Builder $query): Builder => $query->where($afterSales->timeQuery($chargebacks), '>=', $data['after_sale_from']),
-                    )),
-                Filter::make('after_sale_to')->label(__('admin.order.after_sale.time_to', ['event' => $timeLabel]))
-                    ->schema([
-                        DateTimePicker::make('after_sale_to')->label(__('admin.order.after_sale.time_to', ['event' => $timeLabel]))
-                            ->native(false)->seconds()->displayFormat('Y-m-d H:i:s')->timezone(config('app.timezone')),
-                    ])
-                    ->query(fn (Builder $query, array $data, OrderAfterSaleService $afterSales): Builder => $query->when(
-                        filled($data['after_sale_to'] ?? null),
-                        fn (Builder $query): Builder => $query->where($afterSales->timeQuery($chargebacks), '<=', $data['after_sale_to']),
-                    )),
+                self::eventTimeFilter('paid_from', 'paid', '>='),
+                self::eventTimeFilter('paid_to', 'paid', '<='),
+                ...($chargebacks ? [
+                    self::eventTimeFilter('refunded_from', 'refund', '>='),
+                    self::eventTimeFilter('refunded_to', 'refund', '<='),
+                ] : []),
+                self::eventTimeFilter('after_sale_from', $chargebacks ? 'chargeback' : 'refund', '>='),
+                self::eventTimeFilter('after_sale_to', $chargebacks ? 'chargeback' : 'refund', '<='),
             ], layout: FiltersLayout::AboveContentCollapsible)
             ->filtersFormColumns(3)
             ->recordActions([
@@ -116,5 +111,51 @@ final class OrderAfterSaleTable
             ])
             ->recordUrl(fn (Order $record): string => OrderResource::getUrl('view', ['record' => $record]))
             ->defaultSort($timeColumn, 'desc');
+    }
+
+    private static function textFilter(string $field): Filter
+    {
+        return Filter::make($field)->label(__('admin.order.filters.'.$field))
+            ->schema([
+                TextInput::make($field)->label(__('admin.order.filters.'.$field))
+                    ->placeholder(__('admin.order.filters.'.$field.'_placeholder')),
+            ])
+            ->query(function (Builder $query, array $data) use ($field): Builder {
+                $value = trim((string) ($data[$field] ?? ''));
+
+                return $value === '' ? $query : $query->where('orders.'.$field, 'like', '%'.$value.'%');
+            });
+    }
+
+    /** @param 'paid'|'refund'|'chargeback' $event */
+    private static function eventTimeFilter(string $name, string $event, string $operator): Filter
+    {
+        $eventLabel = match ($event) {
+            'paid' => __('admin.order.fields.paid_at'),
+            'refund' => __('admin.order.after_sale.refunded_at'),
+            'chargeback' => __('admin.order.after_sale.chargeback_at'),
+        };
+        $label = __('admin.order.after_sale.time_'.($operator === '>=' ? 'from' : 'to'), ['event' => $eventLabel]);
+
+        return Filter::make($name)->label($label)
+            ->schema([
+                DateTimePicker::make($name)->label($label)->native(false)->seconds()
+                    ->displayFormat('Y-m-d H:i:s')->timezone(config('app.timezone')),
+            ])
+            ->query(function (Builder $query, array $data, OrderAfterSaleService $afterSales) use ($name, $event, $operator): Builder {
+                $value = $data[$name] ?? null;
+
+                if (blank($value)) {
+                    return $query;
+                }
+
+                $column = match ($event) {
+                    'paid' => 'orders.paid_at',
+                    'refund' => $afterSales->timeQuery(false),
+                    'chargeback' => $afterSales->timeQuery(true),
+                };
+
+                return $query->where($column, $operator, $value);
+            });
     }
 }

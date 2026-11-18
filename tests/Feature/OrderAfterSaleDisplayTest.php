@@ -114,6 +114,134 @@ class OrderAfterSaleDisplayTest extends TestCase
         $this->assertFalse($this->reader->can(Permissions::ORDERS_CHARGEBACK));
     }
 
+    #[DataProvider('textFilters')]
+    public function test_text_filters_support_partial_full_zero_and_blank_values(
+        string $page,
+        string $status,
+        string $field,
+        string $full,
+        string $similar,
+        string $partial,
+        string $zero,
+    ): void {
+        $this->prepareReader();
+        $target = $this->paidOrder('filter-target', ['status' => $status, $field => $full]);
+        $near = $this->paidOrder('filter-near', ['status' => $status, $field => $similar]);
+        $zeroOrder = $this->paidOrder('filter-zero', ['status' => $status, $field => $zero]);
+        $other = $this->paidOrder('filter-other', [
+            'status' => $status,
+            $field => $field === 'customer_email' ? 'other@example.com' : 'OTHER',
+        ]);
+
+        Livewire::test($page)
+            ->filterTable($field, [$field => $partial])
+            ->assertCanSeeTableRecords([$target, $near])->assertCanNotSeeTableRecords([$zeroOrder, $other])
+            ->filterTable($field, [$field => $full])
+            ->assertCanSeeTableRecords([$target])->assertCanNotSeeTableRecords([$near, $zeroOrder, $other])
+            ->filterTable($field, [$field => '0'])
+            ->assertCanSeeTableRecords([$target, $near, $zeroOrder])->assertCanNotSeeTableRecords([$other])
+            ->filterTable($field, [$field => '   '])->assertCanSeeTableRecords([$target, $near, $zeroOrder, $other])
+            ->filterTable($field, [$field => 'NOTFOUND'])->assertCountTableRecords(0)
+            ->filterTable($field, [$field => null])->assertCanSeeTableRecords([$target, $near, $zeroOrder, $other]);
+    }
+
+    #[DataProvider('filterLists')]
+    public function test_payment_time_filters_are_inclusive_and_do_not_use_order_creation_or_current_status(string $page, string $status): void
+    {
+        $this->prepareReader();
+        $this->merchant->update(['timezone' => 'Pacific/Honolulu']);
+        $before = $this->paidOrder('paid-before', ['status' => $status, 'paid_at' => '2026-11-05 12:34:55']);
+        $start = $this->paidOrder('paid-start', ['status' => $status, 'paid_at' => '2026-11-05 12:34:56']);
+        $end = $this->paidOrder('paid-end', ['status' => $status, 'paid_at' => '2026-11-06 13:45:57']);
+        $after = $this->paidOrder('paid-after', ['status' => $status, 'paid_at' => '2026-11-06 13:45:58']);
+        $unknown = $this->paidOrder('paid-unknown', ['status' => $status, 'paid_at' => null]);
+
+        Livewire::test($page)
+            ->assertSet('tableFilters.paid_from.paid_from', null)->assertSet('tableFilters.paid_to.paid_to', null)
+            ->filterTable('paid_from', ['paid_from' => '2026-11-05 12:34:56'])
+            ->assertCanSeeTableRecords([$start, $end, $after])->assertCanNotSeeTableRecords([$before, $unknown])
+            ->filterTable('paid_to', ['paid_to' => '2026-11-06 13:45:57'])
+            ->assertCanSeeTableRecords([$start, $end])->assertCanNotSeeTableRecords([$before, $after, $unknown])
+            ->removeTableFilter('paid_from')
+            ->assertCanSeeTableRecords([$before, $start, $end])->assertCanNotSeeTableRecords([$after, $unknown])
+            ->removeTableFilter('paid_to')->assertCanSeeTableRecords([$before, $start, $end, $after, $unknown]);
+    }
+
+    public function test_chargeback_list_can_filter_by_latest_refund_time_independently_of_chargeback_time(): void
+    {
+        $this->prepareReader();
+        $older = $this->paidOrder('refund-older');
+        $target = $this->paidOrder('refund-target');
+        $later = $this->paidOrder('refund-later');
+        $direct = $this->paidOrder('refund-none');
+        $this->refund($older, '100.00', '2026-11-09 11:25:00');
+        $this->refund($target, '30.00', '2026-11-08 10:15:00');
+        $this->refund($target, '70.00', '2026-11-10 11:25:00');
+        $this->refund($later, '100.00', '2026-11-11 11:25:00');
+        $this->chargeback($direct, '2026-11-10 11:25:00');
+        $this->chargeback($older, '2026-11-18 10:00:00');
+        $this->chargeback($target, '2026-11-18 10:00:00');
+        $this->chargeback($later, '2026-11-18 10:00:00');
+
+        Livewire::test(ManageChargebackOrders::class)
+            ->filterTable('refunded_from', ['refunded_from' => '2026-11-10 11:25:00'])
+            ->filterTable('refunded_to', ['refunded_to' => '2026-11-10 11:25:00'])
+            ->assertCanSeeTableRecords([$target])->assertCanNotSeeTableRecords([$older, $later, $direct])
+            ->removeTableFilter('refunded_from')->removeTableFilter('refunded_to')
+            ->assertCanSeeTableRecords([$older, $target, $later, $direct]);
+    }
+
+    #[DataProvider('filterLists')]
+    public function test_text_payment_and_refund_ranges_combine_without_exposing_other_merchants(string $page, string $status): void
+    {
+        $this->prepareReader();
+        $paidAt = '2026-11-05 12:34:56';
+        $refundAt = '2026-11-10 11:25:00';
+        $attributes = ['transaction_id' => 'TX-KEEP', 'customer_email' => 'alice@example.com', 'paid_at' => $paidAt];
+        $target = $this->paidOrder('FILTER-target', $attributes);
+        $wrongEmail = $this->paidOrder('FILTER-email', array_merge($attributes, ['customer_email' => 'bob@example.com']));
+        $wrongPaidTime = $this->paidOrder('FILTER-paid', array_merge($attributes, ['paid_at' => '2026-11-06 12:34:56']));
+        $wrongRefundTime = $this->paidOrder('FILTER-refund', $attributes);
+
+        foreach ([[$target, $refundAt], [$wrongEmail, $refundAt], [$wrongPaidTime, $refundAt], [$wrongRefundTime, '2026-11-11 11:25:00']] as [$order, $date]) {
+            $this->refund($order, '100.00', $date);
+
+            if ($status === 'chargeback') {
+                $this->chargeback($order, '2026-11-18 10:00:00');
+            }
+        }
+
+        $foreign = $this->otherMerchantOrder($status);
+        $foreign->update(array_merge($attributes, [
+            'order_no' => 'AFTER-FILTER-foreign', 'merchant_order_no' => 'M-FILTER-foreign', 'refunded_amount' => '100.00',
+        ]));
+        $this->gatewayEvent($foreign, 'refunded', $refundAt);
+        $refundFilter = $status === 'chargeback' ? 'refunded' : 'after_sale';
+
+        Livewire::test($page)
+            ->filterTable('order_no', ['order_no' => 'FILTER'])
+            ->filterTable('merchant_order_no', ['merchant_order_no' => 'M-FILTER'])
+            ->filterTable('transaction_id', ['transaction_id' => 'TX-KEEP'])
+            ->filterTable('customer_email', ['customer_email' => ' alice@ '])
+            ->filterTable('paid_from', ['paid_from' => $paidAt])->filterTable('paid_to', ['paid_to' => $paidAt])
+            ->filterTable($refundFilter.'_from', [$refundFilter.'_from' => $refundAt])
+            ->filterTable($refundFilter.'_to', [$refundFilter.'_to' => $refundAt])
+            ->assertCanSeeTableRecords([$target])
+            ->assertCanNotSeeTableRecords([$wrongEmail, $wrongPaidTime, $wrongRefundTime, $foreign]);
+        Http::assertNothingSent();
+    }
+
+    #[TestWith(['zh_CN', '支付成功时间（开始）', '退款时间（开始）', '拒付时间（开始）'])]
+    #[TestWith(['en', 'Paid At (from)', 'Refunded At (from)', 'Chargeback At (from)'])]
+    public function test_each_time_range_has_a_localized_label(string $locale, string $paidLabel, string $refundLabel, string $chargebackLabel): void
+    {
+        $this->prepareReader();
+        app()->setLocale($locale);
+
+        Livewire::test(ManageRefundOrders::class)->assertSee($paidLabel)->assertSee($refundLabel);
+        Livewire::test(ManageChargebackOrders::class)->assertSee($paidLabel)->assertSee($refundLabel)->assertSee($chargebackLabel);
+    }
+
     public function test_refund_sorting_and_inclusive_filters_use_the_latest_refund_time(): void
     {
         $this->prepareReader();
@@ -396,6 +524,34 @@ class OrderAfterSaleDisplayTest extends TestCase
         $this->assertDatabaseCount('merchant_balance_transactions', $transactions);
         $this->assertDatabaseCount('order_refunds', 1);
         Http::assertNothingSent();
+    }
+
+    /** @return array<string, array{class-string, string}> */
+    public static function filterLists(): array
+    {
+        return [
+            'refunds' => [ManageRefundOrders::class, 'refunded'],
+            'chargebacks' => [ManageChargebackOrders::class, 'chargeback'],
+        ];
+    }
+
+    /** @return array<string, array{class-string, string, string, string, string, string, string}> */
+    public static function textFilters(): array
+    {
+        $cases = [];
+
+        foreach (self::filterLists() as $list => [$page, $status]) {
+            foreach ([
+                'order_no' => ['SSC-1001', 'SSC-100', ' C-100 ', 'SSC-0'],
+                'merchant_order_no' => ['M-1001', 'M-100', ' -100 ', 'M-0'],
+                'transaction_id' => ['TX-1001', 'TX-100', ' X-100 ', 'TX-0'],
+                'customer_email' => ['buyer1001@example.com', 'buyer100@example.com', ' buyer100 ', 'buyer0@example.com'],
+            ] as $field => $values) {
+                $cases[$list.'/'.$field] = [$page, $status, $field, ...$values];
+            }
+        }
+
+        return $cases;
     }
 
     /** @return array<string, array{class-string, class-string, string}> */
