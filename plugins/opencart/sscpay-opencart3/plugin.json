@@ -1,0 +1,14 @@
+{
+    "slug": "sscpay-opencart3",
+    "name": "SSCPay for OpenCart 3.x — PayPal & Credit Card",
+    "version": "1.0.0",
+    "platform": "opencart",
+    "api_version": "2.0",
+    "protocol_hash": "213d97741a3dbcd78770d7b23bb33b64ec14f0ea60c6fd5eb20f9c4000615b0e",
+    "requires": "3.0.x",
+    "requires_php": "7.4",
+    "tested": "",
+    "archive_name": "sscpay-opencart3.ocmod.zip",
+    "description": "OpenCart 3.x PayPal 与信用卡支付，支持 API v2、组合付款与物流同步。",
+    "changelog": "首版：PayPal / 信用卡、普通及组合付款、签名通知与主动查询、同单重试、物流同步、版本检查。"
+}

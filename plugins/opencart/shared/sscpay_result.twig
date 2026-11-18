@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>{{ (text.heading_title)|escape }}</title></head>
+<body><main style="max-width:40rem;margin:4rem auto;padding:1rem;font-family:system-ui;line-height:1.8">
+  <h1>{{ (text.heading_title)|escape }}</h1>
+  {% if message %}<p role="alert">{{ (message)|escape }}</p>{% endif %}
+  {% if progress %}
+    <h2>{{ (text.text_progress)|escape }}</h2>
+    <dl><dt>{{ (text.text_status)|escape }}</dt><dd>{{ (progress.order_status)|escape }}</dd>
+      <dt>{{ (text.text_paid)|escape }}</dt><dd>{{ (progress.paid_amount)|escape }}</dd>
+      <dt>{{ (text.text_remaining)|escape }}</dt><dd>{{ (progress.remaining_amount)|escape }}</dd></dl>
+  {% endif %}
+  {% if pay_url %}<p><a href="{{ (pay_url)|escape }}" rel="noreferrer">{{ (text.button_confirm)|escape }}</a></p>{% endif %}
+  {% if refresh_url %}<p><a href="{{ (refresh_url)|escape }}">{{ (text.button_refresh)|escape }}</a></p>{% endif %}
+  <p><a href="{{ (continue_url)|escape }}">{{ (text.button_continue)|escape }}</a></p>
+</main></body></html>

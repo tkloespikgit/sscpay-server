@@ -1,0 +1,31 @@
+<div class="sscpay-checkout">
+  <p>{{ (text.text_combined)|escape }}</p>
+  <div class="alert alert-danger" role="alert" data-sscpay-error hidden></div>
+  <form action="{{ (confirm_url)|escape }}" method="post" data-sscpay-checkout>
+    <input type="hidden" name="sscpay_csrf" value="{{ (csrf)|escape }}">
+    <div class="buttons"><button type="submit" class="btn btn-primary">{{ (text.button_confirm)|escape }}</button></div>
+  </form>
+</div>
+<script>
+(function () {
+  document.querySelectorAll('[data-sscpay-checkout]').forEach(function (form) {
+  if (form.getAttribute('data-sscpay-bound') === '1') { return; }
+  form.setAttribute('data-sscpay-bound', '1');
+  var root = form.closest('.sscpay-checkout');
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var button = form.querySelector('button');
+    var error = root.querySelector('[data-sscpay-error]');
+    button.disabled = true;
+    error.hidden = true;
+    fetch(form.action, {method: 'POST', credentials: 'same-origin', body: new FormData(form), headers: {'Accept': 'application/json'}})
+      .then(function (response) { return response.json(); })
+      .then(function (json) {
+        if (json.redirect && /^https:\/\//.test(json.redirect)) { window.location.assign(json.redirect); }
+        else { throw new Error(json.error || 'Payment could not be processed.'); }
+      })
+      .catch(function (exception) { error.textContent = exception.message; error.hidden = false; button.disabled = false; });
+  });
+  });
+})();
+</script>

@@ -1,0 +1,44 @@
+{{ header }}{{ column_left }}
+<div id="content">
+  <div class="page-header"><div class="container-fluid"><h1>{{ (text.heading_title)|escape }} <small>v{{ (version)|escape }} / OpenCart {{ (major)|escape }}.x</small></h1></div></div>
+  <div class="container-fluid">
+    {% if error_warning %}<div class="alert alert-danger" role="alert">{{ (error_warning)|escape }}</div>{% endif %}
+    {% if success %}<div class="alert alert-success" role="status">{{ (success)|escape }}</div>{% endif %}
+    <div class="panel panel-default card"><div class="panel-body card-body">
+      <form action="{{ (action)|escape }}" method="post" autocomplete="off">
+        <input type="hidden" name="sscpay_csrf" value="{{ (csrf)|escape }}"><input type="hidden" name="sscpay_action" value="save">
+        <h2>{{ (text.text_edit)|escape }}</h2><p>{{ (text.text_combined)|escape }}</p>
+        {% for field in ['api_url', 'app_id', 'api_key', 'group_key', 'payment_method_key', 'platform', 'update_url', 'sort_order'] %}
+          <div class="form-group mb-3"><label for="sscpay-{{ (field)|escape }}">{{ (attribute(text, 'entry_' ~ field))|escape }}</label>
+            <input id="sscpay-{{ (field)|escape }}" class="form-control" name="{{ (field)|escape }}" type="{{ (field == 'api_key' ? 'password' : 'text')|escape }}" value="{{ (attribute(settings, field))|escape }}" {% if field in ['api_url', 'app_id', 'group_key', 'platform'] %}required{% endif %}>
+            {% if field == 'api_key' %}<p class="help-block form-text">{{ (text.text_key_hint)|escape }}</p>{% endif %}
+          </div>
+        {% endfor %}
+        <div class="form-group mb-3"><label for="sscpay-status">{{ (text.entry_status)|escape }}</label><select class="form-control form-select" id="sscpay-status" name="status"><option value="0">{{ (text.text_disabled)|escape }}</option><option value="1" {% if settings.status %}selected{% endif %}>{{ (text.text_enabled)|escape }}</option></select></div>
+        <div class="form-group mb-3"><label for="sscpay-zone">{{ (text.entry_geo_zone_id)|escape }}</label><select class="form-control form-select" id="sscpay-zone" name="geo_zone_id"><option value="0">{{ (text.text_all_zones)|escape }}</option>{% for zone in geo_zones %}<option value="{{ (zone.geo_zone_id)|escape }}" {% if zone.geo_zone_id == settings.geo_zone_id %}selected{% endif %}>{{ (zone.name)|escape }}</option>{% endfor %}</select></div>
+        <p>{{ (text.text_status_hint)|escape }}</p>
+        {% for stage in ['pending', 'partial', 'paid', 'cancelled', 'failed', 'refunded', 'chargeback'] %}
+          <div class="form-group mb-3"><label for="sscpay-{{ (stage)|escape }}">{{ (attribute(text, 'entry_' ~ stage ~ '_status_id'))|escape }}</label>
+            <select class="form-control form-select" id="sscpay-{{ (stage)|escape }}" name="{{ (stage)|escape }}_status_id">{% for status in order_statuses %}<option value="{{ (status.order_status_id)|escape }}" {% if status.order_status_id == attribute(settings, stage ~ '_status_id') %}selected{% endif %}>{{ (status.name)|escape }}</option>{% endfor %}</select>
+          </div>
+        {% endfor %}
+        <button class="btn btn-primary" type="submit">{{ (text.button_save)|escape }}</button> <a class="btn btn-default btn-light" href="{{ (cancel)|escape }}">{{ (text.button_cancel)|escape }}</a>
+      </form>
+      <hr><p>{{ (text.text_notify_hint)|escape }}</p><p>Payment: <code>{{ (notify_url)|escape }}</code></p><p>Shipment: <code>{{ (shipment_url)|escape }}</code></p>
+      <hr><h2>{{ (text.text_tools)|escape }}</h2><p>{{ (text.text_query_hint)|escape }}</p>
+      <form action="{{ (action)|escape }}" method="post">
+        <input type="hidden" name="sscpay_csrf" value="{{ (csrf)|escape }}">
+        {% for field in ['order_id', 'logistics_company', 'tracking_number', 'tracking_url', 'shipped_at'] %}
+          <div class="form-group mb-3"><label for="tool-{{ (field)|escape }}">{{ (attribute(text, 'entry_' ~ field))|escape }}</label><input id="tool-{{ (field)|escape }}" class="form-control" name="{{ (field)|escape }}" {% if field == 'order_id' %}type="number" min="1" required{% else %}type="text"{% endif %} {% if field == 'shipped_at' %}placeholder="2026-11-17T12:30:00+08:00"{% endif %}></div>
+        {% endfor %}
+        <button class="btn btn-default btn-light" name="sscpay_action" value="query">{{ (text.text_query)|escape }}</button>
+        <button class="btn btn-primary" name="sscpay_action" value="ship">{{ (text.text_ship)|escape }}</button>
+      </form>
+      {% if lookup %}<dl>{% for key, value in lookup %}<dt>{{ (key)|escape }}</dt><dd>{{ (value)|escape }}</dd>{% endfor %}</dl>{% endif %}
+      <hr><p>{{ (text.text_update_hint)|escape }}</p>
+      <form action="{{ (action)|escape }}" method="post"><input type="hidden" name="sscpay_csrf" value="{{ (csrf)|escape }}"><button class="btn btn-default btn-light" name="sscpay_action" value="updates">{{ (text.text_updates)|escape }}</button></form>
+      {% if update %}<p>v{{ (update.version)|escape }} — <a href="{{ (update.download_url)|escape }}" rel="noopener noreferrer">{{ (text.text_download)|escape }}</a></p><p>SHA-256: <code>{{ (update.sha256)|escape }}</code></p>{% endif %}
+    </div></div>
+  </div>
+</div>
+{{ footer }}
