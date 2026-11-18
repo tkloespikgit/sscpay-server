@@ -141,7 +141,7 @@ final class CryptoPaymentRequestService
                     'payment_config_snapshot' => $config,
                     'verification_policy' => CryptoVerificationPolicy::snapshot($asset['network']),
                 ],
-                'expires_at' => now()->addSeconds($ttl),
+                'expires_at' => now()->addSeconds($ttl), 'settlement_next_attempt_at' => now()->addSeconds($ttl),
             ]);
             $checkout?->update(['current_request_id' => $request->id, 'action' => 'open', 'phase' => 'backfill',
                 'handoff_at' => null, 'ready_at' => null, 'next_attempt_at' => now()]);

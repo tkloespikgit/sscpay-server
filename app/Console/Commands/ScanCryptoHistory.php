@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\CryptoPaymentRequest;
 use App\Services\CryptoHistoryScanService;
 use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoVerificationPolicy;
@@ -10,9 +11,9 @@ use Throwable;
 
 class ScanCryptoHistory extends Command
 {
-    protected $signature = 'crypto:scan-history {network : Explicit network, including mainnet/testnet} {--limit=100 : Maximum block batches per invocation}';
+    protected $signature = 'crypto:scan-history {network : Explicit network, including mainnet/testnet} {--merchant= : Merchant owning the address} {--request= : Payment request to query} {--limit=100 : Maximum address history pages}';
 
-    protected $description = '按网络连续补查全部订单地址（包括冷地址），持久化待核验线索与完整扫描检查点';
+    protected $description = '按明确商户与付款请求补查地址历史；不扫描整条链';
 
     public function handle(CryptoHistoryScanService $service): int
     {
@@ -35,11 +36,22 @@ class ScanCryptoHistory extends Command
 
             return self::INVALID;
         }
+        $merchant = filter_var($this->option('merchant'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $request = filter_var($this->option('request'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($merchant === false || $request === false) {
+            $this->error('Continuous block scanning is retired. Supply --merchant and --request, or use crypto:check-addresses.');
+
+            return self::INVALID;
+        }
         $processed = 0;
         $deadline = microtime(true) + 45;
         try {
-            while ($processed < $limit && microtime(true) < $deadline && $service->scan($network)) {
+            while ($processed < $limit && microtime(true) < $deadline && $service->scan($network, $merchant, $request)) {
                 $processed++;
+                $fresh = CryptoPaymentRequest::query()->forMerchant($merchant)->findOrFail($request);
+                if ($fresh->history_query_state === null) {
+                    break;
+                }
             }
         } catch (Throwable) {
             $this->error('History scan failed for '.$network.'; completed checkpoints are retained.');

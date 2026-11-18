@@ -46,11 +46,13 @@ final class CryptoReceiptVerificationService
                 $request = CryptoPaymentRequest::query()->forMerchant($merchantId)->findOrFail($receipt->crypto_payment_request_id);
                 $address = CryptoAddress::query()->forMerchant($merchantId)->where('order_id', $request->order_id)
                     ->where('payment_method_id', $request->payment_method_id)->where('network', $request->network)->findOrFail($request->crypto_address_id);
-                $monitor = CryptoAddressMonitor::query()->forMerchant($merchantId)
-                    ->where('crypto_payment_request_id', $request->id)->where('crypto_address_id', $address->id)->findOrFail($receipt->crypto_address_monitor_id);
-                if ($monitor->network !== $request->network
-                    || $monitor->environment !== (str_ends_with($request->network, '-mainnet') ? 'mainnet' : 'testnet')) {
-                    throw new DomainException('Unsupported receipt network.');
+                if ($receipt->signature_mode !== 'address_history' || $receipt->crypto_address_monitor_id !== null) {
+                    $monitor = CryptoAddressMonitor::query()->forMerchant($merchantId)
+                        ->where('crypto_payment_request_id', $request->id)->where('crypto_address_id', $address->id)->findOrFail($receipt->crypto_address_monitor_id);
+                    if ($monitor->network !== $request->network
+                        || $monitor->environment !== (str_ends_with($request->network, '-mainnet') ? 'mainnet' : 'testnet')) {
+                        throw new DomainException('Unsupported receipt network.');
+                    }
                 }
                 $policy = $request->quote_snapshot['verification_policy'] ?? [];
                 $config = $request->quote_snapshot['payment_config_snapshot'] ?? [];

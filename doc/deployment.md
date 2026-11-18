@@ -225,7 +225,7 @@ BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 
 以下按当前代码整理，使用独立测试数据库、缓存、商户和钱包；不是已完成真实链验收的记录。
 
 1. `APP_URL` 填测试付款站点的完整 HTTPS origin。`crypto.webhook_base_url` 填 Tatum 能访问的公网 HTTPS origin，可与付款站点相同，只填域名，不附加 `/api/...`。系统会生成 `/api/webhooks/tatum/testnet/{监控UUID}`；该路径须能接收外部 POST，反向代理保留原始请求体和签名头，不能出现登录／人机验证页。
-2. 准备有 BTC/USD 行情权限的 Key 填 `crypto.api_key`，有测试 RPC、v3 公钥地址派生、v4 订阅管理权限的 Key 填 `crypto.testnet_key`。即使收测试币，当前代码仍用前者获取 BTC/USD 参考报价。独立随机 HMAC 填 `crypto.testnet_hmac_secret`，16–100 字符；例如在本地用 `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` 生成 64 位十六进制字符串。系统创建订阅前会同步 HMAC。只测试 BTC 时，主网 HMAC、其他链确认参数及测试代币合约可留空。
+2. 准备有 BTC/USD 行情权限的 Key 填 `crypto.api_key`，有测试 RPC、v3 公钥地址派生、v4 订阅管理及地址历史 Data API 权限的 Key 填 `crypto.testnet_key`。即使收测试币，当前代码仍用前者获取 BTC/USD 参考报价。独立随机 HMAC 填 `crypto.testnet_hmac_secret`，16–100 字符；例如在本地用 `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` 生成 64 位十六进制字符串。系统创建订阅前会同步 HMAC。只测试 BTC 时，主网 HMAC、其他链确认参数及测试代币合约可留空。
 3. 用测试 Key 调用 [Tatum 支持网络接口](https://docs.tatum.io/reference/getsupportedalertchains) `GET /v4/subscription/chains`，确认目标测试网络列有 `ADDRESS_EVENT`。官方说明该列表不按 Key／套餐过滤，仍要由后续订单验证实际创建权限；不能只凭列表判断账号已具备权限。
 4. 当前代码的 BTC 测试网络键是 `bitcoin-testnet`，RPC 固定指向 `https://bitcoin-testnet.gateway.tatum.io/`。Tatum 另列独立 Testnet4 与 Signet 网关，不能直接把模板改成 `bitcoin-testnet4` 或把 Testnet4 创世哈希填到现有配置中当作切网。见 [Tatum Bitcoin 网络列表](https://tatum.io/chain/bitcoin)。在所用 RPC 分别提交以下 JSON，检查 `chain`、`initialblockdownload=false`、链头进度和创世哈希：
 
@@ -273,18 +273,20 @@ BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 
 #### 3.2.3 从下单到到账的测试顺序
 
 1. 按 3.2 完成迁移并核对后台值；本节测试值只用于隔离环境。填齐凭证、网络策略及支付方式后，依次开启订阅、核验、历史补查、入账，最后开启 `crypto.checkout_enabled`。日常保存配置无需再执行 `config:cache`；旧订单确认策略、费率和报价仍取原快照，改配置后用新订单测试。
-2. 保持调度和队列运行。本地测试可在两个终端分别执行 `php artisan schedule:work`、`php artisan queue:work`；服务器已有调度／Supervisor 时沿用原运行方式。链上准备、订阅、历史扫描、核验、入账由 Scheduler 调用，单独启动 Queue Worker 不会启动这些定时命令；Worker 用于异步通知等任务。
+2. 保持调度和队列运行。本地测试可在两个终端分别执行 `php artisan schedule:work`、`php artisan queue:work`；服务器已有调度／Supervisor 时沿用原运行方式。链上准备、订阅、核验、入账及每三小时的补查派发由 Scheduler 调用，单独启动 Queue Worker 不会启动这些定时命令；default 队列 Worker 负责地址补查与手动查询，通知沿用原队列。
 3. 从现有统一下单入口创建一笔 `USD 10.00` 订单，使用测试应用和仅含 BTC 渠道的支付组，商户订单号每笔唯一。提交的仍是法币金额／币种，不将 API 的 `currency` 改为 BTC。先用 USD 验证收款，再用 AUD／GBP 等验证法币原始汇率快照与数量上浮。订单金额须满足现有渠道限额。
 4. 打开返回的付款链接，等待公钥核对、地址派生、报价、历史补查、订阅及交接补查完成。付款页应展示 `bitcoin-testnet`、BTC 应付数量、独立地址和报价到期时间。Tatum 中应有该地址的有效订阅。没有通过核对前页面不显示可付款地址；不要向两个校验地址付款。
 5. 报价有效时，从发送钱包将页面要求的 BTC **精确足额**转到该订单地址，发送手续费另付，不勾选从收款金额扣除矿工费。保存订单号、地址、报价数量、txid、上链高度与时间。当前迟到判定看规范区块时间，报价到期前广播不保证到期前上链。
-6. 达到两次确认并完成核验、完整历史补查后，检查订单支付成功、「虚拟币资金」中 `bitcoin-testnet / BTC` 的净余额和入账凭证，以及服务费。首次零费时净额等于应付；第二轮 1% 费用时按聪向上舍入服务费后扣除。例：应付 `0.00010000 BTC`、1%、固定费 0 时，服务费为 `0.00000100 BTC`，净额 `0.00009900 BTC`。实际应付以冻结报价为准，法币余额不应增加。
+6. 达到两次确认并完成链上核验后，检查订单支付成功、「虚拟币资金」中 `bitcoin-testnet / BTC` 的净余额和入账凭证，以及服务费。首次零费时净额等于应付；第二轮 1% 费用时按聪向上舍入服务费后扣除。例：应付 `0.00010000 BTC`、1%、固定费 0 时，服务费为 `0.00000100 BTC`，净额 `0.00009900 BTC`。实际应付以冻结报价为准，法币余额不应增加。
 7. 同时核对真实 Tatum 投递成功和本系统验签接收记录。只靠历史补查到账只能证明补查可用，不能把 webhook 标为通过。反复刷新付款页及重复运行核验／入账后，余额与原始收入凭证应只增加一次；再建第二单确认地址不同。
 
 需要定位后台处理阶段时，可在该隔离测试环境逐项运行以下现有命令；不要以命令退出成功替代订单／链上结果核对，部分命令存在下一次重试时间，链上确认仍须真实出块：
 
 ```bash
 php artisan crypto:prepare-checkouts --limit=5 --no-interaction
-php artisan crypto:scan-history bitcoin-testnet --limit=100 --no-interaction
+# 查询实际付款请求地址；替换以下示例商户 ID、crypto_payment_requests.id
+php artisan crypto:scan-history bitcoin-testnet --merchant=123 --request=456 --limit=100 --no-interaction
+php artisan crypto:check-addresses --limit=1000 --no-interaction
 php artisan crypto:maintain-subscriptions --limit=5 --no-interaction
 php artisan crypto:verify-receipts --limit=25 --no-interaction
 php artisan crypto:settle-payments --limit=100 --no-interaction
@@ -296,11 +298,33 @@ php artisan crypto:settle-payments --limit=100 --no-interaction
 | --- | --- |
 | 少付／多付 | 不按正常足额款直接完成入账；核验及补查后进入对应状态或人工复核 |
 | 报价过期后转入旧地址 | 找回原订单，按迟到款处理，不命中新订单 |
-| 测试环境短暂阻断回调、保持扫描 | 真实款通过历史补查发现；记录线索来源，区分回调重投和补查 |
+| 测试环境短暂阻断回调，再点订单“查询链上到账” | 不等待三小时即入队，地址 API 发现交易后由 RPC 核验；区分回调重投和补查，不重复入账 |
 | 过期链接重新打开／重新报价 | 先补查旧地址；有款先核验处理，无款且覆盖完整、链头已越过到期时间后才允许显式重新报价及新地址 |
 | 单独关闭新下单开关 | 新建链上单停止，已有单的发现、核验和入账继续 |
 
-测订阅到期时，可对**新测试订单**使用报价 `300` 秒、订阅 `600` 秒等短值，并继续历史扫描；订阅实际期限至少覆盖报价，补查未接管或有待核验线索时会延迟取消。BTC 若长时间不出块，历史完整性／新鲜度条件可能暂不成立，不能据此要求立即退订或绕过安全检查。退款／取款依旧是人工审核核销，真实钱包归集另测，不属于本次自动到账验证。
+测订阅到期时，可对**新测试订单**使用报价 `300` 秒、订阅 `600` 秒等短值。订阅期限至少覆盖报价；到期在历史功能开启、远端身份核对及取消成功后，记录实际取消时间并创建第 3／7 天计划，不再等待持续扫描接管。已发现的未确认交易继续核验。BTC 长时间不出块仍可能使付款页的链头新鲜度检查失败，不能绕过。退款／取款依旧是人工审核核销，真实钱包归集另测。
+
+#### 3.2.4 两轮地址补查升级与验收
+
+新增迁移 `2026_11_18_111740_create_crypto_address_checks_table`，需要上线执行。已有 `deploy.sh` 自动按“迁移 → 初始化旧退订计划 → 重启队列”推进；无需在正式库重建数据。若不用该脚本，沿用本站部署账号和 PHP 版本执行：
+
+```bash
+php artisan migrate --force --no-interaction
+php artisan crypto:check-addresses --initialize --no-interaction
+php artisan queue:restart --no-interaction
+```
+
+初始化只读本地取消记录并补缺计划，不调用 Tatum，重复执行不重置已完成计划。存在审计记录时新迁移的 `down()` 会拒绝删除；生产优先向前修复。原有 `schedule:run` 保持每分钟触发，代码内每三小时派发一次到期补查；手动按钮直接进入 default 队列。移除运维层自行添加的全网 `crypto:scan-history` cron，该命令现必须明确 `--merchant` 和 `--request`。
+
+- 核对实际退订时间 T0：只产生 day3/day7 两条，due_at 分别为 T0+72 小时和 T0+168 小时。到期后最近一轮三小时调度派发，队列等待另计；不会承诺恰好在截止秒完成。
+- 在独立测试环境让真实时间经过两轮，或由自动化测试使用时间旅行覆盖；不要修改服务器系统时间或正式订单计划。到期前无查询，到期后记录完成、分页进度及结果；完成后再次派发不增加 Tatum 请求。
+- 在退订空档转入旧地址，第 3／7 天应归属原订单并按迟到款规则审核。第 7 天后转入不会再自动轮询；点“查询链上到账”或合法重开付款链接补查，仍不改变地址归属。
+- 查询中遇到限流／失败，不记完成并保留分页。每轮最多三次失败后停止自动请求；排除故障后可点手动查询。队列超时也保留失败状态。暂停服务直到两轮均到期时，只执行第 7 天完整查询，第 3 天记录由该次结果覆盖。
+- 重开付款页恢复订阅或手动查询，不重置两轮。重新报价的旧地址一起查；反复点击一分钟内复用手动任务，既有已入账交易不重复记账，多个历史地址同时有款进入审核。
+- 平台／商户只能查当前权限内订单；撤销商户归属或权限后，已有页面／排队任务不能继续查询。法币订单仍使用原网关查询按钮。
+- 查看系统配置 `crypto.history_scan_interval_seconds` 的新说明：它仍是付款页／人工核账的结果新鲜度窗口，**不是三小时调度间隔**。第 3／7 天和三小时周期固定于本次实现，不需要新增密钥或私钥。
+
+两轮查询不等于两次 HTTP 调用：分页、链身份／链头、ETH 内部转账和发现交易后的 RPC 核验分别计费。真实测试需记录 Tatum Credits、索引延迟、各网络 API 权限及完成耗时。
 
 ---
 
@@ -666,7 +690,7 @@ node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync("pu
 
 ## 电商插件发布与更新
 
-WordPress PayPal 和信用卡插件的维护源在 `plugins/wordpress/`；原独立仓库保留作为旧安装的兼容分发入口。本项目的主页链接到 `/plugins`，更新检查接口为 `GET /plugins/updates/v1/{slug}`，下载地址为 `GET /plugins/{slug}/{version}/download`。更新服务的 `v1` 是元数据接口版本，与支付协议 `2.0` 分开编号。接口公开只读，不要求商户 API 密钥；安装包从私有磁盘流式下载，保留 SHA-256 校验。
+WordPress PayPal / 信用卡的维护源在 `plugins/wordpress/`，OpenCart 3 / 4 的维护源在 `plugins/opencart/`（每代一个安装包，内含 PayPal 与信用卡）；原 WordPress 独立仓库保留作为旧安装的兼容分发入口。本项目的主页链接到 `/plugins`，更新检查接口为 `GET /plugins/updates/v1/{slug}`，下载地址为 `GET /plugins/{slug}/{version}/download`。更新服务的 `v1` 是元数据接口版本，与支付协议 `2.0` 分开编号。接口公开只读，不要求商户 API 密钥；安装包从私有磁盘流式下载，保留 SHA-256 校验。
 
 ### 本地构建与验收
 
@@ -675,15 +699,18 @@ php artisan plugins:check --no-interaction
 php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php
 php artisan plugins:build sscpay-payment-paypal --no-interaction
 php artisan plugins:build sscpay-payment-creditcard --no-interaction
+php artisan plugins:build sscpay-opencart3 --no-interaction
+php artisan plugins:build sscpay-opencart4 --no-interaction
+php artisan test --compact tests/Unit/OpenCartPaymentProtocolTest.php tests/Feature/OpenCartGatewayTest.php tests/Feature/OpenCartV2ContractTest.php tests/Feature/OpenCartDistributionTest.php
 ```
 
-安装包和 `release.json` 输出到 `storage/app/plugin-builds/{slug}/{version}/`，不会打包 Laravel 源码、配置、Git 文件或测试。打包文件列表固定为插件主文件、`index.php`、`includes/`、`assets/`、`languages/`。插件继续使用 PHP 7.4 兼容语法，Laravel Pint 排除插件目录；CI 另用 PHP 7.4 检查插件语法。
+安装包和 `release.json` 输出到 `storage/app/plugin-builds/{slug}/{version}/`，不会打包 Laravel 源码、配置、Git 文件或测试。WordPress 文件列表固定为插件主文件、`index.php`、`includes/`、`assets/`、`languages/`；OpenCart 3 打包 `upload/` 与 `install.json`，4 打包 `admin/`、`catalog/`、`install.json`，两者注入白名单共享客户端、模板及版本文件。共享代码使用 PHP 7.4 语法，OpenCart 4 运行时至少 PHP 8.0；Laravel Pint 排除整个插件目录，CI 以 PHP 7.4 / 8.0 / 8.3 检查语法。
 
 `plugins:publish {slug}` 会构建并上传单个插件；`plugins:sync` 会预检并发布全部已接入插件，已纳入日常部署脚本。两者都使用 `config/plugins.php` 指定的磁盘。未配置 `PLUGIN_RELEASE_DISK` 时为本地私有 `local`，文件实际位于执行机器的 `storage/app/private/plugin-releases/`，必须在对应服务器发布并持久保存该目录；多实例及 GitHub Actions 发布使用 `PLUGIN_RELEASE_DISK=oss`，与运行应用对齐 bucket/prefix。版本 ZIP 和清单均写入成功后才更新该插件的 `stable.json`；同一版本不同内容拒绝覆盖，旧版本不能替换更新的稳定版本。下载页始终从已发布记录读取版本；单独 `git pull` 或 `plugins:build` 不会创建线上发布记录。
 
 ### GitHub Actions 配置
 
-`.github/workflows/plugins.yml` 检查协议指纹、双插件版本递增、插件行为及服务端 v2 回归；建议将 `verify` 与 `php-compatibility` 设为分支合并必需检查。发布工作流只接受 `plugins/{slug}/v{version}`，如 `plugins/sscpay-payment-paypal/v1.1.0` 和 `plugins/sscpay-payment-creditcard/v1.1.0`；两个插件各打一个 tag。
+`.github/workflows/plugins.yml` 检查协议指纹、四个安装包版本递增、插件行为及服务端 v2 回归；建议将 `verify` 与 `php-compatibility` 设为分支合并必需检查。发布工作流只接受 `plugins/{slug}/v{version}`，如 `plugins/sscpay-payment-paypal/v1.1.0` 和 `plugins/sscpay-payment-creditcard/v1.1.0`，新增 OpenCart 使用 `plugins/sscpay-opencart3/v1.0.0` / `plugins/sscpay-opencart4/v1.0.0`；每个包各打一个 tag。
 
 GitHub 仓库配置：
 
@@ -703,30 +730,50 @@ GitHub 仓库配置：
 3. 新更新器默认使用生产 API 根地址，留空时使用沙箱根地址；可在插件设置填写独立 HTTPS 更新服务根地址，或通过 `SSCPAY_UPDATE_BASE_URL` / 对应插件的 `SSCPAY_PAYPAL_UPDATE_BASE_URL`、`SSCPAY_CREDITCARD_UPDATE_BASE_URL` 覆盖。更新过程不发送支付 API Key 或 GitHub Token。
 4. 升级保留原 slug、主文件、支付方式 ID、配置和订单引用。不要删除其他插件仍在使用的共用 GitHub Token。原仓库过渡 Release 保留，便于长期未升级的站点接入。
 
+### OpenCart 安装、配置与升级
+
+| 安装包 | 商城范围 | 插件 PHP 下限 | ZIP 结构 / 文件名 |
+|---|---|---|---|
+| `sscpay-opencart3` v1.0.0 | 3.0.x | 7.4 | `upload/`，下载 `sscpay-opencart3.ocmod.zip` |
+| `sscpay-opencart4` v1.0.0 | 4.0.x / 4.1.x | 8.0（同时满足商城要求） | 根目录 `admin/`、`catalog/`、`system/`、`install.json`，文件名必须为 `sscpay.ocmod.zip` |
+
+1. 在 OpenCart「扩展 → 安装器」上传对应包；4.x 再执行包的安装，然后在支付扩展中分别安装 `SSCPay PayPal`、`SSCPay Credit Card`，保存配置后启用需要的支付方式。使用默认结账入口；不支持订阅、循环扣款或无需商品记录的纯礼品券订单。
+2. 每种支付方式分别填写 HTTPS API 根地址、App-ID、API Key、支付组和可选的指定渠道。后台密钥留空保留已保存值，不回显；默认平台标识 `opencart` 必须已在 SSCPay 的 `order.platforms` 中启用。不要使用带 `/api` 的根地址。配置通过 OpenCart 标准 setting 模型写入默认店铺，其他店铺继承时仍按 `store_id` 隔离订单和回调。
+3. 配置状态映射：全额付款选择系统「处理中 / 完成」分类之一，其他映射必须属于非已付款分类；建议新建独立部分付款、退款和拒付状态。部分付款不减为零、不触发付款完成；过期但已付部分款项保留进度，不再引导继续付款；组合订单的售后 review 保留曾付款事实并显示远端状态，需人工处理。
+4. 支付通知地址由客户端随建单发送。需要物流回传时，在 SSCPay 应用中填写插件设置显示的完整 shipment 地址，如 `https://商城域名/index.php?route=extension/payment/sscpaypaypal&sscpay_action=shipment`（3.x）或 `https://商城域名/index.php?route=extension/sscpay/payment/sscpaypaypal&sscpay_action=shipment`（4.x）；信用卡把末段换成 `sscpaycreditcard`。多店铺使用实际店铺域名。回传仅追加配送备注与去重记录，不改变付款状态。
+5. 插件设置中的订单工具输入 OpenCart 订单 ID 可只读查询远端进度；商城状态由签名通知或持有不可猜回跳 key 的主动查询更新。发货填写 SSCPay 已登记的承运商代码、运单号及带时区 ISO 8601 时间。组合订单全额付清后逐个向真实已付款子单发送，同一请求重试跳过已确认成功的子单。
+6. 可填写独立 HTTPS 下载站根地址并「检查新版本」，不发送支付密钥；返回版本、下载地址和 SHA-256。升级前备份，3.x 重新上传安装包；4.x 将 ZIP 根目录内容覆盖到 `extension/sscpay/`，不先卸载或删除支付记录。4.x 安装器通过 ZIP 文件名识别扩展代码，因此下载后不可改名；GitHub 自动生成的源码 ZIP 不能安装。
+
+OpenCart 建单商户号固定为 `OC{3|4}-{store_id}-{order_id}`；第一次请求前持久保存，超时后沿用原号补单，跨支付方式 / 应用 / API 地址的复用被拒绝。卸载支付方式保留对账记录；不在卸载时删除扩展表。共享客户端修改后应重测并递增两个 OpenCart 包版本。
+
+CI 另在独立 MySQL 8 临时库验证建表、事务回滚、nonce 防篡改及同单四并发回调。手工运行 `OpenCartStorageTest` 时显式提供 `OPENCART_TEST_MYSQL_DSN=mysql:host=127.0.0.1;port=3306`、`OPENCART_TEST_MYSQL_USER`、`OPENCART_TEST_MYSQL_PASSWORD`；测试自行创建并删除随机 `sscpay_oc_test_*` 库，完全不读取应用数据库配置。未配置时该专项跳过。协议契约测试仍使用隔离 SQLite 内存库。
+
+当前验证覆盖协议、打包后入口、MySQL 存储及本机 3.0.3.8 的模板运行时；完整 OpenCart 3/4 安装、4.x 实际运行、主题/第三方结账、库存/优惠券等核心扩展联动及真实收款需在专用商城测试站验收。退款与拒付使用主动查询同步已有状态，本插件不提供真实退款发起动作。
+
 ### 插件开发与 API 同步规范
 
-商户 API 与已接入商城插件在同一开发任务内交付。当前同步范围是 WordPress PayPal、信用卡两个插件；后续平台接入后纳入相同流程。协议定义继续维护在 [API 手册](api.md)，本节只规定开发和交付约束。
+商户 API 与已接入商城插件在同一开发任务内交付。当前同步范围是 WordPress PayPal、信用卡及 OpenCart 3、4 四个安装包；后续平台接入后纳入相同流程。协议定义继续维护在 [API 手册](api.md)，本节只规定开发和交付约束。
 
 | 范围 | 开发约定 |
 |---|---|
 | 源码与职责 | 以本仓库 `plugins/{platform}/{slug}/` 为维护源，原独立仓库仅作兼容分发。插件独立安装运行，不依赖 Laravel 的 `vendor/` 或另一个 SSCPay 支付插件已启用；只负责商城数据转换、API 调用、结果验证与商城状态映射，汇率、渠道路由及账务由服务端处理。 |
-| 运行环境 | 每个平台声明并验证自己的商城、PHP 与 API 兼容版本。当前两个 WordPress 插件保持 PHP 7.4 语法，沿用相邻文件的 WordPress 风格，与 Laravel 服务端分别格式化、检查。 |
+| 运行环境 | 每个平台声明并验证自己的商城、PHP 与 API 兼容版本。WordPress 与 OpenCart 共享客户端保持 PHP 7.4 语法，OpenCart 4 运行时至少 PHP 8.0，沿用相邻文件的 WordPress 风格，与 Laravel 服务端分别格式化、检查。 |
 | 升级兼容 | 保留现有 slug、主文件、支付方式 ID、配置键、订单 meta 和已公开钩子的语义。保留目前支持的 V1 / V2 格式；不兼容变更需有服务端兼容期和升级迁移安排，不能假设所有商户会立即升级。 |
 | 签名与数据 | 请求和回调遵循同一规范化签名算法，先对完整报文验证再转换字段。金额保持十进制字符串，不以浮点数判断已付金额；日志和更新请求不暴露 API Key、GitHub Token 等凭证。 |
 | 支付与物流 | 同一订单重试沿用原商户号和已保存引用；事件去重、进度版本只前进，只有原订单付清才确认商城付款。按真实子单上传物流，按父商户号与运单号去重回传，不由物流回传改变支付状态。 |
 | 测试 | 使用实际服务端报文验证每个已接入插件，覆盖完整验签、错误身份和金额、重复与乱序、部分与全部付款、同号重试及物流去重；发布检查覆盖包结构、版本和下载校验。变更行为时补充相应失败场景。 |
-| 版本与安装包 | 插件版本独立于 Laravel 版本，使用三段版本号：缺陷修复递增修订号，兼容新增功能递增次版本，不兼容升级递增主版本。插件头部 `Version`、版本常量与 `plugin.json.version` 一致，更新说明写清 API 变化与兼容范围。已发布版本包保持不可变。 |
+| 版本与安装包 | 插件版本独立于 Laravel 版本，使用三段版本号：缺陷修复递增修订号，兼容新增功能递增次版本，不兼容升级递增主版本。WordPress 头部 `Version`、版本常量与 `plugin.json.version` 一致；OpenCart 的 `install.json.version` 与清单一致，后台显示的版本由打包时注入，更新说明写清 API 变化与兼容范围。已发布版本包保持不可变。 |
 
 每次涉及请求字段、响应字段、错误码、签名、付款通知、查询状态或物流协议变化，按以下顺序完成：
 
-1. **确认影响。** 核对执行代码、API 文档和相关测试，逐个检查已接入插件的调用、验签、状态处理及数据保存。当前两个插件都须给出兼容性结论；无需修改运行逻辑时说明原因，不为制造代码差异改写原有行为。
+1. **确认影响。** 核对执行代码、API 文档和相关测试，逐个检查已接入插件的调用、验签、状态处理及数据保存。当前四个安装包都须给出兼容性结论；无需修改运行逻辑时说明原因，不为制造代码差异改写原有行为。
 2. **同步适配。** 在本次任务中完成服务端与插件修改，保留旧订单、旧配置和兼容协议。字段新增也要检查完整体验签、金额类型和状态分支，不能仅凭 HTTP 200 判定已收款。
-3. **补充并运行回归。** 更新相关插件测试与[服务端真实报文契约测试](../tests/Feature/WordPressV2ContractTest.php)，验证旧格式与本次变化；新增行为的用例同时覆盖成功和重要失败路径。真实 WordPress 升级或 MySQL 并发未验证时在交付记录中注明。
-4. **同步版本与协议声明。** 当前指纹规则要求 API 关联文件变化后两个插件都递增版本，维护三处版本值、`api_version` 和更新说明。格式化与协议文档更新完成后，执行 `php artisan plugins:check`，按输出的当前 SHA-256 更新各自 `plugin.json.protocol_hash`，然后重新检查；不能仅改版本或指纹代替适配与测试。
-5. **检查并构建。** 执行本节的本地构建与验收命令。开发中可用 `php artisan plugins:check --base=HEAD` 比较未提交修改；CI 使用相应基线提交检查双插件升版。确认两个安装包可独立构建，并核对 ZIP 内目录、版本与校验值。
+3. **补充并运行回归。** 更新相关插件测试与 [WordPress 契约测试](../tests/Feature/WordPressV2ContractTest.php)、[OpenCart 契约测试](../tests/Feature/OpenCartV2ContractTest.php)，验证旧格式与本次变化；新增行为的用例同时覆盖成功和重要失败路径。真实商城安装、升级或 MySQL 并发未验证时在交付记录中注明。
+4. **同步版本与协议声明。** 当前指纹规则要求 API 关联文件变化后四个包都递增版本，维护各自版本值、`api_version` 和更新说明。格式化与协议文档更新完成后，执行 `php artisan plugins:check`，按输出的当前 SHA-256 更新各自 `plugin.json.protocol_hash`，然后重新检查；不能仅改版本或指纹代替适配与测试。
+5. **检查并构建。** 执行本节的本地构建与验收命令。开发中可用 `php artisan plugins:check --base=HEAD` 比较未提交修改；CI 使用相应基线提交检查全部插件升版。确认四个安装包可独立构建，并核对 ZIP 内目录、版本与校验值。
 6. **交付与发布。** 一起报告服务端变化、各插件版本、兼容性结论、验证结果和安装包位置，明确是否已经发布。版本准备、构建完成与生产发布分别记录；按兼容性安排部署服务端及发布插件，不将“API 已完成、插件尚待适配”作为默认交付状态。
 
-**检查范围与能力边界：** [PluginProtocol::files()](../app/Support/PluginProtocol.php) 当前按登记文件的完整内容计算指纹，命中的文案或格式变化也会触发同步检查。指纹只能证明登记内容与插件声明对应，语义正确性仍由代码适配、回归和审查确认。新增协议实现文件或电商平台时，一并扩充插件目录发现、指纹覆盖、参数化契约测试、运行环境检查和发布工作流；下载页出现平台名称不代表插件已接入。CI 检测不一致并执行测试，不会自动重写插件业务代码。开发任务中的同步由开发者或 AI 完成；插件发布后的商户站安装升级沿用 WordPress 的后台操作和自动更新设置。
+**检查范围与能力边界：** [PluginProtocol::files()](../app/Support/PluginProtocol.php) 当前按登记文件的完整内容计算指纹，命中的文案或格式变化也会触发同步检查。指纹只能证明登记内容与插件声明对应，语义正确性仍由代码适配、回归和审查确认。新增协议实现文件或电商平台时，一并扩充插件目录发现、指纹覆盖、参数化契约测试、运行环境检查和发布工作流；下载页出现平台名称不代表插件已接入。CI 检测不一致并执行测试，不会自动重写插件业务代码。开发任务中的同步由开发者或 AI 完成；插件发布后的商户站安装升级遵循对应平台方式：WordPress 使用后台更新；OpenCart 使用版本检查和安装包升级，当前不在线自动覆盖文件。
 
 V2 使用原建单、查单和发货路径；使用组合付款时，清空插件的「指定支付渠道」，并在对应支付组开启组合付款。已有指定渠道配置不会自动清除，指定渠道下单继续原语义。组合付款按父单 `event_id` / `version` 处理，只有付清父单才确认 WooCommerce 付款完成。商城物流集成可调用插件网关的 `sync_shipping($order, $shipment)`，按真实子单上传同一运单，不向父单上传。更完整的协议定义继续以 [API 手册](api.md#组合付款与-v2-通知) 为准。
 

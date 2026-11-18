@@ -21,6 +21,7 @@ use App\Support\CryptoAmount;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoCheckoutGuard;
 use App\Support\CryptoFinanceAccess;
+use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoWithdrawalInput;
 use App\Support\Permissions;
 use DomainException;
@@ -235,6 +236,9 @@ final class CryptoBalanceService
     public function recheckOrder(int $merchantId, int $orderId, User $operator, string $reason, ?string $mfaCode): void
     {
         $this->verifyOperator($operator, $mfaCode);
+        if (! CryptoRuntimeSettings::get('history_enabled')) {
+            throw new BalanceOperationException(__('crypto.address_check.disabled'));
+        }
         DB::transaction(function () use ($merchantId, $orderId, $operator, $reason): void {
             $merchant = Merchant::query()->lockForUpdate()->findOrFail($merchantId);
             $actor = $this->authorizeOperator($operator, $merchant, Permissions::CRYPTO_PAYMENTS_RECONCILE, platformOnly: true);
@@ -260,10 +264,11 @@ final class CryptoBalanceService
             CryptoPaymentResolution::query()->create($data);
             foreach (CryptoCheckoutGuard::requests($order) as $request) {
                 $request->update(['status' => 'review', 'review_reason' => 'manual_recheck', 'history_checked_at' => null,
-                    'history_next_attempt_at' => now(), 'settlement_next_attempt_at' => now()]);
+                    'history_next_attempt_at' => null, 'settlement_next_attempt_at' => now()]);
                 CryptoWebhookReceipt::query()->forMerchant($merchantId)->where('crypto_payment_request_id', $request->id)
                     ->update(['status' => 'pending', 'processed_at' => null, 'next_attempt_at' => now(), 'last_error_code' => null]);
             }
+            app(CryptoAddressCheckService::class)->requestReconciliation($actor, $order);
         }, 3);
     }
 
@@ -411,7 +416,7 @@ final class CryptoBalanceService
 
             $quote = $fresh->quote_snapshot;
             if (CryptoCheckoutGuard::requests($order)->contains(fn ($other) => $other->id !== $fresh->id
-                && (CryptoCheckoutGuard::hasEvidence($other) || ! CryptoCheckoutGuard::covered($other)))) {
+                && (CryptoCheckoutGuard::hasEvidence($other) || $other->history_query_state !== null))) {
                 throw new DomainException('Another quote has payment evidence or incomplete history.');
             }
             $calculated = $this->quotes->calculate(

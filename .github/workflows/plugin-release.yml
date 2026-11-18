@@ -5,6 +5,8 @@ on:
     tags:
       - 'plugins/sscpay-payment-paypal/v*'
       - 'plugins/sscpay-payment-creditcard/v*'
+      - 'plugins/sscpay-opencart3/v*'
+      - 'plugins/sscpay-opencart4/v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -58,7 +60,7 @@ jobs:
       - name: Validate tag and build
         shell: bash
         run: |
-          if [[ ! "$PLUGIN_TAG" =~ ^plugins/(sscpay-payment-(paypal|creditcard))/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          if [[ ! "$PLUGIN_TAG" =~ ^plugins/(sscpay-payment-(paypal|creditcard)|sscpay-opencart[34])/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             echo '::error::Invalid plugin release tag'
             exit 1
           fi
@@ -84,16 +86,17 @@ jobs:
         shell: bash
         run: |
           package="storage/app/plugin-builds/$PLUGIN_SLUG/$PLUGIN_VERSION"
+          archive="$(jq -r '.archive_name // (.slug + ".zip")' "$package/release.json")"
           jq -r '.changelog' "$package/release.json" > "$RUNNER_TEMP/plugin-release-notes.txt"
           if ! gh release view "$PLUGIN_TAG" >/dev/null 2>&1; then
-            gh release create "$PLUGIN_TAG" "$package/$PLUGIN_SLUG.zip" "$package/release.json" --verify-tag --latest=false --title "$PLUGIN_SLUG $PLUGIN_VERSION" --notes-file "$RUNNER_TEMP/plugin-release-notes.txt"
+            gh release create "$PLUGIN_TAG" "$package/$archive" "$package/release.json" --verify-tag --latest=false --title "$PLUGIN_SLUG $PLUGIN_VERSION" --notes-file "$RUNNER_TEMP/plugin-release-notes.txt"
           else
-            gh release download "$PLUGIN_TAG" --pattern "$PLUGIN_SLUG.zip" --dir "$RUNNER_TEMP/main-release"
+            gh release download "$PLUGIN_TAG" --pattern "$archive" --dir "$RUNNER_TEMP/main-release"
             checksum="$(jq -r '.sha256' "$package/release.json")"
-            echo "$checksum  $RUNNER_TEMP/main-release/$PLUGIN_SLUG.zip" | sha256sum --check
+            echo "$checksum  $RUNNER_TEMP/main-release/$archive" | sha256sum --check
           fi
       - name: Mirror compatibility package for existing WordPress installations
-        if: env.LEGACY_TOKEN != '' && env.LEGACY_OWNER != ''
+        if: startsWith(env.PLUGIN_SLUG, 'sscpay-payment-') && env.LEGACY_TOKEN != '' && env.LEGACY_OWNER != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.LEGACY_PLUGIN_RELEASE_TOKEN }}

@@ -25,6 +25,21 @@ jobs:
       DB_DATABASE: ':memory:'
       DB_URL: ''
       PLUGIN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      OPENCART_TEST_MYSQL_DSN: 'mysql:host=127.0.0.1;port=3306'
+      OPENCART_TEST_MYSQL_USER: root
+      OPENCART_TEST_MYSQL_PASSWORD: sscpay-ci-only
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: sscpay-ci-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -psscpay-ci-only --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +48,7 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: bcmath, zip, pdo_sqlite, gd, intl
+          extensions: bcmath, zip, pdo_sqlite, pdo_mysql, gd, intl
           coverage: none
       - run: composer install --no-interaction --prefer-dist --no-progress
       - name: Check protocol and plugin versions
@@ -45,19 +60,22 @@ jobs:
             php artisan plugins:check --no-interaction
           fi
       - name: Test plugin behavior and distribution
-        run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php tests/Feature/SyncPluginReleasesTest.php tests/Feature/DeploymentScriptTest.php
+        run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php tests/Feature/SyncPluginReleasesTest.php tests/Feature/DeploymentScriptTest.php tests/Unit/OpenCartPaymentProtocolTest.php tests/Feature/OpenCartGatewayTest.php tests/Feature/OpenCartV2ContractTest.php tests/Feature/OpenCartDistributionTest.php tests/Feature/OpenCartStorageTest.php
       - name: Test server v2 contract
         run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderNotificationRetryTest.php
 
   php-compatibility:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.0', '8.3']
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '7.4'
+          php-version: ${{ matrix.php }}
           coverage: none
-      - name: Check WordPress minimum PHP version
-        run: find plugins/wordpress -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Check plugin PHP compatibility
+        run: find plugins/wordpress plugins/opencart -type f -name '*.php' -print0 | xargs -0 -n1 php -l

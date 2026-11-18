@@ -60,7 +60,7 @@ final class CryptoCheckoutGuard
             return false;
         }
 
-        return $request->history_error_code === null && $request->history_to_block !== null && filled($request->history_to_hash)
+        return $request->history_query_state === null && $request->history_error_code === null && $request->history_to_block !== null && filled($request->history_to_hash)
             && $request->history_checked_at !== null && ! $request->history_checked_at->isFuture()
             && $request->history_checked_at->gte(now()->subSeconds((int) $interval))
             && ($since === null || $request->history_checked_at->gte($since))

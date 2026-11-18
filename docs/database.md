@@ -314,10 +314,10 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 | 表 | 当前数据与约束 |
 | --- | --- |
-| `crypto_address_monitors` | 请求内代次唯一，回调 UUID 全局唯一，远端订阅 ID 可空且唯一；冻结商户／请求／地址、网络／环境、TTL、API Key 指纹与回调 URL。记录准备、创建、激活、失败、取消、冷地址状态和重试时间，保留补查／冷扫描高度、区块哈希及时间；第六批扫描器写入完整覆盖证明 |
+| `crypto_address_monitors` | 请求内代次唯一，回调 UUID 全局唯一，远端订阅 ID 可空且唯一；冻结商户／请求／地址、网络／环境、TTL、API Key 指纹与回调 URL。记录准备、创建、激活、失败、取消、冷地址状态和重试时间，保留历代订阅审计和旧补查字段；地址补查完成后更新 backfill 检查点，停止写 cold_scan 证明 |
 | `crypto_webhook_receipts` | 按商户、监控代次保存请求绑定、body 摘要、规范化交易哈希、白名单线索、验签模式和处理状态；监控 ID＋摘要唯一。原始 body、签名及任意客户端字段不存库。该去重只针对投递，经济事件仍由链上事件表判定 |
 
-模型禁止删除监控与回调证据，禁止改写代次身份、已有远端订阅 ID、激活期限和回调证据，外键采用 RESTRICT；当前请求指针不使旧代次失效。过期退订需历史扫描接管且无未处理收件／核验事项，默认缺少扫描证明时不删除远端订阅。API Key 与 HMAC 密钥仅从环境配置读取，不存渠道 JSON 或表内；指纹用于阻止换 Key 后误认远端状态。
+模型禁止删除监控与回调证据，禁止改写代次身份、已有远端订阅 ID、激活期限和回调证据，外键采用 RESTRICT；当前请求指针不使旧代次失效。到期退订在核对远端身份后取消，历史功能关闭时不自动退订；成功取消的事务内保存第 3／7 天计划。API Key 与 HMAC 现从加密 System Config 读取，不存渠道 JSON；指纹用于阻止换 Key 后误认远端状态。
 
 [配置数据迁移](../database/migrations/2026_11_12_163459_add_crypto_defaults_to_system_configs.php) 随普通 `migrate` 补齐七个 `crypto.*` 配置，并填充旧 Seeder 留下的 `NULL`／空字符串。初值为上浮 `0`、报价 `3600` 秒、行情最大年龄 `300` 秒、订阅 `7200` 秒、覆盖对象 `{}`、恢复次数 `3`、历史扫描健康门槛 `300` 秒。已有非空值（包括恢复次数 `0`）和元数据保留，更新在同一事务内提交并逐项失效缓存；回滚保留所有配置。`CryptoSettingsSeeder` 同步采用这些初值，仅补缺。后台保持上浮比例的十进制字符串和订阅覆盖对象校验；缺失／非法参数仍拒绝相关操作，不增加运行时兜底。具体键与部署步骤见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。已有环境不需为这七项执行可能重设其他配置的总 Seeder；权限与支付模板仍单独初始化。
 
@@ -331,10 +331,18 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 历史发现复用 `crypto_webhook_receipts`，用 `signature_mode=history_rpc` 标明扫描来源，摘要由请求、交易哈希、区块哈希生成，不能把此来源当作 HMAC 验签通过。线索与当前请求的完整块游标一起提交，新的区块归属允许重新核验；事件经济身份仍全局唯一。新 EVM 请求增加 `verification_policy.internal_transfers=true`，内部价值转入使用 `trace:{路径}`，顶层仍为 `native:0`。旧报价缺少此能力时不回填不可变 JSON。
 
-自动记账只接受已确认、足额、按时报价内的事件以及新鲜历史证明，并在同一事务提交独立余额、收入流水、请求 credited 标记、订单付款事实和通知待办。`paid_at` 取付足的最后一笔链上时间；事件 `block_time` 和扫描时间在写入数据库前转换为系统时区，避免 UTC 对象写入无时区字段后被误读。请求状态另包含 partial／expired／review；迟到、超额、到期不足额及已入账后证据变化不会自动冲正或创建法币结算。已入账的异常仍保留原账，后续人工调整需独立审计设计。
+自动记账只接受已核验确认、足额、按时报价内的事件；持续历史新鲜度门槛已被下述地址补查方案替代，并在同一事务提交独立余额、收入流水、请求 credited 标记、订单付款事实和通知待办。`paid_at` 取付足的最后一笔链上时间；事件 `block_time` 和扫描时间在写入数据库前转换为系统时区，避免 UTC 对象写入无时区字段后被误读。请求状态另包含 partial／expired／review；迟到、超额、到期不足额及已入账后证据变化不会自动冲正或创建法币结算。已入账的异常仍保留原账，后续人工调整需独立审计设计。
 
 本阶段只在 SQLite 内存测试库随测试执行迁移。独立 MySQL 的 DDL、锁竞争和并发压测仍待验证，不能将上述描述视为正式库已经部署。独立取款的实际结构见下方第八批；教程网页目标结构继续见[完整方案](blockchain-payment-plan.md)；只读派生边界见 [D-34](decisions.md#d-34-链上配置隔离与只读公钥地址分配)，本批订阅与验签边界见 [D-35](decisions.md#d-35-订阅代次回调线索与保守退订)。
 
+
+2026-11-18 的[地址补查迁移](../database/migrations/2026_11_18_111740_create_crypto_address_checks_table.php) 替换持续扫描：
+
+- `crypto_address_checks` 保存商户、订单、`kind`（day3/day7/manual/recheck）、`check_key`、首次取消／到期时间、请求人、状态、运行次数／失败次数、派发／开始／完成／重试时间、固定错误码和结果。唯一键 `(order_id, check_key)` 固定两轮计划；到期及商户订单索引支持有界调度。三次失败后保留 error，不再自动派发；分页续跑不算失败。任务身份与计划不可改写，审核记录不可通过模型删除。
+- `crypto_payment_requests.history_query_state` 为可空 JSON，保存查询 UUID、固定起止高度／链头哈希、时间范围、阶段与分页位置。旧 `history_to_*` 改为上次完整地址查询的链头，`history_checked_at` 为本轮开始时间；完成后不再设置下一次持续扫描时间，`history_recent_blocks` 不再维护全链窗口。每轮从地址起始高度查完整历史；地址／报价绑定不变。
+- 本地查询收件使用 `signature_mode=address_history` 和请求＋查询 UUID＋交易哈希摘要；不是 HMAC 通知。`crypto_address_monitor_id` 改为可空，允许从未订阅的历史地址核查；实际回调仍必须匹配真实监控。事件与独立账本唯一约束不变，不用地址余额差额记账。
+- `deploy.sh` 迁移后调用 `crypto:check-addresses --initialize`，按现存订阅最早实际 `cancelled_at` 幂等补计划，不接触远端。两轮都逾期时执行第 7 天，第 3 天记录 `covered_by_check_id`；恢复订阅不重置计划。
+- 空数据可以回滚；存在补查审计或无监控的收件时，`down()` 在改表前拒绝，避免丢弃资金核查证据。生产保留数据向前修复。MySQL DDL／并发仍需在隔离 MySQL 验证，不能把 SQLite 回归当作生产迁移验收。
 
 第七批新增[收款流程附表迁移](../database/migrations/2026_11_11_232321_create_crypto_checkouts_table.php)：`crypto_checkouts.order_id` 唯一，显式保存 `merchant_id/payment_method_id` 和不可改写的 `fee_snapshot`（约定百分比费率、固定 USD 费）；`current_request_id` 指向当前报价，`action/phase/status` 与 `requested_at/handoff_at/ready_at/next_attempt_at/error_code` 保存重开和交接进度。创建报价及更新当前请求指针同事务提交，中断后沿用已预留的派生索引和请求。请求表新增唯一可空自关联 `replaces_request_id`，旧请求、地址、订阅及收件全部保留。
 
@@ -414,3 +422,15 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 写入后清除普通值与密文缓存，并在事务提交后再失效；事务内读取不填共享缓存。密钥显式解密只供服务端本次操作使用。应用重启或 `config:cache` 不会覆盖数据库配置，丢失或损坏的密钥不回退旧环境变量。
 
 配置数据迁移回滚保留值；列迁移在存在任何密文时拒绝删除，避免回滚丢失凭证。仅空密钥列可定向回滚／重建。生产修正应向前迁移，不还原明文密钥。加密依赖原 `APP_KEY`，与数据库一同妥善保管其既有恢复能力，不能重新生成。
+
+### OpenCart 商城侧支付记录（2026-11-17）
+
+以下表由插件安装时在 **OpenCart 自己的数据库** 创建，不属于 Laravel 迁移或余额账本；定义见 [Repository](../plugins/opencart/shared/Repository.php)。不保存商户 API Key，不增加 SSCPay 服务端表。
+
+| 表（含商城 DB_PREFIX） | 约束与用途 |
+|---|---|
+| `sscpay_order` | InnoDB；`(store_id, order_id)` 主键，ASCII 区分大小写的 `merchant_order_no` 唯一。保存支付方式、App-ID、API 根地址、原币 `decimal(18,2)` 金额、商城币种、远端订单号、付款地址及随机回跳 key；重试保留原引用并拒绝跨应用、接口地址或支付方式复用。 |
+| `sscpay_order.state_json` | 支付类型、进度、最高版本、最近 128 个 event_id、曾全额付款事实、真实子单、出站物流确认及入站配送去重。金额核对使用十进制字符串；部分付款、过期及 review 均不自行确认全额付款。 |
+| `sscpay_nonce` | InnoDB；App-ID + nonce 的 SHA-256 主键与规范化 body 摘要，保存 600 秒。相同 body 重投交由事件 / 物流去重，复用 nonce 改 body 拒绝；接收端时间窗口为正负 300 秒，验证完整报文后才写入。 |
+
+商城同单 MySQL 命名锁覆盖建单、回跳查询、付款和物流回传；独立状态写入与核心历史调用置于事务中，核心订单状态仍经 OpenCart 的 `addOrderHistory`（3.x）/ `addHistory`（4.x），不直接修改商城库存。核心表若使用非事务引擎或第三方事件外部副作用，不受扩展表事务完整保护；不能据自有 InnoDB 表回归宣称整个商城跨扩展事务已验证。卸载不删除支付引用与去重记录，重新启用可继续对账。保留其他店铺和支付方式的记录。

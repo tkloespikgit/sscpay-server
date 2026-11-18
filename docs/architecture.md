@@ -6,7 +6,7 @@
 
 新版区块链收款已接入统一下单和付款页，新下单由系统配置 `crypto.checkout_enabled` 控制（新安装默认关闭）。API、手工下单和公开收款链接共用 `OrderCreationService`：法币渠道继续插件流程，链上渠道保存原始汇率 USD 参考值、独立收款附表及本地付款链接，不准备 WooCommerce 商品。`CryptoCheckoutService` 后台推进公钥派生、报价、历史补查、订阅和交接补查；公开页只提交重开／重新报价意图并读取状态。报价有效时复用原地址，失效后须显式重新报价，新地址与旧地址永久分别绑定。
 
-Tatum 回调、逐块历史线索及 EVM／UTXO／TRON 核验复用前六批服务。`CryptoSettlementService` 将净额加密余额、账本、订单付款事实和首次通知一起提交；同单其他请求有款或补查未完成时阻止自动入账。法币余额与网关状态入口保持隔离。真实 Tatum／钱包、MySQL 并发及长期地址规模尚未验收；订单展示与异常款处理已增加，归集工具与教程网页待完成，不能据模拟测试开放生产收款。边界见[方案第 6.12 节](blockchain-payment-plan.md#612-统一下单付款页与重开第七批默认关闭)。
+Tatum 回调、按地址历史线索及 EVM／UTXO／TRON 核验复用既有链上服务。2026-11-18 起取消持续扫块：首次退订后第 3／7 天各安排一轮整单地址补查，每 3 小时派发；付款链接重开和后台手动查询按需执行，见 [D-65](decisions.md#d-65-退订后两轮地址补查替代持续扫块)。`CryptoSettlementService` 将净额加密余额、账本、订单付款事实和首次通知一起提交；同单其他请求有款或补查未完成时阻止自动入账。法币余额与网关状态入口保持隔离。真实 Tatum／钱包、MySQL 并发及长期地址规模尚未验收；订单展示与异常款处理已增加，归集工具与教程网页待完成，不能据模拟测试开放生产收款。边界见[方案第 6.12 节](blockchain-payment-plan.md#612-统一下单付款页与重开第七批默认关闭)。
 
 运行配置统一由 `CryptoRuntimeSettings` 从 `system_configs` 读取；`APP_URL` 仍为部署环境配置。新增 29 个运行参数覆盖 Tatum 主／测试网凭证、回调域名、开关、确认数、链身份、测试合约及地址／行情请求超时。`SystemConfig.secret_value` 使用 Laravel encrypted cast；密钥不进入普通值列、模型序列化或表单回显，共享缓存只保存密文，事务内读取不缓存未提交值。保存由 `CryptoRuntimeSettingsService` 重查超管权限、校验并清除缓存；凭证编辑与新监控创建使用配置行锁，仍有非冷订阅时拒绝替换相关凭证。新订阅自动同步新 HMAC；原回调域名和确认策略保持快照。仅关闭新下单开关后，已有付款页、监听、补查及入账继续运行。首次升级一次性导入旧环境／配置缓存，之后不再回退 `.env`；部署和 BTC 测试填写见[部署说明](../doc/deployment.md#32-区块链系统配置与升级)。
 
@@ -51,7 +51,9 @@ flowchart TD
 
 ## 2. 请求入口与访问边界
 
-WordPress 商城 PayPal / 信用卡插件已迁入 `plugins/wordpress/`，各自维护版本与清单，源码和服务端同仓库管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。`PluginCatalog` 读取插件目录，`PluginProtocol` 检查商户 API 协议指纹与双插件版本，`PluginReleaseService` 构建独立 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件代码保留 PHP 7.4 兼容语法，与 Laravel PHP 运行环境分别检查。
+商城插件以 `plugins/{platform}/{slug}/` 为维护源，源码和服务端同仓管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。WordPress PayPal / 信用卡各自一个包；OpenCart 3 / 4 各一个包，每包注册 PayPal 与信用卡。`PluginCatalog` 发现两层目录，`PluginProtocol` 检查商户 API 协议指纹及四个包的版本，`PluginReleaseService` 按平台构建 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件共享代码保留 PHP 7.4 语法，OpenCart 4 运行时要求 PHP 8.0+，与 Laravel 环境分别检查。
+
+OpenCart 两代入口分别保留 MVC 类与命名空间结构，复用 `plugins/opencart/shared/` 的签名、十进制计算、v1/v2 状态处理与注册表适配。打包时注入共享代码和模板：3.x 使用 `upload/`，4.x 根目录直接部署到 `extension/sscpay/`，公开下载保留文件名 `sscpay.ocmod.zip`。商城独立保存支付引用、支付进度、事件及物流去重，以 MySQL 同单命名锁串行处理建单、回跳及通知；只有签名通知或主动查询确认收齐全额才调用商城核心历史接口。插件设置提供中英文配置、只读支付查询、物流发送和版本检查；退款/拒付按远端查询映射，不发起扣款或退款。边界与验收范围见 [D-64](decisions.md#d-64-opencart-两代独立安装包与共享协议客户端)。
 
 日常上线由根目录 `deploy.sh` 统一执行：维护模式下更新代码、依赖及资源，预检协议和全部插件版本，执行增量迁移与缓存、调用 `plugins:sync` 发布安装包及下载索引，再通知队列重启并恢复访问。`PluginReleaseService::sync()` 在写入前构建并预检所有已接入插件，支持 `--dry-run` 和相同版本重试；各插件分别切换稳定入口，不提供跨插件存储事务。GitHub tag 工作流继续承担 Release 附件和旧仓库过渡镜像。边界与重试见[日常自动部署](../doc/deployment.md#9-日常自动部署)。
 
@@ -251,7 +253,8 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `crypto:prepare-checkouts --limit=5` | 每十秒后台处理下单准备／页面重开／显式重新报价；默认关闭，商户与订单锁、订单级缓存互斥及持久重试 |
 | `crypto:maintain-subscriptions --limit=5` | 每分钟、后台、防重叠／多调度节点互斥；默认关闭，订阅代次锁和接管条件仍独立校验 |
 | `crypto:verify-receipts --limit=25` | 每分钟后台消费到期 pending／confirming 收件，默认关闭；请求级锁、批次及启动新核验的 45 秒预算，有界 RPC 超时，最终确认后不持续轮询 |
-| `crypto:scan-history {network} --limit=100` | 八个网络分别每分钟后台运行；同高请求合并读块，连续游标、重组回退、冷地址持续扫描，默认关闭 |
+| `crypto:check-addresses --limit=1000` | 每 3 小时派发退订 +72／+168 小时的订单地址补查；default 队列分页执行，失败最多 3 次；`--initialize` 仅补旧数据计划 |
+| `crypto:scan-history {network} --merchant=ID --request=ID --limit=100` | 仅供定点排障，按地址查询；不再自动调度，必须指定商户和付款请求 |
 | `crypto:settle-payments --limit=100` | 每分钟后台处理入账待办；完整覆盖＋核验后原子提交余额／订单／通知，默认关闭 |
 | `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |

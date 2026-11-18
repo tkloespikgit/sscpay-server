@@ -208,6 +208,16 @@ class Order extends Model
         ];
     }
 
+    public function cryptoAddressChecks(): HasMany
+    {
+        return $this->hasMany(CryptoAddressCheck::class);
+    }
+
+    public function latestCryptoAddressCheck(): HasOne
+    {
+        return $this->hasOne(CryptoAddressCheck::class)->latestOfMany('updated_at');
+    }
+
     public function cryptoRequests(): HasMany
     {
         return $this->hasMany(CryptoPaymentRequest::class);

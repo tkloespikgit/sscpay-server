@@ -17,6 +17,8 @@ return [
     'download' => 'Download :version',
     'unpublished' => 'Package not published yet',
     'requirements' => 'Requirements',
+    'opencart_instructions' => 'Choose the 3.x or 4.x package matching your store. Upload it through Extensions → Installer, then install and configure SSCPay PayPal and SSCPay Credit Card under payment extensions. Enter the API URL, App-ID, API Key, payment group and status mappings before enabling. Enable the opencart platform identifier in the SSCPay order platform settings.',
+    'opencart_upgrade' => '3.x uses an .ocmod.zip package. Keep the 4.x download filename sscpay.ocmod.zip. Back up before upgrading: upload again for 3.x; for 4.x, replace the files in extension/sscpay/ and keep settings and payment tables. The plugin settings support version checks, payment lookup and shipment sync. Subscriptions and recurring charges are not supported.',
     'install' => 'Installation and setup',
     'instructions' => 'Upload the ZIP through Plugins → Add New → Upload Plugin in WordPress, then activate it. Under WooCommerce → Settings → Payments, enter your order system URL, App-ID, API Key and payment group. Existing installations can update from the dashboard and keep their settings.',
     'combined' => 'To use combined payments, leave the specified payment channel blank and enable combined payments on the payment group. Partial payments retain their progress; the store order is marked paid only after the full amount has been collected.',

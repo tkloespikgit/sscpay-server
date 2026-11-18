@@ -27,13 +27,16 @@ final readonly class PluginReleaseService
         }
         $directory = config('plugins.build_path').'/'.$slug.'/'.$version;
         File::ensureDirectoryExists($directory);
-        $path = $directory.'/'.$slug.'.zip';
+        $path = $directory.'/'.$plugin['archive_name'];
         $zip = new ZipArchive;
         if ($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             throw new RuntimeException('Cannot create plugin ZIP.');
         }
         try {
-            foreach ([$slug.'.php', 'index.php', 'includes', 'assets', 'languages'] as $entry) {
+            $entries = $plugin['platform'] === 'wordpress'
+                ? [$slug.'.php', 'index.php', 'includes', 'assets', 'languages']
+                : ($slug === 'sscpay-opencart3' ? ['upload', 'install.json'] : ['admin', 'catalog', 'install.json']);
+            foreach ($entries as $entry) {
                 $source = $plugin['path'].'/'.$entry;
                 $files = is_dir($source)
                     ? array_map('strval', iterator_to_array(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source, RecursiveDirectoryIterator::SKIP_DOTS)), false))
@@ -42,15 +45,12 @@ final readonly class PluginReleaseService
                 foreach ($files as $file) {
                     $file = (string) $file;
                     $relative = substr($file, strlen($plugin['path']) + 1);
-                    if (is_link($file) || ! preg_match('/\.(php|js|css|png|jpg|jpeg|gif|svg|webp|woff2?|mo|po|pot)$/i', $relative)) {
-                        throw new RuntimeException('Unexpected file in plugin package: '.$relative);
-                    }
-                    if (! $zip->addFile($file, $slug.'/'.$relative)) {
-                        throw new RuntimeException('Cannot add plugin file: '.$relative);
-                    }
-                    $zip->setMtimeName($slug.'/'.$relative, 315532800);
-                    $zip->setExternalAttributesName($slug.'/'.$relative, ZipArchive::OPSYS_UNIX, 0100644 << 16);
+                    $target = ($plugin['platform'] === 'wordpress' ? $slug.'/' : '').$relative;
+                    $this->addFile($zip, $file, $target);
                 }
+            }
+            if ($plugin['platform'] === 'opencart') {
+                $this->addOpenCartSharedFiles($zip, $plugin);
             }
         } finally {
             if (! $zip->close()) {
@@ -59,9 +59,10 @@ final readonly class PluginReleaseService
         }
         $release = [
             'slug' => $slug, 'name' => $plugin['name'], 'version' => $version,
+            'platform' => $plugin['platform'], 'archive_name' => $plugin['archive_name'],
             'api_version' => $plugin['api_version'], 'protocol_hash' => $plugin['protocol_hash'],
             'requires' => $plugin['requires'], 'requires_php' => $plugin['requires_php'],
-            'tested' => $plugin['tested'], 'wc_requires' => $plugin['wc_requires'],
+            'tested' => $plugin['tested'], 'wc_requires' => $plugin['wc_requires'] ?? null,
             'description' => $plugin['description'], 'changelog' => $plugin['changelog'],
             'sha256' => hash_file('sha256', $path), 'size' => filesize($path),
             'published_at' => now()->toIso8601String(),
@@ -80,10 +81,11 @@ final readonly class PluginReleaseService
         $prefix = $this->prefix($release['slug']);
         $versionPrefix = $prefix.'/'.$release['version'];
         $metadataPath = $versionPrefix.'/release.json';
-        if (! $disk->exists($metadataPath) || ! $disk->exists($versionPrefix.'/'.$release['slug'].'.zip')) {
+        $packagePath = $this->packagePath($release['slug'], $release['version']);
+        if (! $disk->exists($metadataPath) || ! $disk->exists($packagePath)) {
             $stream = fopen($build['zip'], 'rb');
             try {
-                if (! $disk->put($versionPrefix.'/'.$release['slug'].'.zip', $stream)
+                if (! $disk->put($packagePath, $stream)
                     || ! $disk->put($metadataPath, json_encode($release, JSON_THROW_ON_ERROR))) {
                     throw new RuntimeException('Uploading the plugin release failed.');
                 }
@@ -165,12 +167,42 @@ final readonly class PluginReleaseService
 
     public function packagePath(string $slug, string $version): string
     {
-        $this->catalog->find($slug);
+        $plugin = $this->catalog->find($slug);
         if (! preg_match('/^\d+\.\d+\.\d+$/D', $version)) {
             throw new InvalidArgumentException('Invalid plugin version.');
         }
 
-        return $this->prefix($slug).'/'.$version.'/'.$slug.'.zip';
+        return $this->prefix($slug).'/'.$version.'/'.$plugin['archive_name'];
+    }
+
+    private function addFile(ZipArchive $zip, string $file, string $target): void
+    {
+        if (! is_file($file) || is_link($file) || ! preg_match('/\.(php|js|css|json|twig|png|jpg|jpeg|gif|svg|webp|woff2?|mo|po|pot)$/i', $file)) {
+            throw new RuntimeException('Unexpected file in plugin package: '.$target);
+        }
+        if (! $zip->addFile($file, $target)) {
+            throw new RuntimeException('Cannot add plugin file: '.$target);
+        }
+        $zip->setMtimeName($target, 315532800);
+        $zip->setExternalAttributesName($target, ZipArchive::OPSYS_UNIX, 0100644 << 16);
+    }
+
+    /** @param array<string, mixed> $plugin */
+    private function addOpenCartSharedFiles(ZipArchive $zip, array $plugin): void
+    {
+        $prefix = $plugin['slug'] === 'sscpay-opencart3' ? 'upload/' : '';
+        $shared = base_path('plugins/opencart/shared');
+        foreach (['bootstrap', 'Decimal', 'Signature', 'Client', 'PaymentState', 'Payload', 'Repository', 'Gateway', 'Admin', 'Text'] as $class) {
+            $this->addFile($zip, $shared.'/'.$class.'.php', $prefix.'system/library/sscpay/'.$class.'.php');
+        }
+        $target = $prefix.'system/library/sscpay/release-version.json';
+        $zip->addFromString($target, json_encode(['version' => $plugin['version']], JSON_THROW_ON_ERROR));
+        $zip->setMtimeName($target, 315532800);
+        $zip->setExternalAttributesName($target, ZipArchive::OPSYS_UNIX, 0100644 << 16);
+        $this->addFile($zip, $shared.'/sscpay_settings.twig', $prefix.'admin/view/template/'.($prefix !== '' ? 'extension/' : '').'payment/sscpay_settings.twig');
+        foreach (['sscpay_checkout', 'sscpay_result'] as $name) {
+            $this->addFile($zip, $shared.'/'.$name.'.twig', $prefix.'catalog/view/'.($prefix !== '' ? 'theme/default/' : '').'template/'.($prefix !== '' ? 'extension/' : '').'payment/'.$name.'.twig');
+        }
     }
 
     private function prefix(string $slug): string
@@ -190,6 +222,11 @@ final readonly class PluginReleaseService
             || ! preg_match('/^[a-f0-9]{64}$/D', $release['sha256'] ?? '')
             || ! is_int($release['size'] ?? null) || $release['size'] <= 0) {
             throw new RuntimeException('Invalid plugin release metadata.');
+        }
+        $plugin = $this->catalog->find($slug);
+        if (($release['platform'] ?? $plugin['platform']) !== $plugin['platform']
+            || ($release['archive_name'] ?? $plugin['archive_name']) !== $plugin['archive_name']) {
+            throw new RuntimeException('Invalid plugin package metadata.');
         }
 
         return $release;

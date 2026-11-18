@@ -370,6 +370,7 @@ run_step '缓存当前环境配置' "$deploy_php" artisan config:cache --no-inte
 run_step '检查 API 与插件版本同步' "$deploy_php" artisan plugins:check "--base=$deploy_previous_commit" --no-interaction
 run_step '预检全部插件发布' "$deploy_php" artisan plugins:sync --dry-run --no-interaction
 run_step '执行增量数据库迁移' "$deploy_php" artisan migrate --force --no-interaction
+run_step '初始化区块链地址补查计划' "$deploy_php" artisan crypto:check-addresses --initialize --no-interaction
 run_step '缓存路由' "$deploy_php" artisan route:cache --no-interaction
 run_step '缓存视图' "$deploy_php" artisan view:cache --no-interaction
 run_step '发布全部插件及下载索引' "$deploy_php" artisan plugins:sync --no-interaction

@@ -24,7 +24,7 @@ class CryptoPaymentRequest extends Model
     }
 
     protected $fillable = [
-        'replaces_request_id',
+        'replaces_request_id', 'history_query_state',
         'history_to_block', 'history_to_hash', 'history_to_time', 'history_recent_blocks', 'history_checked_at',
         'history_next_attempt_at', 'history_error_code', 'review_reason', 'settlement_next_attempt_at',
         'current_monitor_id',
@@ -47,6 +47,7 @@ class CryptoPaymentRequest extends Model
     protected function casts(): array
     {
         return [
+            'history_query_state' => 'array',
             'history_to_block' => 'integer', 'history_to_time' => 'immutable_datetime', 'history_recent_blocks' => 'array',
             'history_checked_at' => 'immutable_datetime', 'history_next_attempt_at' => 'immutable_datetime',
             'settlement_next_attempt_at' => 'immutable_datetime',

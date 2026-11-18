@@ -49,7 +49,7 @@ class PluginDownloadController extends Controller
             } finally {
                 fclose($stream);
             }
-        }, $slug.'-'.$version.'.zip', [
+        }, ($release['platform'] ?? 'wordpress') === 'opencart' ? $release['archive_name'] : $slug.'-'.$version.'.zip', [
             'Content-Type' => 'application/zip', 'Content-Length' => (string) $release['size'],
             'X-Checksum-Sha256' => $release['sha256'], 'X-Content-Type-Options' => 'nosniff',
             'Cache-Control' => 'public, max-age=86400, immutable',

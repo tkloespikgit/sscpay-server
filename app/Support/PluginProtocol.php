@@ -47,14 +47,21 @@ final class PluginProtocol
             if ($plugin['api_version'] !== self::VERSION || ($plugin['protocol_hash'] ?? '') !== $fingerprint) {
                 throw new RuntimeException("{$plugin['slug']} 尚未同步当前 API 协议。完成适配、回归和版本递增后，将 protocol_hash 更新为 {$fingerprint}");
             }
-            $main = File::get($plugin['path'].'/'.$plugin['slug'].'.php');
-            preg_match('/^\s*\*\s*Version:\s*(\S+)/m', $main, $header);
-            preg_match("/define\(\s*'SSCPAY_[A-Z]+_VERSION',\s*'([^']+)'/", $main, $constant);
-            if (($header[1] ?? '') !== $plugin['version'] || ($constant[1] ?? '') !== $plugin['version']) {
-                throw new RuntimeException("{$plugin['slug']} 的清单、插件头部与版本常量不一致。");
+            if ($plugin['platform'] === 'wordpress') {
+                $main = File::get($plugin['path'].'/'.$plugin['slug'].'.php');
+                preg_match('/^\s*\*\s*Version:\s*(\S+)/m', $main, $header);
+                preg_match("/define\(\s*'SSCPAY_[A-Z]+_VERSION',\s*'([^']+)'/", $main, $constant);
+                if (($header[1] ?? '') !== $plugin['version'] || ($constant[1] ?? '') !== $plugin['version']) {
+                    throw new RuntimeException("{$plugin['slug']} 的清单、插件头部与版本常量不一致。");
+                }
+            } else {
+                $installer = json_decode(File::get($plugin['path'].'/install.json'), true, flags: JSON_THROW_ON_ERROR);
+                if (($installer['version'] ?? '') !== $plugin['version']) {
+                    throw new RuntimeException("{$plugin['slug']} 的清单与 install.json 版本不一致。");
+                }
             }
             if ($base !== null) {
-                $manifest = 'plugins/wordpress/'.$plugin['slug'].'/plugin.json';
+                $manifest = $plugin['manifest_path'];
                 $process = new Process(['git', 'show', $base.':'.$manifest], base_path());
                 $process->run();
                 if ($process->isSuccessful()) {

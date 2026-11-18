@@ -60,6 +60,15 @@ class ViewOrder extends ViewRecord
     public function infolist(Schema $schema): Schema
     {
         return $schema->components([
+            Section::make(__('crypto.address_check.section'))->visible(fn (Order $record): bool => $record->payment_type === 'crypto')
+                ->schema([
+                    TextEntry::make('latestCryptoAddressCheck.status')->label(__('crypto.address_check.status'))
+                        ->formatStateUsing(fn (string $state): string => __('crypto.address_check.states.'.$state))->placeholder('—'),
+                    TextEntry::make('latestCryptoAddressCheck.started_at')->label(__('crypto.address_check.started_at'))->dateTime()->placeholder('—'),
+                    TextEntry::make('latestCryptoAddressCheck.completed_at')->label(__('crypto.address_check.completed_at'))->dateTime()->placeholder('—'),
+                    TextEntry::make('latestCryptoAddressCheck.last_error_code')->label(__('crypto.address_check.error'))
+                        ->formatStateUsing(fn (string $state): string => __('crypto.address_check.failed'))->placeholder('—'),
+                ])->columns(2),
             Section::make(__('admin.order.sections.order_info'))
                 ->schema([
                     Grid::make(4)->schema([
@@ -693,6 +702,7 @@ class ViewOrder extends ViewRecord
     {
         return [
             OrderResource::queryStatusAction(),
+            OrderResource::queryCryptoAddressAction(),
             $this->syncOrderEventsAction(),
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),

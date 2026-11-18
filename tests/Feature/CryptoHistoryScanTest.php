@@ -2,19 +2,13 @@
 
 namespace Tests\Feature;
 
-use App\Models\CryptoAddress;
-use App\Models\CryptoAddressMonitor;
 use App\Models\CryptoChainEvent;
 use App\Models\CryptoPaymentRequest;
 use App\Models\CryptoWebhookReceipt;
-use App\Models\User;
-use App\Services\CryptoAddressMonitorService;
 use App\Services\CryptoHistoryScanService;
-use App\Services\CryptoReceiptVerificationService;
-use App\Services\CryptoSettlementService;
+use App\Support\CryptoCheckoutGuard;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\Concerns\CreatesCryptoHistory;
@@ -25,206 +19,165 @@ class CryptoHistoryScanTest extends TestCase
     use CreatesCryptoHistory;
     use RefreshDatabase;
 
-    public function test_cold_address_without_webhook_is_discovered_continuously_with_resumable_coverage(): void
+    public function test_targeted_history_completes_native_and_internal_pages_without_walking_blocks(): void
     {
         [$monitor, $rpc] = $this->historyFixture();
-        $monitor->update(['status' => 'cold', 'cancelled_at' => now()->subMinute()]);
+        $monitor->update(['status' => 'cold', 'cancelled_at' => now()]);
         $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
         $scanner = app(CryptoHistoryScanService::class);
-
-        $this->assertTrue($scanner->scan('ethereum-sepolia'));
-        $this->assertSame(100, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->assertNull($monitor->fresh()->cold_scan_checked_at);
-        $receipt = CryptoWebhookReceipt::query()->sole();
-        $this->assertSame('history_rpc', $receipt->signature_mode);
-        $this->assertSame('pending', $receipt->status);
-        $this->assertSame($monitor->merchant_id, $receipt->merchant_id);
-        $this->assertDatabaseCount('crypto_chain_events', 0);
-        $this->assertDatabaseCount('crypto_ledger_entries', 0);
-
-        $this->assertTrue($scanner->scan('ethereum-sepolia'));
-        $this->assertTrue($scanner->scan('ethereum-sepolia'));
-        $this->assertSame(102, $monitor->fresh()->cold_scan_to_block);
-        $this->assertSame($this->historyHash(102), $monitor->fresh()->backfill_to_hash);
-        $this->assertNotNull($monitor->fresh()->backfill_completed_at);
-        $this->assertNotNull($monitor->paymentRequest->fresh()->history_checked_at);
-        $this->assertFalse($scanner->scan('ethereum-sepolia'));
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertNull($request->fresh()->history_checked_at);
+        $this->assertSame(1, $request->fresh()->history_query_state['stage']);
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertTrue(CryptoCheckoutGuard::covered($request->fresh()));
+        $this->assertSame(102, $request->fresh()->history_to_block);
+        $this->assertTrue($request->fresh()->history_to_time->equalTo(now()->addSeconds(2)));
         $this->assertDatabaseCount('crypto_webhook_receipts', 1);
-
-        $this->travel(61)->seconds();
-        $rpc['head'] = 103;
-        $this->addHistoryTransfer($rpc, $monitor, 103, str_repeat('e', 64), '1');
-        $this->assertTrue($scanner->scan('ethereum-sepolia'));
-        $this->assertDatabaseCount('crypto_webhook_receipts', 2);
-        $this->assertSame(103, $monitor->paymentRequest->fresh()->history_to_block);
+        $this->assertNull($request->fresh()->history_next_attempt_at);
+        $this->assertNull($monitor->fresh()->cold_scan_checked_at);
+        Http::assertNotSent(fn ($r): bool => in_array($r->data()['method'] ?? null, ['eth_getLogs', 'debug_traceBlockByNumber'], true)
+            || (($r->data()['method'] ?? null) === 'eth_getBlockByNumber' && ($r['params'][1] ?? null) === true));
     }
 
-    public function test_rpc_failure_keeps_last_complete_block_and_clears_healthy_takeover_proof(): void
+    public function test_failed_internal_page_resumes_fixed_anchor_and_does_not_accept_partial_history(): void
     {
         [$monitor, $rpc] = $this->historyFixture();
         $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
         $scanner = app(CryptoHistoryScanService::class);
-        $scanner->scan('ethereum-sepolia');
-        $rpc['fail_method'] = 'eth_getLogs';
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $state = $request->fresh()->history_query_state;
+        $rpc['fail_address_history'] = true;
         try {
-            $scanner->scan('ethereum-sepolia');
-            $this->fail('Incomplete history advanced.');
-        } catch (DomainException $exception) {
-            $this->assertStringNotContainsString('credential', $exception->getMessage());
+            $scanner->scan($request->network, $request->merchant_id, $request->id);
+            $this->fail('Incomplete history was accepted.');
+        } catch (DomainException) {
+            $this->assertNull($request->fresh()->history_checked_at);
+            $this->assertSame($state, $request->fresh()->history_query_state);
+            $this->assertFalse(CryptoCheckoutGuard::covered($request->fresh()));
         }
-        $this->assertSame(100, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->assertSame('history_read_failed', $monitor->paymentRequest->fresh()->history_error_code);
-        $this->assertNull($monitor->fresh()->cold_scan_checked_at);
-        $this->assertDatabaseCount('crypto_webhook_receipts', 1);
-        unset($rpc['fail_method']);
-        $this->travel(61)->seconds();
-        $scanner->scan('ethereum-sepolia');
-        $this->assertSame(101, $monitor->paymentRequest->fresh()->history_to_block);
-    }
-
-    public function test_one_network_block_is_shared_between_merchants_and_browser_scope_does_not_hide_addresses(): void
-    {
-        [$monitor, $rpc] = $this->historyFixture();
-        $firstMerchantId = $monitor->merchant_id;
-        $this->createMerchantAndApplication();
-        $order = $this->makeOrder('second-crypto-order', 'second-crypto-order', ['payment_type' => 'crypto', 'payment_method_id' => $monitor->paymentRequest->payment_method_id]);
-        $address = CryptoAddress::factory()->create(['merchant_id' => $this->merchant->id, 'order_id' => $order->id,
-            'payment_method_id' => $order->payment_method_id, 'scan_from_block' => 100, 'address' => '0x'.str_repeat('9', 40)]);
-        $request = CryptoPaymentRequest::factory()->create([...$monitor->paymentRequest->only(['network', 'asset', 'decimals', 'due_units', 'fee_units', 'net_units', 'quote_snapshot']),
-            'merchant_id' => $this->merchant->id, 'order_id' => $order->id, 'payment_method_id' => $order->payment_method_id, 'crypto_address_id' => $address->id]);
-        $otherMonitor = CryptoAddressMonitor::factory()->create(['merchant_id' => $this->merchant->id, 'crypto_payment_request_id' => $request->id, 'crypto_address_id' => $address->id]);
-        $request->update(['current_monitor_id' => $otherMonitor->id]);
-        $this->addHistoryTransfer($rpc, $otherMonitor, 100, str_repeat('e', 64), $request->due_units);
-        $this->actingAs(User::factory()->create(['merchant_id' => $firstMerchantId, 'status' => true]));
-        $this->fakeHistoryRpc($rpc);
-
-        app(CryptoHistoryScanService::class)->scan('ethereum-sepolia');
-
-        $this->assertSame(100, $request->fresh()->history_to_block);
-        $this->assertDatabaseCount('crypto_webhook_receipts', 2);
-        $this->assertSame([$firstMerchantId, $this->merchant->id], CryptoWebhookReceipt::withoutGlobalScopes()->orderBy('merchant_id')->pluck('merchant_id')->all());
-        $this->assertCount(1, Http::recorded(fn (Request $req) => $req['method'] === 'debug_traceBlockByNumber'));
-    }
-
-    public function test_invalid_old_policy_does_not_block_other_requests_in_the_same_block_batch(): void
-    {
-        [$monitor, $rpc] = $this->historyFixture();
-        $address = CryptoAddress::factory()->create(['merchant_id' => $monitor->merchant_id, 'order_id' => $monitor->paymentRequest->order_id,
-            'payment_method_id' => $monitor->paymentRequest->payment_method_id, 'scan_from_block' => 100, 'address' => '0x'.str_repeat('9', 40)]);
-        $invalid = CryptoPaymentRequest::factory()->create(['merchant_id' => $monitor->merchant_id, 'order_id' => $address->order_id,
-            'payment_method_id' => $address->payment_method_id, 'crypto_address_id' => $address->id, 'quote_snapshot' => []]);
-        $invalidMonitor = CryptoAddressMonitor::factory()->create(['merchant_id' => $monitor->merchant_id,
-            'crypto_payment_request_id' => $invalid->id, 'crypto_address_id' => $address->id]);
-        $invalid->update(['current_monitor_id' => $invalidMonitor->id]);
-        $this->fakeHistoryRpc($rpc);
-
-        app(CryptoHistoryScanService::class)->scan('ethereum-sepolia');
-
-        $this->assertSame(100, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->assertNull($invalid->fresh()->history_to_block);
-        $this->assertSame('invalid_history_policy', $invalid->fresh()->history_error_code);
-        $this->assertSame($monitor->crypto_payment_request_id, CryptoWebhookReceipt::query()->sole()->crypto_payment_request_id);
-    }
-
-    public function test_reorg_rewinds_to_common_ancestor_and_invalidates_orphaned_evidence(): void
-    {
-        [$monitor, $rpc] = $this->historyFixture();
-        $rpc['blocks'][100]['transactions'] = [];
-        $this->addHistoryTransfer($rpc, $monitor, 101, str_repeat('e', 64), $monitor->paymentRequest->due_units);
-        $this->fakeHistoryRpc($rpc);
-        $scanner = app(CryptoHistoryScanService::class);
-        foreach (range(1, 3) as $_) {
-            $scanner->scan('ethereum-sepolia');
-        }
-        $receipt = CryptoWebhookReceipt::query()->sole();
-        $this->assertTrue(app(CryptoReceiptVerificationService::class)->process($receipt->merchant_id, $receipt->id));
-        $rpc['blocks'][101]['hash'] = '0x'.str_repeat('f', 64);
-        $rpc['blocks'][101]['transactions'] = [];
-        $rpc['blocks'][102]['hash'] = '0x'.str_repeat('e', 64);
-        $rpc['blocks'][102]['parentHash'] = $rpc['blocks'][101]['hash'];
-        $this->travel(61)->seconds();
-
-        $scanner->scan('ethereum-sepolia');
-
-        $this->assertSame(100, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->assertNotNull(CryptoChainEvent::query()->sole()->orphaned_at);
-        $this->assertNull(CryptoChainEvent::query()->sole()->confirmed_at);
-        $this->assertSame('pending', $receipt->fresh()->status);
-        $this->assertNull($monitor->fresh()->backfill_completed_at);
-        $this->assertNull($monitor->fresh()->cold_scan_checked_at);
-        $this->assertNull($monitor->paymentRequest->fresh()->credited_at);
-        $scanner->scan('ethereum-sepolia');
-        $this->assertSame(101, $monitor->paymentRequest->fresh()->history_to_block);
-    }
-
-    public function test_real_scan_proof_allows_cancellation_and_later_payment_is_still_found_on_original_request(): void
-    {
-        [$monitor, $rpc] = $this->historyFixture();
-        $rpc['blocks'][100]['transactions'] = [];
-        $monitor->update(['status' => 'active', 'subscription_id' => 'alert-1', 'activated_at' => now(), 'expires_at' => now()->addMinutes(15)]);
-        $rpc['subscription'] = $this->alertData($monitor);
-        $this->travel(16)->minutes();
-        $rpc['blocks'][102]['timestamp'] = '0x'.dechex(now()->getTimestamp());
-        $this->fakeHistoryRpc($rpc);
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
-
-        $this->assertTrue(app(CryptoAddressMonitorService::class)->synchronize($monitor->merchant_id, $monitor->id));
-        $this->assertSame('cold', $monitor->fresh()->status);
-        Http::assertSent(fn (Request $request) => $request->method() === 'DELETE');
-        $this->travel(61)->seconds();
+        unset($rpc['fail_address_history']);
         $rpc['head'] = 105;
-        $rpc['finalized'] = 105;
-        foreach ([103, 104, 105] as $height) {
-            $rpc['blocks'][$height]['timestamp'] = '0x'.dechex(now()->getTimestamp());
-        }
-        $this->addHistoryTransfer($rpc, $monitor, 103, str_repeat('e', 64), $monitor->paymentRequest->due_units);
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
-        $this->artisan('crypto:verify-receipts')->assertSuccessful();
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertSame(102, $request->fresh()->history_to_block);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 1);
+        $this->assertNull($request->fresh()->history_error_code);
+    }
 
-        $receipt = CryptoWebhookReceipt::query()->sole();
-        $this->assertSame($monitor->crypto_payment_request_id, $receipt->crypto_payment_request_id);
-        $this->assertSame('review', $receipt->status);
-        $this->assertSame('review', app(CryptoSettlementService::class)->settle($monitor->merchant_id, $monitor->crypto_payment_request_id));
-        $this->assertDatabaseCount('crypto_addresses', 1);
+    public function test_full_page_uses_offset_before_completing_the_round(): void
+    {
+        [$monitor, $rpc] = $this->historyFixture('USDT');
+        foreach (range(1, 50) as $index) {
+            $this->addHistoryTransfer($rpc, $monitor, 100, str_pad(dechex($index), 64, '0', STR_PAD_LEFT), '1');
+        }
+        $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
+        $scanner = app(CryptoHistoryScanService::class);
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertSame(50, $request->fresh()->history_query_state['cursor']);
+        $this->assertNull($request->fresh()->history_checked_at);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 50);
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 51);
+        $this->assertTrue(CryptoCheckoutGuard::covered($request->fresh()));
+    }
+
+    public function test_chain_anchor_change_mid_query_restarts_and_known_transactions_are_reverified(): void
+    {
+        [$monitor, $rpc] = $this->historyFixture();
+        $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
+        $this->query($request);
+        $this->artisan('crypto:verify-receipts')->assertSuccessful();
+        $this->assertNotNull(CryptoChainEvent::query()->sole()->confirmed_at);
+        $rpc['blocks'][100]['transactions'] = [];
+        $rpc['blocks'][100]['hash'] = '0x'.str_repeat('e', 64);
+        $rpc['blocks'][102]['hash'] = '0x'.str_repeat('f', 64);
+        $scanner = app(CryptoHistoryScanService::class);
+        $scanner->scan($request->network, $request->merchant_id, $request->id);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 2);
+        $rpc['blocks'][102]['hash'] = '0x'.str_repeat('d', 64);
+        try {
+            $scanner->scan($request->network, $request->merchant_id, $request->id);
+            $this->fail('Changed anchor accepted.');
+        } catch (DomainException) {
+            $this->assertNull($request->fresh()->history_query_state);
+            $this->assertNull($request->fresh()->history_checked_at);
+        }
+        $this->query($request);
+        $this->artisan('crypto:verify-receipts')->assertSuccessful();
+        $this->assertNotNull(CryptoChainEvent::query()->sole()->orphaned_at);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);
     }
 
-    public function test_stale_node_head_cannot_refresh_history_health_or_advance_coverage(): void
+    public function test_later_query_rechecks_the_full_address_range_for_delayed_index_entries(): void
+    {
+        [$monitor, $rpc] = $this->historyFixture();
+        $tx = $rpc['blocks'][100]['transactions'];
+        $rpc['blocks'][100]['transactions'] = [];
+        $this->fakeHistoryRpc($rpc);
+        $this->query($monitor->paymentRequest);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 0);
+        $rpc['blocks'][100]['transactions'] = $tx;
+        $this->travel(61)->seconds();
+        $this->query($monitor->paymentRequest);
+        $this->assertDatabaseCount('crypto_webhook_receipts', 1);
+        $this->assertSame(str_repeat('c', 64), CryptoWebhookReceipt::query()->sole()->transaction_hash);
+    }
+
+    public function test_stale_head_fails_without_healthy_proof(): void
     {
         [$monitor, $rpc] = $this->historyFixture();
         $this->travel(301)->seconds();
         $rpc['blocks'][102]['timestamp'] = $rpc['blocks'][100]['timestamp'];
         $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
+        $this->artisan('crypto:scan-history', ['network' => $request->network, '--merchant' => $request->merchant_id, '--request' => $request->id])->assertFailed();
+        $this->assertNull($request->fresh()->history_checked_at);
+        $this->assertSame('address_history_failed', $request->fresh()->history_error_code);
+        Http::assertNotSent(fn ($r): bool => str_contains($r->url(), '/v4/data/'));
+    }
 
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertFailed();
-
-        $this->assertNull($monitor->paymentRequest->fresh()->history_to_block);
-        $this->assertNull($monitor->fresh()->cold_scan_checked_at);
-        $this->assertSame('history_read_failed', $monitor->paymentRequest->fresh()->history_error_code);
+    public function test_explicit_merchant_scope_is_required_and_never_discovers_another_tenants_address(): void
+    {
+        [$monitor] = $this->historyFixture();
+        Http::preventStrayRequests();
+        $request = $monitor->paymentRequest;
+        $this->artisan('crypto:scan-history', ['network' => $request->network])->assertExitCode(2);
+        $this->artisan('crypto:scan-history', ['network' => $request->network, '--merchant' => $request->merchant_id + 1, '--request' => $request->id])->assertFailed();
+        Http::assertNothingSent();
+        $this->assertNull($request->fresh()->history_error_code);
         $this->assertDatabaseCount('crypto_webhook_receipts', 0);
     }
 
-    public function test_command_limit_resumes_next_block_and_disabled_or_locked_scans_do_no_http(): void
+    public function test_command_resumes_pages_and_disabled_or_locked_queries_do_no_http(): void
     {
         [$monitor, $rpc] = $this->historyFixture();
-        $this->fakeHistoryRpc($rpc);
+        $request = $monitor->paymentRequest;
+        $args = ['network' => $request->network, '--merchant' => $request->merchant_id, '--request' => $request->id];
+        Http::preventStrayRequests();
         $this->setCryptoSettings(['crypto.history_enabled' => false]);
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
-        Http::assertNothingSent();
+        $this->artisan('crypto:scan-history', $args)->assertSuccessful();
         $this->setCryptoSettings(['crypto.history_enabled' => true]);
-        $lock = Cache::lock('crypto:history:ethereum-sepolia', 600);
+        $lock = Cache::lock('crypto:address-history:'.$request->id, 120);
         $lock->get();
         try {
-            $this->assertFalse(app(CryptoHistoryScanService::class)->scan('ethereum-sepolia'));
-            Http::assertNothingSent();
+            $this->assertFalse(app(CryptoHistoryScanService::class)->scan($request->network, $request->merchant_id, $request->id));
         } finally {
             $lock->release();
         }
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia', '--limit' => 1])->assertSuccessful();
-        $this->assertSame(100, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia', '--limit' => 2])->assertSuccessful();
-        $this->assertSame(102, $monitor->paymentRequest->fresh()->history_to_block);
-        $this->artisan('crypto:scan-history', ['network' => 'invalid'])->assertExitCode(2);
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia', '--limit' => 201])->assertExitCode(2);
+        Http::assertNothingSent();
+        $this->fakeHistoryRpc($rpc);
+        $this->artisan('crypto:scan-history', [...$args, '--limit' => 1])->assertSuccessful();
+        $this->assertNotNull($request->fresh()->history_query_state);
+        $this->artisan('crypto:scan-history', [...$args, '--limit' => 1])->assertSuccessful();
+        $this->assertNull($request->fresh()->history_query_state);
+        $this->artisan('crypto:scan-history', [...$args, '--limit' => 201])->assertExitCode(2);
+    }
+
+    private function query(CryptoPaymentRequest $request): void
+    {
+        $this->artisan('crypto:scan-history', ['network' => $request->network, '--merchant' => $request->merchant_id, '--request' => $request->id])->assertSuccessful();
     }
 }

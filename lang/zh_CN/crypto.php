@@ -1,6 +1,15 @@
 <?php
 
 return [
+    'address_check' => [
+        'action' => '查询链上到账', 'section' => '地址查询', 'status' => '地址查询状态',
+        'started_at' => '查询开始时间', 'completed_at' => '查询完成时间', 'error' => '查询异常',
+        'queued' => '已提交地址查询，不等待三小时调度。请稍后刷新查看结果；查询不会强制接受异常款。',
+        'recent' => '最近一分钟内已完成查询，复用该次结果。',
+        'failed' => '地址查询未完成，请检查配置、查询任务和队列后重试。',
+        'disabled' => '地址历史查询尚未启用。',
+        'states' => ['pending' => '等待查询', 'running' => '查询中', 'completed' => '查询完成', 'error' => '查询失败'],
+    ],
     'order' => [
         'uncredited' => '尚未入账',
         'preparing' => '等待生成报价',
@@ -222,7 +231,7 @@ return [
             'checkout_enabled' => '允许新建区块链订单；关闭后已有订单继续监听、补查和入账',
             'subscriptions_enabled' => '地址订阅维护及回调接收开关',
             'verification_enabled' => '链上交易核验开关',
-            'history_enabled' => '历史补查与冷地址扫描开关',
+            'history_enabled' => '地址历史补查开关，包含退订第 3／7 天、手动查询和付款页重开补查',
             'settlement_enabled' => '已核验收款自动入账开关',
             'api_key' => 'Tatum 主网及行情 API Key，加密保存',
             'testnet_key' => 'Tatum 测试网 API Key，加密保存',

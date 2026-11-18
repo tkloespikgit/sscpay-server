@@ -4,13 +4,12 @@ namespace App\Services;
 
 use App\Models\CryptoAddress;
 use App\Models\CryptoAddressMonitor;
-use App\Models\CryptoChainEvent;
 use App\Models\CryptoPaymentRequest;
-use App\Models\CryptoWebhookReceipt;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\SystemConfig;
 use App\Support\CryptoRuntimeSettings;
+use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -18,7 +17,7 @@ use Illuminate\Support\Str;
 
 final class CryptoAddressMonitorService
 {
-    public function __construct(private readonly TatumSubscriptionClient $tatum) {}
+    public function __construct(private readonly TatumSubscriptionClient $tatum, private readonly CryptoAddressCheckService $checks) {}
 
     public function prepare(int $merchantId, int $requestId, bool $historyOnly = false): CryptoAddressMonitor
     {
@@ -171,7 +170,8 @@ final class CryptoAddressMonitorService
             }
             $remote = $this->tatum->get($monitor->environment, $monitor->subscription_id);
             if ($remote === null) {
-                $monitor->update(['status' => 'cold', 'cancelled_at' => now(), 'backfill_completed_at' => null,
+                $this->recordCancellation($monitor);
+                $monitor->update(['backfill_completed_at' => null,
                     'last_error_code' => 'remote_subscription_missing']);
 
                 return false;
@@ -193,29 +193,6 @@ final class CryptoAddressMonitorService
 
             return false;
         }
-        try {
-            $interval = $this->positiveSetting('crypto.history_scan_interval_seconds');
-        } catch (DomainException) {
-            $this->failure($monitor, 'history_configuration_missing');
-
-            return false;
-        }
-        $address = CryptoAddress::query()->forMerchant($monitor->merchant_id)->findOrFail($monitor->crypto_address_id);
-        $request = CryptoPaymentRequest::query()->forMerchant($monitor->merchant_id)->findOrFail($monitor->crypto_payment_request_id);
-        $covered = $monitor->backfill_to_block !== null && $monitor->backfill_completed_at !== null && filled($monitor->backfill_to_hash)
-            && $monitor->backfill_to_block >= $address->scan_from_block
-            && $monitor->cold_scan_to_block !== null && $monitor->cold_scan_to_block >= $monitor->backfill_to_block
-            && filled($monitor->cold_scan_to_hash) && $monitor->cold_scan_checked_at !== null
-            && ! $monitor->cold_scan_checked_at->isFuture() && $monitor->cold_scan_checked_at->gte(now()->subSeconds($interval));
-        $pendingReceipts = CryptoWebhookReceipt::query()->forMerchant($monitor->merchant_id)
-            ->where('crypto_payment_request_id', $monitor->crypto_payment_request_id)->whereIn('status', ['pending', 'confirming', 'review'])->exists();
-        $pendingEvents = CryptoChainEvent::query()->forMerchant($monitor->merchant_id)->where('crypto_payment_request_id', $monitor->crypto_payment_request_id)
-            ->whereNull('orphaned_at')->where(fn ($query) => $query->whereNull('confirmed_at')->orWhereNull('verified_at'))->exists();
-        if (! $covered || $pendingReceipts || $pendingEvents || $request->status === 'confirming') {
-            $this->failure($monitor, ! $covered ? 'history_coverage_required' : 'verification_pending');
-
-            return false;
-        }
         $monitor->update(['status' => 'cancelling']);
         $remote = $this->tatum->get($monitor->environment, $monitor->subscription_id);
         if ($remote !== null) {
@@ -226,9 +203,23 @@ final class CryptoAddressMonitorService
             }
             $this->tatum->cancel($monitor->environment, $monitor->subscription_id);
         }
-        $monitor->update(['status' => 'cold', 'cancelled_at' => now(), 'last_error_code' => null, 'next_attempt_at' => null]);
+        $this->recordCancellation($monitor);
 
         return true;
+    }
+
+    private function recordCancellation(CryptoAddressMonitor $monitor): void
+    {
+        DB::transaction(function () use ($monitor): void {
+            $request = CryptoPaymentRequest::query()->forMerchant($monitor->merchant_id)->findOrFail($monitor->crypto_payment_request_id);
+            Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($monitor->merchant_id);
+            Order::query()->withoutGlobalScopes()->where('merchant_id', $monitor->merchant_id)->lockForUpdate()->findOrFail($request->order_id);
+            $monitor->update(['status' => 'cold', 'cancelled_at' => $monitor->cancelled_at ?? now(), 'last_error_code' => null, 'next_attempt_at' => null]);
+            $first = CryptoAddressMonitor::query()->forMerchant($monitor->merchant_id)
+                ->whereIn('crypto_payment_request_id', CryptoPaymentRequest::query()->forMerchant($monitor->merchant_id)->where('order_id', $request->order_id)->select('id'))
+                ->whereNotNull('cancelled_at')->min('cancelled_at');
+            $this->checks->schedule($monitor->merchant_id, $request->order_id, CarbonImmutable::parse($first));
+        }, 3);
     }
 
     private function failure(CryptoAddressMonitor $monitor, string $code): void

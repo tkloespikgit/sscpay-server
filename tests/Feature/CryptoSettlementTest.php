@@ -7,9 +7,9 @@ use App\Jobs\SendOrderNotificationJob;
 use App\Models\CryptoAssetBalance;
 use App\Models\CryptoChainEvent;
 use App\Models\CryptoLedgerEntry;
+use App\Models\CryptoPaymentRequest;
 use App\Models\CryptoWebhookReceipt;
 use App\Models\OrderNotificationAttempt;
-use App\Services\CryptoHistoryScanService;
 use App\Services\CryptoQuoteService;
 use App\Services\CryptoSettlementService;
 use App\Services\OrderPaymentStatusService;
@@ -45,7 +45,7 @@ class CryptoSettlementTest extends TestCase
         $this->fakeHistoryRpc($rpc);
         $settlement = app(CryptoSettlementService::class);
 
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
+        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia', '--merchant' => $monitor->merchant_id, '--request' => $monitor->crypto_payment_request_id])->assertSuccessful();
         $this->assertSame('waiting', $settlement->settle($monitor->merchant_id, $monitor->crypto_payment_request_id));
         $this->artisan('crypto:verify-receipts')->assertSuccessful();
         $this->artisan('crypto:settle-payments')->assertSuccessful();
@@ -86,15 +86,7 @@ class CryptoSettlementTest extends TestCase
         $request = $monitor->paymentRequest->fresh();
         $event = CryptoChainEvent::query()->sole();
         switch ($case) {
-            case 'no coverage': $request->update(['history_checked_at' => null]);
-                break;
-            case 'stale coverage': $this->travel(61)->seconds();
-                break;
-            case 'future coverage': $request->update(['history_checked_at' => now()->addSecond()]);
-                break;
-            case 'history error': $request->update(['history_error_code' => 'history_read_failed']);
-                break;
-            case 'cursor behind': $request->update(['history_to_block' => 99]);
+            case 'incomplete address query': $request->update(['history_query_state' => ['stage' => 1], 'history_checked_at' => null]);
                 break;
             case 'unconfirmed': $event->update(['confirmed_at' => null]);
                 break;
@@ -129,7 +121,7 @@ class CryptoSettlementTest extends TestCase
     public static function unsafeEvidence(): array
     {
         $cases = [];
-        foreach (['no coverage', 'stale coverage', 'future coverage', 'history error', 'cursor behind', 'unconfirmed', 'unverified', 'orphan', 'pending receipt'] as $case) {
+        foreach (['incomplete address query', 'unconfirmed', 'unverified', 'orphan', 'pending receipt'] as $case) {
             $cases[$case] = [$case, 'waiting'];
         }
         foreach (['late', 'before quote', 'receipt review', 'cancelled order', 'overpaid'] as $case) {
@@ -205,7 +197,7 @@ class CryptoSettlementTest extends TestCase
         $rpc['blocks'][102]['hash'] = '0x'.str_repeat('d', 64);
         $this->travel(61)->seconds();
 
-        app(CryptoHistoryScanService::class)->scan('ethereum-sepolia');
+        $this->completeDiscoveryAndVerification();
 
         $this->assertSame('review', app(CryptoSettlementService::class)->settle($monitor->merchant_id, $monitor->crypto_payment_request_id));
         $this->assertSame('credited_chain_reorg', $monitor->paymentRequest->fresh()->review_reason);
@@ -224,7 +216,7 @@ class CryptoSettlementTest extends TestCase
         $this->travel(16)->minutes();
         $rpc['head'] = 103;
         $rpc['blocks'][103]['timestamp'] = '0x'.dechex(now()->getTimestamp());
-        app(CryptoHistoryScanService::class)->scan('ethereum-sepolia');
+        $this->completeDiscoveryAndVerification();
 
         $this->assertSame('credited', app(CryptoSettlementService::class)->settle($monitor->merchant_id, $monitor->crypto_payment_request_id));
         $this->assertDatabaseCount('crypto_ledger_entries', 1);
@@ -323,7 +315,7 @@ class CryptoSettlementTest extends TestCase
         $attempt = OrderNotificationAttempt::query()->sole();
         $this->travel(301)->seconds();
 
-        $this->assertSame('credited', $service->settle($monitor->merchant_id, $monitor->crypto_payment_request_id));
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
         $service->settle($monitor->merchant_id, $monitor->crypto_payment_request_id);
 
         Queue::assertPushed(SendOrderNotificationJob::class, 2);
@@ -334,7 +326,21 @@ class CryptoSettlementTest extends TestCase
 
     private function completeDiscoveryAndVerification(): void
     {
-        $this->artisan('crypto:scan-history', ['network' => 'ethereum-sepolia'])->assertSuccessful();
+        $request = CryptoPaymentRequest::query()->sole();
+        $this->artisan('crypto:scan-history', ['network' => $request->network, '--merchant' => $request->merchant_id, '--request' => $request->id])->assertSuccessful();
         $this->artisan('crypto:verify-receipts')->assertSuccessful();
+    }
+
+    public function test_verified_payment_does_not_require_a_continuously_refreshed_address_scan(): void
+    {
+        [$monitor, $rpc] = $this->historyFixture();
+        Queue::fake();
+        $this->fakeHistoryRpc($rpc);
+        $this->completeDiscoveryAndVerification();
+        $monitor->paymentRequest->update(['history_checked_at' => null, 'history_to_block' => null, 'history_to_hash' => null, 'history_to_time' => null]);
+        $this->artisan('crypto:settle-payments')->assertSuccessful();
+        $this->assertNotNull($monitor->paymentRequest->order->fresh()->paid_at);
+        $this->assertDatabaseCount('crypto_ledger_entries', 1);
+        $this->assertNull($monitor->paymentRequest->fresh()->settlement_next_attempt_at);
     }
 }

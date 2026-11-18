@@ -164,9 +164,10 @@ class PluginDistributionTest extends TestCase
             File::copy(base_path($file), $fixture.'/'.$file);
         }
         foreach ($plugins as $plugin) {
-            $directory = $fixture.'/plugins/wordpress/'.$plugin['slug'];
+            $directory = $fixture.'/plugins/'.$plugin['platform'].'/'.$plugin['slug'];
             File::ensureDirectoryExists($directory);
-            File::copy($plugin['path'].'/'.$plugin['slug'].'.php', $directory.'/'.$plugin['slug'].'.php');
+            $entry = $plugin['platform'] === 'wordpress' ? $plugin['slug'].'.php' : 'install.json';
+            File::copy($plugin['path'].'/'.$entry, $directory.'/'.$entry);
             $plugin['protocol_hash'] = 'previous-protocol';
             File::put($directory.'/plugin.json', json_encode($plugin));
         }
@@ -174,18 +175,19 @@ class PluginDistributionTest extends TestCase
             (new Process($command, $fixture))->mustRun();
         }
         $this->app->setBasePath($fixture);
-        config(['plugins.source_path' => $fixture.'/plugins/wordpress']);
+        config(['plugins.source_path' => $fixture.'/plugins']);
         try {
             foreach ($plugins as $slug => $plugin) {
-                File::put($fixture.'/plugins/wordpress/'.$slug.'/plugin.json', json_encode($plugin));
+                File::put($fixture.'/plugins/'.$plugin['platform'].'/'.$slug.'/plugin.json', json_encode($plugin));
             }
             $this->artisan('plugins:check', ['--base' => 'HEAD'])->expectsOutputToContain('必须递增版本')->assertFailed();
-            foreach (['sscpay-payment-creditcard', 'sscpay-payment-paypal'] as $slug) {
-                $directory = $fixture.'/plugins/wordpress/'.$slug;
-                $plugin = $plugins[$slug];
-                $plugin['version'] = '1.1.1';
+            foreach ($plugins as $slug => $plugin) {
+                $directory = $fixture.'/plugins/'.$plugin['platform'].'/'.$slug;
+                $previousVersion = $plugin['version'];
+                $plugin['version'] = $plugin['platform'] === 'wordpress' ? '1.1.1' : '1.0.1';
                 File::put($directory.'/plugin.json', json_encode($plugin));
-                File::put($directory.'/'.$slug.'.php', str_replace('1.1.0', '1.1.1', File::get($directory.'/'.$slug.'.php')));
+                $entry = $plugin['platform'] === 'wordpress' ? $slug.'.php' : 'install.json';
+                File::put($directory.'/'.$entry, str_replace($previousVersion, $plugin['version'], File::get($directory.'/'.$entry)));
                 if ($slug === 'sscpay-payment-creditcard') {
                     $this->artisan('plugins:check', ['--base' => 'HEAD'])->expectsOutputToContain('sscpay-payment-paypal 必须递增版本')->assertFailed();
                 }

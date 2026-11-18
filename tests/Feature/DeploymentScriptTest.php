@@ -42,6 +42,8 @@ class DeploymentScriptTest extends TestCase
         $this->assertBefore('filament:upgrade', 'config:cache', $trace);
         $this->assertBefore('plugins:sync --dry-run', 'migrate --force', $trace);
         $this->assertBefore('migrate --force', 'plugins:sync --no-interaction', $trace);
+        $this->assertBefore('migrate --force', 'crypto:check-addresses --initialize --no-interaction', $trace);
+        $this->assertBefore('crypto:check-addresses --initialize --no-interaction', 'queue:restart', $trace);
         $this->assertBefore('plugins:sync --no-interaction', 'queue:restart', $trace);
         $this->assertBefore('queue:restart', 'artisan up', $trace);
         $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
@@ -67,6 +69,7 @@ class DeploymentScriptTest extends TestCase
             'frontend build' => ['npm run build', false],
             'plugin preflight' => ['php artisan plugins:sync --dry-run --no-interaction', false],
             'migration' => ['php artisan migrate --force --no-interaction', true],
+            'crypto address check initialization' => ['php artisan crypto:check-addresses --initialize --no-interaction', true],
             'plugin upload' => ['php artisan plugins:sync --no-interaction', true],
             'queue restart' => ['php artisan queue:restart --no-interaction', true],
         ];

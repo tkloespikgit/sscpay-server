@@ -288,6 +288,9 @@ class CryptoCheckoutTest extends TestCase
         $request->update(['history_next_attempt_at' => now()]);
         for ($i = 0; $i < 3; $i++) {
             app(CryptoHistoryScanService::class)->scan($request->network, $request->merchant_id, $request->id);
+            if ($request->fresh()->history_query_state === null) {
+                break;
+            }
         }
         $this->artisan('crypto:verify-receipts')->assertSuccessful();
         $this->artisan('crypto:settle-payments')->assertSuccessful();

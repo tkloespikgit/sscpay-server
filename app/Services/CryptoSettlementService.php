@@ -2,13 +2,13 @@
 
 namespace App\Services;
 
+use App\Models\CryptoAddressCheck;
 use App\Models\CryptoChainEvent;
 use App\Models\CryptoPaymentRequest;
 use App\Models\CryptoPaymentResolution;
 use App\Models\CryptoWebhookReceipt;
 use App\Models\Merchant;
 use App\Models\Order;
-use App\Models\SystemConfig;
 use App\Support\CryptoAmount;
 use App\Support\CryptoCheckoutGuard;
 use App\Support\CryptoRuntimeSettings;
@@ -34,7 +34,7 @@ final class CryptoSettlementService
             if ($order->payment_type !== 'crypto') {
                 throw new DomainException('Cannot apply crypto evidence to a fiat order.');
             }
-            $request->update(['settlement_next_attempt_at' => now()->addMinute()]);
+            $request->update(['settlement_next_attempt_at' => null]);
             if ($request->credited_at !== null && $order->paid_at !== null) {
                 $this->payments->recoverCryptoNotification($order);
             }
@@ -84,20 +84,9 @@ final class CryptoSettlementService
             if ($order->status !== 'pending' || $order->paid_at !== null) {
                 return $this->review($request, 'order_not_payable');
             }
-            $interval = SystemConfig::get('crypto.history_scan_interval_seconds');
-            if (! is_string($interval) || ! preg_match('/^[1-9][0-9]{0,6}$/D', $interval)) {
-                throw new DomainException('Missing history health interval.');
-            }
-            $maxAge = CryptoRuntimeSettings::get('history_max_head_age_seconds');
-            if ((! is_int($maxAge) && ! is_string($maxAge)) || ! preg_match('/^[1-9][0-9]{0,4}$/D', (string) $maxAge) || (int) $maxAge > 86400) {
-                throw new DomainException('Missing chain head freshness policy.');
-            }
-            $healthy = $request->history_error_code === null && $request->history_to_block !== null && $request->history_to_hash !== null
-                && $request->history_checked_at !== null && ! $request->history_checked_at->isFuture()
-                && $request->history_checked_at->gte(now()->subSeconds((int) $interval)) && $request->history_to_time !== null
-                && $request->history_to_time->gte(now()->subSeconds((int) $maxAge));
-            if (! $healthy || $events->contains(fn (CryptoChainEvent $event): bool => $event->block_height > $request->history_to_block)
-                || (clone $receipts)->whereIn('status', ['pending', 'confirming'])->exists() || $unconfirmed) {
+            if ($request->history_query_state !== null || (clone $receipts)->whereIn('status', ['pending', 'confirming'])->exists() || $unconfirmed
+                || CryptoAddressCheck::query()->forMerchant($merchantId)->where('order_id', $order->id)->where('status', 'running')->exists()) {
+                $request->update(['settlement_next_attempt_at' => now()->addMinute()]);
                 if ($gross !== '0') {
                     $request->update(['status' => 'confirming']);
                 }
@@ -105,10 +94,11 @@ final class CryptoSettlementService
                 return 'waiting';
             }
             if ($gross !== $request->due_units) {
-                if ($gross !== '0' && $request->history_to_time->gt($request->expires_at)) {
+                if ($gross !== '0' && $request->expires_at->isPast()) {
                     return $this->review($request, 'expired_underpayment');
                 }
-                $request->update(['status' => $gross !== '0' ? 'partial' : ($request->expires_at->isPast() ? 'expired' : $request->status)]);
+                $request->update(['status' => $gross !== '0' ? 'partial' : ($request->expires_at->isPast() ? 'expired' : $request->status),
+                    'settlement_next_attempt_at' => $request->expires_at->isFuture() ? $request->expires_at : null]);
 
                 return $gross === '0' ? 'waiting' : 'partial';
             }
@@ -120,7 +110,9 @@ final class CryptoSettlementService
                 if (CryptoCheckoutGuard::hasEvidence($other)) {
                     return $this->review($request, 'multiple_requests_received');
                 }
-                if (! CryptoCheckoutGuard::covered($other)) {
+                if ($other->history_query_state !== null) {
+                    $request->update(['settlement_next_attempt_at' => now()->addMinute()]);
+
                     return 'waiting';
                 }
             }

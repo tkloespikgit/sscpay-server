@@ -57,7 +57,7 @@ class CryptoPaymentReviewResource extends CryptoFinanceResource
         ])->filters([
             Filter::make('review')->label(__('crypto.order.review'))->query(fn (Builder $query): Builder => $query->whereHas('cryptoRequests',
                 fn (Builder $q): Builder => $q->where(fn ($state) => $state->where('status', 'review')->orWhereNotNull('review_reason')->orWhere('status', 'partial')))),
-        ])->recordActions([ViewAction::make(), self::reconcileAction(), self::recheckAction()])->defaultSort('id', 'desc');
+        ])->recordActions([ViewAction::make(), OrderResource::queryCryptoAddressAction(), self::reconcileAction(), self::recheckAction()])->defaultSort('id', 'desc');
     }
 
     public static function infolist(Schema $schema): Schema

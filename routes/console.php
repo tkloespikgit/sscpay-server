@@ -76,12 +76,9 @@ Schedule::command('crypto:verify-receipts --limit=25')
     ->everyMinute()->runInBackground()->withoutOverlapping(30)->onOneServer()
     ->onFailure(fn () => Log::error('区块链回调核验失败，请检查收件记录；未凭回调直接入账。'));
 
-foreach (['bitcoin-mainnet', 'bitcoin-testnet', 'litecoin-mainnet', 'litecoin-testnet',
-    'ethereum-mainnet', 'ethereum-sepolia', 'tron-mainnet', 'tron-shasta'] as $cryptoNetwork) {
-    Schedule::command('crypto:scan-history '.$cryptoNetwork.' --limit=100')
-        ->everyMinute()->runInBackground()->withoutOverlapping(30)->onOneServer()
-        ->onFailure(fn () => Log::error('区块链历史扫描失败，请检查网络进度；不推进失败区块或自动放弃冷地址。', ['network' => $cryptoNetwork]));
-}
+Schedule::command('crypto:check-addresses --limit=1000')
+    ->everyThreeHours()->runInBackground()->withoutOverlapping(30)->onOneServer()
+    ->onFailure(fn () => Log::error('区块链地址补查派发失败，请检查第 3 天、第 7 天计划及队列。'));
 
 Schedule::command('crypto:prepare-checkouts --limit=5')
     ->everyTenSeconds()->runInBackground()->withoutOverlapping(30)->onOneServer()

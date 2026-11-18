@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\CryptoAddressCheck;
 use App\Models\CryptoAddressMonitor;
 use App\Models\CryptoWebhookReceipt;
 use App\Models\SystemConfig;
@@ -66,19 +67,21 @@ class CryptoAddressMonitorTest extends TestCase
         Http::assertNotSent(fn (Request $r): bool => $r->method() === 'POST');
     }
 
-    public function test_expiry_without_history_takeover_never_deletes_the_remote_subscription(): void
+    public function test_expiry_cancels_without_continuous_history_and_schedules_only_two_order_checks(): void
     {
         $monitor = $this->createCryptoMonitor();
         $this->activateFixture($monitor);
         $this->travel(16)->minutes();
-        Http::preventStrayRequests();
-
-        $this->assertFalse(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
-
-        $this->assertSame('active', $monitor->refresh()->status);
-        $this->assertSame('history_coverage_required', $monitor->last_error_code);
-        $this->assertNull($monitor->cancelled_at);
-        Http::assertNothingSent();
+        $this->fakeProvider($monitor, false, true);
+        $service = app(CryptoAddressMonitorService::class);
+        $this->assertTrue($service->synchronize($this->merchant->id, $monitor->id));
+        $this->assertTrue($service->synchronize($this->merchant->id, $monitor->id));
+        $this->assertSame('cold', $monitor->refresh()->status);
+        $this->assertDatabaseCount('crypto_address_checks', 2);
+        $checks = CryptoAddressCheck::query()->orderBy('due_at')->get();
+        $this->assertTrue($checks[0]->due_at->equalTo($monitor->cancelled_at->addHours(72)));
+        $this->assertTrue($checks[1]->due_at->equalTo($monitor->cancelled_at->addHours(168)));
+        Http::assertSentCount(2);
     }
 
     public function test_disabling_history_keeps_subscription_even_with_recent_takeover_proof(): void
@@ -97,7 +100,7 @@ class CryptoAddressMonitorTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_expiry_cancels_only_after_fresh_history_takeover_and_preserves_subscription_id(): void
+    public function test_expiry_cancels_and_preserves_subscription_identity_and_audit(): void
     {
         $monitor = $this->createCryptoMonitor();
         $this->activateFixture($monitor);
@@ -119,7 +122,7 @@ class CryptoAddressMonitorTest extends TestCase
     }
 
     #[DataProvider('blockingReceiptStates')]
-    public function test_pending_receipt_blocks_cancellation_even_with_history_takeover(string $status): void
+    public function test_pending_receipt_remains_available_for_verification_after_cancellation(string $status): void
     {
         $monitor = $this->createCryptoMonitor();
         $this->activateFixture($monitor);
@@ -130,12 +133,11 @@ class CryptoAddressMonitorTest extends TestCase
             'crypto_payment_request_id' => $monitor->crypto_payment_request_id,
             'status' => $status,
         ]);
-        Http::preventStrayRequests();
-
-        $this->assertFalse(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
-
-        $this->assertSame('verification_pending', $monitor->refresh()->last_error_code);
-        Http::assertNothingSent();
+        $this->fakeProvider($monitor, false, true);
+        $this->assertTrue(app(CryptoAddressMonitorService::class)->synchronize($this->merchant->id, $monitor->id));
+        $this->assertSame('cold', $monitor->refresh()->status);
+        $this->assertSame($status, CryptoWebhookReceipt::query()->sole()->status);
+        $this->assertDatabaseCount('crypto_address_checks', 2);
     }
 
     public static function blockingReceiptStates(): array
@@ -208,19 +210,17 @@ class CryptoAddressMonitorTest extends TestCase
         }
     }
 
-    public function test_command_is_inert_by_default_and_reports_blocked_expiry_when_enabled(): void
+    public function test_command_is_inert_when_disabled_and_cancels_expired_alert_when_enabled(): void
     {
         $this->setCryptoSettings(['crypto.subscriptions_enabled' => false]);
         $this->artisan('crypto:maintain-subscriptions')->assertSuccessful();
         $monitor = $this->createCryptoMonitor();
         $this->activateFixture($monitor);
         $this->travel(16)->minutes();
-        Http::preventStrayRequests();
-
-        $this->artisan('crypto:maintain-subscriptions --limit=1')->assertFailed();
-
-        $this->assertSame('history_coverage_required', $monitor->refresh()->last_error_code);
-        Http::assertNothingSent();
+        $this->fakeProvider($monitor, false, true);
+        $this->artisan('crypto:maintain-subscriptions --limit=1')->assertSuccessful();
+        $this->assertSame('cold', $monitor->refresh()->status);
+        $this->assertDatabaseCount('crypto_address_checks', 2);
     }
 
     private function activateFixture(CryptoAddressMonitor $monitor, int $seconds = 900): void

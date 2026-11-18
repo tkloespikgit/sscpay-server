@@ -34,9 +34,9 @@ class SyncPluginReleasesTest extends TestCase
 
         $this->artisan('plugins:sync')->expectsOutputToContain('插件发布存储：plugin-sync-test')->assertSuccessful();
 
-        foreach (['sscpay-payment-paypal', 'sscpay-payment-creditcard'] as $slug) {
-            $this->get('/plugins/updates/v1/'.$slug)->assertOk()->assertJsonPath('version', '1.1.0');
-            Storage::disk('plugin-sync-test')->assertExists('plugin-releases/'.$slug.'/1.1.0/'.$slug.'.zip');
+        foreach (app(PluginCatalog::class)->all() as $slug => $plugin) {
+            $this->get('/plugins/updates/v1/'.$slug)->assertOk()->assertJsonPath('version', $plugin['version']);
+            Storage::disk('plugin-sync-test')->assertExists('plugin-releases/'.$slug.'/'.$plugin['version'].'/'.$plugin['archive_name']);
         }
         Http::assertNothingSent();
     }
@@ -83,8 +83,8 @@ class SyncPluginReleasesTest extends TestCase
         $this->artisan('plugins:sync', ['--dry-run' => true])->expectsOutputToContain('发布预检通过')->assertSuccessful();
 
         $this->assertSame([], Storage::disk('plugin-sync-test')->allFiles());
-        foreach (['sscpay-payment-paypal', 'sscpay-payment-creditcard'] as $slug) {
-            $this->assertFileExists($this->buildPath.'/'.$slug.'/1.1.0/'.$slug.'.zip');
+        foreach (app(PluginCatalog::class)->all() as $slug => $plugin) {
+            $this->assertFileExists($this->buildPath.'/'.$slug.'/'.$plugin['version'].'/'.$plugin['archive_name']);
         }
     }
 
@@ -103,7 +103,9 @@ class SyncPluginReleasesTest extends TestCase
 
         $this->artisan('plugins:sync')->expectsOutputToContain('Increment the plugin version')->assertFailed();
 
-        $disk->assertMissing('plugin-releases/sscpay-payment-creditcard/stable.json');
+        foreach (['sscpay-payment-creditcard', 'sscpay-opencart3', 'sscpay-opencart4'] as $slug) {
+            $disk->assertMissing('plugin-releases/'.$slug.'/stable.json');
+        }
         $this->assertSame([], $disk->allFiles('plugin-releases/sscpay-payment-creditcard'));
         $this->assertSame($originalStable, $disk->get('plugin-releases/sscpay-payment-paypal/stable.json'));
     }

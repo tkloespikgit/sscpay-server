@@ -36,7 +36,7 @@
 - **统计口径**：曾支付成功使用 `Order::paidEver()`；风控按系统时区、渠道 ID 跨商户统计，按 `paid_at` 归窗。成交额 `converted_amount` 与净入账 `settlement_amount` 不可混用。
 - **公开收款页**：服务端构造金额、商品、回跳地址并建单，浏览器不接收应用 API 密钥；保留 Host、启用状态、Turnstile、频率和 CSRF 校验。`/c/{slug}` 与 `/payment/{token}` 各有用途。
 - **协议兼容**：商户签名复用 `SignatureCanonicalizer`；网关 webhook 对原始 body 单独验签；插件客户端当前使用 query 凭证，不能直接替换为标准 Basic Auth。
-- **商城插件同步**：修改商户 API 请求、响应、错误码、签名、通知或物流协议前，先读[插件开发与 API 同步规范](doc/deployment.md#插件开发与-api-同步规范)。同一任务内检查并适配 `plugins/wordpress/` 下 PayPal 与信用卡插件，补充契约回归、递增两个插件版本并更新各自 `plugin.json` 的 `protocol_hash`，不得只改指纹代替适配。执行 `php artisan plugins:check`；CI 以基线提交检查版本递增。插件保留 PHP 7.4 兼容语法，新增平台同步接入目录、协议检查、测试及发布流程。
+- **商城插件同步**：修改商户 API 请求、响应、错误码、签名、通知或物流协议前，先读[插件开发与 API 同步规范](doc/deployment.md#插件开发与-api-同步规范)。同一任务内检查并适配 `config/plugins.php` 登记的全部插件：WordPress PayPal / 信用卡和 OpenCart 3 / 4（各含两种支付方式）。补充契约回归、递增各安装包版本并更新各自 `plugin.json.protocol_hash`，不得只改指纹代替适配；OpenCart 同步 `install.json.version`，共享客户端变更检查两个包。执行 `php artisan plugins:check`；CI 以基线提交检查版本递增。插件共享代码保留 PHP 7.4 语法，OpenCart 4 运行时至少 PHP 8.0；新增平台同步接入目录、协议检查、测试及发布流程。
 - **数据演进**：生产目标为 MySQL。修改已有表时新增迁移，保留生成列唯一约束和金融审计记录；不要将正式库重建当成日常开发步骤。
 
 ## 修改与验证

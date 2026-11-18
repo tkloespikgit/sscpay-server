@@ -383,7 +383,7 @@
 
 HMAC 校验仅证明回调来源，不能证明交易最终到账。回调先校验请求大小、环境密钥、原始 body 签名及限定的 JSON 空白兼容签名，再按本地监控绑定商户，保存摘要与白名单线索到可靠收件箱；不信任回调商户 ID，不保存任意原始数据，不直接写余额或订单已支付事实。已取消／旧代次的有效线索仍接受。第三批未实现核验与消费；第四批以太坊进展见 [D-36](#d-36-以太坊规范链核验与冻结确认策略)，其他链和订单通知编排仍待实现。
 
-即时订阅到期不等于可以安全退订：必须有新鲜连续历史扫描及补查覆盖证明，并无待核验收件或未确认事件。缺少任一条件就保留订阅，避免为节约 Credits 失去迟到款发现能力。重新订阅只在有效报价、恢复次数和补查条件满足时创建新代次。第三批当时无真实历史扫描器，不能手工伪造检查点来启用收款或退订。后台必要参数当时以补缺 Seeder 留空／关闭初始化；该初值策略已由 [D-42](#d-42-区块链系统配置随部署迁移初始化) 替代，收款开关仍关闭。HMAC 配置使用专用 API Key 并与其已有回调约定一致。
+**本段退订接管条件已由 [D-65](#d-65-退订后两轮地址补查替代持续扫块) 替代，保留为第三批历史。** 即时订阅到期不等于可以安全退订：必须有新鲜连续历史扫描及补查覆盖证明，并无待核验收件或未确认事件。缺少任一条件就保留订阅，避免为节约 Credits 失去迟到款发现能力。重新订阅只在有效报价、恢复次数和补查条件满足时创建新代次。第三批当时无真实历史扫描器，不能手工伪造检查点来启用收款或退订。后台必要参数当时以补缺 Seeder 留空／关闭初始化；该初值策略已由 [D-42](#d-42-区块链系统配置随部署迁移初始化) 替代，收款开关仍关闭。HMAC 配置使用专用 API Key 并与其已有回调约定一致。
 
 **依据：** [监控服务](../app/Services/CryptoAddressMonitorService.php)、[订阅客户端](../app/Services/TatumSubscriptionClient.php)、[验签](../app/Support/TatumWebhookSignature.php)、[回调收件](../app/Services/TatumWebhookService.php)、[维护命令](../app/Console/Commands/MaintainCryptoSubscriptions.php)、[监控测试](../tests/Feature/CryptoAddressMonitorTest.php)、[回调测试](../tests/Feature/TatumWebhookTest.php)、[配置测试](../tests/Feature/CryptoSettingsTest.php)。具体设置与未完成项见[方案第 6.8 节](blockchain-payment-plan.md#68-当前第三批代码的落地边界未开放收款)。
 
@@ -414,7 +414,7 @@ TRC20 核对 Base58Check、冻结 USDT 合约、raw_data_hex 对应交易 ID、�
 
 ## D-38 连续历史覆盖与订单原子入账
 
-**状态：当前工作区第六批实现，未提交，仅隔离库与模拟接口验证（2026-11-11）。** 承接 D-35 至 D-37 的可靠线索和核验边界。新历史服务读取完整区块，按网络／下一高度合并最多 500 个请求的发现查询，继续扫描过期、冷地址及已入账请求；不依赖付款页打开、不复用旧地址、不按金额配单。请求游标和发现线索一起提交；只有追平新鲜链头才形成退订接管证明。新增扫描和自动记账开关均默认关闭。
+**状态：当前工作区第六批实现，未提交，仅隔离库与模拟接口验证（2026-11-11）。** 承接 D-35 至 D-37 的可靠线索和核验边界。**持续扫描与退订接管部分于 2026-11-18 被 [D-65](#d-65-退订后两轮地址补查替代持续扫块) 替代；以下为当时实现。** 新历史服务读取完整区块，按网络／下一高度合并最多 500 个请求的发现查询，继续扫描过期、冷地址及已入账请求；不依赖付款页打开、不复用旧地址、不按金额配单。请求游标和发现线索一起提交；只有追平新鲜链头才形成退订接管证明。新增扫描和自动记账开关均默认关闭。
 
 ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整，核验另取交易 trace 并匹配顶层交易。撤销子树、委托调用的表面 value、自转和零值不作为收入。调用路径用作事件位置，顶层仍为 native:0，避免重复叠加。冻结 internal_transfers 能力，旧报价不静默重写。节点返回不是独立多源共识，真实 trace／历史权限必须单独验收。
 
@@ -693,3 +693,28 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 网关自动拒付遇部分退款仍转人工待办，不能用无操作人的自动路径代替金额确认。人工补录凭证后可核销原待办；后续网关又报退款时，不重复扣已由退款＋拒付结清的本金。可靠待办、生命周期与资金释放查询均识别拒付凭证，避免因原退款累计未达全额而永久阻塞出款。统计按实际退款本金与拒付剩余本金分别归日，不重复计本金；不新增迁移、商户 API 协议或远端退款操作。
 
 **依据：** [账务服务](../app/Services/BalanceService.php)、[可靠记账](../app/Services/OrderAccountingService.php)、[生命周期](../app/Services/OrderLifecycleService.php)、[订单详情](../app/Filament/Resources/OrderResource/Pages/ViewOrder.php)、[退款与拒付回归](../tests/Feature/GatewayRefundChargebackTest.php)、[后台操作回归](../tests/Feature/Filament/OrderLifecycleActionsTest.php)、[MySQL 并发回归](../tests/Feature/MySqlSettlementConcurrencyTest.php)。
+
+## D-64 OpenCart 两代独立安装包与共享协议客户端
+
+**状态：按用户要求实现，当前工作区未提交（2026-11-17），未生产发布。** 用户要求同时支持 OpenCart 3.x、4.x。新增 `sscpay-opencart3` 与 `sscpay-opencart4` v1.0.0；每包注册 PayPal 和信用卡，不共用不同平台的可安装目录。3.x 使用传统 MVC 与 `upload/`；4.x 使用命名空间与扩展目录，兼容早期 `getMethod` / 字符串支付方式及后期 `getMethods` / 多选项结构，避免在公开动作地址依赖不同版本的方法分隔符。
+
+**复用与边界：** 协议、金额计算、状态归约、存储和模板维护在 `plugins/opencart/shared/`，由构建白名单注入两个包。客户端无 Laravel 运行依赖，以订单币种汇率快照换算，沿用原商户号重试；完整签名通知及主动查询验证身份、币种和金额，组合单只在全额收齐后更新商城已付款分类。商城 MySQL 命名锁、独立状态、事件和物流去重共同防止重复状态副作用。管理端查询为只读，发货前验证全额付款并拆分到真实子单；不提供循环扣款或真实退款操作。
+
+**发布与同步：** 两个包均加入下载中心、`plugins:sync`、协议与版本检查、CI 契约回归和 tag 发布；4.x 公开下载及 Release 附件固定名 `sscpay.ocmod.zip`，供安装器识别 `sscpay` 代码。OpenCart 后台提供版本、下载地址及校验值检查，升级通过安装包 / 覆盖扩展目录完成，保留订单记录。服务端 API 本次未变，不递增现有 WordPress 版本；以后协议关联文件变化须检查并递增全部四个包。
+
+**验证边界：** 契约测试覆盖两代 PayPal / 信用卡、真实 Laravel API 建单与同号重试、分次付款通知、主动查询及双向物流；独立 MySQL 库验证建表、事务回滚、nonce 与同单四并发。打包后入口在模拟注册表中执行，本机 OpenCart 3.0.3.8 Twig 能渲染并转义模板；完整商城安装、4.x 运行时、主题 / 第三方结账、库存与优惠券联动及真实收款尚需专用测试站验收。
+
+**依据：** [共享客户端](../plugins/opencart/shared/Gateway.php)、[两个安装包清单](../plugins/opencart/sscpay-opencart3/plugin.json)、[4.x 清单](../plugins/opencart/sscpay-opencart4/plugin.json)、[契约回归](../tests/Feature/OpenCartV2ContractTest.php)、[MySQL 回归](../tests/Feature/OpenCartStorageTest.php)、[操作说明](../doc/deployment.md#opencart-安装配置与升级)。
+
+
+## D-65 退订后两轮地址补查替代持续扫块
+
+**状态：用户确认，当前工作区实现，未部署（2026-11-18）。** 替代 D-35 的连续历史接管退订门槛和 D-38 的持续冷地址扫块；保留 RPC 核验、事件幂等、独立账本及人工异常款边界。
+
+**决策：** 按整单首次实际退订时间固定 +72／+168 小时两轮地址补查，每三小时调度到期计划。每轮读取所有历史报价地址的完整地址交易索引，固定本轮链头并持久化分页；两轮以唯一键去重。第 7 天可覆盖停机遗漏的第 3 天并保留审计。订阅重开、重新报价或手动查询不新增这两轮。后台订单列表、详情和异常款页面支持即时入队的地址查询，现有审核重新核查接入同一任务，分别沿用当前租户权限和审核权限／TOTP。
+
+**原因与费用：** 不再为无限增长的旧地址持续读块。两轮是业务查询次数，不是 HTTP 次数；分页、内部转账和交易核验仍按实际调用计费。失败最多三次后停止自动重试，保留错误并允许另发手动任务。已发现未确认交易继续按原确认任务处理，手续费和法币账务口径不变。
+
+**一致性与边界：** 退订成功与计划落库同事务。地址 API 只给出交易线索，RPC 决定真实金额、规范链归属和确认结果；完整查询期间阻止提前自动入账。正常回调不再依赖不断刷新的历史扫描证明。迟到、少付、多付、历史地址同时来款及重组异常仍人工处理，不自动冲正。第 7 天以后新增转入／深度重组不再保证自动发现，需手动查询或合法链接重开；索引延迟和套餐／测试链权限须真实联调。
+
+**部署与依据：** [增量迁移](../database/migrations/2026_11_18_111740_create_crypto_address_checks_table.php)、[计划与执行](../app/Services/CryptoAddressCheckService.php)、[地址分页](../app/Services/CryptoHistoryScanService.php)、[Tatum 适配](../app/Services/TatumAddressHistoryClient.php)、[调度](../routes/console.php)、[回归](../tests/Feature/CryptoAddressCheckTest.php)。`deploy.sh` 在迁移后自动初始化旧取消记录；保留审核数据，非空审计拒绝向下迁移。测试与人工验收步骤见[开发方案](blockchain-payment-plan.md#611-历史补查冷地址与自动入账第六批未开放收款)。

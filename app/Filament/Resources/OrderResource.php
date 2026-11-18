@@ -11,6 +11,7 @@ use App\Models\OrderSettlement;
 use App\Models\OrderShipping;
 use App\Models\PaymentMethod;
 use App\Models\User;
+use App\Services\CryptoAddressCheckService;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\OrderPaymentStatusService;
 use App\Services\OrderShippingService;
@@ -73,7 +74,7 @@ class OrderResource extends Resource
             // shipping.tracking_number 列会自动触发 shipping 的预加载，这里额外带上
             // shipping.operator，避免点击"物流信息"弹窗时才现查触发懒加载；
             // paymentMethod 用于把 payment_method 列从 method_code 换成 method_name 展示。
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent', 'settlement', 'cryptoRequests', ...CryptoOrderDisplay::RELATIONS]))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'activeDisputeEvent', 'settlement', 'cryptoRequests', 'latestCryptoAddressCheck', ...CryptoOrderDisplay::RELATIONS]))
             ->columns([
                 // 商户名称列仅平台侧账号（超管、商户级管理员）可见（商户用户本来就只看自己的订单）
                 TextColumn::make('merchant.name')->label(__('admin.order.columns.merchant_name'))
@@ -183,6 +184,10 @@ class OrderResource extends Resource
                     ->action(static::viewTrackingTrailAction()),
 
                 TextColumn::make('platform')->label(__('admin.order.columns.platform')),
+                TextColumn::make('latestCryptoAddressCheck.status')->label(__('crypto.address_check.status'))
+                    ->formatStateUsing(fn (string $state): string => __('crypto.address_check.states.'.$state))->badge()->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('latestCryptoAddressCheck.completed_at')->label(__('crypto.address_check.completed_at'))
+                    ->dateTime()->placeholder('—')->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
             ])
             // "本次查询统计"这行渲染在搜索栏下方、数据行上方，用的是
@@ -469,6 +474,7 @@ class OrderResource extends Resource
             ->recordActions([
                 ViewAction::make(),
                 static::queryStatusAction(),
+                static::queryCryptoAddressAction(),
             ])
             ->defaultSort('created_at', 'desc');
     }
@@ -483,10 +489,10 @@ class OrderResource extends Resource
         return Action::make('queryOrderStatus')
             ->label(__('admin.order.actions.query_status'))
             ->icon('heroicon-o-arrow-path')
-            ->authorize(fn (): bool => static::canViewAny())
-            ->visible(fn (): bool => static::canViewAny())
+            ->authorize(fn (Order $record): bool => $record->payment_type !== 'crypto' && static::canPerformOrderAction($record, Permissions::ORDERS_VIEW))
+            ->visible(fn (Order $record): bool => static::canViewAny() && $record->payment_type !== 'crypto')
             ->action(function (Order $record): void {
-                abort_unless(static::canPerformOrderAction($record, Permissions::ORDERS_VIEW), 403);
+                abort_unless($record->payment_type !== 'crypto' && static::canPerformOrderAction($record, Permissions::ORDERS_VIEW), 403);
 
                 try {
                     $result = app(OrderPaymentStatusService::class)->queryAndApply($record);
@@ -529,6 +535,29 @@ class OrderResource extends Resource
                         ]))
                         ->success()
                         ->send();
+                }
+            });
+    }
+
+    public static function queryCryptoAddressAction(): Action
+    {
+        return Action::make('queryCryptoAddress')
+            ->label(__('crypto.address_check.action'))->icon('heroicon-o-magnifying-glass')
+            ->visible(fn (Order $record): bool => $record->payment_type === 'crypto' && static::canPerformOrderAction($record, Permissions::ORDERS_VIEW))
+            ->authorize(fn (Order $record): bool => $record->payment_type === 'crypto' && static::canPerformOrderAction($record, Permissions::ORDERS_VIEW))
+            ->action(function (Order $record): void {
+                abort_unless(static::canPerformOrderAction($record, Permissions::ORDERS_VIEW), 403);
+                try {
+                    $check = app(CryptoAddressCheckService::class)->requestManual(auth()->user(), $record);
+                    $notification = Notification::make()->title(__('crypto.address_check.states.'.$check->status));
+                    if ($check->status === 'error') {
+                        $notification->body(__('crypto.address_check.failed'))->danger();
+                    } else {
+                        $notification->body(__($check->status === 'completed' ? 'crypto.address_check.recent' : 'crypto.address_check.queued'))->success();
+                    }
+                    $notification->send();
+                } catch (\DomainException $exception) {
+                    Notification::make()->title(__('crypto.address_check.failed'))->danger()->send();
                 }
             });
     }

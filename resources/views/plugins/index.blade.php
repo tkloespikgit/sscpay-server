@@ -76,10 +76,12 @@
                                         <p class="mt-3 text-sm leading-7 text-slate-600 dark:text-slate-400">{{ $plugin['description'] }}</p>
                                         @if ($plugin['release'])
                                             <dl class="mt-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 border-t border-slate-100 pt-4 text-xs leading-6 dark:border-slate-800">
-                                                <dt class="text-slate-500 dark:text-slate-400">WordPress</dt>
-                                                <dd class="text-end font-medium text-slate-700 dark:text-slate-300">{{ $plugin['release']['requires'] }}+</dd>
+                                                <dt class="text-slate-500 dark:text-slate-400">{{ $label }}</dt>
+                                                <dd class="text-end font-medium text-slate-700 dark:text-slate-300">{{ $plugin['release']['requires'] }}{{ $platform === 'wordpress' ? '+' : '' }}</dd>
+                                                @if ($platform === 'wordpress')
                                                 <dt class="text-slate-500 dark:text-slate-400">WooCommerce</dt>
                                                 <dd class="text-end font-medium text-slate-700 dark:text-slate-300">{{ $plugin['release']['wc_requires'] }}+</dd>
+                                                @endif
                                                 <dt class="text-slate-500 dark:text-slate-400">PHP</dt>
                                                 <dd class="text-end font-medium text-slate-700 dark:text-slate-300">{{ $plugin['release']['requires_php'] }}+</dd>
                                             </dl>
@@ -100,7 +102,10 @@
                             </div>
                             <div class="mt-6 rounded-r-xl border-s-4 border-emerald-600 bg-emerald-50 px-5 py-4 dark:bg-emerald-950/35">
                                 <h3 class="mb-2 text-sm font-semibold text-emerald-950 dark:text-emerald-200">{{ __('plugins.install') }}</h3>
-                                <p class="text-sm leading-7 text-slate-700 dark:text-slate-300">{{ __('plugins.instructions') }}</p>
+                                <p class="text-sm leading-7 text-slate-700 dark:text-slate-300">{{ __('plugins.'.($platform === 'opencart' ? 'opencart_instructions' : 'instructions')) }}</p>
+                                @if ($platform === 'opencart')
+                                    <p class="mt-3 text-sm leading-7 text-slate-700 dark:text-slate-300">{{ __('plugins.opencart_upgrade') }}</p>
+                                @endif
                                 <p class="mt-3 text-sm leading-7 text-slate-700 dark:text-slate-300">{{ __('plugins.combined') }}</p>
                             </div>
                         @else

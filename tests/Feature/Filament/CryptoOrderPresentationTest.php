@@ -7,7 +7,9 @@ use App\Filament\Resources\CryptoPaymentReviewResource\Pages\ManageCryptoPayment
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
 use App\Filament\Resources\OrderResource\Pages\ViewOrder;
 use App\Filament\Support\CryptoOrderDisplay;
+use App\Jobs\QueryCryptoAddressCheck;
 use App\Models\CryptoAddress;
+use App\Models\CryptoAddressCheck;
 use App\Models\CryptoAssetBalance;
 use App\Models\CryptoLedgerEntry;
 use App\Models\CryptoPaymentRequest;
@@ -141,6 +143,52 @@ class CryptoOrderPresentationTest extends TestCase
         $this->assertSame('manual_recheck', $this->creditedRequest->fresh()->review_reason);
         $this->assertSame('recheck', CryptoPaymentResolution::query()->sole()->action);
         $this->assertSame($this->income->amount_units, $this->assetBalance->fresh()->balance_units);
+        Queue::assertPushed(QueryCryptoAddressCheck::class, 1);
+        $this->assertSame('recheck', CryptoAddressCheck::query()->sole()->kind);
+        CryptoAddressCheck::query()->sole()->update(['status' => 'completed', 'completed_at' => now()]);
+        Livewire::test(ManageCryptoPaymentReviews::class)->callAction(TestAction::make('recheck')->table($order), [
+            'reason' => 'New verification requested', 'mfa_code' => $this->cryptoCode($this->reviewer),
+        ])->assertHasNoActionErrors()->assertNotified();
+        Queue::assertPushed(QueryCryptoAddressCheck::class, 2);
+        $this->assertSame('pending', CryptoAddressCheck::query()->latest('id')->first()->status);
+    }
+
+    public function test_merchant_order_query_enqueues_immediately_without_financial_permissions_or_external_http(): void
+    {
+        Filament::setCurrentPanel('merchant');
+        $this->actingAs($this->requester);
+        $order = $this->creditedRequest->order;
+        Livewire::test(ListOrders::class)->assertActionVisible(TestAction::make('queryCryptoAddress')->table($order))
+            ->assertActionHidden(TestAction::make('queryOrderStatus')->table($order))
+            ->callAction(TestAction::make('queryCryptoAddress')->table($order))->assertNotified();
+        $check = CryptoAddressCheck::query()->sole();
+        $this->assertSame($order->merchant_id, $check->merchant_id);
+        $this->assertSame($this->requester->id, $check->requested_by);
+        $this->assertSame('pending', $check->status);
+        Queue::assertPushed(QueryCryptoAddressCheck::class, 1);
+        Livewire::test(ViewOrder::class, ['record' => $order->id])->assertSee(__('crypto.address_check.section'))
+            ->assertSee(__('crypto.address_check.states.pending'));
+        $this->assertSame($this->income->amount_units, $this->assetBalance->fresh()->balance_units);
+        Http::assertNothingSent();
+    }
+
+    public function test_fiat_orders_keep_the_gateway_query_and_hide_the_address_query(): void
+    {
+        $order = $this->makeOrder('fiat-query', 'fiat-query');
+        Livewire::test(ListOrders::class)->assertActionHidden(TestAction::make('queryCryptoAddress')->table($order))
+            ->assertActionVisible(TestAction::make('queryOrderStatus')->table($order));
+        Queue::assertNotPushed(QueryCryptoAddressCheck::class);
+    }
+
+    public function test_address_query_rechecks_ownership_after_the_order_page_was_loaded(): void
+    {
+        $order = $this->creditedRequest->order;
+        $page = Livewire::test(ListOrders::class)->assertCanSeeTableRecords([$order]);
+        $this->merchant->update(['owner_id' => null]);
+        $page->call('mountAction', 'queryCryptoAddress', [], ['table' => true, 'recordKey' => (string) $order->id])
+            ->assertSet('mountedActions', []);
+        Queue::assertNotPushed(QueryCryptoAddressCheck::class);
+        $this->assertDatabaseCount('crypto_address_checks', 0);
     }
 
     public function test_same_asset_on_different_networks_has_separate_exact_fee_totals(): void

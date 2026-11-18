@@ -4,6 +4,8 @@ namespace Tests\Concerns;
 
 use App\Models\CryptoAddressMonitor;
 use App\Services\CryptoQuoteService;
+use App\Support\CryptoEvm;
+use App\Support\CryptoEvmTrace;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -63,6 +65,46 @@ trait CreatesCryptoHistory
         Http::preventStrayRequests();
         $baseline = DB::transactionLevel();
         Http::fake(function (Request $request) use (&$rpc, $baseline) {
+            $path = parse_url($request->url(), PHP_URL_PATH);
+            if (in_array($path, ['/v4/data/transaction/history', '/v4/data/blockchains/transaction/internal'], true)) {
+                $this->assertSame($baseline, DB::transactionLevel(), 'Address HTTP must not hold financial locks.');
+                if (! empty($rpc['fail_address_history']) || ($rpc['fail_method'] ?? null) === 'eth_getLogs') {
+                    return Http::response(['error' => 'unavailable'], 503);
+                }
+                $internal = str_ends_with($path, '/internal');
+                $address = strtolower($request[$internal ? 'address' : 'addresses']);
+                $rows = [];
+                foreach ($rpc['blocks'] as $height => $block) {
+                    if ($height < $request['blockFrom'] || $height > $request['blockTo']) {
+                        continue;
+                    }
+                    foreach ($block['transactions'] as $tx) {
+                        if ($internal) {
+                            foreach (CryptoEvmTrace::transfers($rpc['traces'][$tx['hash']]) as $transfer) {
+                                if (strtolower($transfer['recipient']) === $address) {
+                                    $rows[] = ['blockNumber' => (string) $height, 'hash' => $tx['hash'], 'to' => $address, 'isError' => '0'];
+                                }
+                            }
+                        } elseif ($request['transactionTypes'] === 'native') {
+                            if (strtolower($tx['to']) === $address && $tx['value'] !== '0x0') {
+                                $rows[] = ['blockNumber' => $height, 'hash' => $tx['hash'], 'address' => $address, 'chain' => 'ethereum-sepolia',
+                                    'transactionType' => 'native', 'transactionSubtype' => 'incoming'];
+                            }
+                        } else {
+                            foreach ($rpc['receipts'][$tx['hash']]['logs'] ?? [] as $log) {
+                                if (strtolower(CryptoEvm::topicAddress($log['topics'][2])) === $address
+                                    && strtolower($log['address']) === strtolower($request['tokenAddress'])) {
+                                    $rows[] = ['blockNumber' => $height, 'hash' => $tx['hash'], 'address' => $address, 'chain' => 'ethereum-sepolia',
+                                        'transactionType' => 'fungible', 'transactionSubtype' => 'incoming', 'tokenAddress' => $log['address']];
+                                }
+                            }
+                        }
+                    }
+                }
+                $rows = array_slice($rows, (int) $request['offset'], (int) $request['pageSize']);
+
+                return Http::response($internal ? $rows : ['result' => $rows]);
+            }
             if (isset($rpc['provider_handler']) && str_starts_with($request->url(), 'https://api.tatum.io/')) {
                 $this->assertSame($baseline, DB::transactionLevel(), 'Provider HTTP must not hold financial locks.');
 

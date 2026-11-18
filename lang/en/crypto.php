@@ -1,6 +1,15 @@
 <?php
 
 return [
+    'address_check' => [
+        'action' => 'Check on-chain payment', 'section' => 'Address query', 'status' => 'Address query status',
+        'started_at' => 'Query started', 'completed_at' => 'Query completed', 'error' => 'Query error',
+        'queued' => 'The address query is queued immediately. Refresh shortly for results; exceptions still require review.',
+        'recent' => 'A query completed within the last minute. Its result is reused.',
+        'failed' => 'Address query incomplete. Check configuration, the query task and queue before retrying.',
+        'disabled' => 'Address history queries are disabled.',
+        'states' => ['pending' => 'Pending', 'running' => 'Querying', 'completed' => 'Completed', 'error' => 'Failed'],
+    ],
     'order' => [
         'uncredited' => 'Not credited',
         'preparing' => 'Preparing quote',
@@ -222,7 +231,7 @@ return [
             'checkout_enabled' => 'Allow new blockchain orders. Existing orders continue monitoring and settlement when this is off.',
             'subscriptions_enabled' => 'Maintain address subscriptions and receive webhooks.',
             'verification_enabled' => 'Verify transactions against chain data.',
-            'history_enabled' => 'Backfill transaction history and scan cold addresses.',
+            'history_enabled' => 'Address history queries for day 3/day 7 after cancellation, manual checks and reopened payment links.',
             'settlement_enabled' => 'Automatically credit verified payments.',
             'api_key' => 'Tatum mainnet and market price API key, stored encrypted.',
             'testnet_key' => 'Tatum testnet API key, stored encrypted.',

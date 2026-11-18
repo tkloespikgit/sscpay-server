@@ -17,6 +17,8 @@ return [
     'download' => '下载 :version',
     'unpublished' => '安装包尚未发布',
     'requirements' => '环境要求',
+    'opencart_instructions' => '选择与商城对应的 3.x 或 4.x 安装包，在「扩展 → 安装器」上传 ZIP，然后在支付扩展中分别安装并配置 SSCPay PayPal 和 SSCPay 信用卡。填写 API 地址、App-ID、API Key、支付组及订单状态映射后启用。平台标识 opencart 须已在 SSCPay 的订单平台配置中启用。',
+    'opencart_upgrade' => '3.x 使用 .ocmod.zip 安装包；4.x 下载后保留文件名 sscpay.ocmod.zip。升级前备份，3.x 重新上传；4.x 将包内文件覆盖到 extension/sscpay/，保留配置及订单表。插件后台可检查新版本，并查询支付进度、同步物流。订阅 / 循环扣款暂不支持。',
     'install' => '安装与配置',
     'instructions' => '在 WordPress 后台的「插件 → 安装插件 → 上传插件」上传 ZIP 并启用。在「WooCommerce → 设置 → 付款」填写订单系统地址、App-ID、API Key 和支付组。已有安装可直接通过后台更新，原配置保留。',
     'combined' => '使用组合付款时，请清空插件的「指定支付渠道」，并在对应支付组开启组合付款。部分付款会保存累计进度，整单付清后才确认商城订单付款成功。',
