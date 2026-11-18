@@ -67,6 +67,46 @@ class CryptoAddressMonitorTest extends TestCase
         Http::assertNotSent(fn (Request $r): bool => $r->method() === 'POST');
     }
 
+    public function test_bitcoin_alias_recovers_existing_identity_error_without_creating_another_subscription(): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        $monitor->update(['status' => 'error', 'subscription_id' => 'alert-1', 'last_error_code' => 'remote_identity_mismatch']);
+        $this->fakeProvider($monitor, alreadyExists: true, alertOverrides: ['chain' => 'bitcoin-testnet', 'attr' => ['chain' => 'BTC']]);
+        $service = app(CryptoAddressMonitorService::class);
+
+        $this->assertTrue($service->synchronize($monitor->merchant_id, $monitor->id));
+        $expiry = $monitor->fresh()->expires_at;
+        $this->assertTrue($service->checkActive($monitor->merchant_id, $monitor->id));
+
+        $this->assertSame('active', $monitor->fresh()->status);
+        $this->assertNull($monitor->fresh()->last_error_code);
+        $this->assertSame('alert-1', $monitor->fresh()->subscription_id);
+        $this->assertTrue($monitor->fresh()->expires_at->equalTo($expiry));
+        $this->assertDatabaseCount('crypto_address_monitors', 1);
+        $this->assertDatabaseCount('crypto_addresses', 1);
+        $this->assertDatabaseCount('crypto_ledger_entries', 0);
+        Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+    }
+
+    public function test_expired_bitcoin_alias_subscription_is_safely_cancelled_using_canonical_network_identity(): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        $this->activateFixture($monitor);
+        $this->travel(16)->minutes();
+        $this->fakeProvider($monitor, alreadyExists: true, alertOverrides: ['chain' => 'bitcoin-testnet', 'attr' => ['chain' => 'BTC']]);
+
+        $this->assertTrue(app(CryptoAddressMonitorService::class)->synchronize($monitor->merchant_id, $monitor->id));
+
+        $this->assertSame('cold', $monitor->fresh()->status);
+        $this->assertNotNull($monitor->fresh()->cancelled_at);
+        $this->assertSame('alert-1', $monitor->fresh()->subscription_id);
+        $this->assertDatabaseCount('crypto_address_checks', 2);
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'DELETE' && str_ends_with($request->url(), '/alert-1'));
+    }
+
     public function test_expiry_cancels_without_continuous_history_and_schedules_only_two_order_checks(): void
     {
         $monitor = $this->createCryptoMonitor();
@@ -234,11 +274,11 @@ class CryptoAddressMonitorTest extends TestCase
             'cold_scan_to_block' => 1001, 'cold_scan_to_hash' => str_repeat('b', 64), 'cold_scan_checked_at' => now()]);
     }
 
-    private function fakeProvider(CryptoAddressMonitor $monitor, bool $uncertainPost = false, bool $alreadyExists = false, bool $failedDelete = false): void
+    private function fakeProvider(CryptoAddressMonitor $monitor, bool $uncertainPost = false, bool $alreadyExists = false, bool $failedDelete = false, array $alertOverrides = []): void
     {
         Http::preventStrayRequests();
         $exists = $alreadyExists;
-        $alert = $this->alertData($monitor);
+        $alert = array_replace_recursive($this->alertData($monitor), $alertOverrides);
         Http::fake(['https://api.tatum.io/v4/subscription*' => function (Request $r) use (&$exists, $alert, $uncertainPost, $failedDelete) {
             if ($r->method() === 'PUT') {
                 return Http::response('', 204);

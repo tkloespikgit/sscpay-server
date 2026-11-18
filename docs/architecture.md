@@ -229,6 +229,8 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 
 漏配历史汇损可使用 `orders:recalculate-surcharge`，由 `OrderSurchargeRecalculationService` 明确按商户纠正订单快照，保留历史市场汇率及手续费金额，默认预览，仅 `--apply` 写入。只处理已入账且无反向资金/争议历史的订单，保存新旧快照报告，不修改余额或台账；人工调账差额与统计补算步骤见[操作手册](../doc/order-surcharge-recalculation.md)。
 
+订单管理下的“退款订单”和“拒付订单”是平台、商户共用的只读列表，使用原 `orders.view` 权限及 MerchantScope，详情链接回现有 `ViewOrder`。退款包含部分和全额退款；订单主状态、网关事实或实际拒付凭证任一确认拒付时，优先归入拒付列表，保留退款历史。`OrderAfterSaleService` 统一分类、时间和费用查询，`OrderAfterSaleTable` 复用两种列表配置；退款时间取最后一次成功退款，普通拒付取首次本金凭证时间，退款转拒付按退款时间展示、排序和筛选。详情保留逐次退款及实际拒付手续费，无凭证时显示待记账金额；缺少本地时间时只回退当前网关引用的有效接收审计。统计仍按实际流水时间归日，见 [D-66](decisions.md#d-66-售后订单独立列表与退款转拒付展示时间)。
+
 ## 5. 队列和调度
 
 | 队列 | 执行者 | 重试来源 |
@@ -289,6 +291,7 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | 路由与限额 | `app/Services/PaymentService.php`、`app/Models/PaymentMethod.php`、`app/Models/PaymentGroup.php` | `tests/Feature/PaymentRoutingTest.php`、`PaymentRiskPaidAtTest.php` |
 | 连续建单失败与自动停用 | `app/Services/PaymentMethodFailureService.php`、`OrderCreationService.php`、`app/Models/PaymentMethod.php`、`database/seeders/PaymentFailureSettingsSeeder.php` | `tests/Feature/PaymentMethodCreationFailureTest.php`、`PaymentFailureSettingsTest.php` |
 | 退款、拒付、账务 | `app/Services/OrderPaymentStatusService.php`、`app/Services/BalanceService.php` | `tests/Feature/GatewayRefundChargebackTest.php`、`OrderLifecycleTest.php`、`OrderStatusApiCompatibilityTest.php`、`tests/Feature/Filament/OrderLifecycleActionsTest.php` |
+| 退款/拒付列表、售后时间与费用展示 | `app/Services/OrderAfterSaleService.php`、`app/Filament/Support/OrderAfterSaleTable.php`、`app/Filament/Resources/OrderResource/Pages/ViewOrder.php` | `tests/Feature/OrderAfterSaleDisplayTest.php` |
 | 商户费率、结算和保证金 | `MerchantPaymentSettingsService`、`OrderAccountingService`、`OrderLifecycleService`、`BalanceService`、`OrderSettlement` | `MerchantPaymentSettingsTest`、`OrderSettlementBalanceTest`、`OrderAccountingRecoveryTest`、`Filament/OrderSettlementResourceTest` |
 | 商户支付渠道授权 | `MerchantResource/Pages/EditMerchant`、`MerchantPaymentMethodAssignmentService`、`MerchantPaymentMethod` | `Filament/MerchantPaymentMethodAssignmentTest`、`MerchantPaymentDefaultsAssignmentTest` |
 | 支付组成员和权重 | `PaymentGroupResource`、`PaymentGroupResource/RelationManagers/PaymentMethodsRelationManager`、`PaymentGroupMethodService` | `Filament/PaymentGroupMethodManagementTest`、`Filament/PaymentGroupLoadSnapshotTest`、`PaymentRoutingTest` |

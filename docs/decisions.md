@@ -718,3 +718,14 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **一致性与边界：** 退订成功与计划落库同事务。地址 API 只给出交易线索，RPC 决定真实金额、规范链归属和确认结果；完整查询期间阻止提前自动入账。正常回调不再依赖不断刷新的历史扫描证明。迟到、少付、多付、历史地址同时来款及重组异常仍人工处理，不自动冲正。第 7 天以后新增转入／深度重组不再保证自动发现，需手动查询或合法链接重开；索引延迟和套餐／测试链权限须真实联调。
 
 **部署与依据：** [增量迁移](../database/migrations/2026_11_18_111740_create_crypto_address_checks_table.php)、[计划与执行](../app/Services/CryptoAddressCheckService.php)、[地址分页](../app/Services/CryptoHistoryScanService.php)、[Tatum 适配](../app/Services/TatumAddressHistoryClient.php)、[调度](../routes/console.php)、[回归](../tests/Feature/CryptoAddressCheckTest.php)。`deploy.sh` 在迁移后自动初始化旧取消记录；保留审核数据，非空审计拒绝向下迁移。测试与人工验收步骤见[开发方案](blockchain-payment-plan.md#611-历史补查冷地址与自动入账第六批未开放收款)。
+
+
+## D-66 售后订单独立列表与退款转拒付展示时间
+
+**状态：用户确认方案后在当前工作区实现，未提交、未部署（2026-11-18）。** 平台和商户后台在订单管理分组增加“退款订单”“拒付订单”，复用原 `orders.view` 和商户数据范围，观察者面板不增加入口。列表只读并链接回原订单详情；查看售后时间、退款历史和拒付费用无需财务或资金操作权限，原资金动作仍检查各自权限及 TOTP。
+
+**分类与时间：** 部分和全额退款进入退款列表；主状态、网关拒付事实或真实拒付本金凭证（含零本金）存在时，优先归入拒付列表，转换订单不重复出现在退款列表。退款时间取最后一次成功退款，普通拒付取首次本金流水时间；退款转拒付按原退款时间展示、排序和筛选。缺少本地时间时仅回退同商户、当前网关引用、已接受事件的远端时间或接收时间，仍无依据显示未记录。旧主状态与凭证不一致时只按事实查询，不批量改写历史订单。
+
+**费用与边界：** 拒付费用按实际费用流水展示；零费用的本金凭证也视为已记账，防止配置变化后显示成新费用。未记账金额优先取订单快照，NULL 回退原渠道，显式 0 不回退，并标明待记账。详情保留逐次退款及退款费。展示时间不会回写资金流水或改变原统计归日；没有新增迁移、权限、API 字段、插件协议、远端退款或部署步骤，沿用既有资源发现及部署流程。
+
+**依据：** [只读查询服务](../app/Services/OrderAfterSaleService.php)、[共享列表](../app/Filament/Support/OrderAfterSaleTable.php)、[退款入口](../app/Filament/Resources/RefundOrders/RefundOrderResource.php)、[拒付入口](../app/Filament/Resources/ChargebackOrders/ChargebackOrderResource.php)、[原订单详情](../app/Filament/Resources/OrderResource/Pages/ViewOrder.php)、[展示与权限回归](../tests/Feature/OrderAfterSaleDisplayTest.php)。

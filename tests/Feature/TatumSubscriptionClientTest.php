@@ -72,6 +72,89 @@ class TatumSubscriptionClientTest extends TestCase
         Sleep::assertSequence([Sleep::for(1)->second()]);
     }
 
+    #[DataProvider('subscriptionNetworks')]
+    public function test_legacy_currency_alias_is_matched_only_with_the_exact_canonical_network(string $network, string $asset, int $decimals, string $address, string $currency): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => $network, 'asset' => $asset, 'decimals' => $decimals],
+            ['network' => $network, 'address' => $address]);
+        $alert = $this->alertData($monitor);
+        $alert['chain'] = $network;
+        $alert['attr']['chain'] = $currency;
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/alert-1' => Http::response($alert),
+            'https://api.tatum.io/v4/subscription?*' => Http::response([$alert]),
+        ]);
+        $client = app(TatumSubscriptionClient::class);
+
+        $remote = $client->get($monitor->environment, 'alert-1');
+
+        $this->assertTrue($client->matches($monitor, $remote));
+        $this->assertSame(['alert-1'], $client->matchingIds($monitor));
+        Http::assertSentCount(2);
+    }
+
+    public static function subscriptionNetworks(): array
+    {
+        return [
+            'BTC mainnet' => ['bitcoin-mainnet', 'BTC', 8, '1BoatSLRHtKNngkdXEeobR76b53LETtpyT', 'BTC'],
+            'BTC testnet' => ['bitcoin-testnet', 'BTC', 8, 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn', 'BTC'],
+            'LTC mainnet' => ['litecoin-mainnet', 'LTC', 8, 'LZMFvW5GSFwwz6bAsAT37h6ej8H8QwMSHk', 'LTC'],
+            'LTC testnet' => ['litecoin-testnet', 'LTC', 8, 'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef', 'LTC'],
+            'ETH mainnet' => ['ethereum-mainnet', 'ETH', 18, '0x'.str_repeat('a', 40), 'ETH'],
+            'ETH Sepolia' => ['ethereum-sepolia', 'ETH', 18, '0x'.str_repeat('a', 40), 'ETH'],
+            'TRON mainnet' => ['tron-mainnet', 'USDT', 6, 'TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL', 'TRON'],
+            'TRON Shasta' => ['tron-shasta', 'USDT', 6, 'TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL', 'TRON'],
+        ];
+    }
+
+    #[DataProvider('invalidLegacyAlerts')]
+    public function test_legacy_alias_never_relaxes_network_binding_address_callback_or_health_checks(array $changes): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        $alert = $this->alertData($monitor);
+        $alert['chain'] = 'bitcoin-testnet';
+        $alert['attr']['chain'] = 'BTC';
+        $alert = array_replace_recursive($alert, $changes);
+        Http::preventStrayRequests();
+
+        $this->assertFalse(app(TatumSubscriptionClient::class)->matches($monitor, $alert));
+
+        Http::assertNothingSent();
+    }
+
+    public static function invalidLegacyAlerts(): array
+    {
+        return [
+            'mainnet mismatch' => [['chain' => 'bitcoin-mainnet']],
+            'ambiguous network' => [['chain' => null]],
+            'other family' => [['attr' => ['chain' => 'LTC']]],
+            'unknown alias' => [['attr' => ['chain' => 'btc']]],
+            'conflicting attribute network' => [['attr' => ['chain' => 'bitcoin-mainnet']]],
+            'conflicting top-level network' => [['chain' => 'bitcoin-mainnet', 'attr' => ['chain' => 'bitcoin-testnet']]],
+            'wrong address' => [['attr' => ['address' => 'different-address']]],
+            'wrong callback' => [['attr' => ['url' => 'https://other.example.test/callback']]],
+            'wrong event type' => [['type' => 'INCOMING_NATIVE_TX']],
+            'paused' => [['paused' => true]],
+            'inactive' => [['status' => 'paused']],
+            'unsupported template' => [['templateId' => 'custom-template']],
+        ];
+    }
+
+    public function test_bare_legacy_currency_without_canonical_network_is_not_accepted(): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        $alert = $this->alertData($monitor);
+        $alert['attr']['chain'] = 'BTC';
+        Http::preventStrayRequests();
+
+        $this->assertFalse(app(TatumSubscriptionClient::class)->identifies($monitor, $alert));
+
+        Http::assertNothingSent();
+    }
+
     public function test_matching_alert_on_second_page_is_found_using_exact_url_chain_and_address(): void
     {
         $monitor = $this->createCryptoMonitor();

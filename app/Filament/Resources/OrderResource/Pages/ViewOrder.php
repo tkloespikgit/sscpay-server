@@ -15,11 +15,13 @@ use App\Filament\Resources\OrderResource\RelationManagers\OrderNotificationAttem
 use App\Filament\Resources\OrderResource\RelationManagers\OrderShipmentSyncsRelationManager;
 use App\Filament\Support\CryptoOrderDisplay;
 use App\Filament\Support\FinanceSecurity;
+use App\Filament\Support\OrderAfterSaleDisplay;
 use App\Jobs\SendPaymentLinkJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
+use App\Models\OrderRefund;
 use App\Models\OrderSettlement;
 use App\Models\OrderShipping;
 use App\Models\User;
@@ -27,6 +29,7 @@ use App\Services\BalanceService;
 use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\MerchantShipmentSyncService;
+use App\Services\OrderAfterSaleService;
 use App\Services\OrderDisputeService;
 use App\Services\OrderEventSyncService;
 use App\Services\OrderShippingService;
@@ -40,6 +43,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\IconEntry;
+use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
@@ -49,6 +53,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\FontWeight;
 use Filament\Support\Enums\Size;
 use Filament\Support\Icons\Heroicon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Js;
@@ -56,6 +61,8 @@ use Illuminate\Support\Js;
 class ViewOrder extends ViewRecord
 {
     protected static string $resource = OrderResource::class;
+
+    private ?Order $afterSaleSummary = null;
 
     public function infolist(Schema $schema): Schema
     {
@@ -194,6 +201,55 @@ class ViewOrder extends ViewRecord
                             ->state(fn (Order $record): HtmlString => self::settlementSummaryTable($record)),
                     ]),
             ])->columnSpanFull(),
+
+            Section::make(__('admin.order.after_sale.section'))
+                ->visible(fn (Order $record): bool => OrderAfterSaleService::hasRefund($this->afterSaleOrder($record))
+                    || OrderAfterSaleService::isChargeback($this->afterSaleOrder($record)))
+                ->schema([
+                    Grid::make(3)->schema([
+                        TextEntry::make('after_sale_refunded_at')->label(__('admin.order.after_sale.refunded_at'))
+                            ->state(fn (Order $record): ?\Carbon\CarbonInterface => $this->afterSaleOrder($record)->after_sale_refunded_at)
+                            ->dateTime('Y-m-d H:i:s')->timezone(config('app.timezone'))
+                            ->placeholder(__('admin.order.after_sale.not_recorded'))
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::hasRefund($this->afterSaleOrder($record))),
+                        TextEntry::make('after_sale_chargeback_at')->label(__('admin.order.after_sale.chargeback_at'))
+                            ->state(fn (Order $record): ?\Carbon\CarbonInterface => $this->afterSaleOrder($record)->after_sale_chargeback_at)
+                            ->dateTime('Y-m-d H:i:s')->timezone(config('app.timezone'))
+                            ->placeholder(__('admin.order.after_sale.not_recorded'))
+                            ->helperText(fn (Order $record): ?string => OrderAfterSaleService::isRefundConversion($this->afterSaleOrder($record))
+                                ? __('admin.order.after_sale.conversion_time_hint') : null)
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::isChargeback($this->afterSaleOrder($record))),
+                        TextEntry::make('after_sale_origin')->label(__('admin.order.after_sale.origin'))
+                            ->state(fn (Order $record): string => OrderAfterSaleDisplay::origin($this->afterSaleOrder($record)))
+                            ->badge()->color('danger')
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::isChargeback($this->afterSaleOrder($record))),
+                        TextEntry::make('after_sale_refunded_total')->label(__('admin.order.fields.refunded_amount'))
+                            ->state(fn (Order $record): string => (string) ($this->afterSaleOrder($record)->after_sale_refunded_total ?? $record->refunded_amount))
+                            ->money(fn (Order $record): string => $record->currency)
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::hasRefund($this->afterSaleOrder($record))),
+                        TextEntry::make('after_sale_refund_fee_total')->label(__('admin.order.after_sale.refund_fee'))
+                            ->state(fn (Order $record): ?string => $this->afterSaleOrder($record)->after_sale_refund_fee_total)
+                            ->money('USD')->placeholder(__('admin.order.after_sale.not_recorded'))
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::hasRefund($this->afterSaleOrder($record))),
+                        TextEntry::make('after_sale_chargeback_fee')->label(__('admin.order.after_sale.chargeback_fee'))
+                            ->state(fn (Order $record): string => OrderAfterSaleDisplay::chargebackFee($this->afterSaleOrder($record)))
+                            ->helperText(fn (Order $record): string => OrderAfterSaleDisplay::chargebackFeeStatus($this->afterSaleOrder($record)))
+                            ->visible(fn (Order $record): bool => OrderAfterSaleService::isChargeback($this->afterSaleOrder($record))),
+                    ])->columnSpanFull(),
+                    RepeatableEntry::make('refund_history')->label(__('admin.order.after_sale.refund_history'))
+                        ->state(fn (Order $record): Collection => $record->refunds()->where('merchant_id', $record->merchant_id)
+                            ->orderBy('created_at')->orderBy('id')->get())
+                        ->visible(fn (Order $record): bool => $this->afterSaleOrder($record)->after_sale_refunded_total !== null)
+                        ->schema([
+                            TextEntry::make('created_at')->label(__('admin.order.after_sale.refunded_at'))
+                                ->dateTime('Y-m-d H:i:s')->timezone(config('app.timezone')),
+                            TextEntry::make('amount')->label(__('admin.finance.refund.amount'))
+                                ->money(fn (OrderRefund $record): string => $record->currency),
+                            TextEntry::make('fee')->label(__('admin.order.after_sale.refund_fee'))->money('USD'),
+                            TextEntry::make('reason')->label(__('admin.finance.refund.reason'))
+                                ->placeholder(__('admin.order.placeholders.none'))->columnSpanFull(),
+                        ])->columns(3)->columnSpanFull(),
+                ])->columnSpanFull(),
 
             Section::make(__('admin.order.sections.customer_shipping'))
                 ->schema([
@@ -1151,6 +1207,23 @@ class ViewOrder extends ViewRecord
                 Notification::make()->title(__('admin.finance.chargeback.success'))->success()->send();
                 $this->record->refresh();
             });
+    }
+
+    private function afterSaleOrder(Order $record): Order
+    {
+        if ($this->afterSaleSummary?->id !== $record->id) {
+            $this->afterSaleSummary = null;
+        }
+
+        return $this->afterSaleSummary ??= app(OrderAfterSaleService::class)->withSummary(
+            OrderResource::getEloquentQuery()->where('orders.merchant_id', $record->merchant_id)->whereKey($record->id),
+        )->firstOrFail();
+    }
+
+    protected function afterActionCalled(Action $action): void
+    {
+        parent::afterActionCalled($action);
+        $this->afterSaleSummary = null;
     }
 
     private function chargebackActionLabel(Order $record): string

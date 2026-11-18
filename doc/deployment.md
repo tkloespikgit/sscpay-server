@@ -298,6 +298,8 @@ php artisan crypto:settle-payments --limit=100 --no-interaction
 
 若出现 `Provider HTTP status: 429`，表示提供商限流，见 [Tatum 429 说明](https://docs.tatum.io/docs/error-429)。RPC、派生、行情、历史查询和订阅读取会遵守 `Retry-After`（秒数或 GMT HTTP 日期），每次调用仍最多两次尝试；缺失／无效值至少等一秒。单次建议等待超过五秒时不占用后台处理窗口、不提前进行第二次请求，保留既有任务重试机制。相同 HMAC 的 PUT 配置可安全重试，创建订阅 POST 仍先查回结果，不盲目重复创建。持续限流时核对 Tatum 控制台的实际套餐、账户并发和剩余 Credits；退避处理不代表增加供应商配额。
 
+`checking` 且 `0 failed` 只代表本轮没有抛异常，地址仍未发布；订阅未通过核对也会正常返回并持久化错误。若地址预留已是 `derived`、付款请求已生成，而监控记录为 `remote_identity_mismatch`，应检查订阅身份，而非重建地址。Tatum 可能返回顶层 `chain=bitcoin-testnet`、`attr.chain=BTC`；代码仅在顶层网络与当前监控完全一致时接受所属网络的旧币种代码（BTC／LTC／ETH／TRON），同时继续核对订阅 ID、地址、回调和启用状态。缺少明确网络的币种代码、主／测试网冲突仍拒绝，接口兼容依据见 [Tatum 网络字段说明](https://docs.tatum.io/reference/getsupportedalertchains)。已有报错订阅可在后续准备中原地核对恢复，保留当前地址、付款请求和订阅 ID。
+
 首轮成功后再做异常测试：
 
 | 用例 | 预期结果 |

@@ -14,11 +14,13 @@ use App\Models\PaymentMethod;
 use App\Models\SystemConfig;
 use App\Services\CryptoCheckoutService;
 use App\Services\CryptoHistoryScanService;
+use App\Services\CryptoQuoteService;
 use App\Services\OrderCreationService;
 use Carbon\CarbonImmutable;
 use DomainException;
 use GuzzleHttp\Psr7\Response as PsrResponse;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
@@ -122,6 +124,67 @@ class CryptoCheckoutTest extends TestCase
         Http::assertSent(fn ($request): bool => $request->method() === 'POST' && str_ends_with($request->url(), '/v4/subscription?type=testnet'));
         Sleep::assertSleptTimes($limited - $limitedCreations);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);
+    }
+
+    public function test_bitcoin_checkout_recovers_existing_legacy_subscription_and_publishes_the_same_address(): void
+    {
+        $genesis = str_repeat('a', 64);
+        $hash = str_repeat('b', 64);
+        $quote = app(CryptoQuoteService::class)->calculate('bitcoin-testnet:BTC', '100', 'USD', '1', '90000', '0', '1', '0');
+        $quote['payment_config_snapshot'] = ['network' => 'bitcoin-testnet', 'asset' => 'BTC'];
+        $quote['verification_policy'] = ['version' => 'utxo-canonical-v1', 'minimum_confirmations' => '3', 'genesis_hash' => $genesis];
+        $monitor = $this->createCryptoMonitor(['network' => 'bitcoin-testnet', 'asset' => 'BTC', 'decimals' => 8,
+            'quote_snapshot' => $quote, 'due_units' => $quote['due_units'], 'fee_units' => $quote['fee_units'], 'net_units' => $quote['net_units']],
+            ['network' => 'bitcoin-testnet', 'address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn']);
+        $this->setCryptoSettings(['app.url' => 'http://localhost', 'crypto.checkout_enabled' => true,
+            'crypto.verification_enabled' => true, 'crypto.settlement_enabled' => true, 'crypto.history_max_head_age_seconds' => '3600']);
+        $order = $monitor->paymentRequest->order;
+        $checkout = CryptoCheckout::factory()->create(['merchant_id' => $order->merchant_id, 'order_id' => $order->id,
+            'payment_method_id' => $order->payment_method_id, 'current_request_id' => $monitor->crypto_payment_request_id,
+            'requested_at' => now()->subMinute()]);
+        $monitor->update(['status' => 'error', 'subscription_id' => 'alert-1', 'last_error_code' => 'remote_identity_mismatch']);
+        $alert = $this->alertData($monitor);
+        $alert['chain'] = 'bitcoin-testnet';
+        $alert['attr']['chain'] = 'BTC';
+        $blockTime = now()->getTimestamp() + 7019;
+        Http::preventStrayRequests();
+        Http::fake(function (Request $request) use ($genesis, $hash, $blockTime, $alert) {
+            if ($request->url() === 'https://bitcoin-testnet.gateway.tatum.io/') {
+                $result = match ($request['method']) {
+                    'getblockhash' => $request['params'][0] === 0 ? $genesis : $hash,
+                    'getblockchaininfo' => ['chain' => 'test', 'blocks' => 100, 'bestblockhash' => $hash, 'initialblockdownload' => false],
+                    'getblock' => ['height' => 100, 'hash' => $hash, 'previousblockhash' => str_repeat('c', 64), 'time' => $blockTime],
+                    default => throw new DomainException('Unexpected Bitcoin fixture RPC.'),
+                };
+
+                return Http::response(['id' => 1, 'result' => $result, 'error' => null]);
+            }
+            $path = parse_url($request->url(), PHP_URL_PATH);
+            if ($path === '/v4/data/blockchains/transaction/history/utxos') {
+                return Http::response([]);
+            }
+            if ($path === '/v4/subscription' && $request->method() === 'PUT') {
+                return Http::response('', 204);
+            }
+            if ($path === '/v4/subscription/alert-1' && $request->method() === 'GET') {
+                return Http::response($alert);
+            }
+            $this->fail('Unexpected Bitcoin checkout provider request.');
+        });
+        $service = app(CryptoCheckoutService::class);
+
+        $service->process($order->merchant_id, $order->id);
+        $service->process($order->merchant_id, $order->id);
+
+        $this->assertSame('ready', $checkout->fresh()->status);
+        $this->getJson($this->endpoint($order))->assertOk()->assertJsonPath('state', 'ready')
+            ->assertJsonPath('request_id', $monitor->crypto_payment_request_id)->assertJsonPath('address', $monitor->address->address);
+        $this->assertSame('alert-1', $monitor->fresh()->subscription_id);
+        $this->assertDatabaseCount('crypto_addresses', 1);
+        $this->assertDatabaseCount('crypto_payment_requests', 1);
+        $this->assertDatabaseCount('crypto_address_monitors', 1);
+        $this->assertDatabaseCount('crypto_ledger_entries', 0);
+        Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST' && str_contains($request->url(), '/v4/subscription'));
     }
 
     public function test_reopen_restores_cold_address_without_changing_valid_quote_and_refresh_does_not_extend_ttl(): void

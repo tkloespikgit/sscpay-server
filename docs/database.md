@@ -207,6 +207,10 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 | `ad_conversion_attempts` | 按订单/广告平台/尝试编号记录转化发送与重试 |
 | `logistics_import_tasks`、`logistics_import_task_records` | 批量物流导入任务及逐行结果 |
 
+售后页面的 `after_sale_*` 是 `OrderAfterSaleService` 查询时派生的只读属性，不是新增数据库列。退款展示时间优先取本订单、同商户 `order_refunds.created_at` 的最大值；普通拒付取同单同商户 `chargeback` 本金流水最早的 `created_at`（零本金也有效），已退款后转拒付复用退款展示时间。缺少本地记录时只读取当前 `gateway_reference`、`outcome=accepted` 的对应状态审计，优先用 `gateway_updated_at`，空值用该审计的接收时间；仍无依据则显示未记录，不用订单创建或更新时间推断。列表排序与时间筛选使用同一表达式，时间按系统时区展示；原统计继续按真实退款单和拒付流水归日。
+
+拒付展示费用优先取同单同商户 `chargeback_fee` 实扣流水的扣款合计；有拒付本金凭证、无费用流水时为已记账零费用。尚无凭证时按订单 `chargeback_fee_snapshot` 展示待记账金额，NULL 回退订单原渠道（兼容软删除及旧渠道代码），显式 0 保留。原退款金额及逐次手续费从退款单展示；页面读取不补记账、不改余额、快照或审计记录。详见 [D-66](decisions.md#d-66-售后订单独立列表与退款转拒付展示时间)。
+
 物流导入任务表的两个文件名语义不同：`original_file_name` 是商户上传时的本地文件名（2026-10-22 起记录，历史数据为 NULL，展示时回退 `file_name`），`file_name` 是 OSS 上的保存名（Filament 随机串）。`started_at`/`finished_at` 记录解析起止，仅用于识别 worker 中断与审计，不在界面展示耗时；`status=processing` 且 `started_at` 超过 30 分钟按中断处理。任务表只存汇总数，逐行结果一律查明细表。记录保留 90 天，由 `logistics-imports:prune` 每日分批物理删除任务及其明细（含已软删任务）。
 
 商户网站回传批次与本地物流分开：本地改单覆盖原记录，每次启用回传的保存或手动推送创建新的业务快照。状态为 `pending/processing/retrying/success/failed/superseded/paused`；出现新版本后旧待发、待重试或暂停批次停止投递。`next_attempt_at` 同时作为处理租约到期时间，`processing` 超过两分钟可由调度回收；含首次最多 5 次请求，尝试表按批次与尝试编号唯一。终败的 `alert_status` 从 `pending` 转为 `sent` 或机器人不可用时的 `unavailable`；Telegram 失败或限流保留 `pending`，`next_alert_at` 延后 5 分钟；到期时间参与提醒扫描索引，避免长期失败商户占住候选。两表保留审计记录，外键使用限制删除，和 WP 插件的 `order_shippings.sync_*` 无关。

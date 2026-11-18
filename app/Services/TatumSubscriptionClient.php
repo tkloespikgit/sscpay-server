@@ -127,7 +127,7 @@ final class TatumSubscriptionClient
     {
         $attr = $alert['attr'] ?? null;
         if (($alert['type'] ?? null) !== 'ADDRESS_EVENT' || ! is_array($attr)
-            || ($attr['chain'] ?? null) !== $monitor->network || ($attr['url'] ?? null) !== $monitor->callback_url
+            || ! $this->matchesNetwork($monitor, $alert, $attr) || ($attr['url'] ?? null) !== $monitor->callback_url
             || ! is_string($attr['address'] ?? null)) {
             return false;
         }
@@ -137,6 +137,28 @@ final class TatumSubscriptionClient
         } catch (InvalidArgumentException) {
             return false;
         }
+    }
+
+    /** @param array<string, mixed> $alert
+     * @param  array<string, mixed>  $attr
+     */
+    private function matchesNetwork(CryptoAddressMonitor $monitor, array $alert, array $attr): bool
+    {
+        if (array_key_exists('chain', $alert) && $alert['chain'] !== $monitor->network) {
+            return false;
+        }
+        if (($attr['chain'] ?? null) === $monitor->network) {
+            return true;
+        }
+        $currency = match ($monitor->network) {
+            'bitcoin-mainnet', 'bitcoin-testnet' => 'BTC',
+            'litecoin-mainnet', 'litecoin-testnet' => 'LTC',
+            'ethereum-mainnet', 'ethereum-sepolia' => 'ETH',
+            'tron-mainnet', 'tron-shasta' => 'TRON',
+            default => null,
+        };
+
+        return $currency !== null && ($alert['chain'] ?? null) === $monitor->network && ($attr['chain'] ?? null) === $currency;
     }
 
     private function key(string $environment): string
