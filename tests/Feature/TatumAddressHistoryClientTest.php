@@ -9,6 +9,7 @@ use App\Support\CryptoAssetRegistry;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -129,6 +130,19 @@ class TatumAddressHistoryClientTest extends TestCase
             $this->assertStringNotContainsString('private-provider-text', $exception->getMessage());
             $this->assertNull($exception->getPrevious());
         }
+    }
+
+    public function test_address_history_waits_for_provider_rate_limit_before_retrying_the_same_page(): void
+    {
+        $request = $this->payment('bitcoin-testnet', 'BTC', 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn');
+        Sleep::fake();
+        Http::fake(['https://api.tatum.io/v4/data/blockchains/transaction/history/utxos*' => Http::sequence()
+            ->push([], 429, ['Retry-After' => '1'])->push([])]);
+
+        $this->assertSame(['hashes' => [], 'next' => null], app(TatumAddressHistoryClient::class)->page($request, $this->range()));
+
+        Http::assertSentCount(2);
+        Sleep::assertSequence([Sleep::for(1)->second()]);
     }
 
     private function payment(string $network, string $asset, string $address, ?string $contract = null): CryptoPaymentRequest

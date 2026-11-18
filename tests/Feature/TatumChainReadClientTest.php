@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Services\TatumChainReadClient;
 use App\Support\CryptoVerificationPolicy;
+use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -117,6 +118,78 @@ class TatumChainReadClientTest extends TestCase
         $this->assertSame([], app(TatumChainReadClient::class)->tron('tron-shasta', 'wallet', 'getnowblock'));
         Http::assertSentCount(2);
         Sleep::assertSleptTimes(1);
+    }
+
+    #[DataProvider('rateLimitDelays')]
+    public function test_rate_limited_read_waits_for_provider_cooldown(?string $retryAfter, int $expectedMilliseconds): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-11-18T04:00:00Z'));
+        $this->setCryptoSettings(['crypto.testnet_key' => 'private-test-key']);
+        Http::preventStrayRequests();
+        Sleep::fake();
+        $headers = $retryAfter === null ? [] : ['Retry-After' => $retryAfter];
+        Http::fake(['https://bitcoin-testnet.gateway.tatum.io/' => Http::sequence()
+            ->push(['message' => 'private-provider-detail'], 429, $headers)
+            ->push(['id' => 1, 'result' => str_repeat('a', 64), 'error' => null])]);
+
+        $this->assertSame(str_repeat('a', 64), app(TatumChainReadClient::class)->utxo('bitcoin-testnet', 'getblockhash', [0]));
+
+        Http::assertSentCount(2);
+        Sleep::assertSequence([Sleep::for($expectedMilliseconds)->milliseconds()]);
+    }
+
+    public static function rateLimitDelays(): array
+    {
+        return ['one second' => ['1', 1000], 'two seconds' => ['2', 2000], 'bounded five seconds' => ['5', 5000],
+            'absent header' => [null, 1000], 'invalid header' => ['invalid', 1000], 'zero' => ['0', 1000],
+            'HTTP date' => ['Wed, 18 Nov 2026 04:00:02 GMT', 2000],
+            'past HTTP date' => ['Wed, 18 Nov 2026 03:59:59 GMT', 1000]];
+    }
+
+    #[DataProvider('longRateLimitDelays')]
+    public function test_long_provider_cooldown_is_not_retried_early_or_waited_inline(string $retryAfter): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-11-18T04:00:00Z'));
+        $this->setCryptoSettings(['crypto.testnet_key' => 'private-test-key']);
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake(['https://bitcoin-testnet.gateway.tatum.io/' => Http::response(['message' => 'private-provider-detail'], 429, ['Retry-After' => $retryAfter])]);
+
+        try {
+            app(TatumChainReadClient::class)->utxo('bitcoin-testnet', 'getblockhash', [0]);
+            $this->fail('Rate-limited read was accepted.');
+        } catch (DomainException $exception) {
+            $this->assertSame(429, $exception->getCode());
+            $this->assertStringNotContainsString('private-provider-detail', $exception->getMessage());
+            $this->assertNull($exception->getPrevious());
+            Http::assertSentCount(1);
+            Sleep::assertNeverSlept();
+        }
+    }
+
+    public static function longRateLimitDelays(): array
+    {
+        return ['six seconds' => ['6'], 'large delay' => ['999999999999999999999999999999999999'],
+            'HTTP date' => ['Wed, 18 Nov 2026 04:00:06 GMT']];
+    }
+
+    public function test_exhausted_rate_limit_preserves_safe_http_status_without_provider_details(): void
+    {
+        $this->setCryptoSettings(['crypto.testnet_key' => 'private-test-key']);
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake(['https://bitcoin-testnet.gateway.tatum.io/' => Http::response(['message' => 'private-provider-detail'], 429, ['Retry-After' => '1'])]);
+
+        try {
+            app(TatumChainReadClient::class)->utxo('bitcoin-testnet', 'getblockhash', [0]);
+            $this->fail('Rate-limited read was accepted.');
+        } catch (DomainException $exception) {
+            $this->assertSame(429, $exception->getCode());
+            $this->assertSame('Tatum chain read failed.', $exception->getMessage());
+            $this->assertNull($exception->getPrevious());
+            Http::assertSentCount(2);
+            Sleep::assertSequence([Sleep::for(1)->second()]);
+        }
     }
 
     public function test_missing_credentials_fail_without_http(): void

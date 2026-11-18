@@ -7,6 +7,8 @@ use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\CreatesCryptoMonitor;
 use Tests\TestCase;
 
@@ -15,20 +17,59 @@ class TatumSubscriptionClientTest extends TestCase
     use CreatesCryptoMonitor;
     use RefreshDatabase;
 
-    public function test_post_is_not_blindly_retried_after_server_error(): void
+    #[DataProvider('uncertainCreationResponses')]
+    public function test_post_is_not_blindly_retried_after_server_error_or_rate_limit(int $status): void
     {
         $monitor = $this->createCryptoMonitor();
         Http::preventStrayRequests();
-        Http::fake(['https://api.tatum.io/v4/subscription*' => Http::response(['sensitive' => 'do-not-forward'], 503)]);
+        Sleep::fake();
+        Http::fake(['https://api.tatum.io/v4/subscription*' => Http::response(['sensitive' => 'do-not-forward'], $status, ['Retry-After' => '1'])]);
 
         try {
             app(TatumSubscriptionClient::class)->create($monitor);
             $this->fail('Uncertain creation was accepted.');
         } catch (DomainException $exception) {
             $this->assertSame('Tatum subscription creation was not confirmed.', $exception->getMessage());
+            $this->assertSame($status, $exception->getCode());
             $this->assertNull($exception->getPrevious());
             Http::assertSentCount(1);
+            Sleep::assertNeverSlept();
         }
+    }
+
+    public static function uncertainCreationResponses(): array
+    {
+        return ['server error' => [503], 'rate limit' => [429]];
+    }
+
+    public function test_idempotent_hmac_setup_waits_for_rate_limit_and_repeats_the_same_configuration(): void
+    {
+        $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake(['https://api.tatum.io/v4/subscription' => Http::sequence()
+            ->push([], 429, ['Retry-After' => '1'])->push('', 204)]);
+
+        app(TatumSubscriptionClient::class)->enableHmac('testnet');
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
+            && $request['hmacSecret'] === 'test-testnet-webhook-secret-123456');
+        Sleep::assertSequence([Sleep::for(1)->second()]);
+    }
+
+    public function test_subscription_lookup_waits_for_provider_rate_limit(): void
+    {
+        $monitor = $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake(['https://api.tatum.io/v4/subscription/alert-1' => Http::sequence()
+            ->push([], 429, ['Retry-After' => '1'])->push($this->alertData($monitor))]);
+
+        $this->assertSame('alert-1', app(TatumSubscriptionClient::class)->get('testnet', 'alert-1')['id']);
+
+        Http::assertSentCount(2);
+        Sleep::assertSequence([Sleep::for(1)->second()]);
     }
 
     public function test_matching_alert_on_second_page_is_found_using_exact_url_chain_and_address(): void

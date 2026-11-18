@@ -6,12 +6,12 @@ use App\Models\CryptoPaymentRequest;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoRuntimeSettings;
 use App\Support\CryptoTronAddress;
+use App\Support\TatumHttpRetry;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use JsonException;
-use Throwable;
 
 /** Address-index results are discovery hints. Amounts are only accepted by the existing RPC verifiers. */
 final class TatumAddressHistoryClient
@@ -123,8 +123,7 @@ final class TatumAddressHistoryClient
         }
         try {
             $response = Http::acceptJson()->withHeaders(['x-api-key' => $key])->connectTimeout(2)->timeout(8)->withoutRedirecting()
-                ->retry(2, 100, fn (?Throwable $error): bool => $error instanceof ConnectionException
-                    || ($error instanceof RequestException && ($error->response->serverError() || $error->response->status() === 429)))
+                ->retry(2, TatumHttpRetry::delay(...), TatumHttpRetry::shouldRetry(...))
                 ->get('https://api.tatum.io'.$path, $query)->throw();
             if (! $response->successful() || strlen($response->body()) > 8 * 1024 * 1024) {
                 throw new DomainException('Tatum address history response was rejected.');
@@ -135,7 +134,9 @@ final class TatumAddressHistoryClient
             }
 
             return json_decode($response->body(), true, 64, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
-        } catch (ConnectionException|RequestException|JsonException) {
+        } catch (RequestException $error) {
+            throw new DomainException('Tatum address history request failed.', $error->response->status());
+        } catch (ConnectionException|JsonException) {
             throw new DomainException('Tatum address history request failed.');
         }
     }

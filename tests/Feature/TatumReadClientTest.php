@@ -93,11 +93,11 @@ class TatumReadClientTest extends TestCase
         $this->setCryptoSettings(['crypto.testnet_key' => 'key']);
         Http::preventStrayRequests();
         Sleep::fake();
-        Http::fake(['https://api.tatum.io/v3/ethereum/address/*' => Http::sequence()->push([], 429)->push(['address' => '0x'.str_repeat('c', 40)])]);
+        Http::fake(['https://api.tatum.io/v3/ethereum/address/*' => Http::sequence()->push([], 429, ['Retry-After' => '1'])->push(['address' => '0x'.str_repeat('c', 40)])]);
 
         $this->assertSame('0x'.str_repeat('c', 40), app(TatumReadClient::class)->deriveAddress('ethereum-sepolia', CryptoConfigurationTest::XPUB, 2));
         Http::assertSentCount(2);
-        Sleep::assertSleptTimes(1);
+        Sleep::assertSequence([Sleep::for(1)->second()]);
     }
 
     public function test_read_redirect_is_rejected_without_following_or_throwing_a_type_error(): void

@@ -8,6 +8,7 @@ use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -62,10 +63,12 @@ class TatumEvmRpcClientTest extends TestCase
     public function test_only_transient_read_failures_are_retried(): void
     {
         $this->setCryptoSettings(['crypto.testnet_key' => 'testnet-key']);
-        Http::fake(['*' => Http::sequence()->push([], 429)->push(['jsonrpc' => '2.0', 'id' => 1, 'result' => null])]);
+        Sleep::fake();
+        Http::fake(['*' => Http::sequence()->push([], 429, ['Retry-After' => '1'])->push(['jsonrpc' => '2.0', 'id' => 1, 'result' => null])]);
 
         $this->assertNull(app(TatumEvmRpcClient::class)->read('ethereum-sepolia', 'eth_getTransactionReceipt', ['0x'.str_repeat('c', 64)]));
         Http::assertSentCount(2);
+        Sleep::assertSequence([Sleep::for(1)->second()]);
     }
 
     public function test_missing_credentials_stop_before_http(): void

@@ -294,7 +294,9 @@ php artisan crypto:verify-receipts --limit=25 --no-interaction
 php artisan crypto:settle-payments --limit=100 --no-interaction
 ```
 
-`crypto:prepare-checkouts` 会输出本轮处理数量、每条记录的状态／阶段；没有到期任务时显示下次计划时间或没有待办，避免将静默退出误判为准备成功。已有 `checking / preparation_retry` 记录同步修复后按原重试时间继续，不需删除订单、回收派生索引或重建付款请求。
+`crypto:prepare-checkouts` 会输出本轮处理数量、每条记录的状态／阶段；没有到期任务时显示下次计划时间或没有待办，避免将静默退出误判为准备成功。失败时另输出异常类型、源文件／行号及可用的提供商 HTTP 状态码，不输出密钥、请求 URL 或响应正文。已有 `checking / preparation_retry` 记录同步修复后按原重试时间继续，不需删除订单、回收派生索引或重建付款请求。
+
+若出现 `Provider HTTP status: 429`，表示提供商限流，见 [Tatum 429 说明](https://docs.tatum.io/docs/error-429)。RPC、派生、行情、历史查询和订阅读取会遵守 `Retry-After`（秒数或 GMT HTTP 日期），每次调用仍最多两次尝试；缺失／无效值至少等一秒。单次建议等待超过五秒时不占用后台处理窗口、不提前进行第二次请求，保留既有任务重试机制。相同 HMAC 的 PUT 配置可安全重试，创建订阅 POST 仍先查回结果，不盲目重复创建。持续限流时核对 Tatum 控制台的实际套餐、账户并发和剩余 Credits；退避处理不代表增加供应商配额。
 
 首轮成功后再做异常测试：
 

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\CryptoCheckout;
 use App\Services\CryptoCheckoutService;
 use App\Support\CryptoCheckoutGuard;
+use DomainException;
 use Illuminate\Console\Command;
 
 class PrepareCryptoCheckouts extends Command
@@ -53,9 +54,16 @@ class PrepareCryptoCheckouts extends Command
                 $service->process($checkout->merchant_id, $checkout->order_id);
                 $checkout->refresh();
                 $this->line('Crypto checkout '.$checkout->id.': '.$checkout->status.' ('.$checkout->phase.').');
-            } catch (\Throwable) {
+            } catch (\Throwable $error) {
                 $failed++;
                 $this->error('Crypto checkout '.$checkout->id.' will retry.');
+                while ($error->getPrevious() !== null) {
+                    $error = $error->getPrevious();
+                }
+                $this->line('Cause: '.class_basename($error).' at '.basename($error->getFile()).':'.$error->getLine().'.');
+                if ($error instanceof DomainException && $error->getCode() >= 400 && $error->getCode() <= 599) {
+                    $this->line('Provider HTTP status: '.$error->getCode().'.');
+                }
             }
         }
         $this->info('Processed '.$processed.' checkout(s); '.$failed.' failed.');

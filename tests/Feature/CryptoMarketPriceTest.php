@@ -9,6 +9,7 @@ use DomainException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Tests\TestCase;
 
 class CryptoMarketPriceTest extends TestCase
@@ -62,5 +63,24 @@ class CryptoMarketPriceTest extends TestCase
         $this->expectException(DomainException::class);
 
         app(CryptoMarketPriceService::class)->usdPrice('ethereum-mainnet:ETH');
+    }
+
+    public function test_bitcoin_test_checkout_market_price_recovers_after_provider_rate_limit(): void
+    {
+        $this->freezeTime();
+        $this->setCryptoSettings(['crypto.api_key' => 'private-price-key']);
+        SystemConfig::set('crypto.max_market_price_age_seconds', '60');
+        Http::preventStrayRequests();
+        Sleep::fake();
+        Http::fake(['https://api.tatum.io/v4/data/rate/symbol*' => Http::sequence()
+            ->push([], 429, ['Retry-After' => '2'])->push([
+                'value' => '90000', 'basePair' => 'USD', 'symbol' => 'BTC', 'timestamp' => now()->getTimestampMs(),
+            ])]);
+
+        $price = app(CryptoMarketPriceService::class)->usdPrice('bitcoin-testnet:BTC');
+
+        $this->assertSame('90000', $price['value']);
+        Http::assertSentCount(2);
+        Sleep::assertSequence([Sleep::for(2)->seconds()]);
     }
 }

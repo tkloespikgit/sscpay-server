@@ -3,12 +3,12 @@
 namespace App\Services;
 
 use App\Support\CryptoRuntimeSettings;
+use App\Support\TatumHttpRetry;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use JsonException;
-use Throwable;
 
 /** Only read RPC methods on fixed Tatum hosts, never signing or transaction submission. */
 final class TatumEvmRpcClient
@@ -28,8 +28,7 @@ final class TatumEvmRpcClient
         try {
             $response = Http::acceptJson()->withHeaders(['x-api-key' => $key])
                 ->connectTimeout(2)->timeout(5)->withoutRedirecting()
-                ->retry(2, 100, fn (?Throwable $exception): bool => $exception instanceof ConnectionException
-                    || ($exception instanceof RequestException && ($exception->response->serverError() || $exception->response->status() === 429)))
+                ->retry(2, TatumHttpRetry::delay(...), TatumHttpRetry::shouldRetry(...))
                 ->post('https://'.$network.'.gateway.tatum.io/', ['jsonrpc' => '2.0', 'id' => 1, 'method' => $method, 'params' => $params])->throw();
             if (! $response->successful() || strlen($response->body()) > 4 * 1024 * 1024) {
                 throw new DomainException('Tatum EVM RPC response was rejected.');
@@ -45,7 +44,9 @@ final class TatumEvmRpcClient
             }
 
             return $body['result'];
-        } catch (ConnectionException|RequestException|JsonException) {
+        } catch (RequestException $error) {
+            throw new DomainException('Tatum EVM RPC read failed.', $error->response->status());
+        } catch (ConnectionException|JsonException) {
             throw new DomainException('Tatum EVM RPC read failed.');
         }
     }

@@ -3,12 +3,12 @@
 namespace App\Services;
 
 use App\Support\CryptoRuntimeSettings;
+use App\Support\TatumHttpRetry;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use JsonException;
-use Throwable;
 
 /** Fixed Bitcoin/Litecoin/TRON gateways and read-method allowlists only. */
 final class TatumChainReadClient
@@ -65,8 +65,7 @@ final class TatumChainReadClient
         }
         try {
             $response = Http::acceptJson()->withHeaders(['x-api-key' => $key])->connectTimeout(2)->timeout(5)->withoutRedirecting()
-                ->retry(2, 100, fn (?Throwable $exception): bool => $exception instanceof ConnectionException
-                    || ($exception instanceof RequestException && ($exception->response->serverError() || $exception->response->status() === 429)))
+                ->retry(2, TatumHttpRetry::delay(...), TatumHttpRetry::shouldRetry(...))
                 ->send('POST', 'https://'.$network.'.gateway.tatum.io'.$path, ['json' => (object) $body])->throw();
             if (! $response->successful() || strlen($response->body()) > 8 * 1024 * 1024) {
                 throw new DomainException('Tatum chain read response was rejected.');
@@ -77,7 +76,9 @@ final class TatumChainReadClient
             }
 
             return $data;
-        } catch (ConnectionException|RequestException|JsonException) {
+        } catch (RequestException $error) {
+            throw new DomainException('Tatum chain read failed.', $error->response->status());
+        } catch (ConnectionException|JsonException) {
             throw new DomainException('Tatum chain read failed.');
         }
     }

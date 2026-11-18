@@ -17,11 +17,16 @@ use App\Services\CryptoHistoryScanService;
 use App\Services\OrderCreationService;
 use Carbon\CarbonImmutable;
 use DomainException;
+use GuzzleHttp\Psr7\Response as PsrResponse;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Sleep;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Psr\Http\Message\RequestInterface;
 use Tests\Concerns\CreatesCryptoCheckout;
 use Tests\TestCase;
 
@@ -68,6 +73,55 @@ class CryptoCheckoutTest extends TestCase
         $this->assertDatabaseCount('crypto_address_monitors', 1);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);
         $this->assertTrue(Http::recorded(fn ($request) => $request->method() === 'POST' && str_contains($request->url(), '/subscription'))->count() === 1);
+    }
+
+    public function test_checkout_prepares_under_three_requests_per_second_without_duplicate_addresses_or_subscriptions(): void
+    {
+        [$original, , $rpc] = $this->checkoutFixture();
+        $order = $this->makeOrder('rate-limited-checkout', 'rate-limited-checkout', [
+            'payment_type' => 'crypto', 'payment_method_id' => $original->payment_method_id, 'status' => 'pending',
+        ]);
+        $service = app(CryptoCheckoutService::class);
+        $service->initialize($order);
+        $checkout = CryptoCheckout::query()->where('order_id', $order->id)->sole();
+        Sleep::fake(syncWithCarbon: true);
+        $buckets = [];
+        $limited = 0;
+        $limitedCreations = 0;
+        Http::globalRequestMiddleware(function (RequestInterface $request) use (&$buckets, &$limited, &$limitedCreations): RequestInterface {
+            $bucket = hash('sha256', $request->getHeaderLine('x-api-key')).':'.now()->getTimestamp();
+            $buckets[$bucket] = ($buckets[$bucket] ?? 0) + 1;
+            if ($buckets[$bucket] > 3) {
+                $limited++;
+                if ($request->getMethod() === 'POST' && $request->getUri()->getPath() === '/v4/subscription') {
+                    $limitedCreations++;
+                }
+
+                throw new RequestException(new Response(new PsrResponse(429, ['Retry-After' => '1', 'Content-Type' => 'application/json'], '{}')));
+            }
+
+            return $request;
+        });
+        $this->fakeCheckoutProvider($rpc);
+
+        for ($attempt = 0; $attempt < 6 && $checkout->fresh()->status !== 'ready'; $attempt++) {
+            $next = $checkout->fresh()->next_attempt_at;
+            if ($next?->isFuture()) {
+                $this->travelTo($next);
+            }
+            $service->process($order->merchant_id, $order->id);
+        }
+
+        $this->assertGreaterThan(0, $limited);
+        $this->assertSame('ready', $checkout->fresh()->status);
+        $this->getJson($this->endpoint($order))->assertOk()->assertJsonPath('state', 'ready')->assertJsonPath('address', '0x'.str_repeat('c', 40));
+        $this->assertDatabaseCount('crypto_address_allocations', 1);
+        $request = CryptoPaymentRequest::query()->where('order_id', $order->id)->sole();
+        $this->assertSame(1, CryptoAddressMonitor::query()->where('crypto_payment_request_id', $request->id)->count());
+        $this->assertCount(1, $rpc['alerts']);
+        Http::assertSent(fn ($request): bool => $request->method() === 'POST' && str_ends_with($request->url(), '/v4/subscription?type=testnet'));
+        Sleep::assertSleptTimes($limited - $limitedCreations);
+        $this->assertDatabaseCount('crypto_ledger_entries', 0);
     }
 
     public function test_reopen_restores_cold_address_without_changing_valid_quote_and_refresh_does_not_extend_ttl(): void
@@ -205,7 +259,7 @@ class CryptoCheckoutTest extends TestCase
         [$checkout, $monitor, $rpc] = $this->checkoutFixture();
         $rpc['fail_method'] = 'eth_getLogs';
         $this->fakeCheckoutProvider($rpc);
-        $this->artisan('crypto:prepare-checkouts')->assertFailed();
+        $this->artisan('crypto:prepare-checkouts')->expectsOutput('Provider HTTP status: 503.')->assertFailed();
         $this->assertSame('preparation_retry', $checkout->fresh()->error_code);
         $this->getJson($this->endpoint($monitor->paymentRequest->order))->assertJsonPath('address', null)->assertDontSee('credential');
         unset($rpc['fail_method']);

@@ -6,13 +6,13 @@ use App\Models\CryptoAddress;
 use App\Models\CryptoAddressMonitor;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoRuntimeSettings;
+use App\Support\TatumHttpRetry;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
-use Throwable;
 
 /** Subscription management only. No signing, transaction broadcast, or balance accounting. */
 final class TatumSubscriptionClient
@@ -34,7 +34,7 @@ final class TatumSubscriptionClient
     {
         $response = $this->request('PUT', '/v4/subscription', $environment, ['hmacSecret' => $this->hmacSecret($environment)]);
         if ($response->status() !== 204) {
-            throw new DomainException('Tatum HMAC setup failed.');
+            throw new DomainException('Tatum HMAC setup failed.', $response->status());
         }
     }
 
@@ -45,7 +45,7 @@ final class TatumSubscriptionClient
             'attr' => ['chain' => $monitor->network, 'address' => $this->address($monitor), 'url' => $monitor->callback_url],
         ], ['type' => $monitor->environment]);
         if (! in_array($response->status(), [200, 201], true)) {
-            throw new DomainException('Tatum subscription creation was not confirmed.');
+            throw new DomainException('Tatum subscription creation was not confirmed.', $response->status());
         }
         $data = $response->json();
         $id = is_string($data) ? $data : (is_array($data) ? ($data['id'] ?? null) : null);
@@ -64,7 +64,7 @@ final class TatumSubscriptionClient
         }
         $data = $response->json();
         if (! $response->successful() || ! is_array($data) || array_is_list($data)) {
-            throw new DomainException('Tatum subscription lookup failed.');
+            throw new DomainException('Tatum subscription lookup failed.', $response->status());
         }
 
         return $data;
@@ -93,7 +93,7 @@ final class TatumSubscriptionClient
             $data = $response->json();
             $items = is_array($data) && array_is_list($data) ? $data : (is_array($data) ? ($data['data'] ?? null) : null);
             if (! $response->successful() || ! is_array($items) || ! array_is_list($items)) {
-                throw new DomainException('Tatum subscription reconciliation failed.');
+                throw new DomainException('Tatum subscription reconciliation failed.', $response->status());
             }
             foreach ($items as $item) {
                 if (! is_array($item) || ! is_string($item['id'] ?? null) || ! is_string($item['type'] ?? null)
@@ -188,9 +188,8 @@ final class TatumSubscriptionClient
     {
         $request = Http::acceptJson()->withHeaders(['x-api-key' => $this->key($environment)])
             ->connectTimeout(2)->timeout(3)->withoutRedirecting();
-        if ($method === 'GET') {
-            $request->retry(2, 100, fn (?Throwable $exception): bool => $exception instanceof ConnectionException
-                || ($exception instanceof RequestException && ($exception->response->serverError() || $exception->response->status() === 429)), throw: false);
+        if ($method === 'GET' || ($method === 'PUT' && $path === '/v4/subscription')) {
+            $request->retry(2, TatumHttpRetry::delay(...), TatumHttpRetry::shouldRetry(...), throw: false);
         }
         try {
             return $request->send($method, 'https://api.tatum.io'.$path, $body === [] ? ['query' => $query] : ['query' => $query, 'json' => $body]);

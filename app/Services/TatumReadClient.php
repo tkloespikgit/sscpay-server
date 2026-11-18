@@ -7,13 +7,13 @@ use App\Support\CryptoAmount;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoPublicKey;
 use App\Support\CryptoRuntimeSettings;
+use App\Support\TatumHttpRetry;
 use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
-use Throwable;
 
 /** Explicit read-only allow-list. No wallet creation, private key, signing, or broadcast endpoints. */
 final class TatumReadClient
@@ -88,8 +88,7 @@ final class TatumReadClient
             $response = Http::acceptJson()->withHeaders(['x-api-key' => $key])
                 ->connectTimeout((int) CryptoRuntimeSettings::get('connect_timeout', 3))
                 ->timeout((int) CryptoRuntimeSettings::get('timeout', 10))
-                ->withoutRedirecting()->retry(2, 200, fn (?Throwable $exception): bool => $exception instanceof ConnectionException
-                    || ($exception instanceof RequestException && ($exception->response->serverError() || $exception->response->status() === 429)))
+                ->withoutRedirecting()->retry(2, TatumHttpRetry::delay(...), TatumHttpRetry::shouldRetry(...))
                 ->get('https://api.tatum.io'.$path, $query)->throw();
             if (! $response->successful()) {
                 throw new DomainException('Tatum read request failed.');
@@ -100,7 +99,9 @@ final class TatumReadClient
             }
 
             return $data;
-        } catch (ConnectionException|RequestException) {
+        } catch (RequestException $error) {
+            throw new DomainException('Tatum read request failed.', $error->response->status());
+        } catch (ConnectionException) {
             throw new DomainException('Tatum read request failed.');
         }
     }
