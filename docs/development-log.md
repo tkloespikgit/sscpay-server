@@ -2,6 +2,20 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-18：物流批量上传支持两种订单号与三列文件（当前工作区，未部署）
+
+- 用户要求 `merchant_order_no` / `order_no` 二选一，文件只含一种订单号、`logistics_company`、`tracking_number` 三列也能上传。[导入服务](../app/Services/LogisticsImportService.php)新增商户订单号及中文、空格表头别名；逐行仍限定任务商户、可履约且没有有效物流的订单，两种订单号同时填写时须匹配同一订单，空值或冲突按行报错。发货时间留空继续取文件上传时间。说明行只在首列以 `#` 开头且其余列为空时跳过，避免 `#1001` 等商户订单号携带物流数据时被忽略。
+- [增量迁移](../database/migrations/2026_11_18_171052_add_merchant_order_no_to_logistics_import_task_records_table.php)为导入明细新增可空 `merchant_order_no` 原文；同步阶段限制为 80 个字符，超长输入不截断匹配。模型、后台解析记录的展示/搜索、任务错误摘要及失败行 CSV 一并保留商户订单号，失败 CSV 在原列末尾追加字段，可修正后重传。中英文上传说明和模板说明明确最少三列，无需保留其余核对列；同步架构、数据及部署说明。
+- 部署沿用 `deploy.sh` 已有的增量迁移与队列重启步骤，无需新手工命令、不回填历史明细、不修改商户 API 或商城插件物流协议。
+- 验证：[订单号导入回归](../tests/Feature/LogisticsOrderIdentifierImportTest.php)、模板、Excel 解析、上传记录及 Filament 文件上传共 **69 项、544 断言通过**，覆盖 CSV / XLSX / XLS 两种订单号最小文件、文本与前导零、混合空值、冲突、商户隔离、状态限制、`#` 前缀和失败行重传。使用显式 SQLite `:memory:`、空 `DB_URL` 与独立配置缓存路径；`vendor/bin/pint --dirty --format agent`、`php artisan plugins:check`、新增文档相对链接及 `git diff --check` 通过。未验证 MySQL 实际升级、未迁移业务库、未触发真实物流/通知、未部署或提交 Git。
+
+## 2026-11-18：补齐 Telegram 回调部署注册与只读诊断（当前工作区，未部署）
+
+- 用户反馈线上通过链接添加群聊后没有绑定成功，且不确定是否执行过回调注册。核对发现 `deploy.sh` 未调用原有注册命令，生成链接只检查本地凭证格式，不能证明 Telegram 已登记或成功投递回调。这是已确认的部署漏项；未直接访问线上，不能将其当作已验证的线上唯一原因。
+- [注册命令](../app/Console/Commands/RegisterTelegramWebhook.php) 增加 `--if-configured`，仅在全部平台 Telegram 配置为空时跳过；部分配置、机器人身份/群组能力校验失败或 Telegram 拒绝注册均返回失败。[部署脚本](../deploy.sh) 在配置缓存、迁移和路由缓存之后自动注册，失败沿用维护模式保护。新增可选 `TELEGRAM_WEBHOOK_URL` 持久保存独立入口；命令行 `--url` 仍可临时覆盖，不丢弃待处理消息。
+- 同一命令增加 `--check`，只调用 `getMe` / `getWebhookInfo`，报告预期及已登记地址、消息订阅、积压数量与最近错误，隐藏已知凭证、URL 用户信息及查询参数；不调用 `setWebhook` 或发送消息。未登记、地址不符、漏订阅 `message` 或待投递消息伴随错误时返回失败；保留历史错误提示，明确不能据此验证 Secret 或实际绑定。同步中英文文案、环境示例、架构及[部署排障说明](../doc/deployment.md#31-telegram-快速绑定)。
+- 验证：注册命令与部署脚本回归 **84 项、411 断言通过**；补充异常响应校验后，注册命令、商户绑定、管理员绑定和服务配置页回归 **96 项、520 断言通过**（两批含重复命令用例）。使用显式 SQLite `:memory:`、空 `DB_URL` 和独立配置缓存路径；`vendor/bin/pint --dirty --format agent`、`bash -n deploy.sh`、命令帮助和 `git diff --check` 通过。未新增迁移、变更商户 API/商城插件协议或前端资源；未调用真实 Telegram、发送消息、部署线上或提交 Git。线上须登记回调后重新生成链接，由群主/管理员实际绑定验收。
+
 ## 2026-11-18：补齐退款、拒付订单的文字与时间筛选（dev，当前工作区未提交）
 
 - 基于 `dev` 的售后入口，在 [OrderAfterSaleTable](../app/Filament/Support/OrderAfterSaleTable.php) 为两张列表添加系统订单号、商户订单号、三方交易号和客户邮箱四个独立筛选，支持包含匹配、首尾空格清理、零值及清空。复用现有中英文标签和占位文案，不新增权限；文字、时间、商户、应用及渠道条件按交集应用，继续受 MerchantScope 限制。

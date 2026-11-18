@@ -49,6 +49,12 @@ class RecordsRelationManager extends RelationManager
                             : null)
                     ->openUrlInNewTab(),
 
+                TextColumn::make('merchant_order_no')
+                    ->label(__('admin.logistics_import_task_record.fields.merchant_order_no'))
+                    ->placeholder(__('admin.logistics_import_task_record.placeholders.none'))
+                    ->searchable()
+                    ->copyable(),
+
                 TextColumn::make('logistics_company')
                     ->label(__('admin.logistics_import_task_record.fields.logistics_company'))
                     ->placeholder(__('admin.logistics_import_task_record.placeholders.none')),

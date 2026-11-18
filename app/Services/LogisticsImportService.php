@@ -29,10 +29,11 @@ use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
  * 两个方向共用同一套表头（TEMPLATE_HEADERS）：导出的 XLSX 商户填完可直接回传，
  * 因此解析端必须认得导出端的全部列名，见 HEADER_ALIASES。
  *
- * 可填写的列只有 5 个：logistics_company / tracking_number（必填）、
+ * order_no / merchant_order_no 至少填写一项；同时填写时必须指向同一订单。
+ * 物流列为 logistics_company / tracking_number（必填）、
  * shipped_at / tracking_url / remark（选填）。其余列是导出时带出来给商户核对的
  * 快照，改了不会有任何效果——这点写在模板第二行的说明行里（templateNoteRow()），
- * 上传时按 '#' 前缀整行跳过。
+ * 上传时跳过首列以 '#' 开头且其余列为空的说明行。
  */
 class LogisticsImportService
 {
@@ -88,6 +89,7 @@ class LogisticsImportService
      */
     private const HEADER_ALIASES = [
         'order_no' => ['order_no', '系统单号', '系统订单号', '订单号'],
+        'merchant_order_no' => ['merchant_order_no', 'merchant order no', '商户订单号', '商户单号'],
         'logistics_company' => ['logistics_company', 'carrier_code', '承运商编码', '承运商代码', '物流公司'],
         'tracking_number' => ['tracking_number', 'tracking_no', '物流单号', '运单号'],
         'shipped_at' => ['shipped_at', 'ship_time', '发货时间'],
@@ -127,6 +129,7 @@ class LogisticsImportService
         'tracking_url',
         'remark',
         'error_message',
+        'merchant_order_no',
     ];
 
     /** 失败行导出的单次上限，防止一个全失败的大文件把内存和响应时间拖爆。 */
@@ -215,6 +218,7 @@ class LogisticsImportService
                 $record->tracking_url,
                 $record->remark,
                 $record->error_message,
+                $record->merchant_order_no,
             ]);
         }
 
@@ -321,7 +325,7 @@ class LogisticsImportService
 
             $totalRecords = $this->storeRows($task, $localPath);
         } catch (\Throwable $e) {
-            // 文件级失败（OSS 下载失败 / 没有表头 / 缺 order_no 列）：一条明细都落不了库，
+            // 文件级失败（OSS 下载失败 / 没有表头 / 缺少两种订单号列）：一条明细都落不了库，
             // 直接把任务标记为 failed，不再进入逐行同步阶段。
             $task->markFailed([['row' => 0, 'order_no' => '', 'error' => $e->getMessage()]]);
 
@@ -368,6 +372,7 @@ class LogisticsImportService
                 // 三个定长列按迁移里的长度截断：完整原文始终在 raw_data 里，
                 // 截断只是为了避免 MySQL 严格模式下整批插入报错。
                 'order_no' => $this->truncate($row['order_no'], 32),
+                'merchant_order_no' => $row['merchant_order_no'] !== '' ? $row['merchant_order_no'] : null,
                 'logistics_company' => $this->truncate($row['logistics_company'], 50),
                 'tracking_number' => $this->truncate($row['tracking_number'], 100),
                 // 原文落库，解析/校验留到同步阶段做，失败只影响这一行
@@ -440,6 +445,7 @@ class LogisticsImportService
                             $errorLog[] = [
                                 'row' => $record->row_number,
                                 'order_no' => (string) $record->order_no,
+                                'merchant_order_no' => (string) $record->merchant_order_no,
                                 'error' => $message,
                             ];
                         }
@@ -463,19 +469,38 @@ class LogisticsImportService
     private function syncRecord(LogisticsImportTask $task, LogisticsImportTaskRecord $record, OrderShippingService $shippingService): int
     {
         $orderNo = trim((string) $record->order_no);
+        $merchantOrderNo = trim((string) $record->merchant_order_no);
 
-        if ($orderNo === '') {
-            throw new \RuntimeException('该行未填写系统订单号（order_no）');
+        if ($orderNo === '' && $merchantOrderNo === '') {
+            throw new \RuntimeException('该行须填写系统订单号（order_no）或商户订单号（merchant_order_no）至少一项');
         }
 
-        $order = Order::query()
+        if (mb_strlen($merchantOrderNo) > 80) {
+            throw new \RuntimeException('商户订单号（merchant_order_no）不能超过 80 个字符');
+        }
+
+        $query = Order::query()
             ->forMerchant($task->merchant_id)
-            ->paidUnshipped()
-            ->where('order_no', $orderNo)
-            ->first();
+            ->paidUnshipped();
+
+        if ($orderNo !== '') {
+            $query->where('order_no', $orderNo);
+        }
+
+        if ($merchantOrderNo !== '') {
+            $query->where('merchant_order_no', $merchantOrderNo);
+        }
+
+        $order = $query->first();
 
         if (! $order) {
-            throw new \RuntimeException('订单不存在或不属于可录入物流的未发货订单');
+            $message = '订单不存在或不属于可录入物流的未发货订单';
+
+            if ($orderNo !== '' && $merchantOrderNo !== '') {
+                $message .= '；同时填写的系统订单号与商户订单号须对应同一订单';
+            }
+
+            throw new \RuntimeException($message);
         }
 
         $logisticsCompany = trim((string) $record->logistics_company);
@@ -586,7 +611,7 @@ class LogisticsImportService
      *
      * @return Generator<int, array<string, mixed>>
      *
-     * @throws \RuntimeException 文件打不开、没有表头、或表头里找不到 order_no 列
+     * @throws \RuntimeException 文件打不开、没有表头、或表头里找不到两种订单号列
      */
     private function readRows(string $localPath, string $fileName): Generator
     {
@@ -602,8 +627,8 @@ class LogisticsImportService
                 $header = $cells;
                 $map = $this->mapHeader($header);
 
-                if (! isset($map['order_no'])) {
-                    throw new \RuntimeException('模板缺少 order_no 列，请先用「导出物流模板」下载最新模板，填好后上传');
+                if (! isset($map['order_no']) && ! isset($map['merchant_order_no'])) {
+                    throw new \RuntimeException('模板须包含 order_no（系统订单号）或 merchant_order_no（商户订单号）至少一列');
                 }
 
                 continue;
@@ -771,6 +796,7 @@ class LogisticsImportService
         return [
             'raw' => $raw,
             'order_no' => isset($map['order_no']) ? $pick('order_no') : '',
+            'merchant_order_no' => isset($map['merchant_order_no']) ? $pick('merchant_order_no') : '',
             'logistics_company' => isset($map['logistics_company']) ? $pick('logistics_company') : '',
             'tracking_number' => isset($map['tracking_number']) ? $pick('tracking_number') : '',
             'shipped_at' => isset($map['shipped_at']) ? $pick('shipped_at') : '',
@@ -781,7 +807,8 @@ class LogisticsImportService
 
     private function isInstructionRow(array $cells): bool
     {
-        return str_starts_with(trim((string) ($cells[0] ?? '')), self::INSTRUCTION_PREFIX);
+        return str_starts_with(trim((string) ($cells[0] ?? '')), self::INSTRUCTION_PREFIX)
+            && $this->isBlankRow(array_slice($cells, 1));
     }
 
     private function isBlankRow(array $cells): bool

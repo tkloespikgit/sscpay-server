@@ -150,11 +150,15 @@ BAIDU_TRANSLATE_SECRET_KEY=…
 TELEGRAM_BOT_TOKEN=平台机器人的Token
 TELEGRAM_BOT_USERNAME=机器人用户名不含@
 TELEGRAM_WEBHOOK_SECRET=至少32位随机字母数字下划线或短横线
+# 可选：API 独立域名时设置完整回调地址，留空使用 APP_URL
+TELEGRAM_WEBHOOK_URL=
 ```
 
 回调密钥独立于 Bot Token，长度为 32–256。可使用 `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` 在部署环境生成，然后写入环境配置。此机器人应专用于本系统：Telegram 每个机器人只有一个 webhook，注册会更新该机器人的既有回调。
 
-发布新增迁移后，按实际 PHP 路径和运行用户执行：
+日常使用 `deploy.sh` 时，脚本会在配置缓存、迁移及路由缓存完成后自动运行 `telegram:register-webhook --if-configured`，无需额外手动注册。平台 Telegram 配置全部为空时跳过；部分填写、用户名不匹配或注册失败会中止部署并保留维护状态，修正后重新部署。API 使用独立域名时，将完整回调地址写入 `TELEGRAM_WEBHOOK_URL`，避免下次部署覆盖成默认地址。
+
+不使用部署脚本时，按实际 PHP 路径和运行用户执行：
 
 ```bash
 sudo -u www-data /usr/bin/php artisan migrate --force
@@ -164,9 +168,19 @@ sudo -u www-data /usr/bin/php artisan telegram:register-webhook
 sudo -u www-data /usr/bin/php artisan queue:restart
 ```
 
-默认回调为 `APP_URL` 下的 `/api/webhooks/telegram`，必须是 Telegram 可访问的公网 HTTPS 地址。若 API 使用独立入口，可在注册命令传 `--url=https://实际公网域名/api/webhooks/telegram`。网关须转发 `X-Telegram-Bot-Api-Secret-Token` 请求头，不对此路径施加交互式登录或人机验证。命令先校验 Token 对应的用户名及群组能力，再注册 `message` 更新，不清空已有待处理消息。更换 Token、回调域名或 Secret 后重新注册并刷新配置缓存、重启队列；更换 Token 也会使未完成的绑定链接失效。
+默认回调为 `APP_URL` 下的 `/api/webhooks/telegram`，必须是 Telegram 可访问的公网 HTTPS 地址。地址优先级为命令行 `--url`、`TELEGRAM_WEBHOOK_URL`、默认路由；临时 `--url` 不会持久保存，独立入口应配置环境变量。网关须转发 `X-Telegram-Bot-Api-Secret-Token` 请求头，不对此路径施加交互式登录或人机验证。命令先校验 Token 对应的用户名及群组能力，再注册 `message` 更新，不清空已有待处理消息。更换 Token、回调域名或 Secret 后重新部署即可同步配置缓存、回调和队列；更换 Token 也会使未完成的绑定链接失效。
 
 商户在「服务配置 → Telegram 通知」选择「快速绑定」，点击个人或群聊按钮生成链接，再前往 Telegram：个人聊天点 Start，群聊由群主/管理员选择群并添加机器人，确保机器人有发言权限。链接 10 分钟有效且只能用一次，不应转发；后台会自动显示绑定结果，可发送测试消息、关闭通知或解除绑定。每个商户当前只有一个接收目标，完成新绑定会替换旧目标并开启通知；已有自建机器人沿用原配置，手动模式也可继续使用。
+
+**已进群但没有绑定成功**：生成链接只证明本地配置完整，不证明 Telegram 已向本站投递消息。先在线上以站点账号运行只读检查，命令不会注册回调或发送聊天消息：
+
+```bash
+sudo -u www-data /usr/bin/php artisan telegram:register-webhook --check
+```
+
+检查输出包含预期/已登记地址、等待投递数量及最近投递错误（隐藏已知凭证及 URL 查询参数）。未注册、地址不一致或未订阅 `message` 时，核对配置后运行注册命令；403 检查代理/WAF 及 Secret 请求头，404 检查域名与路由缓存，503 检查维护模式、有效配置和应用日志，SSL/连接错误检查公网证书与网络。`getWebhookInfo` 不返回 Secret，且可能保留历史错误；没有待投递消息时的历史错误不能单独证明当前故障，检查通过也不等于实际绑定已验证。
+
+回调恢复后重新生成链接，由群主/管理员通过该链接选群，Telegram 应发送 `/start@机器人用户名 绑定码`。普通“添加成员”操作不携带绑定码；匿名管理员身份无法通过发送者校验。已有机器人也应使用新链接完成绑定，无需重新创建机器人。不要转发绑定码或 Bot Token。
 
 实现采用 Telegram 官方的 [深链接机制](https://core.telegram.org/bots/features#deep-linking) 和 [webhook Secret Header](https://core.telegram.org/bots/api#setwebhook)。平台凭证不会发给商户浏览器，未绑定的商户不会自动使用平台机器人。
 
@@ -626,7 +640,9 @@ npm 缓存固定为本站 `storage/app/deploy-cache/npm`，通过大小写两种
 
 `--check` 执行上述预检及 Git 工作区/上游分支检查后退出，不创建部署锁、拉取代码、进入维护模式、执行迁移或发布文件；Git 状态检查关闭可选索引锁。正式部署也会自动执行同样的预检，失败时站点保持原访问状态。预检反映当前文件系统权限，后续磁盘空间、外部存储或并发变更造成的失败仍按部署错误处理。
 
-脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由/视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
+脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由缓存、`telegram:register-webhook --if-configured`、视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。Telegram 全部未配置时跳过，已配置时按[快速绑定说明](#31-telegram-快速绑定)同步回调；注册期间站点仍处维护模式，实际投递需恢复访问后验证。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
+
+物流批量上传支持商户订单号的升级包含[新增明细字段迁移](../database/migrations/2026_11_18_171052_add_merchant_order_no_to_logistics_import_task_records_table.php)，由上述 `migrate --force` 自动执行，随后 `queue:restart` 让物流导入 Worker 加载新匹配规则，无需额外手工命令或历史数据回填。原系统订单号模板继续兼容；商户订单号模板最少保留 `merchant_order_no`、`logistics_company`、`tracking_number` 三列。本次仅调整文件导入，不变更商户 API 或商城插件物流协议。
 
 `plugins:sync` 自动处理 `PluginCatalog` 已接入的全部插件，当前为 WordPress PayPal、信用卡；发布使用与下载页面相同的 `PLUGIN_RELEASE_DISK`。所有包先构建并完成版本预检，再逐个发布；相同版本和内容可重复执行，保留原发布时间，缺失的索引或 ZIP 可由相同源码补齐。各插件按独立稳定入口发布，OSS 写入失败时命令返回失败；跨插件切换不提供事务。预检读取存储并在本机构建安装包，不会试写 OSS，写权限或上传故障仍会在实际发布时阻止恢复站点。
 

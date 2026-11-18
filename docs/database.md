@@ -215,6 +215,8 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 物流导入任务表的两个文件名语义不同：`original_file_name` 是商户上传时的本地文件名（2026-10-22 起记录，历史数据为 NULL，展示时回退 `file_name`），`file_name` 是 OSS 上的保存名（Filament 随机串）。`started_at`/`finished_at` 记录解析起止，仅用于识别 worker 中断与审计，不在界面展示耗时；`status=processing` 且 `started_at` 超过 30 分钟按中断处理。任务表只存汇总数，逐行结果一律查明细表。记录保留 90 天，由 `logistics-imports:prune` 每日分批物理删除任务及其明细（含已软删任务）。
 
+物流导入明细通过[增量迁移](../database/migrations/2026_11_18_171052_add_merchant_order_no_to_logistics_import_task_records_table.php)新增可空 TEXT `merchant_order_no`，保存文件中的商户订单号原文；使用 TEXT 避免超长输入在批量入库阶段中断整个任务，逐行匹配前限制为 80 个字符，超长行失败且不截断匹配。历史明细保持 NULL、不回填。系统订单号与商户订单号至少填写一项，二者同时填写须匹配同一订单，查询始终显式限定任务商户；不改写 `orders` 的订单号或唯一约束。失败行 CSV 在既有列末尾追加 `merchant_order_no`，保留原列顺序并支持修正后重传。
+
 商户网站回传批次与本地物流分开：本地改单覆盖原记录，每次启用回传的保存或手动推送创建新的业务快照。状态为 `pending/processing/retrying/success/failed/superseded/paused`；出现新版本后旧待发、待重试或暂停批次停止投递。`next_attempt_at` 同时作为处理租约到期时间，`processing` 超过两分钟可由调度回收；含首次最多 5 次请求，尝试表按批次与尝试编号唯一。终败的 `alert_status` 从 `pending` 转为 `sent` 或机器人不可用时的 `unavailable`；Telegram 失败或限流保留 `pending`，`next_alert_at` 延后 5 分钟；到期时间参与提醒扫描索引，避免长期失败商户占住候选。两表保留审计记录，外键使用限制删除，和 WP 插件的 `order_shippings.sync_*` 无关。
 
 余额可为负；可提现 = `balance - frozen_balance - pending_settlement_balance - pending_withdrawal_balance`。商户显示的待出款由 `pendingWithdrawalBalance()` 将新待出款加旧待审核提现合计；`reserveBalance()` 将原冻结额减去这部分旧提现。两者按读时归类，不改历史余额或流水，且保持总额 = 待结算 + 保证金/冻结 + 可提现 + 待出款。列表使用 `legacyPendingWithdrawals` 的预聚合避免逐行查询。

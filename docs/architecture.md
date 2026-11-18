@@ -55,7 +55,7 @@ flowchart TD
 
 OpenCart 两代入口分别保留 MVC 类与命名空间结构，复用 `plugins/opencart/shared/` 的签名、十进制计算、v1/v2 状态处理与注册表适配。打包时注入共享代码和模板：3.x 使用 `upload/`，4.x 根目录直接部署到 `extension/sscpay/`，公开下载保留文件名 `sscpay.ocmod.zip`。商城独立保存支付引用、支付进度、事件及物流去重，以 MySQL 同单命名锁串行处理建单、回跳及通知；只有签名通知或主动查询确认收齐全额才调用商城核心历史接口。插件设置提供中英文配置、只读支付查询、物流发送和版本检查；退款/拒付按远端查询映射，不发起扣款或退款。边界与验收范围见 [D-64](decisions.md#d-64-opencart-两代独立安装包与共享协议客户端)。
 
-日常上线由根目录 `deploy.sh` 统一执行：维护模式下更新代码、依赖及资源，预检协议和全部插件版本，执行增量迁移与缓存、调用 `plugins:sync` 发布安装包及下载索引，再通知队列重启并恢复访问。`PluginReleaseService::sync()` 在写入前构建并预检所有已接入插件，支持 `--dry-run` 和相同版本重试；各插件分别切换稳定入口，不提供跨插件存储事务。GitHub tag 工作流继续承担 Release 附件和旧仓库过渡镜像。边界与重试见[日常自动部署](../doc/deployment.md#9-日常自动部署)。
+日常上线由根目录 `deploy.sh` 统一执行：维护模式下更新代码、依赖及资源，预检协议和全部插件版本，执行增量迁移与缓存、同步已配置的平台 Telegram 回调、调用 `plugins:sync` 发布安装包及下载索引，再通知队列重启并恢复访问。`telegram:register-webhook --if-configured` 仅在平台 Telegram 配置全部为空时跳过；部分配置或注册失败会停止部署，独立回调地址通过 `TELEGRAM_WEBHOOK_URL` 持久保存。命令的 `--check` 选项只读核对登记地址、消息订阅、待投递数量及最近错误，不代替实际绑定验收。`PluginReleaseService::sync()` 在写入前构建并预检所有已接入插件，支持 `--dry-run` 和相同版本重试；各插件分别切换稳定入口，不提供跨插件存储事务。GitHub tag 工作流继续承担 Release 附件和旧仓库过渡镜像。边界与重试见[日常自动部署](../doc/deployment.md#9-日常自动部署)。
 
 脚本在维护模式前自动识别并切换非 root 站点账号，优先采用本站运行目录及项目目录属主，无文件归属证据时才参考唯一的 PHP-FPM worker UID；来源冲突则停止。随后以实际账号预检代码、Git、依赖、缓存、插件与前端目录权限；`--check` 仅执行账号、权限和 Git 预检，不创建部署锁或执行上线动作。
 
@@ -128,6 +128,8 @@ Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商�
 采购页面的“订单详情”进入 `purchase-orders.details`（`/purchase-orders/{purchaseOrder}/details`），模板为 `resources/views/purchase-orders/details/show.blade.php`，展示四步时间线、收货与卖家资料、采购明细、费用及打印区域；两个页面共享控制器的鉴权与数据构造。收货地址优先使用档案 `stock_addresses` 中首个非空字符串，再回退到 `company_address`；联系人、手机号、供应商信息读取当前档案。现有采购单不保存物流公司和运单号，详情以缺省文案展示，不发起物流、评价或支付请求。
 
 订单列表的物流模板导出沿用当前筛选与搜索条件，不要求平台账号选定单个商户；超管可跨商户导出，其他用户限定在 `manageableMerchantIds()` 范围。物流上传仍绑定登录用户所属商户。订单支付方式筛选及观察者账户的渠道分配包含软删除渠道，保留渠道的租户可见性过滤；观察者关联也包含软删除渠道，以便回显和保留已有分配。
+
+物流批量上传支持 `order_no`（系统订单号）或 `merchant_order_no`（商户订单号）至少一项，加 `logistics_company`、`tracking_number` 的三列 CSV / XLSX / XLS 文件，无需其余模板列。逐行匹配限定任务所属商户及 `paidUnshipped()` 范围；同时填写两种订单号时取交集，必须指向同一订单。发货时间留空仍按文件上传时间记录。商户订单号原文保存在导入明细，后台可查看、搜索，失败行导出保留该字段供修正后重传；不改变商户 API 或商城插件物流协议。
 
 API 文档页覆盖创建订单、查询订单、上传物流、商户网站物流回传，并补齐共用签名、支付结果通知、状态与错误码。两种语言分别由 `api_docs_v1.php`、`api_docs_v2.php` 保存版本独立的接口正文，`api_docs.php` 只保存共享文案、签名及参考附录，按执行代码与 [API 手册](../doc/api.md) 同步维护。语言按钮右侧的版本按钮切换 `?version=1.0|2.0`，省略参数打开最新 2.0，未知或非字符串版本返回 404；1.0 不显示组合付款内容，2.0 的普通单和组合单示例均使用 V2 通知。两种语言与版本的章节锚点保持一致，切换保留语言、版本及当前章节，不改变后台会话语言或支付配置。首页、应用列表及创建/编辑表单仍使用默认文档入口。`ApiDocumentationReferenceService` 为两版只读取 `exchange.supported_currencies` 与 `order.platforms` 两个公开配置，沿用系统配置缓存及清除机制动态展示列表。币种列表是部署配置参考，不新增 API 币种枚举校验；原 `order-statuses` 锚点保留，完整状态表位于附录 C。
 

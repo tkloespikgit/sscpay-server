@@ -34,6 +34,7 @@ class LogisticsImportTaskRecord extends Model
         'merchant_id',
         'row_number',
         'order_no',
+        'merchant_order_no',
         'logistics_company',
         'tracking_number',
         'shipped_at',

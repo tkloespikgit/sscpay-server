@@ -882,6 +882,7 @@ return [
         'fields' => [
             'row_number' => '行号',
             'order_no' => '系统订单号',
+            'merchant_order_no' => '商户订单号',
             'logistics_company' => '承运商',
             'tracking_number' => '物流单号',
             'shipped_at' => '发货时间（原值）',
@@ -1012,10 +1013,10 @@ return [
             'import_file' => 'CSV / Excel 文件',
             'merchant_required' => '请先在上方筛选条件中选择「商户」后再操作',
             'upload_forbidden' => '超级管理员不能上传物流信息，请由该商户的用户登录后上传',
-            'upload_logistics_hint' => '支持上传 CSV、XLSX、XLS，Excel 仅读取第一张工作表。请先用「导出物流模板」下载 XLSX 文件：订单金额为数值，其余字段已设为文本，可保留纯数字编号和前导零。填写后请保留 XLSX 格式及文本列格式。可填写的列共 5 个：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空不改动）、remark（备注，选填）；其余列仅供核对，改了不生效。填好后上传，表头和第二行的说明行请勿删除。',
+            'upload_logistics_hint' => '支持上传 CSV、XLSX、XLS，Excel 仅读取第一张工作表。最少只需 3 列：order_no（系统订单号）或 merchant_order_no（商户订单号）二选一，加上 logistics_company（系统已启用的承运商编码）和 tracking_number（物流单号）。两种订单号同时填写时，必须对应同一订单。可用「导出物流模板」下载 XLSX，编号及物流单号请保持文本格式，避免丢失前导零。shipped_at（发货时间）选填，留空按文件上传时间记；tracking_url（追踪链接）和 remark（备注）选填。其余核对列可以删除，必须保留表头。',
             // 写进导出模板第二行的说明（以 # 开头，上传时整行跳过），
             // 内容必须与 LogisticsImportService::HEADER_ALIASES 支持的字段保持一致
-            'logistics_template_note' => '可填写列：logistics_company（承运商编码，必填）、tracking_number（物流单号，必填）、shipped_at（发货时间，选填，格式 2026-09-22 15:30:00，留空按文件上传时间记）、tracking_url（物流追踪链接，选填，留空则不改动已有链接）、remark（备注，选填）。其余列仅供核对，修改不生效。本行以 # 开头，上传时会被忽略，请勿删除表头。',
+            'logistics_template_note' => '最少保留 3 列：order_no（系统订单号）或 merchant_order_no（商户订单号）至少一项，加上 logistics_company（系统已启用的承运商编码）和 tracking_number（物流单号）。两种订单号同时填写须对应同一订单。选填列：shipped_at（发货时间，格式 2026-09-22 15:30:00，留空按文件上传时间记）、tracking_url（追踪链接，留空不改动）、remark（备注）。其余列仅供核对，可删除。本行以 # 开头，上传时会被忽略，请保留表头。',
             'export_failed' => '导出失败：无法获取当前列表的查询条件，请刷新页面后重试',
             'export_too_many_rows' => '物流模板最多导出 1,048,574 条订单，请缩小筛选范围后分批导出',
             'upload_success' => '文件已上传，正在后台处理，完成后会有 Telegram 通知',
@@ -1779,10 +1780,21 @@ return [
         ],
         'setup' => [
             'missing_config' => '请配置 TELEGRAM_BOT_TOKEN、TELEGRAM_BOT_USERNAME（不含 @）和 TELEGRAM_WEBHOOK_SECRET（32–256 位字母、数字、下划线或短横线）。',
-            'https_required' => 'Telegram 回调必须使用公网 HTTPS 地址。请检查 APP_URL 或传入 --url。',
+            'https_required' => 'Telegram 回调必须使用公网 HTTPS 地址。请检查 APP_URL、TELEGRAM_WEBHOOK_URL 或传入 --url。',
             'invalid_bot' => '机器人用户名与 Token 不一致，或机器人禁止加入群组。请核对配置及 BotFather 的群组设置。',
             'failed' => 'Telegram 注册失败，请检查平台机器人配置与网络连接。',
             'registered' => 'Telegram 快速绑定回调已注册：:url',
+            'skipped' => '未配置平台 Telegram 机器人，跳过回调注册。',
+            'check_failed' => '无法查询 Telegram 回调状态，请检查平台机器人配置与网络连接。',
+            'expected_url' => '预期回调：:url',
+            'current_url' => '已注册回调：:url',
+            'pending_updates' => '等待投递的消息：:count',
+            'last_error' => '最近投递错误（:time）：:error',
+            'not_registered' => '尚未注册回调，机器人进群后系统无法收到绑定消息。请运行 php artisan telegram:register-webhook。',
+            'url_mismatch' => '已注册回调与当前配置不一致。请核对公网域名，并运行 php artisan telegram:register-webhook。',
+            'messages_disabled' => '当前回调未订阅 message，无法接收绑定命令。请运行 php artisan telegram:register-webhook。',
+            'delivery_failed' => '消息尚未投递且存在回调错误。请按上方错误检查 HTTPS、代理/WAF 放行、Secret 请求头和应用日志。',
+            'check_passed' => '回调地址与 message 订阅正确。历史错误可能仍保留；这不代表已验证 Secret 或实际投递。请重新生成链接完成绑定验证。',
         ],
     ],
 

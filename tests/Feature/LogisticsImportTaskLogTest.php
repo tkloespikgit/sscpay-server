@@ -2,11 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Resources\LogisticsImportTaskResource\Pages\ViewLogisticsImportTask;
+use App\Filament\Resources\LogisticsImportTaskResource\RelationManagers\RecordsRelationManager;
 use App\Models\LogisticsImportTask;
 use App\Models\LogisticsImportTaskRecord;
 use App\Models\Merchant;
-use App\Filament\Resources\LogisticsImportTaskResource\Pages\ViewLogisticsImportTask;
-use App\Filament\Resources\LogisticsImportTaskResource\RelationManagers\RecordsRelationManager;
 use App\Models\User;
 use App\Services\LogisticsImportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -246,7 +246,8 @@ class LogisticsImportTaskLogTest extends TestCase
     {
         $task = $this->makeTask(['original_file_name' => '我的物流单.csv']);
         $task->forceFill(['total_records' => 2, 'success_count' => 1, 'fail_count' => 1])->save();
-        $this->makeRecord($task, 2, 'SSC-1', LogisticsImportTaskRecord::STATUS_FAILED, '订单不存在');
+        $record = $this->makeRecord($task, 2, 'SSC-1', LogisticsImportTaskRecord::STATUS_FAILED, '订单不存在');
+        $record->update(['merchant_order_no' => 'M-UPLOAD-ROW']);
 
         $admin = User::create([
             'name' => 'Admin',
@@ -280,7 +281,10 @@ class LogisticsImportTaskLogTest extends TestCase
         ])
             ->assertSuccessful()
             ->assertCanSeeTableRecords($task->records()->get())
-            ->assertSee('订单不存在');
+            ->assertSee('订单不存在')
+            ->assertSee('M-UPLOAD-ROW')
+            ->searchTable('M-UPLOAD-ROW')
+            ->assertCanSeeTableRecords([$record]);
     }
 
     private function makeTask(array $overrides = []): LogisticsImportTask

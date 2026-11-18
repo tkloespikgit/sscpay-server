@@ -45,6 +45,8 @@ class DeploymentScriptTest extends TestCase
         $this->assertBefore('migrate --force', 'crypto:check-addresses --initialize --no-interaction', $trace);
         $this->assertBefore('crypto:check-addresses --initialize --no-interaction', 'queue:restart', $trace);
         $this->assertBefore('plugins:sync --no-interaction', 'queue:restart', $trace);
+        $this->assertBefore('route:cache', 'telegram:register-webhook --if-configured --no-interaction', $trace);
+        $this->assertBefore('telegram:register-webhook --if-configured --no-interaction', 'artisan up', $trace);
         $this->assertBefore('queue:restart', 'artisan up', $trace);
         $this->assertFileDoesNotExist($this->directory.'/storage/framework/down');
         $this->assertStringContainsString('部署完成', $process->getOutput());
@@ -70,6 +72,7 @@ class DeploymentScriptTest extends TestCase
             'plugin preflight' => ['php artisan plugins:sync --dry-run --no-interaction', false],
             'migration' => ['php artisan migrate --force --no-interaction', true],
             'crypto address check initialization' => ['php artisan crypto:check-addresses --initialize --no-interaction', true],
+            'Telegram webhook registration' => ['php artisan telegram:register-webhook --if-configured --no-interaction', true],
             'plugin upload' => ['php artisan plugins:sync --no-interaction', true],
             'queue restart' => ['php artisan queue:restart --no-interaction', true],
         ];
