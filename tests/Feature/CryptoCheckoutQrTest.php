@@ -60,6 +60,28 @@ class CryptoCheckoutQrTest extends TestCase
         ];
     }
 
+    public function test_payment_page_titles_the_loading_card_with_the_merchant_order_number(): void
+    {
+        [$monitor] = $this->readyCheckout('bitcoin-testnet', 'BTC', 8, '51000', 'tb1qexample');
+        $monitor->paymentRequest->order->update([
+            'merchant_order_no' => 'SHOP-0042 <Retail>',
+            'order_no' => 'PLATFORM-220',
+            'currency' => 'CAD',
+            'amount' => '67.20',
+        ]);
+
+        $this->get('/payment/tok-monitor-order')->assertOk()
+            ->assertSee('<title>SHOP-0042 &lt;Retail&gt; — '.e(__('crypto.checkout.title')).'</title>', false)
+            ->assertSee('<bdi>SHOP-0042 &lt;Retail&gt;</bdi>', false)
+            ->assertSee('CAD 67.20')
+            ->assertSee(__('crypto.checkout.preparing'))
+            ->assertDontSee('PLATFORM-220')
+            ->assertDontSee('tb1qexample')
+            ->assertDontSee('0.00051000');
+
+        Http::assertNothingSent();
+    }
+
     #[DataProvider('tronNetworks')]
     public function test_tron_displays_an_address_qr_and_exact_amount_without_a_wallet_confirmation_flow(string $network): void
     {

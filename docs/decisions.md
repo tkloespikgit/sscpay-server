@@ -748,6 +748,8 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **格式与原因：** BTC／LTC 使用 `bitcoin:`／`litecoin:` 的十进制 `amount`，ETH／ERC20 使用 [EIP-681](https://eips.ethereum.org/EIPS/eip-681) 的链 ID、最小单位整数与冻结代币合约。TRC20 使用纯收款地址二维码，用户扫码填入地址、复制页面展示的精确应付数量，在钱包内完成转账，减少钱包浏览器连接和网页确认步骤。
 
-**边界：** 金额与 ERC20 合约只取请求快照，缺少合约快照时回退地址二维码和复制金额。TRC20 地址二维码不依赖合约或创世区块快照，公开状态不下发 TRON 钱包转账参数；非 ready 状态不返回地址、URI 或二维码，前端失联、过期和离开页面时隐藏付款信息。页面不连接 TRON 钱包、不构建或签署交易，到账继续走既有核验和入账服务。
+**边界：** 金额与 ERC20 合约只取请求快照，缺少合约快照时回退地址二维码和复制金额。TRC20 地址二维码不依赖合约或创世区块快照，公开状态不下发 TRON 钱包转账参数。非 ready 状态不返回地址、URI 或二维码。页面不连接 TRON 钱包、不构建或签署交易，到账继续走既有核验和入账服务。
+
+2026-11-19 的付款页调整在倒计时归零时立即撤下二维码、复制和钱包入口。到期或重新报价期间，以删除线呈现旧金额及同一浏览器标签页看过的旧地址。标签页仅存放对应付款链接最后一次实际展示的报价，新地址等服务端返回 ready 才展示。失联及离开页面时隐藏付款信息。
 
 **依据与部署：** [付款数据](../app/Services/CryptoCheckoutPresenter.php)、[页面交互](../resources/js/crypto-payment.js)、[付款页](../resources/views/payment/crypto.blade.php)、[二维码回归](../tests/Feature/CryptoCheckoutQrTest.php)、[前端展示回归](../tests/JavaScript/crypto-payment.test.mjs)。没有新增迁移、依赖、商户 API 或商城插件协议，沿用 `deploy.sh` 现有资源构建与缓存步骤；完整二维码内容作为缓存键，旧二维码缓存不需手工清除。
