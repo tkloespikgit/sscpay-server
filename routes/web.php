@@ -9,11 +9,22 @@ use App\Http\Controllers\PaymentPageController;
 use App\Http\Controllers\PluginDownloadController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\StaticConfigShowcaseController;
+use App\Http\Controllers\WooCommerceAuthorizationController;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/docs/api/{locale?}', [ApiDocumentationController::class, 'show'])
     ->whereIn('locale', ['zh_CN', 'en'])
     ->name('api.documentation');
+
+Route::post('/integrations/woocommerce/authorization/{token}', [WooCommerceAuthorizationController::class, 'store'])
+    ->where('token', '[a-f0-9]{64}')
+    ->withoutMiddleware(ValidateCsrfToken::class)
+    ->middleware('throttle:30,1')
+    ->name('woocommerce.authorization.callback');
+
+Route::get('/integrations/woocommerce/authorization-return', [WooCommerceAuthorizationController::class, 'show'])
+    ->name('woocommerce.authorization.return');
 
 // 争议审核事件的图片凭证（后台详情页灯箱用）。放在 web.php 而不是某个面板里，
 // 是因为管理端和商户端两个面板都要用同一个地址。

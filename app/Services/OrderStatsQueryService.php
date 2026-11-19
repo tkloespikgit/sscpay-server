@@ -7,6 +7,7 @@ use App\Models\Merchant;
 use App\Models\OrderDailyStat;
 use App\Models\OrderStatsRun;
 use App\Models\PaymentMethod;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -37,6 +38,8 @@ class OrderStatsQueryService
         self::PERIOD_THIS_MONTH,
         self::PERIOD_LAST_MONTH,
     ];
+
+    public const BREAKDOWN_DIMENSIONS = ['payment_method_id', 'application_id', 'merchant_id'];
 
     /**
      * 周期 -> [起始日, 结束日]。非法值一律回退当天：$period 来自 Livewire 的
@@ -129,18 +132,64 @@ class OrderStatsQueryService
      * @param  'merchant_id'|'application_id'|'payment_method_id'  $dimension
      * @return Collection<int, object>
      */
-    public function breakdown(?array $merchantIds, ?string $period, string $dimension, array $filters = [])
+    public function breakdown(?array $merchantIds, ?string $period, string $dimension, array $filters = []): Collection
+    {
+        return $this->breakdownFromQuery($this->scoped($merchantIds, $period, $filters), $dimension);
+    }
+
+    /**
+     * @param  Builder<OrderDailyStat>  $query
+     * @return Collection<int, object>
+     */
+    public function breakdownFromQuery(Builder $query, string $dimension): Collection
+    {
+        if (! in_array($dimension, self::BREAKDOWN_DIMENSIONS, true)) {
+            throw new \InvalidArgumentException('Unsupported order statistics dimension.');
+        }
+
+        return $this->groupedBreakdown($query, $dimension)->get();
+    }
+
+    /**
+     * 按商户当前归属分组，平台直管与无有效代理归属的订单合在一行。
+     * Left join 保留历史商户的统计，即使商户已软删除。
+     *
+     * @param  Builder<OrderDailyStat>  $query
+     * @return Collection<int, object>
+     */
+    public function breakdownByOwner(Builder $query): Collection
+    {
+        $viewer = auth()->user();
+
+        abort_unless($viewer instanceof User && $viewer->status && $viewer->is_super_admin, 403);
+
+        $owners = User::query()->select('id', 'name')->whereNull('merchant_id')->where('is_super_admin', false);
+
+        $query->leftJoin('merchants', 'merchants.id', '=', 'order_daily_stats.merchant_id')
+            ->leftJoinSub($owners, 'stat_owners', 'stat_owners.id', '=', 'merchants.owner_id');
+
+        return $this->groupedBreakdown($query, 'stat_owners.id')
+            ->addSelect('stat_owners.name as dimension_name')
+            ->groupBy('stat_owners.name')
+            ->orderBy('stat_owners.id')
+            ->get();
+    }
+
+    /**
+     * @param  Builder<OrderDailyStat>  $query
+     * @return Builder<OrderDailyStat>
+     */
+    private function groupedBreakdown(Builder $query, string $dimension): Builder
     {
         $metrics = implode(', ', array_map(
-            fn (string $column) => "COALESCE(SUM({$column}), 0) as {$column}",
+            fn (string $column) => "COALESCE(SUM(order_daily_stats.{$column}), 0) as {$column}",
             OrderDailyStat::METRIC_COLUMNS,
         ));
 
-        return $this->scoped($merchantIds, $period, $filters)
-            ->selectRaw("{$dimension} as dimension_id, {$metrics}")
+        return $query->select("{$dimension} as dimension_id")
+            ->selectRaw($metrics)
             ->groupBy($dimension)
-            ->orderByDesc('paid_amount')
-            ->get();
+            ->orderByDesc('paid_amount');
     }
 
     /**

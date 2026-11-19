@@ -1,4 +1,4 @@
-<x-filament::section>
+<x-filament::section divided>
     <x-slot name="heading">
         {{ __('admin.dashboard.filters.period') }}
     </x-slot>
@@ -29,6 +29,8 @@
             {{ __('admin.dashboard.periods.custom') }}
         </x-filament::tabs.item>
     </x-filament::tabs>
+
+    {{ $this->dimensionFiltersForm }}
 
     <x-slot name="footer">
         {{ __('admin.dashboard.stats.data_note') }}

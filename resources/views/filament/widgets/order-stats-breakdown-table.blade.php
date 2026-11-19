@@ -7,7 +7,7 @@
 <x-filament-widgets::widget>
     <x-filament::section>
         <x-slot name="heading">
-            {{ __('admin.order_stats.charts.breakdown', ['dimension' => $dimensionLabel]) }}
+            {{ $heading }}
         </x-slot>
 
         <x-slot name="description">

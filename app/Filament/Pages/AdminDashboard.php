@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Filament\Widgets\MerchantBalanceOverview;
 use App\Filament\Widgets\MerchantSalesRankingChart;
+use App\Filament\Widgets\OrderStatsBreakdownTable;
 use App\Filament\Widgets\OrderTrendChart;
 use App\Filament\Widgets\PaymentMethodBreakdownChart;
 use App\Filament\Widgets\PaymentSuccessRate;
@@ -13,8 +14,12 @@ use App\Models\User;
 use App\Services\DashboardService;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Select;
 use Filament\Pages\Dashboard as BaseDashboard;
 use Filament\Panel;
+use Filament\Schemas\Components\Tabs;
+use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\Validator;
@@ -22,16 +27,25 @@ use Illuminate\Validation\Rule;
 use Livewire\Attributes\Locked;
 
 /**
- * 订单指标共用已确认的日期区间，余额卡片始终展示当前余额。
+ * 订单指标共用已确认的统计筛选，余额卡片始终展示当前余额。
  * 商户范围由 DashboardService::viewerMerchantIds() 按登录用户确定。
  */
 class AdminDashboard extends BaseDashboard
 {
     public const QUICK_PERIODS = ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_month', 'last_month'];
 
-    /** @var array{period: string, date_from: ?string, date_to: ?string} */
+    private const REPORTS_ANCHOR = 'data-reports';
+
+    private const OVERVIEW_REPORT = 'overview';
+
+    /** @var array{period: string, date_from: ?string, date_to: ?string, owner_id?: ?int, merchant_id?: ?int, application_id?: ?int, payment_method_id?: ?int} */
     #[Locked]
     public array $filters = ['period' => 'today', 'date_from' => null, 'date_to' => null];
+
+    /** @var array<string, mixed> */
+    public array $dimensionFilters = [];
+
+    public string $activeReport = self::OVERVIEW_REPORT;
 
     /** 面板根路径交由 Filament 按可访问导航跳转，客服直接进入订单查询。 */
     protected static string $routePath = '/dashboard';
@@ -44,6 +58,15 @@ class AdminDashboard extends BaseDashboard
     public function hydrate(): void
     {
         abort_unless(static::canAccess(), 403);
+
+        if (! $this->canViewReport($this->activeReport)) {
+            $this->activeReport = self::OVERVIEW_REPORT;
+        }
+    }
+
+    public function updatingActiveReport(mixed $report): void
+    {
+        abort_unless(is_string($report) && $this->canViewReport($report), 403);
     }
 
     public static function canAccess(array $parameters = []): bool
@@ -77,7 +100,7 @@ class AdminDashboard extends BaseDashboard
             'period' => ['required', Rule::in(self::QUICK_PERIODS)],
         ])->validate();
 
-        $this->filters = ['period' => $period, 'date_from' => null, 'date_to' => null];
+        $this->filters = [...$this->filters, 'period' => $period, 'date_from' => null, 'date_to' => null];
     }
 
     public function customDateRangeAction(): Action
@@ -117,7 +140,7 @@ class AdminDashboard extends BaseDashboard
                     'date_to' => ['required', 'date_format:Y-m-d', 'after_or_equal:date_from', 'before_or_equal:'.today()->toDateString()],
                 ])->validate();
 
-                $this->filters = ['period' => 'custom', ...$dates];
+                $this->filters = [...$this->filters, 'period' => 'custom', ...$dates];
             });
     }
 
@@ -138,11 +161,54 @@ class AdminDashboard extends BaseDashboard
         return $from->toDateString().' — '.$to->toDateString();
     }
 
+    public function dimensionFiltersForm(Schema $schema): Schema
+    {
+        $user = auth()->user();
+
+        return $schema
+            ->components([
+                $this->dimensionFilter('owner_id', __('admin.dashboard.filters.owner'), ['merchant_id', 'application_id', 'payment_method_id'])
+                    ->visible((bool) $user?->is_super_admin),
+                $this->dimensionFilter('merchant_id', __('admin.order_stats.filters.merchant'), ['application_id', 'payment_method_id'])
+                    ->visible((bool) $user?->isPlatformStaff()),
+                $this->dimensionFilter('application_id', __('admin.order_stats.filters.application'), ['payment_method_id']),
+                $this->dimensionFilter('payment_method_id', __('admin.order_stats.filters.payment_method')),
+            ])
+            ->columns(['sm' => 2, 'xl' => $user?->is_super_admin ? 4 : ($user?->isPlatformStaff() ? 3 : 2)])
+            ->statePath('dimensionFilters');
+    }
+
+    /** @param array<string> $dependentFields */
+    private function dimensionFilter(string $field, string $label, array $dependentFields = []): Select
+    {
+        return Select::make($field)
+            ->label($label)
+            ->placeholder(__('admin.order_stats.filters.all'))
+            ->options(fn (): array => app(DashboardService::class)->filterOptions($field, $this->dimensionFilters))
+            ->searchable()
+            ->live()
+            ->afterStateUpdated(function (Set $set) use ($dependentFields): void {
+                abort_unless(static::canAccess(), 403);
+
+                foreach ($dependentFields as $dependentField) {
+                    $set($dependentField, null);
+                }
+
+                $dimensions = app(DashboardService::class)->validateDimensionFilters($this->dimensionFilters, 'dimensionFilters.');
+                $this->filters = [...$this->filters, ...$dimensions];
+            });
+    }
+
     public function content(Schema $schema): Schema
     {
         return $schema->components([
             View::make('filament.pages.dashboard-period-filter'),
-            $this->getWidgetsContentComponent(),
+            Tabs::make(__('admin.dashboard.overview'))
+                ->id(self::REPORTS_ANCHOR)
+                ->key(self::REPORTS_ANCHOR)
+                ->extraAttributes(['style' => 'scroll-margin-top: 5rem'])
+                ->livewireProperty('activeReport')
+                ->tabs(fn (): array => $this->getReportTabs()),
         ]);
     }
 
@@ -162,6 +228,46 @@ class AdminDashboard extends BaseDashboard
             TransactionAmountTrendChart::class,
             MerchantSalesRankingChart::class,
             PaymentMethodBreakdownChart::class,
+        ];
+    }
+
+    /** @return array<string, Tab> */
+    private function getReportTabs(): array
+    {
+        $tabs = [
+            self::OVERVIEW_REPORT => Tab::make(__('admin.dashboard.overview'))
+                ->schema([$this->getWidgetsContentComponent()]),
+        ];
+
+        foreach ($this->reportDimensions() as $report => $dimension) {
+            $tabs[$report] = Tab::make(__('admin.dashboard.breakdowns.'.$report))
+                ->schema(fn (): array => $this->getWidgetsSchemaComponents([
+                    OrderStatsBreakdownTable::make(['fixedDimension' => $dimension]),
+                ]));
+        }
+
+        return $tabs;
+    }
+
+    private function canViewReport(string $report): bool
+    {
+        return $report === self::OVERVIEW_REPORT || isset($this->reportDimensions()[$report]);
+    }
+
+    /** @return array<string, string> */
+    private function reportDimensions(): array
+    {
+        if (! OrderStats::canAccess()) {
+            return [];
+        }
+
+        $user = auth()->user();
+
+        return [
+            ...($user?->is_super_admin ? ['owner' => 'owner_id'] : []),
+            ...($user?->isPlatformStaff() ? ['merchant' => 'merchant_id'] : []),
+            'application' => 'application_id',
+            'payment_method' => 'payment_method_id',
         ];
     }
 }

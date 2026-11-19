@@ -4,6 +4,7 @@ namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
 use App\Filament\Support\GeneratePurchaseOrderAction;
+use App\Filament\Support\InteractsWithWooCommerceAuthorization;
 use App\Filament\Support\PaymentMethodProfileAction;
 use App\Services\PaymentMethodMerchantAssignmentService;
 use Filament\Actions\Action;
@@ -16,6 +17,8 @@ use Livewire\Attributes\Locked;
 
 class EditPaymentMethod extends EditRecord
 {
+    use InteractsWithWooCommerceAuthorization;
+
     protected static string $resource = PaymentMethodResource::class;
 
     #[Locked]

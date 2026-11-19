@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Pages\AdminDashboard;
 use App\Filament\Widgets\MerchantBalanceOverview;
 use App\Filament\Widgets\MerchantSalesRankingChart;
+use App\Filament\Widgets\OrderStatsBreakdownTable;
 use App\Filament\Widgets\OrderTrendChart;
 use App\Filament\Widgets\PaymentMethodBreakdownChart;
 use App\Filament\Widgets\PaymentSuccessRate;
@@ -158,6 +160,142 @@ class DashboardWidgetsTest extends TestCase
 
         $this->assertSame(['Ranked Merchant', 'Other Merchant'], $data['labels']);
         $this->assertSame([800.0, 400.0], $data['datasets'][0]['data']);
+    }
+
+    public function test_dashboard_defaults_to_the_overview_and_reuses_filters_across_report_tabs(): void
+    {
+        app()->setLocale('zh_CN');
+        $this->createMerchantAndApplication();
+        $agent = $this->manager();
+        $method = $this->makePaymentMethod('dashboard_method');
+        $this->dailyStat('2026-11-03', ['payment_method_id' => $method->id, 'paid_orders' => 1, 'paid_amount' => '600.00']);
+        $this->dailyStat('2026-11-02', ['payment_method_id' => $method->id, 'paid_orders' => 1, 'paid_amount' => '234.56']);
+        $this->dailyStat('2026-11-02', ['paid_orders' => 1, 'paid_amount' => '400.00']);
+        $this->actingAs(User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]));
+
+        $page = Livewire::withoutLazyLoading()->test(AdminDashboard::class)
+            ->assertOk()
+            ->assertSet('activeReport', 'overview')
+            ->assertSeeHtml('id="data-reports"')
+            ->assertSeeInOrder([
+                '数据统计',
+                '代理统计',
+                '商户统计',
+                '应用统计',
+                '支付统计',
+            ])
+            ->assertSee(__('admin.dashboard.stats.total_orders'))
+            ->assertSee(__('admin.dashboard.charts.order_trend'))
+            ->assertSee('$600.00')
+            ->assertDontSee(__('admin.order_stats.amount_order_hint'))
+            ->callAction('customDateRange', data: ['date_from' => '2026-11-01', 'date_to' => '2026-11-02'])
+            ->assertHasNoActionErrors()
+            ->set('dimensionFilters.owner_id', $agent->id)
+            ->set('dimensionFilters.merchant_id', $this->merchant->id)
+            ->set('dimensionFilters.application_id', $this->application->id)
+            ->set('dimensionFilters.payment_method_id', $method->id)
+            ->assertHasNoErrors();
+
+        $dimensions = [
+            'owner_id' => $agent->id,
+            'merchant_id' => $this->merchant->id,
+            'application_id' => $this->application->id,
+            'payment_method_id' => $method->id,
+        ];
+        $filters = [
+            'period' => 'custom',
+            'date_from' => '2026-11-01',
+            'date_to' => '2026-11-02',
+            ...$dimensions,
+        ];
+
+        foreach ([
+            'payment_method' => $method->method_name,
+            'application' => $this->application->name,
+            'merchant' => $this->merchant->name,
+            'owner' => $agent->name,
+        ] as $tab => $rowLabel) {
+            Livewire::withoutLazyLoading();
+
+            $page->set('activeReport', $tab)
+                ->assertSet('filters', $filters)
+                ->assertSet('dimensionFilters', $dimensions)
+                ->assertSee(__('admin.order_stats.amount_order_hint'))
+                ->assertSee('$234.56')
+                ->assertDontSee('$400.00')
+                ->assertDontSee('$600.00')
+                ->assertDontSee(__('admin.dashboard.charts.order_trend'));
+
+            $this->assertMatchesRegularExpression('~<td\b[^>]*>\s*'.preg_quote(e($rowLabel), '~').'\s*</td>~', $page->html());
+        }
+
+        Livewire::withoutLazyLoading();
+
+        $page->set('activeReport', 'overview')
+            ->assertSet('filters', $filters)
+            ->assertSee(__('admin.dashboard.charts.order_trend'))
+            ->assertSee('$234.56')
+            ->assertDontSee(__('admin.order_stats.amount_order_hint'));
+    }
+
+    public function test_agent_report_combines_merchants_by_current_owner_and_includes_platform_managed_orders(): void
+    {
+        $this->createMerchantAndApplication();
+        $agent = $this->manager();
+        $otherAgent = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $this->dailyStat('2026-11-02', ['paid_orders' => 1, 'paid_amount' => '110.00']);
+        $reassigned = $this->otherMerchantStat('2026-11-02', ['paid_orders' => 2, 'paid_amount' => '120.00']);
+        Merchant::findOrFail($reassigned->merchant_id)->update(['owner_id' => $agent->id]);
+        $managed = $this->otherMerchantStat('2026-11-02', ['paid_orders' => 3, 'paid_amount' => '130.00']);
+        Merchant::findOrFail($managed->merchant_id)->update(['owner_id' => $otherAgent->id]);
+        $this->otherMerchantStat('2026-11-02', ['paid_orders' => 4, 'paid_amount' => '140.00']);
+        $this->actingAs(User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]));
+
+        Livewire::withoutLazyLoading()->test(OrderStatsBreakdownTable::class, [
+            'fixedDimension' => 'owner_id',
+            'pageFilters' => ['period' => 'yesterday'],
+        ])->assertOk()
+            ->assertSeeInOrder([$agent->name, '$230.00'])
+            ->assertSeeInOrder([$otherAgent->name, '$130.00'])
+            ->assertSeeInOrder([__('admin.dashboard.direct_management'), '$140.00'])
+            ->assertDontSee('$110.00')
+            ->assertDontSee('$120.00');
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function test_only_super_administrators_can_mount_the_agent_report_directly(bool $isMerchantUser): void
+    {
+        $this->createMerchantAndApplication();
+        $viewer = $isMerchantUser ? $this->merchantUser() : $this->manager();
+        $viewer->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($viewer);
+
+        Livewire::withoutLazyLoading()->test(OrderStatsBreakdownTable::class, ['fixedDimension' => 'owner_id'])
+            ->assertForbidden();
+    }
+
+    public function test_application_breakdown_obeys_a_custom_range_and_the_viewer_scope(): void
+    {
+        $this->createMerchantAndApplication();
+        $method = $this->makePaymentMethod('dashboard_breakdown');
+        $this->dailyStat('2026-11-01', ['payment_method_id' => $method->id, 'paid_orders' => 2, 'paid_amount' => '234.56']);
+        $this->dailyStat('2026-11-02', ['paid_orders' => 1, 'paid_amount' => '400.00']);
+        $this->dailyStat('2026-11-03', ['payment_method_id' => $method->id, 'paid_orders' => 1, 'paid_amount' => '600.00']);
+        $this->otherMerchantStat('2026-11-01', ['payment_method_id' => $method->id, 'paid_orders' => 3, 'paid_amount' => '800.00']);
+        $manager = $this->manager();
+        $manager->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($manager);
+
+        Livewire::withoutLazyLoading()->test(OrderStatsBreakdownTable::class, [
+            'fixedDimension' => 'application_id',
+            'pageFilters' => ['period' => 'custom', 'date_from' => '2026-11-01', 'date_to' => '2026-11-02', 'payment_method_id' => $method->id],
+        ])->assertOk()
+            ->assertSee($this->application->name)
+            ->assertSee('$234.56')
+            ->assertDontSee('Other Application')
+            ->assertDontSee('$400.00')
+            ->assertDontSee('$600.00');
     }
 
     #[TestWith([StatsOverview::class])]

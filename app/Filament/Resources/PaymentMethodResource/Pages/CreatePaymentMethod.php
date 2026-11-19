@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\PaymentMethodResource\Pages;
 
 use App\Filament\Resources\PaymentMethodResource;
+use App\Filament\Support\InteractsWithWooCommerceAuthorization;
 use App\Services\PaymentMethodMerchantAssignmentService;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
@@ -10,6 +11,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class CreatePaymentMethod extends CreateRecord
 {
+    use InteractsWithWooCommerceAuthorization;
+
     protected static string $resource = PaymentMethodResource::class;
 
     protected ?bool $hasDatabaseTransactions = true;

@@ -367,7 +367,7 @@ class OrderStatsPageTest extends TestCase
     {
         return User::firstOrCreate(
             ['email' => 'root@example.com'],
-            ['name' => 'Root', 'password' => bcrypt('secret'), 'is_super_admin' => true],
+            ['name' => 'Root', 'password' => bcrypt('secret'), 'is_super_admin' => true, 'status' => true],
         );
     }
 
@@ -375,7 +375,7 @@ class OrderStatsPageTest extends TestCase
     {
         $user = User::firstOrCreate(
             ['email' => 'merchant@example.com'],
-            ['name' => 'Merchant User', 'password' => bcrypt('secret'), 'merchant_id' => $this->merchant->id],
+            ['name' => 'Merchant User', 'password' => bcrypt('secret'), 'merchant_id' => $this->merchant->id, 'status' => true],
         );
 
         $user->givePermissionTo(Permissions::ORDERS_VIEW);

@@ -58,6 +58,11 @@ class OrderResource extends Resource
         return __('admin.nav.order_management');
     }
 
+    public static function getNavigationLabel(): string
+    {
+        return __('admin.order.nav_label');
+    }
+
     public static function getModelLabel(): string
     {
         return __('admin.order.model_label');

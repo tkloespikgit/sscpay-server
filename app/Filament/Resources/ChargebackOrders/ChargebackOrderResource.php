@@ -18,6 +18,11 @@ class ChargebackOrderResource extends OrderResource
 
     protected static ?int $navigationSort = 12;
 
+    public static function getNavigationLabel(): string
+    {
+        return static::getPluralModelLabel();
+    }
+
     public static function getModelLabel(): string
     {
         return __('admin.order.after_sale.chargebacks');

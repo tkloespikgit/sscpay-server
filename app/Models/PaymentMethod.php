@@ -34,6 +34,19 @@ class PaymentMethod extends Model
         return is_null($this->merchant_id);
     }
 
+    public function canBeManagedBy(User $user): bool
+    {
+        if ($user->is_super_admin) {
+            return true;
+        }
+
+        if ($this->merchant_id !== null) {
+            return in_array($this->merchant_id, $user->manageableMerchantIds() ?? [], true);
+        }
+
+        return $this->owner_id !== null && $this->owner_id === $user->id;
+    }
+
     /**
      * 平台商户级管理员仅能维护自己名下的渠道；普通商户用户仍可使用已授权系统渠道。
      */

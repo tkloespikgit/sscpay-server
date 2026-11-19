@@ -254,6 +254,42 @@ class DashboardOrderStatsAlignmentTest extends TestCase
         $this->assertSame(0.0, $yesterday['total_amount_usd']);
     }
 
+    public function test_agent_merchant_application_and_payment_filters_intersect_on_order_statistics(): void
+    {
+        $agent = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $otherAgent = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $this->merchant->update(['owner_id' => $agent->id]);
+        $secondMerchant = Merchant::create(['name' => 'Same agent merchant', 'owner_id' => $agent->id]);
+        $otherMerchant = Merchant::create(['name' => 'Other agent merchant', 'owner_id' => $otherAgent->id]);
+        $secondApplication = Application::createWithCredentials(['merchant_id' => $this->merchant->id, 'name' => 'Second App', 'website' => 'https://second.example.com']);
+        $secondMerchantApp = Application::createWithCredentials(['merchant_id' => $secondMerchant->id, 'name' => 'Same Agent App', 'website' => 'https://same.example.com']);
+        $otherMerchantApp = Application::createWithCredentials(['merchant_id' => $otherMerchant->id, 'name' => 'Other Agent App', 'website' => 'https://other.example.com']);
+        $sharedMethod = $this->makePaymentMethod('shared_dashboard');
+        $sharedMethod->update(['merchant_id' => null, 'owner_id' => $otherAgent->id]);
+        $otherMethod = $this->makePaymentMethod('other_dashboard');
+        $date = now()->toDateString();
+
+        $this->dailyStat($date, ['payment_method_id' => $sharedMethod->id, 'paid_amount' => '100.00', 'paid_orders' => 1]);
+        $this->dailyStat($date, ['payment_method_id' => $otherMethod->id, 'paid_amount' => '200.00', 'paid_orders' => 1]);
+        $this->dailyStat($date, ['application_id' => $secondApplication->id, 'payment_method_id' => $sharedMethod->id, 'paid_amount' => '300.00', 'paid_orders' => 1]);
+        $this->dailyStat($date, ['merchant_id' => $secondMerchant->id, 'application_id' => $secondMerchantApp->id, 'payment_method_id' => $sharedMethod->id, 'paid_amount' => '400.00', 'paid_orders' => 1]);
+        $this->dailyStat($date, ['merchant_id' => $otherMerchant->id, 'application_id' => $otherMerchantApp->id, 'payment_method_id' => $sharedMethod->id, 'paid_amount' => '800.00', 'paid_orders' => 1]);
+        $this->actingAs(User::factory()->create(['merchant_id' => null, 'is_super_admin' => true, 'status' => true]));
+
+        $agentFilters = ['owner_id' => $agent->id];
+        $merchantFilters = [...$agentFilters, 'merchant_id' => $this->merchant->id];
+        $appFilters = [...$merchantFilters, 'application_id' => $this->application->id];
+        $allFilters = [...$appFilters, 'payment_method_id' => $sharedMethod->id];
+
+        $this->assertSame(1000.0, $this->dashboard->summary(null, $agentFilters)['total_amount_usd']);
+        $this->assertSame(600.0, $this->dashboard->summary(null, $merchantFilters)['total_amount_usd']);
+        $this->assertSame(300.0, $this->dashboard->summary(null, $appFilters)['total_amount_usd']);
+        $this->assertSame(100.0, $this->dashboard->summary(null, $allFilters)['total_amount_usd']);
+        $this->assertSame([['date' => $date, 'order_count' => 0, 'amount_usd' => 100.0]], $this->dashboard->trend(null, $allFilters));
+        $this->assertSame(['success_rate' => 100.0, 'paid_count' => 1, 'terminal_count' => 1], $this->dashboard->getPaymentSuccessRate(null, $allFilters));
+        $this->assertSame(0.0, $this->dashboard->summary([$otherMerchant->id], $allFilters)['total_amount_usd']);
+    }
+
     public function test_missing_statistics_and_old_metrics_versions_are_reported_without_reaggregation(): void
     {
         OrderStatsRun::create(['stat_date' => now()->toDateString(), 'completed_at' => now(), 'metrics_version' => 1]);

@@ -18,6 +18,11 @@ class RefundOrderResource extends OrderResource
 
     protected static ?int $navigationSort = 11;
 
+    public static function getNavigationLabel(): string
+    {
+        return static::getPluralModelLabel();
+    }
+
     public static function getModelLabel(): string
     {
         return __('admin.order.after_sale.refunds');

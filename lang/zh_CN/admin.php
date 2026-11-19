@@ -432,8 +432,8 @@ return [
             'is_active' => '启用',
             'config_map' => '配置模板',
             'domain' => '网站域名',
-            'domain_client_id' => 'Rest Api Key',
-            'domain_client_sk' => 'Rest Api Secret',
+            'domain_client_id' => 'Consumer Key（CK）',
+            'domain_client_sk' => 'Consumer Secret（CS）',
             'order_account' => '创建订单账户',
             'order_password' => '创建订单密码',
             'config_account' => '创建配置账户',
@@ -494,6 +494,21 @@ return [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
             'method_code_duplicate' => '该支付方式代码已被占用：代码全局唯一，不区分商户级与系统级，请换一个',
             'owner_invalid' => '请选择启用且未删除的平台管理员账号',
+        ],
+        'woocommerce' => [
+            'action' => 'WordPress 授权获取 CK / CS',
+            'heading' => '连接 WordPress / WooCommerce',
+            'description' => '打开网站，用管理员账号登录并批准读写授权，网站会生成新的 CK / CS 并自动回填。已有密钥也可直接手工填写。',
+            'open' => '前往 WordPress 授权',
+            'waiting' => '等待网站授权，链接 10 分钟内有效。请保留此窗口，完成后会自动回填。',
+            'requirements' => '网站需已安装并启用 WooCommerce，且 WordPress 服务器能访问本系统的 HTTPS 地址。本地开发域名无法接收公网回调时，请手工填写密钥。',
+            'ready' => 'CK / CS 已自动回填，请保存支付方式。',
+            'expired' => '授权已过期或不可用，请重新授权或手工填写 CK / CS。',
+            'changed' => '网站配置已变更，本次授权已取消，请重新授权。',
+            'https_required' => '自动授权需要本系统 APP_URL 配置为可公开访问的 HTTPS 地址；也可手工填写 CK / CS。',
+            'too_many_attempts' => '授权请求过于频繁，请稍后重试。',
+            'return_title' => '请返回支付方式页面',
+            'return_description' => '授权结果会在原来的支付方式窗口自动检查。回填 CK / CS 后，请保存支付方式；若取消授权或未能回填，可重新授权或手工填写密钥。现在可以关闭此标签页。',
         ],
         'match_modes' => [
             'match' => '匹配',
@@ -906,7 +921,7 @@ return [
     'order' => [
         'model_label' => '订单',
         'model_label_plural' => '订单',
-        'nav_label' => '订单管理',
+        'nav_label' => '订单列表',
         'after_sale' => [
             'refunds' => '退款订单',
             'chargebacks' => '拒付订单',
@@ -1264,7 +1279,7 @@ return [
     'order_dispute_event' => [
         'model_label' => '争议审核事件',
         'model_label_plural' => '争议审核事件',
-        'nav_label' => '争议审核事件',
+        'nav_label' => '争议审核',
         'statuses' => [
             'processing' => '处理中',
             'closed' => '已结束',
@@ -1664,13 +1679,23 @@ return [
     ],
 
     'dashboard' => [
+        'overview' => '数据统计',
         'filters' => [
-            'period' => '交易统计区间',
+            'period' => '统计周期',
+            'owner' => '代理（商户管理员）',
+            'invalid_selection' => '所选筛选项无效，请重新选择。',
             'custom_heading' => '自定义统计区间',
             'date_from' => '开始日期',
             'date_to' => '结束日期',
             'apply' => '应用区间',
         ],
+        'breakdowns' => [
+            'owner' => '代理统计',
+            'merchant' => '商户统计',
+            'application' => '应用统计',
+            'payment_method' => '支付统计',
+        ],
+        'direct_management' => '平台直管',
         'periods' => [
             'today' => '今天',
             'yesterday' => '昨天',

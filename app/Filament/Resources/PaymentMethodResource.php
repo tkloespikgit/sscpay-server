@@ -16,6 +16,7 @@ use App\Services\CryptoPaymentConfigurationService;
 use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\PaymentMethodMerchantAssignmentService;
+use App\Services\WooCommerceAuthorizationService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
@@ -42,6 +43,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TrashedFilter;
 use Filament\Tables\Table;
+use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -246,7 +248,17 @@ class PaymentMethodResource extends Resource
                         ->validationMessages([
                             'regex' => __('admin.payment_method.validation.domain_format'),
                             'url' => __('admin.payment_method.validation.domain_format'),
-                        ])->columnSpanFull(),
+                        ])
+                        ->belowContent(Action::make('authorizeWooCommerce')
+                            ->label(__('admin.payment_method.woocommerce.action'))
+                            ->icon(Heroicon::Key)
+                            ->modalHeading(__('admin.payment_method.woocommerce.heading'))
+                            ->modalDescription(__('admin.payment_method.woocommerce.description'))
+                            ->mountUsing(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire, WooCommerceAuthorizationService $service) => $livewire->startWooCommerceAuthorization($service))
+                            ->modalContent(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire): View => view('filament.woocommerce-authorization', ['authorizationUrl' => $livewire->wooCommerceAuthorizationUrl]))
+                            ->modalSubmitAction(false)
+                            ->modalCancelActionLabel(__('admin.payment_method.modals.close')))
+                        ->columnSpanFull(),
 
                     TextInput::make('domain_client_id')
                         ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
@@ -1065,19 +1077,7 @@ class PaymentMethodResource extends Resource
     {
         $viewer = auth()->user();
 
-        if (! $viewer) {
-            return false;
-        }
-
-        if ($viewer->is_super_admin) {
-            return true;
-        }
-
-        if ($record->merchant_id !== null) {
-            return in_array($record->merchant_id, $viewer->manageableMerchantIds() ?? [], true);
-        }
-
-        return $record->owner_id !== null && $record->owner_id === $viewer->id;
+        return $viewer instanceof User && $record->canBeManagedBy($viewer);
     }
 
     /**

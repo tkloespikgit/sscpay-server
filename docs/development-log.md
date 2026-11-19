@@ -2,6 +2,24 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-19 法币渠道 WordPress 授权获取密钥（当前工作区，未部署）
+
+- [支付方式表单](../app/Filament/Resources/PaymentMethodResource.php)新增 WooCommerce 官方授权入口：填写域名后，在 WordPress 管理端批准读写权限，自动生成并回填 CK / CS。创建、编辑页共用交互，不提交其他草稿；用户保存时仍走原有持久化和配置同步，手工填写继续兼容。
+- [授权服务](../app/Services/WooCommerceAuthorizationService.php)使用 10 分钟随机令牌、独立请求标识、加密缓存及原子锁，绑定当前账号、商户身份和支付方式。回调和回填重新检查权限、账号状态及渠道归属；重复回调不能替换已接收密钥。修改网站、支付类型或手工密钥时取消本次回填。只新增独立 web 回调，不变更商户 API、商城插件协议、依赖或表结构。运行要求见[部署说明](../doc/deployment.md#33-法币渠道-wordpress-授权)。
+- SQLite 内存库六组关联回归通过，共 92 项测试、714 条断言，含 [36 项授权回归](../tests/Feature/WooCommerceAuthorizationTest.php)。Pint、`plugins:check` 和 `git diff --check` 通过。`npm run build` 被本机 Node 20.1.0 缺失 ICU 72 动态库阻塞；浏览器预览工具超时，真实 WordPress 管理员授权及公网回调尚未联调。
+
+## 2026-11-19 仪表板统计页签（当前工作区，未部署）
+
+- 首页默认显示“数据统计”总览，其后依次是有权限查看的代理统计、商户统计、应用统计和支付统计。顶部筛选随页签切换保留，移除侧栏“数据报表”入口。[仪表板](../app/Filament/Pages/AdminDashboard.php)
+- 代理统计仅供超级管理员访问，按商户当前归属汇总，没有商户级管理员归属的交易列为“平台直管”。[查询服务](../app/Services/OrderStatsQueryService.php)
+- SQLite 内存库六组关联回归通过，共 147 项测试、642 条断言。Pint、Vite 构建和 `git diff --check` 通过。
+
+## 2026-11-19 仪表板筛选与数据报表（当前工作区，未部署）
+
+- [仪表板](../app/Filament/Pages/AdminDashboard.php)新增按账号角色显示的代理、商户、应用和支付方式筛选，逐级联动，并与统计周期一起作用于首页订单指标。[查询服务](../app/Services/DashboardService.php)在每次读取时限定当前账号的商户范围，校验选项与所属关系。
+- 支付方式、应用和商户统计明细移到首页，仪表板下方的“数据报表”直达明细区。移除原订单统计菜单，旧地址保留订单查看权限及手动重算操作。见 [D-69](decisions.md#d-69-仪表盘统一筛选与统计明细)。
+- SQLite 内存库验证六组相关测试，共 141 项测试、582 条断言。Pint、Vite 构建和 `git diff --check` 通过。
+
 ## 2026-11-19 区块链付款页单卡片（当前工作区，未部署）
 
 - 付款页以商户订单号为标题，在同一卡片内展示原始订单金额、应付数量、币种标签和收款网络。到账用已收到／未收到进度条表示。地址和金额旁各有复制图标，支持打开钱包时与核查按钮并排展示。[页面模板](../resources/views/payment/crypto.blade.php)

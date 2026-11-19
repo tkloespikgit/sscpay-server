@@ -11,6 +11,7 @@
 - [2. 目录与权限（www-data 属主）](#2-目录与权限www-data-属主)
 - [3. 生产环境变量（.env）](#3-生产环境变量env)
 - [3.1 Telegram 快速绑定](#31-telegram-快速绑定)
+- [3.3 法币渠道 WordPress 授权](#33-法币渠道-wordpress-授权)
 - [4. Crontab 定时任务](#4-crontab-定时任务)
 - [5. Supervisor 队列 Worker](#5-supervisor-队列-worker)
 - [6. 日志轮转（logrotate）](#6-日志轮转logrotate)
@@ -353,6 +354,14 @@ php artisan queue:restart --no-interaction
 两轮查询不等于两次 HTTP 调用：分页、链身份／链头、ETH 内部转账和发现交易后的 RPC 核验分别计费。真实测试需记录 Tatum Credits、索引延迟、各网络 API 权限及完成耗时。
 
 ---
+
+### 3.3 法币渠道 WordPress 授权
+
+新增或编辑法币支付方式时，填写 WordPress 网站 HTTPS 地址，点击「WordPress 授权获取 CK / CS」，再在新标签页用该站管理员账号批准 WooCommerce 读写授权。原支付方式弹窗会自动回填新生成的 CK / CS，之后仍需保存支付方式。已有密钥可继续手工填写。
+
+网站需已启用 WooCommerce。`APP_URL` 必须是 WordPress 服务器可访问的公网 HTTPS 地址，并允许向 `/integrations/woocommerce/authorization/{token}` 投递 JSON POST；此入口不使用商户 API 签名或后台会话，而使用本次授权的随机令牌和请求标识。多实例部署须沿用共享缓存，回调与后台页面才能读取同一份授权状态。不要给此路径加交互式登录或浏览器挑战。
+
+授权链接 10 分钟有效。请保留原弹窗；过期、取消授权、关闭弹窗后未回填时，可重新发起。授权期间修改网站、支付类型或手工密钥会取消本次回填。本地开发域名通常无法接收公网回调，可手工填写密钥。新版本无需新增迁移、WordPress 插件或部署命令，沿用 `deploy.sh` 的代码、视图及路由缓存更新；真实站点回调连通性仍需在公网环境验收。
 
 ## 4. Crontab 定时任务
 

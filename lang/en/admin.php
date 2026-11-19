@@ -436,8 +436,8 @@ return [
             'is_active' => 'Enabled',
             'config_map' => 'Config Template',
             'domain' => 'Website Domain',
-            'domain_client_id' => 'Domain Client ID',
-            'domain_client_sk' => 'Domain Client SK',
+            'domain_client_id' => 'Consumer Key (CK)',
+            'domain_client_sk' => 'Consumer Secret (CS)',
             'order_account' => 'Order Creation Account',
             'order_password' => 'Order Creation Password',
             'config_account' => 'Config Creation Account',
@@ -498,6 +498,21 @@ return [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
             'method_code_duplicate' => 'This method code is already in use: method codes are globally unique across all merchant-level and system-level payment methods.',
             'owner_invalid' => 'Choose an active platform administrator account that has not been deleted.',
+        ],
+        'woocommerce' => [
+            'action' => 'Get CK / CS via WordPress',
+            'heading' => 'Connect WordPress / WooCommerce',
+            'description' => 'Open the website, sign in as an administrator and approve read/write access to generate and fill in new CK / CS automatically. You can also enter existing keys manually.',
+            'open' => 'Authorize in WordPress',
+            'waiting' => 'Waiting for authorization. This link expires in 10 minutes. Keep this window open to receive the keys automatically.',
+            'requirements' => 'WooCommerce must be installed and active. The WordPress server must be able to reach this system over HTTPS. Enter keys manually if a local development domain cannot receive public callbacks.',
+            'ready' => 'CK / CS filled in. Save the payment method to apply them.',
+            'expired' => 'Authorization expired or is unavailable. Try again or enter CK / CS manually.',
+            'changed' => 'Website settings changed. This authorization was cancelled. Please try again.',
+            'https_required' => 'Automatic authorization requires a publicly accessible HTTPS APP_URL. You can also enter CK / CS manually.',
+            'too_many_attempts' => 'Too many authorization attempts. Please try again later.',
+            'return_title' => 'Return to the payment method',
+            'return_description' => 'The original payment method window will check the authorization result automatically. Save the payment method after CK / CS are filled in. If authorization was cancelled or the keys did not arrive, try again or enter them manually. You can close this tab.',
         ],
         'match_modes' => [
             'match' => 'Match',
@@ -908,7 +923,7 @@ return [
     'order' => [
         'model_label' => 'Order',
         'model_label_plural' => 'Orders',
-        'nav_label' => 'Orders',
+        'nav_label' => 'Order List',
         'after_sale' => [
             'refunds' => 'Refunded Orders',
             'chargebacks' => 'Chargeback Orders',
@@ -1264,7 +1279,7 @@ return [
     'order_dispute_event' => [
         'model_label' => 'Dispute Review Event',
         'model_label_plural' => 'Dispute Review Events',
-        'nav_label' => 'Dispute Review Events',
+        'nav_label' => 'Dispute Review',
         'statuses' => [
             'processing' => 'Processing',
             'closed' => 'Closed',
@@ -1663,13 +1678,23 @@ return [
     ],
 
     'dashboard' => [
+        'overview' => 'Statistics',
         'filters' => [
-            'period' => 'Transaction date range',
+            'period' => 'Reporting Period',
+            'owner' => 'Agent (Merchant Administrator)',
+            'invalid_selection' => 'Select a valid filter option.',
             'custom_heading' => 'Custom date range',
             'date_from' => 'Start date',
             'date_to' => 'End date',
             'apply' => 'Apply range',
         ],
+        'breakdowns' => [
+            'owner' => 'Agent Statistics',
+            'merchant' => 'Merchant Statistics',
+            'application' => 'Application Statistics',
+            'payment_method' => 'Payment Statistics',
+        ],
+        'direct_management' => 'Platform Managed',
         'periods' => [
             'today' => 'Today',
             'yesterday' => 'Yesterday',

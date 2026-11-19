@@ -25,6 +25,8 @@ class OrderEventResource extends Resource
 
     protected static string|\UnitEnum|null $navigationGroup = null;
 
+    protected static bool $shouldRegisterNavigation = false;
+
     public static function getNavigationGroup(): ?string
     {
         return __('admin.nav.order_management');

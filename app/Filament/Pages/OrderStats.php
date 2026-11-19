@@ -6,6 +6,7 @@ use App\Filament\Widgets\OrderStatsBreakdownTable;
 use App\Filament\Widgets\OrderStatsOverview;
 use App\Filament\Widgets\OrderStatsTrendChart;
 use App\Models\OrderStatsRun;
+use App\Models\User;
 use App\Services\DashboardService;
 use App\Services\OrderStatsAggregator;
 use App\Services\OrderStatsQueryService;
@@ -38,22 +39,7 @@ class OrderStats extends Page
 {
     use HasFiltersForm;
 
-    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-chart-bar';
-
-    protected static string|\UnitEnum|null $navigationGroup = null;
-
-    /** 排在「订单管理」分组里订单、争议之后。 */
-    protected static ?int $navigationSort = 40;
-
-    public static function getNavigationGroup(): ?string
-    {
-        return __('admin.nav.order_management');
-    }
-
-    public static function getNavigationLabel(): string
-    {
-        return __('admin.order_stats.nav_label');
-    }
+    protected static bool $shouldRegisterNavigation = false;
 
     public function getTitle(): string
     {
@@ -65,14 +51,11 @@ class OrderStats extends Page
      * 另开一个权限——新权限要连带改 Permissions、两个 RoleProvisioning 服务，
      * 还得写一次性 rollout 命令给存量商户补发，否则除超管外全员不可见。
      */
-    public static function shouldRegisterNavigation(): bool
-    {
-        return (bool) auth()->user()?->can(Permissions::ORDERS_VIEW);
-    }
-
     public static function canAccess(array $parameters = []): bool
     {
-        return static::shouldRegisterNavigation();
+        $user = auth()->user();
+
+        return $user instanceof User && $user->status && $user->can(Permissions::ORDERS_VIEW);
     }
 
     public function filtersForm(Schema $schema): Schema

@@ -248,6 +248,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 - `exchange_rates`：当前汇率，`base_currency + target_currency` 唯一；下单汇率数据源。
 - `exchange_rate_histories`：追加式历史展示数据，不参与下单金额计算。
 - `order_daily_stats`：按 `stat_date + merchant_id + application_id + payment_method_id` 唯一；渠道 ID `0` 表示未知维度，刻意不设渠道外键，避免删除渠道改写汇总维度。仪表盘全部交易指标由此表读取，余额另读商户当前值。
+- 代理统计在读取时按商户当前 `owner_id` 分组。平台直管及没有商户级管理员归属的历史记录归入“平台直管”。商户转移代理后，历史统计随当前归属展示。
 - `order_stats_runs`：每个统计日的执行完成记录；`rows_written=0` 表示已算但无交易，与未运行区分。`metrics_version` 默认 1 保留旧执行事实，新聚合版本为 2；旧版本日期需重算才具备新计数字段，不清空旧记录。
 
 | 指标 | 归日时间 | 金额口径 |
