@@ -426,7 +426,7 @@ return [
             'assigned_merchants' => '分配给以下商户使用',
             'merchant_or_owner' => '所属商户 / 管理员',
             'owner' => '归属管理员',
-            'method_code' => '支付方式代码',
+            'method_code' => '标识',
             'method_name' => '名称',
             'display_name' => '展示名称',
             'is_active' => '启用',
@@ -465,6 +465,9 @@ return [
             'site_products_summary_synced_at' => '上次同步时间',
         ],
         'help' => [
+            'method_name' => '输入名称自动生成标识，中文转为拼音；手动修改标识后保留自定义值。',
+            'method_code' => '支持大小写英文字母、数字和下划线，最多 50 个字符，全局唯一，例如 PayPal_2026；可自行修改。',
+            'method_code_legacy' => '历史标识可保留原值；修改后支持大小写英文字母、数字和下划线，最多 50 个字符，全局唯一。',
             'display_name' => '商户交易列表中显示的名称，留空则使用名称；管理员仍显示名称。',
             'merchant_blank_for_system_level' => '留空表示创建系统级支付方式（挂在自己名下），可在下方分配给多个商户使用；商户只能使用，不能修改配置',
             'assigned_merchants' => '被分配的商户可在自己的支付组里勾选使用这条支付方式，但不能修改配置、删除、复制或触发同步；取消分配会自动把该商户支付组里对这条支付方式的引用一并摘除',
@@ -492,7 +495,8 @@ return [
         ],
         'validation' => [
             'domain_format' => '网站域名格式不正确，需为 https://example.com 这样的完整地址',
-            'method_code_duplicate' => '该支付方式代码已被占用：代码全局唯一，不区分商户级与系统级，请换一个',
+            'method_code_format' => '标识仅支持大小写英文字母、数字和下划线，例如 PayPal_2026。',
+            'method_code_duplicate' => '该标识已被占用：标识全局唯一，不区分商户级与系统级，请换一个',
             'owner_invalid' => '请选择启用且未删除的平台管理员账号',
         ],
         'woocommerce' => [
@@ -521,7 +525,7 @@ return [
             'alnum' => '大写字母+数字组合',
         ],
         'columns' => [
-            'code' => '代码',
+            'code' => '标识',
             'product_match_mode' => '匹配模式',
             'site_products_count' => '站点商品数',
             'sync_status' => '商品同步状态',

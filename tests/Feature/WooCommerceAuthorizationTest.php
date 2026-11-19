@@ -49,7 +49,7 @@ class WooCommerceAuthorizationTest extends TestCase
         $map = PaymentMethodConfigMap::create(['name' => 'Test Gateway', 'payment_config_tag' => 'stripe', 'fields' => []]);
         Http::preventStrayRequests();
         $page = Livewire::actingAs($admin)->test(CreatePaymentMethod::class)->fillForm([
-            'merchant_id' => $this->merchant->id, 'method_code' => 'connected-channel',
+            'merchant_id' => $this->merchant->id, 'method_code' => 'connected_channel',
             'method_name' => 'Draft channel name', 'domain' => self::DOMAIN, 'config_map_id' => $map->id,
         ])->mountAction(TestAction::make('authorizeWooCommerce')->schemaComponent('domain'))
             ->assertActionMounted(TestAction::make('authorizeWooCommerce')->schemaComponent('domain'));
@@ -82,7 +82,7 @@ class WooCommerceAuthorizationTest extends TestCase
         $page->call('create')->assertHasNoFormErrors();
 
         $this->assertDatabaseHas('payment_methods', [
-            'method_code' => 'connected-channel', 'merchant_id' => $this->merchant->id,
+            'method_code' => 'connected_channel', 'merchant_id' => $this->merchant->id,
             'domain_client_id' => self::KEY, 'domain_client_sk' => self::SECRET, 'payment_config_id' => 'authorized-config',
         ]);
         Http::assertSentCount(1);

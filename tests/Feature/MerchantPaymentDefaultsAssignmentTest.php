@@ -352,7 +352,7 @@ class MerchantPaymentDefaultsAssignmentTest extends TestCase
 
         Livewire::test(CreatePaymentMethod::class)->fillForm([
             'merchant_id' => null, 'assignedMerchants' => [$merchant->id],
-            'method_code' => 'filament-create', 'method_name' => 'Filament Create',
+            'method_code' => 'filament_create', 'method_name' => 'Filament Create',
             'domain' => 'https://shop.example.com', 'domain_client_id' => 'ck_test', 'domain_client_sk' => 'cs_test',
             'product_match_mode' => 'MATCH', 'fee_percent' => '9',
         ])->call('create')->assertHasNoFormErrors()->assertRedirect();

@@ -233,6 +233,97 @@ class OrderListFiltersTest extends TestCase
             ->assertNoFileDownloaded();
     }
 
+    #[TestWith(['merchant', false])]
+    #[TestWith(['manager', false])]
+    #[TestWith(['super_admin', false])]
+    #[TestWith(['manager', true])]
+    public function test_downloaded_payment_method_column_follows_the_account_type_and_uses_the_name(string $accountType, bool $archived): void
+    {
+        $this->freezeTime();
+        $actor = User::factory()->create([
+            'merchant_id' => $accountType === 'merchant' ? $this->merchant->id : null,
+            'is_super_admin' => $accountType === 'super_admin', 'status' => true,
+        ]);
+        $actor->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::LOGISTICS_IMPORTS_MANAGE]);
+        $this->merchant->update(['owner_id' => $actor->id]);
+        $method = $this->makePaymentMethod('Internal_Channel_2026');
+        $method->update(['method_name' => 'Private channel name', 'display_name' => 'Merchant display label']);
+        $this->makeOrder('SSC-ROLE-EXPORT', 'M-ROLE-EXPORT', [
+            'payment_method_id' => $method->id, 'payment_method' => $method->method_code,
+            'amount' => '100.50', 'converted_amount' => '109.25',
+        ]);
+        if ($archived) {
+            $method->delete();
+        }
+        $this->actingAs($actor);
+        Filament::setCurrentPanel($accountType === 'merchant' ? 'merchant' : 'admin');
+
+        $page = Livewire::test(ListOrders::class)->callAction('exportLogisticsTemplate')
+            ->assertFileDownloaded('logistics_template_'.now()->format('Ymd_His').'.xlsx');
+
+        $contents = base64_decode($page->effects['download']['content'], true);
+        $this->assertIsString($contents);
+        $rows = $this->spreadsheetRows($contents);
+        $this->assertNotContains(null, $rows[0]);
+        $data = array_combine($rows[0], $rows[2]);
+        $this->assertSame('SSC-ROLE-EXPORT', $data['order_no']);
+        $this->assertSame(100.5, $data['amount']);
+        $this->assertSame(109.25, $data['converted_amount']);
+        $this->assertNotContains('Internal_Channel_2026', $rows[2]);
+        $this->assertNotContains('Merchant display label', $rows[2]);
+
+        if ($accountType === 'merchant') {
+            $this->assertNotContains('payment_method_name', $rows[0]);
+            $this->assertNotContains('Private channel name', $rows[2]);
+        } else {
+            $this->assertSame('Private channel name', $data['payment_method_name']);
+        }
+    }
+
+    public function test_export_without_an_explicit_actor_omits_payment_method_even_in_an_admin_session(): void
+    {
+        $method = $this->makePaymentMethod('private_route');
+        $method->update(['method_name' => 'Private channel name']);
+        $this->makeOrder('SSC-PRIVATE', 'M-PRIVATE', ['payment_method_id' => $method->id, 'payment_method' => $method->method_code]);
+
+        $rows = $this->spreadsheetRows(app(LogisticsImportService::class)->generateTemplate(null, Order::query()));
+
+        $this->assertNotContains('payment_method_name', $rows[0]);
+        $this->assertNotContains('Private channel name', $rows[2]);
+        $this->assertNotContains('private_route', $rows[2]);
+    }
+
+    #[TestWith(['merchant'])]
+    #[TestWith(['disabled'])]
+    #[TestWith(['permission_revoked'])]
+    public function test_export_rechecks_current_account_access_before_including_payment_method(string $change): void
+    {
+        $actor = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false, 'status' => true]);
+        $actor->givePermissionTo(Permissions::LOGISTICS_IMPORTS_MANAGE);
+        $this->makeOrder('SSC-CURRENT-ROLE', 'M-CURRENT-ROLE');
+        match ($change) {
+            'merchant' => User::query()->whereKey($actor)->update(['merchant_id' => $this->merchant->id]),
+            'disabled' => User::query()->whereKey($actor)->update(['status' => false]),
+            'permission_revoked' => $actor->revokePermissionTo(Permissions::LOGISTICS_IMPORTS_MANAGE),
+        };
+
+        $rows = $this->spreadsheetRows(app(LogisticsImportService::class)->generateTemplate(null, Order::query(), $actor));
+
+        $this->assertNotContains('payment_method_name', $rows[0]);
+    }
+
+    public function test_platform_export_does_not_replace_a_missing_payment_method_name_with_the_identifier(): void
+    {
+        $this->makeOrder('SSC-LEGACY-EXPORT', 'M-LEGACY-EXPORT', ['payment_method' => 'Missing_Channel_2026']);
+
+        $rows = $this->spreadsheetRows(app(LogisticsImportService::class)->generateTemplate(null, Order::query(), auth()->user()));
+
+        $this->assertContains('payment_method_name', $rows[0]);
+        $data = array_combine($rows[0], $rows[2]);
+        $this->assertEmpty($data['payment_method_name']);
+        $this->assertNotContains('Missing_Channel_2026', $rows[2]);
+    }
+
     public function test_export_preserves_filters_and_merchant_permissions(): void
     {
         $otherMerchant = Merchant::create(['name' => 'Other Merchant', 'contact_person' => 'Other', 'contact_phone' => '123456', 'contact_email' => 'other@example.com']);

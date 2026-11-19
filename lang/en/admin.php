@@ -430,7 +430,7 @@ return [
             'assigned_merchants' => 'Assigned to Merchants',
             'merchant_or_owner' => 'Merchant / Administrator',
             'owner' => 'Managing Administrator',
-            'method_code' => 'Method Code',
+            'method_code' => 'Identifier',
             'method_name' => 'Name',
             'display_name' => 'Display Name',
             'is_active' => 'Enabled',
@@ -469,6 +469,9 @@ return [
             'site_products_summary_synced_at' => 'Last Synced At',
         ],
         'help' => [
+            'method_name' => 'The name generates an identifier automatically, with Chinese converted to pinyin. Manual identifier changes are preserved.',
+            'method_code' => 'Uppercase and lowercase English letters, digits and underscores, up to 50 characters, globally unique, e.g. PayPal_2026. You can edit it manually.',
+            'method_code_legacy' => 'You can keep the existing identifier. A replacement must use only uppercase and lowercase English letters, digits and underscores, up to 50 characters, and be globally unique.',
             'display_name' => 'Shown in the merchant transaction list. Leave blank to use the name. Administrators still see the name.',
             'merchant_blank_for_system_level' => 'Leave blank to create a system-level payment method (owned by you); it can then be assigned to multiple merchants below. Assigned merchants can use it but cannot change its configuration.',
             'assigned_merchants' => 'Assigned merchants can pick this payment method in their own payment groups, but cannot edit its configuration, delete it, duplicate it, or trigger a sync. Removing a merchant here also detaches this payment method from that merchant\'s payment groups automatically.',
@@ -496,7 +499,8 @@ return [
         ],
         'validation' => [
             'domain_format' => 'Invalid domain format. Please enter a full URL like https://example.com',
-            'method_code_duplicate' => 'This method code is already in use: method codes are globally unique across all merchant-level and system-level payment methods.',
+            'method_code_format' => 'The identifier may contain only uppercase and lowercase English letters, digits and underscores, e.g. PayPal_2026.',
+            'method_code_duplicate' => 'This identifier is already in use: identifiers are globally unique across all merchant-level and system-level payment methods.',
             'owner_invalid' => 'Choose an active platform administrator account that has not been deleted.',
         ],
         'woocommerce' => [
@@ -525,7 +529,7 @@ return [
             'alnum' => 'Uppercase letters + digits',
         ],
         'columns' => [
-            'code' => 'Code',
+            'code' => 'Identifier',
             'product_match_mode' => 'Match Mode',
             'site_products_count' => 'Site Products',
             'sync_status' => 'Product Sync Status',

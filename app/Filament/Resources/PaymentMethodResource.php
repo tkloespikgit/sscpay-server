@@ -140,60 +140,58 @@ class PaymentMethodResource extends Resource
                             }
                         })
                         ->columnSpanFull(),
-                    Section::make(__('admin.payment_method.authorization.action'))
-                        ->description(fn (string $operation): string => __('admin.payment_method.authorization.'.($operation === 'create' ? 'create_description' : 'description')))
-                        ->contained(false)
-                        ->visible(fn (Get $get, ?PaymentMethod $record): bool => blank($get('merchant_id'))
-                            && PaymentMethodMerchantAssignmentService::canManage(auth()->user(), $record))
-                        ->schema([
-                            ViewField::make('assignedMerchants')
-                                ->label(__('admin.payment_method.fields.assigned_merchants'))
-                                ->hiddenLabel()
-                                ->view('filament.resources.payment-method-resource.merchant-authorization')
-                                ->default([])
-                                ->rules(fn (string $operation, PaymentMethodMerchantAssignmentService $service): array => $operation === 'create'
-                                    ? ['array', 'list', Rule::in($service->merchants(auth()->user())->modelKeys())]
-                                    : [])
-                                ->dehydrated(fn (string $operation): bool => $operation === 'create')
-                                ->viewData(function (Get $get, ?PaymentMethod $record, PaymentMethodMerchantAssignmentService $service): array {
-                                    $merchants = $service->merchants(auth()->user(), $record);
-                                    $selectedIds = (array) ($get('assignedMerchants') ?? []);
+                    Grid::make(3)->schema([
+                        TextInput::make('method_name')
+                            ->label(__('admin.payment_method.fields.method_name'))
+                            ->helperText(fn (string $operation): ?string => $operation === 'create' ? __('admin.payment_method.help.method_name') : null)
+                            ->required()
+                            ->maxLength(50)
+                            ->live(debounce: 500)
+                            ->afterStateUpdated(function (Get $get, Set $set, ?string $old, ?string $state, string $operation): void {
+                                if ($operation !== 'create') {
+                                    return;
+                                }
 
-                                    return ['columns' => [
-                                        'unassigned' => $record === null ? $merchants->whereNotIn('id', $selectedIds) : $merchants->where('is_assigned', false),
-                                        'assigned' => $record === null ? $merchants->whereIn('id', $selectedIds) : $merchants->where('is_assigned', true),
-                                    ]];
-                                })
-                                ->columnSpanFull(),
-                        ])
-                        ->columnSpanFull(),
-                    Textarea::make('remark')
-                        ->label(__('admin.payment_method.fields.remark'))
-                        ->maxLength(5000)
-                        ->rows(3)
-                        ->columnSpanFull(),
-                    TextInput::make('method_code')
-                        ->label(__('admin.payment_method.fields.method_code'))
-                        ->required()
-                        ->maxLength(50)
-                        ->placeholder('paypal / stripe')
-                        // 数据库层是靠生成列 method_code_uniq 做的软删安全全局唯一索引
-                        // （method_code 在所有未删除记录之间不能重复，不分商户/系统级），
-                        // 这里复刻同样的判断规则，保证冲突时是友好的表单校验提示，而不是
-                        // 未捕获的 SQL 唯一键冲突异常直接抛到用户面前。
-                        // unique() 走的是 Laravel 原生 Rule::unique（直接查表、不经过
-                        // Eloquent 全局 Scope），天然是全局口径——商户级管理员当前看不到的
-                        // 其它商户/其它管理员的记录同样会算进冲突范围，正是我们要的。
-                        // whereNull('deleted_at') 用于对齐生成列"只有未删除记录参与唯一性"
-                        // 的语义，否则已软删记录的 code 会被误判成占用、永远无法复用。
-                        ->unique(
-                            ignoreRecord: true,
-                            modifyRuleUsing: fn (Unique $rule) => $rule->whereNull('deleted_at'),
-                        )
-                        ->validationMessages([
-                            'unique' => __('admin.payment_method.validation.method_code_duplicate'),
-                        ]),
-                    TextInput::make('method_name')->label(__('admin.payment_method.fields.method_name'))->required()->maxLength(50),
+                                $identifier = (string) $get('method_code');
+                                if ($identifier !== '' && $identifier !== static::identifierFromName($old)) {
+                                    return;
+                                }
+
+                                $set('method_code', static::identifierFromName($state));
+                            })
+                            ->columnSpan(1),
+                        TextInput::make('method_code')
+                            ->label(__('admin.payment_method.fields.method_code'))
+                            ->helperText(fn (?PaymentMethod $record): string => __('admin.payment_method.help.'.($record !== null && ! preg_match('/\A[A-Za-z0-9_]+\z/', $record->method_code) ? 'method_code_legacy' : 'method_code')))
+                            ->required()
+                            ->maxLength(50)
+                            ->placeholder('PayPal_2026')
+                            ->live(onBlur: true)
+                            ->regex(fn (Get $get, ?PaymentMethod $record): ?string => $record !== null && $get('method_code') === $record->method_code ? null : '/\A[A-Za-z0-9_]+\z/')
+                            // 数据库层是靠生成列 method_code_uniq 做的软删安全全局唯一索引
+                            // （method_code 在所有未删除记录之间不能重复，不分商户/系统级），
+                            // 这里复刻同样的判断规则，保证冲突时是友好的表单校验提示，而不是
+                            // 未捕获的 SQL 唯一键冲突异常直接抛到用户面前。
+                            // unique() 走的是 Laravel 原生 Rule::unique（直接查表、不经过
+                            // Eloquent 全局 Scope），天然是全局口径——商户级管理员当前看不到的
+                            // 其它商户/其它管理员的记录同样会算进冲突范围，正是我们要的。
+                            // whereNull('deleted_at') 用于对齐生成列"只有未删除记录参与唯一性"
+                            // 的语义，否则已软删记录的 code 会被误判成占用、永远无法复用。
+                            ->unique(
+                                ignoreRecord: true,
+                                modifyRuleUsing: fn (Unique $rule) => $rule->whereNull('deleted_at'),
+                            )
+                            ->validationMessages([
+                                'regex' => __('admin.payment_method.validation.method_code_format'),
+                                'unique' => __('admin.payment_method.validation.method_code_duplicate'),
+                            ])
+                            ->columnSpan(1),
+                        TextInput::make('display_name')
+                            ->label(__('admin.payment_method.fields.display_name'))
+                            ->helperText(__('admin.payment_method.help.display_name'))
+                            ->maxLength(100)
+                            ->columnSpan(1),
+                    ])->columnSpanFull(),
                     Radio::make('payment_type')
                         ->label(__('crypto.payment_type'))
                         ->options(['fiat' => __('crypto.fiat'), 'crypto' => __('crypto.crypto')])
@@ -203,16 +201,10 @@ class PaymentMethodResource extends Resource
                         ->afterStateUpdated(function (Set $set): void {
                             $set('config_map_id', null);
                             $set('config', []);
-                        })
-                        ->columnSpanFull(),
+                        }),
                     Placeholder::make('crypto_configuration_help')->hiddenLabel()
                         ->content(__('crypto.configuration_help').' '.__('crypto.public_derivation_help'))
-                        ->visible(fn (Get $get): bool => $get('payment_type') === 'crypto')->columnSpanFull(),
-                    TextInput::make('display_name')
-                        ->label(__('admin.payment_method.fields.display_name'))
-                        ->helperText(__('admin.payment_method.help.display_name'))
-                        ->maxLength(100),
-
+                        ->visible(fn (Get $get): bool => $get('payment_type') === 'crypto'),
                     Toggle::make('is_active')->label(__('admin.payment_method.fields.is_active'))->default(true)->inline(false),
                     Toggle::make('sync_logistics')
                         ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
@@ -225,7 +217,11 @@ class PaymentMethodResource extends Resource
                         ->helperText(__('admin.payment_method.help.allow_returned_source'))
                         ->default(true)
                         ->inline(false),
-
+                    Textarea::make('remark')
+                        ->label(__('admin.payment_method.fields.remark'))
+                        ->maxLength(5000)
+                        ->rows(3)
+                        ->columnSpanFull(),
                     TextEntry::make('divider')
                         ->hiddenLabel() // V5 推荐用 ->hiddenLabel() 代替 ->label('')
                         ->state(new HtmlString('<hr class="border-t border-gray-200 dark:border-gray-800 my-5" />'))
@@ -452,9 +448,44 @@ class PaymentMethodResource extends Resource
                                 return __('admin.payment_method.help.min_transaction_amount', ['amount' => $minAmount]);
                             }),
                     ])->columns(2),
+
+                Section::make(__('admin.payment_method.authorization.action'))
+                    ->description(fn (string $operation): string => __('admin.payment_method.authorization.'.($operation === 'create' ? 'create_description' : 'description')))
+                    ->visible(fn (Get $get, ?PaymentMethod $record): bool => blank($get('merchant_id'))
+                        && PaymentMethodMerchantAssignmentService::canManage(auth()->user(), $record))
+                    ->schema([
+                        ViewField::make('assignedMerchants')
+                            ->label(__('admin.payment_method.fields.assigned_merchants'))
+                            ->hiddenLabel()
+                            ->view('filament.resources.payment-method-resource.merchant-authorization')
+                            ->default([])
+                            ->rules(fn (string $operation, PaymentMethodMerchantAssignmentService $service): array => $operation === 'create'
+                                ? ['array', 'list', Rule::in($service->merchants(auth()->user())->modelKeys())]
+                                : [])
+                            ->dehydrated(fn (string $operation): bool => $operation === 'create')
+                            ->viewData(function (Get $get, ?PaymentMethod $record, PaymentMethodMerchantAssignmentService $service): array {
+                                $merchants = $service->merchants(auth()->user(), $record);
+                                $selectedIds = (array) ($get('assignedMerchants') ?? []);
+
+                                return ['columns' => [
+                                    'unassigned' => $record === null ? $merchants->whereNotIn('id', $selectedIds) : $merchants->where('is_assigned', false),
+                                    'assigned' => $record === null ? $merchants->whereIn('id', $selectedIds) : $merchants->where('is_assigned', true),
+                                ]];
+                            })
+                            ->columnSpanFull(),
+                    ])
+                    ->columnSpanFull(),
             ])->columnSpan(1),
 
         ]);
+    }
+
+    private static function identifierFromName(?string $name): string
+    {
+        $latinName = transliterator_transliterate('Any-Latin; Latin-ASCII', $name ?? '') ?: '';
+        $identifier = trim((string) preg_replace('/[^a-z0-9]+/', '_', strtolower($latinName)), '_');
+
+        return substr($identifier, 0, 50);
     }
 
     public static function table(Table $table): Table

@@ -353,7 +353,7 @@ class PaymentMethodAdministratorBoundaryTest extends TestCase
     private function creationData(): array
     {
         return [
-            'method_code' => 'draft-method', 'method_name' => 'Draft method',
+            'method_code' => 'draft_method', 'method_name' => 'Draft method',
             'domain' => 'https://shop.example.com', 'domain_client_id' => 'ck_test', 'domain_client_sk' => 'cs_test',
             'product_match_mode' => 'MATCH',
         ];

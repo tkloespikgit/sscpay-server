@@ -30,11 +30,11 @@ class CryptoPaymentMethodTest extends TestCase
         Http::preventStrayRequests();
 
         Livewire::test(CreatePaymentMethod::class)->fillForm([
-            'merchant_id' => $this->merchant->id, 'method_code' => 'crypto-create', 'method_name' => 'ETH payments',
+            'merchant_id' => $this->merchant->id, 'method_code' => 'crypto_create', 'method_name' => 'ETH payments',
             'payment_type' => 'crypto', 'config_map_id' => $map->id, 'config' => CryptoConfigurationTest::publicConfig(),
         ])->call('create')->assertHasNoFormErrors();
 
-        $method = PaymentMethod::query()->where('method_code', 'crypto-create')->sole();
+        $method = PaymentMethod::query()->where('method_code', 'crypto_create')->sole();
         $this->assertSame('crypto', $method->payment_type);
         $this->assertSame(CryptoConfigurationTest::publicConfig(), $method->config);
         $this->assertNull($method->domain_client_sk);
@@ -80,11 +80,11 @@ class CryptoPaymentMethodTest extends TestCase
         Http::preventStrayRequests();
 
         Livewire::test(CreatePaymentMethod::class)->fillForm([
-            'merchant_id' => $this->merchant->id, 'method_code' => 'bad-map', 'method_name' => 'Bad',
+            'merchant_id' => $this->merchant->id, 'method_code' => 'bad_map', 'method_name' => 'Bad',
             'payment_type' => 'crypto', 'config_map_id' => $fiat->config_map_id,
         ])->call('create')->assertHasFormErrors(['config_map_id']);
 
-        $this->assertDatabaseMissing('payment_methods', ['method_code' => 'bad-map']);
+        $this->assertDatabaseMissing('payment_methods', ['method_code' => 'bad_map']);
         Http::assertNothingSent();
     }
 

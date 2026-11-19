@@ -70,7 +70,7 @@ class ListOrders extends ListRecords
                     }
 
                     try {
-                        $contents = $service->generateTemplate(null, $query);
+                        $contents = $service->generateTemplate(null, $query, $user);
                     } catch (OverflowException) {
                         Notification::make()
                             ->title(__('admin.order.actions.export_too_many_rows'))

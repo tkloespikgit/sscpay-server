@@ -347,7 +347,7 @@
 
 **原因与影响：** 支付方式禁止跨商户级管理员新增分配，超级管理员代操作也按渠道与商户的归属判断。Pivot 写入及双向页面入口都校验。平台直管商户（无 `owner_id`）只接受超管归属或历史无归属系统渠道，不能使用普通商户级管理员渠道进行新分配。历史跨管理员授权关系保留，不批量修改既有渠道使用、支付组、订单和账务；管理员不再从历史授权关系看到对方渠道。
 
-支付方式编辑页移除管理员转交动作并锁定已有商户归属，顶部显示管理员标签；新增最多 5,000 字符的可空备注。原 `PaymentMethodOwnershipService` 保留为无页面入口的内部方法，拒绝会使现有分配跨管理员的转交。按用户后续澄清，编辑页授权放在“所属商户”选择框下的常驻双栏点选面板，不使用弹窗；仅未设置所属商户的系统级支付方式显示，商户自有支付方式隐藏。按名称/ID 搜索并立即保存，主表单不提交已有分配字段。新授权复制商户最新已保存的手续费、保证金和结算默认值，已有独立值不覆盖；明确撤销清理分配、该商户含软删除支付组引用及独立财务配置，重新授权重新初始化。此规则替代 [D-22](#d-22-商户默认财务配置按分配复制) 和 [D-27](#d-27-商户编辑页集中授权系统支付渠道) 中“原支付方式编辑页取消保留配置”的旧约定；直接 Pivot 解除关系仍保留配置。
+支付方式编辑页移除管理员转交动作并锁定已有商户归属，顶部显示管理员标签；新增最多 5,000 字符的可空备注。原 `PaymentMethodOwnershipService` 保留为无页面入口的内部方法，拒绝会使现有分配跨管理员的转交。按用户后续调整，创建、编辑页授权放在手续费配置下方的独立常驻双栏面板，不使用弹窗；仅未设置所属商户的系统级支付方式显示，商户自有支付方式隐藏。按名称/ID 搜索并立即保存，主表单不提交已有分配字段。新授权复制商户最新已保存的手续费、保证金和结算默认值，已有独立值不覆盖；明确撤销清理分配、该商户含软删除支付组引用及独立财务配置，重新授权重新初始化。此规则替代 [D-22](#d-22-商户默认财务配置按分配复制) 和 [D-27](#d-27-商户编辑页集中授权系统支付渠道) 中“原支付方式编辑页取消保留配置”的旧约定；直接 Pivot 解除关系仍保留配置。
 
 **依据：** [PaymentMethod](../app/Models/PaymentMethod.php)、[MerchantPaymentMethod](../app/Models/MerchantPaymentMethod.php)、[PaymentMethodResource](../app/Filament/Resources/PaymentMethodResource.php)、[PaymentMethodMerchantAssignmentService](../app/Services/PaymentMethodMerchantAssignmentService.php)、[管理员边界测试](../tests/Feature/PaymentMethodAdministratorBoundaryTest.php)。
 
@@ -763,3 +763,11 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **影响：** 首页交易指标和明细共用已确认的筛选条件及原日汇总口径。明细沿用 `orders.view`，商户分组限平台人员，代理分组仅超级管理员可查。代理统计按商户当前归属汇总，没有商户级管理员归属的交易归入“平台直管”。余额卡继续读取实时余额。首页读取预先聚合的数据，聚合与手动刷新仍走既有入口。
 
 **依据：** [仪表盘](../app/Filament/Pages/AdminDashboard.php)、[筛选与查询](../app/Services/DashboardService.php)、[明细表](../app/Filament/Widgets/OrderStatsBreakdownTable.php)、[页面测试](../tests/Feature/AdminDashboardTest.php)、[统计范围测试](../tests/Feature/DashboardOrderStatsAlignmentTest.php)。
+
+## D-70 订单导出按账号类型控制支付方式列
+
+**状态：当前工作区实现，未部署（2026-11-19，按用户要求）。** 商户在订单列表下载物流模板时，不输出支付方式列；商户级管理员和超级管理员输出支付方式的“名称”（`method_name`），不使用标识或展示名称替代。可见的软删除渠道保留名称，无法解析关联名称时留空。
+
+**原因与影响：** 商户导出不包含内部渠道资料，平台账号仍可用名称核对订单。`LogisticsImportService::generateTemplate()` 接收明确的导出账号，重新读取其当前身份、启用状态和物流导出权限决定列；缺省不输出支付方式。订单查询继续沿用已有授权范围、筛选与分批读取。表头、说明行与金额列位置同步调整，文本单元格与数值金额格式保持原口径，商户可继续填写并上传模板；旧模板也能导入。观察者的独立导出沿用原有授权及字段，不变更商户 API 或商城插件协议。
+
+**依据：** [订单列表导出入口](../app/Filament/Resources/OrderResource/Pages/ListOrders.php)、[模板导出与导入](../app/Services/LogisticsImportService.php)、[账号类型导出回归](../tests/Feature/Filament/OrderListFiltersTest.php)、[模板回传回归](../tests/Feature/LogisticsTemplateTest.php)。

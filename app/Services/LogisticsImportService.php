@@ -7,6 +7,8 @@ use App\Models\Carrier;
 use App\Models\LogisticsImportTask;
 use App\Models\LogisticsImportTaskRecord;
 use App\Models\Order;
+use App\Models\User;
+use App\Support\Permissions;
 use App\Support\XlsxExport;
 use Carbon\Carbon;
 use Generator;
@@ -38,7 +40,8 @@ use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 class LogisticsImportService
 {
     /**
-     * 模板表头。列顺序即导出顺序，与后台订单列表展示的字段一一对应；
+     * 管理员模板的完整表头；商户导出时移除 payment_method_name。
+     * 列顺序即导出顺序，与后台订单列表展示的字段一一对应；
      * 表头用英文字段名（而不是中文标题）是为了让上传解析不依赖界面语言，
      * 商户填写时也只需照列名对号入座。
      */
@@ -145,10 +148,21 @@ class LogisticsImportService
      * @param  int|null  $merchantId  可选的单商户限制；null 时保留查询的权限范围与筛选。
      *                                调用方负责提供已授权的查询，不能移除租户 scope。
      * @param  Builder  $query  订单列表页已应用筛选/搜索的查询（ListOrders::getFilteredTableQuery()）
+     * @param  User|null  $actor  当前导出账号；缺省不输出支付方式，平台账号须核对当前状态和权限。
      * @return string XLSX 文件内容；非金额字段使用文本单元格，金额保留数值类型。
      */
-    public function generateTemplate(?int $merchantId, Builder $query): string
+    public function generateTemplate(?int $merchantId, Builder $query, ?User $actor = null): string
     {
+        $actor = $actor?->fresh();
+        $includePaymentMethod = $actor?->status && $actor->isPlatformStaff() && $actor->can(Permissions::LOGISTICS_IMPORTS_MANAGE);
+        $headers = array_values(array_filter(self::TEMPLATE_HEADERS,
+            fn (string $header): bool => $includePaymentMethod || $header !== 'payment_method_name'));
+        $relations = ['merchant', 'application', 'shipping'];
+
+        if ($includePaymentMethod) {
+            $relations[] = 'paymentMethod:id,method_name';
+        }
+
         // select('orders.*')：表格查询可能带着列的聚合子查询（withCount 等），
         // 导出只需要订单本身的字段，显式收敛 select 也顺便保证 lazyById() 能拿到 id。
         // lazyById 按主键分批取，内存占用与文件行数无关。
@@ -160,16 +174,16 @@ class LogisticsImportService
 
         $orders = $query
             ->select('orders.*')
-            ->with(['merchant', 'application', 'shipping', 'paymentMethod'])
+            ->with($relations)
             ->lazyById(self::CHUNK_SIZE);
 
-        $rows = function () use ($orders): Generator {
-            yield XlsxExport::row(self::TEMPLATE_HEADERS);
-            yield XlsxExport::row($this->templateNoteRow());
-            $amountColumns = array_keys(array_intersect(self::TEMPLATE_HEADERS, ['amount', 'converted_amount']));
+        $rows = function () use ($orders, $headers, $includePaymentMethod): Generator {
+            yield XlsxExport::row($headers);
+            yield XlsxExport::row($this->templateNoteRow(count($headers)));
+            $amountColumns = array_keys(array_intersect($headers, ['amount', 'converted_amount']));
 
             foreach ($orders as $order) {
-                yield XlsxExport::row(array_values($this->buildRow($order)), $amountColumns);
+                yield XlsxExport::row(array_values($this->buildRow($order, $includePaymentMethod)), $amountColumns);
             }
         };
 
@@ -240,9 +254,9 @@ class LogisticsImportService
      *
      * @return array<int, string>
      */
-    private function templateNoteRow(): array
+    private function templateNoteRow(int $columnCount): array
     {
-        $row = array_fill(0, count(self::TEMPLATE_HEADERS), '');
+        $row = array_fill(0, $columnCount, '');
         $row[0] = self::INSTRUCTION_PREFIX.' '.__('admin.order.actions.logistics_template_note');
 
         return $row;
@@ -252,7 +266,7 @@ class LogisticsImportService
      * 一行订单 -> TEMPLATE_HEADERS 顺序的取值。日期统一格式化成
      * 'Y-m-d H:i:s'，以文本保留系统时区下的完整时间。
      */
-    private function buildRow(Order $order): array
+    private function buildRow(Order $order, bool $includePaymentMethod): array
     {
         $shipping = $order->shipping;
 
@@ -266,7 +280,7 @@ class LogisticsImportService
             'transaction_id' => $order->transaction_id,
             // 交易状态是给人看的，按后台当前语言输出中文/英文名称
             'status' => __('admin.order.statuses.'.$order->status),
-            'payment_method_name' => $order->paymentMethod?->method_name ?? $order->payment_method,
+            ...($includePaymentMethod ? ['payment_method_name' => $order->paymentMethod?->method_name] : []),
             'amount' => number_format((float) $order->amount, 2, '.', ''),
             'currency' => mb_strtoupper((string) $order->currency),
             'converted_amount' => number_format((float) $order->converted_amount, 2, '.', ''),
