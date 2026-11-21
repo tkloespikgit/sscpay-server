@@ -1,0 +1,41 @@
+<?php
+/**
+ * Plugin Name: SSCPay 收款站私有初始化（激活一次后删除）
+ * Description: 为本站写入不回显的默认回调密钥，并保留正在使用的旧版凭证解密能力。
+ * Version: 1.0.0
+ * Update URI: false
+ * Requires PHP: 7.4
+ */
+
+use PaymentGatewayAggregator\Helpers\SiteCipher;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+add_filter('puc_request_info_query_args-sscpay-gateway-aggregator', static function (array $query): array {
+    if (defined('PGA_VERSION') && version_compare(PGA_VERSION, '1.15.2', '<') && get_option('pga_default_outbound_shared_secret', '') !== '') {
+        if (!class_exists(SiteCipher::class)) {
+            require_once __DIR__ . '/SiteCipher.php';
+        }
+        SiteCipher::preserveLegacyKey();
+        $query['site_prepared'] = '1';
+    }
+
+    return $query;
+});
+
+register_activation_hook(__FILE__, static function (bool $networkWide = false): void {
+    if ($networkWide) {
+        wp_die('请逐个收款站激活初始化包。');
+    }
+    if (!class_exists(SiteCipher::class)) {
+        require_once __DIR__ . '/SiteCipher.php';
+    }
+    SiteCipher::preserveLegacyKey();
+    $default = __CALLBACK_DEFAULT__;
+    update_option('pga_default_outbound_shared_secret', SiteCipher::protectCallbackSecret($default), false);
+    if (SiteCipher::readCallbackSecret(get_option('pga_default_outbound_shared_secret', '')) !== $default) {
+        wp_die('未能保存本站默认回调密钥，请勿继续升级。');
+    }
+});
