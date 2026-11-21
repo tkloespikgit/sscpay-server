@@ -55,6 +55,7 @@ class CreateOrderRequest extends FormRequest
             'customer.last_name' => ['required', 'string', 'max:100'],
             'customer.email' => ['required', 'email', 'max:255'],
             'customer.phone' => ['nullable', 'string', 'max:30'],
+            'customer_ip' => ['bail', 'nullable', 'string', 'max:45', 'ip'],
 
             'shipping_address.line1' => ['required', 'string', 'max:255'],
             'shipping_address.line2' => ['nullable', 'string', 'max:255'],
@@ -92,10 +93,13 @@ class CreateOrderRequest extends FormRequest
         ];
     }
 
+    public function validationData(): array
+    {
+        return array_replace(parent::validationData(), ['customer_ip' => $this->json('customer_ip')]);
+    }
+
     /**
-     * 把嵌套的 customer / shipping_address 展平成 OrderCreationService 期望的
-     * 扁平结构，同时补上客户端环境信息（IP / User-Agent / Accept-Language），
-     * 这些字段不来自请求体，而是 API 场景特有的、从 Request 本身读取。
+     * 展平客户与收货信息，商城上报的客户 IP 和历史 API 连接信息独立保存。
      */
     public function toOrderCreationData(): array
     {
@@ -112,6 +116,7 @@ class CreateOrderRequest extends FormRequest
             'shipping_state' => $validated['shipping_address']['state'] ?? null,
             'shipping_country' => $validated['shipping_address']['country'],
             'shipping_zip' => $validated['shipping_address']['zip'] ?? null,
+            'checkout_customer_ip' => $validated['customer_ip'] ?? null,
             'customer_ip' => $this->ip(),
             'user_agent' => $this->userAgent(),
             'accept_language' => $this->header('Accept-Language'),

@@ -53,7 +53,12 @@ trait CreatesCombinedPayments
 
     protected function createCombined(array $overrides = []): TestResponse
     {
-        return $this->signedCombinedRequest('/api/order/create', array_replace([
+        return $this->signedCombinedRequest('/api/order/create', $this->combinedCreationBody($overrides));
+    }
+
+    protected function combinedCreationBody(array $overrides = []): array
+    {
+        return array_replace([
             'merchant_order_no' => 'COMBINE-001', 'platform' => 'wordpress',
             'currency' => 'USD', 'group_key' => 'combine', 'subtotal' => '4000.00',
             'shipping_fee' => '0.00', 'discount' => '0.00', 'tax' => '0.00', 'amount' => '4000.00',
@@ -65,7 +70,7 @@ trait CreatesCombinedPayments
             ]],
             'notify_url' => 'https://shop.example.com/notify', 'return_url' => 'https://shop.example.com/return',
             'cancel_url' => 'https://shop.example.com/cancel',
-        ], $overrides));
+        ], $overrides);
     }
 
     protected function signedCombinedRequest(string $path, array $body, ?Application $application = null): TestResponse

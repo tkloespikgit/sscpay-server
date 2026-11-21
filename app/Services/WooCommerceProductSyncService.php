@@ -54,9 +54,7 @@ class WooCommerceProductSyncService
             throw new RuntimeException('站点配置不完整：缺少网站域名或 WooCommerce REST API 密钥');
         }
 
-        // 站点侧认证插件（WooKeyAuthenticator）不认标准 HTTP Basic Auth，明文 Authorization 头
-        // 也可能被本地/反代环境的 Web 服务器不转发给 PHP，改用 query 参数最可靠，
-        // 见 PaymentGatewayService::client() 的注释。
+        // 沿用旧商品插件和聚合插件均支持的 WooCommerce query 认证。
         $http = Http::withOptions(['query' => [
             'consumer_key' => $paymentMethod->domain_client_id,
             'consumer_secret' => $paymentMethod->domain_client_sk,
@@ -177,9 +175,7 @@ class WooCommerceProductSyncService
 
             $page++;
 
-            // 插件自定义端点不返回 X-WP-TotalPages 分页头（实测为空），
-            // 只能当辅助终止条件；缺失时持续翻页直到拿到空页为止，
-            // MAX_PAGES 作为安全上限防止异常响应导致死循环。
+            // 聚合插件返回分页头；兼容缺少分页头的旧站点，继续翻到空页或安全上限。
             $totalPages = (int) $response->header('X-WP-TotalPages');
         } while ($items !== []
             && $page <= self::MAX_PAGES

@@ -139,6 +139,7 @@ class Order extends Model
         'designated_payment_method_key',
         'refunded_amount',
         'customer_ip',
+        'checkout_customer_ip',
         'user_agent',
         'accept_language',
         'notify_url',
@@ -160,6 +161,8 @@ class Order extends Model
         'remark',
         'ad_params',
     ];
+
+    protected $hidden = ['checkout_customer_ip'];
 
     protected function casts(): array
     {

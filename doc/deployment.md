@@ -739,11 +739,25 @@ php artisan plugins:build sscpay-payment-creditcard --no-interaction
 php artisan plugins:build sscpay-opencart3 --no-interaction
 php artisan plugins:build sscpay-opencart4 --no-interaction
 php artisan test --compact tests/Unit/OpenCartPaymentProtocolTest.php tests/Feature/OpenCartGatewayTest.php tests/Feature/OpenCartV2ContractTest.php tests/Feature/OpenCartDistributionTest.php
+COMPOSER_ROOT_VERSION=dev-main composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --working-dir=plugins/merchant/sscpay-gateway-aggregator
+php artisan plugins:build sscpay-gateway-aggregator --no-interaction
 ```
 
 安装包和 `release.json` 输出到 `storage/app/plugin-builds/{slug}/{version}/`，不会打包 Laravel 源码、配置、Git 文件或测试。WordPress 文件列表固定为插件主文件、`index.php`、`includes/`、`assets/`、`languages/`；OpenCart 3 打包 `upload/` 与 `install.json`，4 打包 `admin/`、`catalog/`、`install.json`，两者注入白名单共享客户端、模板及版本文件。共享代码使用 PHP 7.4 语法，OpenCart 4 运行时至少 PHP 8.0；Laravel Pint 排除整个插件目录，CI 以 PHP 7.4 / 8.0 / 8.3 检查语法。
 
 `plugins:publish {slug}` 会构建并上传单个插件；`plugins:sync` 会预检并发布全部已接入插件，已纳入日常部署脚本。两者都使用 `config/plugins.php` 指定的磁盘。未配置 `PLUGIN_RELEASE_DISK` 时为本地私有 `local`，文件实际位于执行机器的 `storage/app/private/plugin-releases/`，必须在对应服务器发布并持久保存该目录；多实例及 GitHub Actions 发布使用 `PLUGIN_RELEASE_DISK=oss`，与运行应用对齐 bucket/prefix。版本 ZIP 和清单均写入成功后才更新该插件的 `stable.json`；同一版本不同内容拒绝覆盖，旧版本不能替换更新的稳定版本。下载页始终从已发布记录读取版本；单独 `git pull` 或 `plugins:build` 不会创建线上发布记录。
+
+### 网关插件的后台下载
+
+`deploy.sh` 从 `plugins/merchant/sscpay-gateway-aggregator/composer.lock` 安装生产依赖，随后由 `plugins:sync` 预检并发布网关 ZIP。包内含 WordPress 插件源码、静态资源和运行依赖，站点专用密钥由 WordPress 配置提供。网关版本取自主文件，修改发布内容后同步递增插件头部 `Version` 和 `PGA_VERSION`。使用固定的 Composer 根包版本避免无关的 Git 提交改变同一网关版本的打包内容。
+
+平台和商户后台的「创建支付方式」及「编辑支付方式」页面右上角提供「下载网关插件」。已登录且具备 `payment_methods.manage` 权限的账号可从当前面板下载最新已发布 ZIP。网关 ZIP 使用私有发布磁盘，公开下载中心及更新接口仍只提供商城插件。
+
+### 商城客户 IP
+
+WordPress PayPal／信用卡从 `1.2.0`、OpenCart 3／4 从 `1.1.0` 起，在结账时读取商城服务端的 `REMOTE_ADDR`，不读取未经验证的转发头。直连不需额外配置；商城若使用 CDN 或反向代理，应在商城源站只信任实际代理的 IP 网段，恢复真实地址到 PHP 的 `REMOTE_ADDR`。否则商城只能看到代理地址。不要信任所有来源的 `X-Forwarded-For` 或 `CF-Connecting-IP`。
+
+分阶段升级时，先验证商城源站的地址识别，再部署 Laravel（增量迁移沿用 `deploy.sh`）并升级收款站的 [聚合插件](wordpress/wordpress-site-setup.md#41-按站点用途安装插件)到 `1.14.0`，再让商城站安装或更新插件。旧商城不传、旧 Laravel 忽略新字段、旧收款站忽略新字段，都不阻断下单，但须三端都升级后才会完整保存及显示。旧单不补录；用测试凭证下新单，核对后台订单、组合子单及收款站 WooCommerce 订单。
 
 ### GitHub Actions 配置
 

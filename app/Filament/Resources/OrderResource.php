@@ -585,6 +585,14 @@ class OrderResource extends Resource
         return $merchantId !== null && ($merchantIds === null || in_array((int) $merchantId, $merchantIds, true));
     }
 
+    public static function checkoutCustomerIpEntry(): TextEntry
+    {
+        return TextEntry::make('checkout_customer_ip')
+            ->label(__('admin.order.fields.checkout_customer_ip'))
+            ->copyable()
+            ->visible(fn (Order $record): bool => filled($record->checkout_customer_ip));
+    }
+
     /**
      * 列表页"客户邮箱"列点击弹窗：展示当前订单快照里的客户信息（姓名、邮箱、
      * 手机号、收货地址）。订单表自己就冗余存了这些字段（下单时快照，不随
@@ -607,6 +615,7 @@ class OrderResource extends Resource
                     TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email'))->copyable(),
                     TextEntry::make('customer_phone')->label(__('admin.order.fields.customer_phone'))
                         ->placeholder(__('admin.order.placeholders.none')),
+                    static::checkoutCustomerIpEntry(),
                     TextEntry::make('shipping_address_line1')->label(__('admin.order.fields.address'))
                         ->placeholder(__('admin.order.placeholders.none'))
                         ->columnSpanFull(),

@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Carrier;
 use App\Models\CombinedOrder;
+use App\Models\Order;
 use App\Models\OrderNotificationAttempt;
 use App\Models\OrderShipmentSync;
 use App\Services\CombinedOrderService;
@@ -15,6 +16,8 @@ use Illuminate\Container\Container;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\URL;
+use PaymentGatewayAggregator\Core\OrderManager;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionClass;
 use Tests\Concerns\CreatesCombinedPayments;
@@ -28,6 +31,103 @@ class WordPressV2ContractTest extends TestCase
     public static function channels(): array
     {
         return ['PayPal' => ['paypal'], 'Credit card' => ['creditcard']];
+    }
+
+    #[DataProvider('channels')]
+    public function test_storefront_checkout_sends_the_browser_address_to_the_receiving_woo_order(string $channel): void
+    {
+        $this->setupCombinedPayments();
+        $this->group->update(['is_combine_payment_enabled' => false]);
+        $this->combinedMethod();
+        URL::forceScheme('https');
+        $this->withServerVariables(['REMOTE_ADDR' => '192.0.2.15']);
+
+        require_once dirname(__DIR__).'/Support/WordPressRuntime.php';
+        require_once base_path('plugins/merchant/sscpay-gateway-aggregator/src/Core/OrderManager.php');
+        $GLOBALS['wordpress_orders'] = $GLOBALS['wordpress_transients'] = $GLOBALS['wordpress_gateways'] = [];
+        $GLOBALS['wpdb'] = new \WordPressTestDatabase;
+        $prefix = 'SSCPay_'.ucfirst($channel);
+        $gateway = (new ReflectionClass($prefix.'_Gateway'))->newInstanceWithoutConstructor();
+        $gateway->id = 'sscpay_'.$channel;
+        $gateway->settings = [
+            'testmode' => 'no', 'live_base_url' => 'https://system.example.test',
+            'live_app_id' => $this->application->app_id, 'live_api_key' => $this->application->api_key,
+            'group_key' => $this->group->group_key,
+        ];
+        $customerIp = $channel === 'paypal' ? '198.51.100.42' : '2001:db8::42';
+        $storeOrder = new class(42, $gateway->id) extends \WC_Order
+        {
+            public function __call(string $method, array $args): mixed
+            {
+                return match ($method) {
+                    'get_billing_first_name' => 'Jane',
+                    'get_billing_last_name' => 'Doe',
+                    'get_billing_email' => 'jane@example.com',
+                    'get_billing_address_1' => '1 Main St',
+                    'get_billing_city' => 'City',
+                    'get_billing_country' => 'US',
+                    default => parent::__call($method, $args),
+                };
+            }
+        };
+        $storeOrder->set_customer_ip_address('203.0.113.42');
+        $storeOrder->save();
+        $previousTransport = $GLOBALS['wordpress_http'] ?? null;
+        $GLOBALS['wordpress_http'] = function (string $url, array $args) use ($customerIp): array {
+            $body = json_decode($args['body'], true);
+            $this->assertSame($customerIp, $body['customer_ip']);
+            $container = Container::getInstance();
+            Container::setInstance($this->app);
+            try {
+                $response = $this->postJson(parse_url($url, PHP_URL_PATH), $body, $args['headers']);
+                $response->assertOk();
+
+                return ['response' => ['code' => $response->getStatusCode()], 'body' => $response->getContent()];
+            } finally {
+                Container::setInstance($container);
+            }
+        };
+        Http::fake(['https://shop.example.com/wp-json/payment-plugin/v1/pay*' => function (Request $request) {
+            $body = $request->data();
+            $remoteOrderId = OrderManager::createOrder(array_replace($body, ['items' => []]));
+
+            return Http::response(['code' => 0, 'data' => ['pay_url' => 'https://pay.example.com/session', 'wp_order_id' => $remoteOrderId]]);
+        }]);
+
+        $server = $_SERVER;
+        $_SERVER['REMOTE_ADDR'] = $customerIp;
+        $_SERVER['HTTP_X_FORWARDED_FOR'] = '203.0.113.43';
+        try {
+            $result = $this->pluginCall(fn () => $gateway->process_payment(42));
+        } finally {
+            $_SERVER = $server;
+            if ($previousTransport === null) {
+                unset($GLOBALS['wordpress_http']);
+            } else {
+                $GLOBALS['wordpress_http'] = $previousTransport;
+            }
+        }
+
+        $this->assertSame('success', $result['result']);
+        $order = Order::sole();
+        $this->assertSame($customerIp, $order->checkout_customer_ip);
+        $this->assertSame('192.0.2.15', $order->customer_ip);
+        $this->assertSame($customerIp, wc_get_order($order->wp_order_id)->get_customer_ip_address());
+    }
+
+    public function test_receiving_woo_order_does_not_record_the_api_peer_when_older_systems_omit_the_address(): void
+    {
+        require_once dirname(__DIR__).'/Support/WordPressRuntime.php';
+        require_once base_path('plugins/merchant/sscpay-gateway-aggregator/src/Core/OrderManager.php');
+        $GLOBALS['wordpress_orders'] = [];
+
+        $remoteOrderId = OrderManager::createOrder([
+            's_order_id' => 'LEGACY-001', 'amount' => '100.00', 'currency' => 'USD', 'payment_method' => 'stripe',
+            'customer' => ['name' => 'Jane Doe', 'email' => 'jane@example.com'],
+            'billing_address' => [], 'shipping_address' => [], 'items' => [],
+        ]);
+
+        $this->assertSame('', wc_get_order($remoteOrderId)->get_customer_ip_address());
     }
 
     #[DataProvider('channels')]

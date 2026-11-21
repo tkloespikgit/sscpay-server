@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Paper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4efe6; --card: #fffdf8; --line: #e4dccb; --dash: #d8cfbc;
+    --ink: #2a261f; --muted: #6b6457; --accent: #d18a00;
+    --notice-bg: #fbf3e0; --notice-line: #efdfb8; --notice-ink: #6a4500;
+    --pill-bg: #fbecc8; --pill-ink: #7a4f00; --good: #2f6b3a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: Figtree, system-ui, sans-serif; font-variant-numeric: tabular-nums; display: flex; align-items: center; justify-content: center; padding: 48px 16px; }
+  .card { width: 100%; max-width: 620px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 36px 48px; display: flex; flex-direction: column; gap: 22px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .eyebrow { font-size: 13px; letter-spacing: .22em; font-weight: 600; color: var(--muted); }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--pill-bg); color: var(--pill-ink); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .notice { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; background: var(--notice-bg); border: 1px solid var(--notice-line); border-radius: 12px; color: var(--notice-ink); font-size: 14px; line-height: 1.45; }
+  .notice svg { flex-shrink: 0; margin-top: 1px; }
+  .notice strong { display: block; }
+  .due { display: flex; flex-direction: column; gap: 4px; }
+  .due .label, .due .date { font-size: 14px; color: var(--muted); }
+  .due .amount { font-family: Fraunces, serif; font-size: 50px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; }
+  .info { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 18px 0; border-top: 1px dashed var(--dash); border-bottom: 1px dashed var(--dash); }
+  .k { font-size: 12px; letter-spacing: .08em; color: var(--muted); margin: 0 0 6px; }
+  .v { font-size: 14px; font-weight: 600; word-break: break-all; margin: 0 0 14px; }
+  address { font-style: normal; font-size: 14px; line-height: 1.6; }
+  address b { font-weight: 600; }
+  address .m { color: var(--muted); }
+  .sum { display: flex; flex-direction: column; gap: 9px; font-size: 15px; }
+  .row { display: flex; justify-content: space-between; }
+  .row span:first-child { color: var(--muted); }
+  .row.total { align-items: baseline; padding-top: 12px; margin-top: 4px; border-top: 1px solid var(--ink); }
+  .row.total span:first-child { color: var(--ink); font-weight: 600; font-size: 16px; }
+  .row.total span:last-child { font-family: Fraunces, serif; font-size: 24px; font-weight: 600; }
+  .actions { display: flex; gap: 12px; }
+  button { font: inherit; cursor: pointer; height: 52px; border-radius: 12px; }
+  .btn-cancel { padding: 0 24px; border: 1px solid var(--dash); background: var(--card); color: var(--ink); font-size: 15px; font-weight: 600; }
+  .btn-pay { flex: 1; border: 0; background: var(--ink); color: var(--card); font-size: 16px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-cancel:hover { background: #f6f1e6; }
+  .btn-pay:hover { background: #000; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 640px) {
+    body { display: block; padding: 24px 16px 150px; }
+    .card { padding: 0; background: transparent; border: 0; gap: 18px; }
+    .pill { font-size: 12px; padding: 5px 10px; }
+    .due .amount { font-size: 42px; }
+    .info { grid-template-columns: 1fr; gap: 12px; padding: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+    .info address { padding-top: 14px; border-top: 1px dashed var(--dash); }
+    .sum { padding: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+    .actions { position: fixed; left: 0; right: 0; bottom: 0; flex-direction: column-reverse; gap: 8px; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); }
+    .btn-cancel { border: 0; background: transparent; color: var(--muted); height: 44px; }
+  }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="head">
+    <span class="eyebrow">INVOICE</span>
+    <span class="pill"><i></i>Awaiting payment</span>
+  </div>
+
+  <div class="notice" role="status">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    <div><strong>Your order is awaiting payment</strong>Complete payment to confirm your order.</div>
+  </div>
+
+  <div class="due">
+    <span class="label">Total due</span>
+    <span class="amount">EUR 390.00</span>
+    <span class="date">September 16, 2026</span>
+  </div>
+
+  <div class="info">
+    <div>
+      <p class="k">INVOICE NUMBER</p>
+      <p class="v">LF-INV-_JOHN_DOE_LF_76646545413187212561</p>
+      <p class="k">ORDER NO.</p>
+      <p class="v" style="margin-bottom:0">LF_76646545413187212561</p>
+    </div>
+    <address>
+      <p class="k">BILLED TO</p>
+      <b>John Doe</b><br>
+      Alexanderplatz 1 Apt. 4B<br>
+      Berlin, Berlin 10178, DE<br>
+      <span class="m">john.doe@example.com</span><br>
+      <span class="m">+4915112345678</span>
+    </address>
+  </div>
+
+  <div class="sum">
+    <div class="row"><span>Subtotal</span><span>EUR 380.00</span></div>
+    <div class="row"><span>Shipping</span><span>EUR 15.00</span></div>
+    <div class="row"><span>Tax</span><span>EUR 5.00</span></div>
+    <div class="row"><span>Discount</span><span style="color:var(--good)">−EUR 10.00</span></div>
+    <div class="row total"><span>Total</span><span>EUR 390.00</span></div>
+  </div>
+
+  <div class="actions">
+    <button type="button" class="btn-cancel" id="cancel">Cancel</button>
+    <button type="button" class="btn-pay" id="pay">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      Pay EUR 390.00
+    </button>
+  </div>
+</main>
+</body>
+</html>

@@ -6,6 +6,7 @@ use App\Models\Application;
 use App\Support\SignatureCanonicalizer;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
@@ -99,10 +100,8 @@ class ApiAuthentication
                 'nonce' => $nonce,
                 'received_sign' => $sign,
                 'expected_sign' => $expectedSign,
-                // 服务端按约定规则规范化后的待签名 body：与商户端自己算出的
-                // 字符串逐字符比对，能直接看出是排序/转义/字段差异导致的不一致。
-                'canonicalized_body' => SignatureCanonicalizer::canonicalize($body),
-                'raw_body' => $request->getContent(),
+                'canonicalized_body' => SignatureCanonicalizer::canonicalize(Arr::except($body, ['customer_ip'])),
+                'raw_body' => array_key_exists('customer_ip', $body) ? null : $request->getContent(),
             ]);
 
             return $this->reject('Signature verification failed.');

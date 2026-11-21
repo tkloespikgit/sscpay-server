@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Editorial</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #f7f5ef; --ink: #1c1f1a; --muted: #5c5f57; --rule: #cfcabd; --dot: #b9b4a6; --accent: #3f6b4f; --notice: #e9eee7; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: "Public Sans", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .serif { font-family: Newsreader, Georgia, serif; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 52px 40px; display: flex; flex-direction: column; gap: 30px; }
+  .mast { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding-bottom: 18px; border-bottom: 3px double var(--ink); }
+  .no { font-size: 12px; letter-spacing: .2em; font-weight: 600; color: var(--accent); word-break: break-all; }
+  h1 { margin: 4px 0 0; font-size: clamp(56px, 8vw, 84px); font-style: italic; font-weight: 400; line-height: 1; }
+  .meta { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+  .tag { padding: 6px 12px; background: var(--ink); color: var(--bg); font-size: 12px; letter-spacing: .14em; font-weight: 600; white-space: nowrap; }
+  .date { font-size: 18px; }
+  .notice { display: flex; align-items: baseline; gap: 16px; padding: 14px 20px; background: var(--notice); }
+  .notice .lbl { font-size: 11px; letter-spacing: .18em; font-weight: 600; color: var(--accent); flex-shrink: 0; }
+  .notice p { margin: 0; font-size: 20px; font-style: italic; line-height: 1.35; }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .col { padding: 0 32px; border-right: 1px solid var(--rule); }
+  .col:first-child { padding-left: 0; }
+  .col:last-child { padding-right: 0; border-right: 0; }
+  .sec { font-size: 15px; color: var(--accent); margin: 0 0 14px; font-weight: 400; }
+  .k { font-size: 12px; letter-spacing: .1em; color: var(--muted); margin: 0 0 4px; }
+  .v { font-size: 15px; font-weight: 500; word-break: break-all; margin: 0 0 16px; }
+  .name { font-size: 30px; line-height: 1.1; margin: 0 0 10px; font-weight: 400; }
+  address { font-style: normal; font-size: 15px; line-height: 1.6; }
+  address .m { color: var(--muted); }
+  .row { display: flex; justify-content: space-between; padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px dotted var(--dot); font-size: 15px; }
+  .foot { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding-top: 18px; border-top: 1px solid var(--ink); }
+  .tot { display: flex; align-items: baseline; gap: 20px; }
+  .tot .lbl { font-size: 28px; font-style: italic; }
+  .tot .num { font-size: clamp(38px, 5vw, 60px); font-weight: 500; letter-spacing: -.02em; }
+  .actions { display: flex; gap: 12px; }
+  button { font: inherit; cursor: pointer; height: 52px; font-size: 13px; letter-spacing: .14em; font-weight: 600; border-radius: 0; }
+  .btn-cancel { padding: 0 22px; border: 1px solid var(--ink); background: transparent; color: var(--ink); }
+  .btn-cancel:hover { background: #ecE9df; }
+  .btn-pay { padding: 0 32px; border: 0; background: var(--accent); color: #fff; }
+  .btn-pay:hover { background: #335a41; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+
+  @media (max-width: 820px) {
+    .page { padding: 32px 20px 24px; gap: 22px; }
+    .mast { flex-direction: column-reverse; align-items: stretch; gap: 8px; padding-bottom: 14px; }
+    .meta { flex-direction: row; justify-content: space-between; align-items: center; }
+    .no { display: none; }
+    .tag { font-size: 10px; padding: 4px 8px; }
+    .date { font-size: 13px; }
+    .notice { flex-direction: column; gap: 4px; padding: 14px 16px; }
+    .notice p { font-size: 18px; }
+    .cols { grid-template-columns: 1fr; gap: 18px; }
+    .col, .col:first-child, .col:last-child { padding: 18px 0 0; border-right: 0; border-top: 1px solid var(--rule); }
+    .col:first-child { border-top: 0; padding-top: 0; }
+    .v { font-size: 14px; }
+    .name { font-size: 26px; }
+    .row { font-size: 14px; }
+    .foot { position: sticky; bottom: 0; flex-direction: column; align-items: stretch; gap: 14px; margin: 0 -20px -24px; padding: 16px 20px calc(24px + env(safe-area-inset-bottom)); background: var(--bg); }
+    .tot { justify-content: space-between; }
+    .tot .lbl { font-size: 22px; }
+    .btn-pay { flex: 1; }
+    .btn-cancel { padding: 0 18px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="mast">
+    <div>
+      <div class="no">NO. LF_76646545413187212561</div>
+      <h1 class="serif">Invoice</h1>
+    </div>
+    <div class="meta">
+      <span class="tag">AWAITING PAYMENT</span>
+      <span class="date serif">September 16, 2026</span>
+    </div>
+  </header>
+
+  <div class="notice" role="status">
+    <span class="lbl">NOTICE</span>
+    <p class="serif">Your order is awaiting payment — complete payment to confirm your order.</p>
+  </div>
+
+  <div class="cols">
+    <div class="col">
+      <h2 class="sec serif">i. Details</h2>
+      <p class="k">INVOICE NUMBER</p>
+      <p class="v">LF-INV-_JOHN_DOE_LF_76646545413187212561</p>
+      <p class="k">ORDER NO.</p>
+      <p class="v">LF_76646545413187212561</p>
+      <p class="k">DATE</p>
+      <p class="v">September 16, 2026</p>
+    </div>
+    <div class="col">
+      <h2 class="sec serif">ii. Billed to</h2>
+      <p class="name serif">John Doe</p>
+      <address>
+        Alexanderplatz 1 Apt. 4B<br>
+        Berlin, Berlin 10178<br>
+        DE<br>
+        <span class="m">john.doe@example.com</span><br>
+        <span class="m">+4915112345678</span>
+      </address>
+    </div>
+    <div class="col">
+      <h2 class="sec serif">iii. Summary</h2>
+      <div class="row"><span>Subtotal</span><span>EUR 380.00</span></div>
+      <div class="row"><span>Shipping</span><span>EUR 15.00</span></div>
+      <div class="row"><span>Tax</span><span>EUR 5.00</span></div>
+      <div class="row"><span>Discount</span><span>−EUR 10.00</span></div>
+    </div>
+  </div>
+
+  <footer class="foot">
+    <div class="tot">
+      <span class="lbl serif">Total</span>
+      <span class="num serif">EUR 390.00</span>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn-cancel" id="cancel">CANCEL</button>
+      <button type="button" class="btn-pay" id="pay">PAY NOW →</button>
+    </div>
+  </footer>
+</main>
+</body>
+</html>

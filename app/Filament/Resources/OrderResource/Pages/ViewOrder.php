@@ -265,6 +265,7 @@ class ViewOrder extends ViewRecord
                         TextEntry::make('customer_email')->label(__('admin.order.fields.customer_email'))
                             ->placeholder(__('admin.order.placeholders.none'))
                             ->copyable(),
+                        OrderResource::checkoutCustomerIpEntry(),
                     ]),
                     self::fulfillmentRuleEntry('customer_block_rule'),
                     self::fulfillmentHeadingEntry('address_block_heading', __('admin.order.sections.shipping_address')),

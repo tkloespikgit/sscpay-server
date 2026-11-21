@@ -51,6 +51,10 @@ jobs:
           extensions: bcmath, zip, pdo_sqlite, pdo_mysql, gd, intl
           coverage: none
       - run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Install gateway plugin dependencies
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress --working-dir=plugins/merchant/sscpay-gateway-aggregator
+        env:
+          COMPOSER_ROOT_VERSION: dev-main
       - name: Check protocol and plugin versions
         shell: bash
         run: |
@@ -62,7 +66,11 @@ jobs:
       - name: Test plugin behavior and distribution
         run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php tests/Feature/SyncPluginReleasesTest.php tests/Feature/DeploymentScriptTest.php tests/Unit/OpenCartPaymentProtocolTest.php tests/Feature/OpenCartGatewayTest.php tests/Feature/OpenCartV2ContractTest.php tests/Feature/OpenCartDistributionTest.php tests/Feature/OpenCartStorageTest.php
       - name: Test server v2 contract
-        run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderNotificationRetryTest.php
+        run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderCustomerIpTest.php tests/Feature/OrderNotificationRetryTest.php
+      - name: Test receiving-site product API
+        run: php plugins/merchant/sscpay-gateway-aggregator/tests/product-catalog.php
+      - name: Test gateway plugin downloads from the payment method pages
+        run: php artisan test --compact tests/Feature/Filament/GatewayPluginDownloadTest.php
 
   php-compatibility:
     runs-on: ubuntu-latest
@@ -78,4 +86,4 @@ jobs:
           php-version: ${{ matrix.php }}
           coverage: none
       - name: Check plugin PHP compatibility
-        run: find plugins/wordpress plugins/opencart -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+        run: find plugins/wordpress plugins/opencart plugins/merchant -type d -name vendor -prune -o -type f -name '*.php' -print0 | xargs -0 -n1 php -l

@@ -249,7 +249,7 @@ wp option get woocommerce_currency     # 本机 USD
 ```
 woocommerce              elementor              cartflows
 sscpay-gateway-aggregator sscpay-payment-creditcard
-sscpay-payment-paypal    sscpay-products-api
+sscpay-payment-paypal
 astro-sites               modern-cart            power-coupons
 surecookie                sureforms              surerank
 variation-swatches-woo    woo-cart-abandonment-recovery
@@ -266,18 +266,18 @@ woocommerce-payments（停用）
 
 商户商城的 PayPal / 信用卡插件已迁入本系统仓库，从系统主页的「插件下载」取得 ZIP，上传并启用所需支付方式。两个插件均支持 v2 组合付款，旧安装可通过过渡 Release 接入新更新服务，详见[插件发布与更新](../deployment.md#电商插件发布与更新)。
 
-`sscpay-gateway-aggregator` 和 `sscpay-products-api` 仍在原独立仓库，用于本系统调用的收款站。下面保留收款站的安装示例；普通商户商城不需要因此安装这两个服务端插件：
+`sscpay-gateway-aggregator`（PGA）安装在本系统反向调用的 WooCommerce 收款站，源码在 `plugins/merchant/` 下。从 `1.15.0` 起，聚合插件同时处理远程订单、收银台和商品／变体同步。部署会发布正式安装包，在后台创建或编辑支付方式时，点击右上角「下载网关插件」。[后台下载与发布](../deployment.md#网关插件的后台下载)
+
+独立测试时，可在本系统根目录安装锁定的生产依赖，再构建测试 ZIP（需要 Composer、`rsync`、`zip` 和 `unzip`）。
 
 ```bash
-cd /path/to/newsite/wp-content/plugins
-git clone <repo-url> sscpay-gateway-aggregator
-git clone <repo-url> sscpay-products-api
-cd /path/to/newsite
-wp plugin activate sscpay-gateway-aggregator sscpay-products-api
+composer --working-dir=plugins/merchant/sscpay-gateway-aggregator install --no-dev --prefer-dist --optimize-autoloader --no-plugins --no-scripts --no-interaction
+bash plugins/merchant/build-test-zips.sh
 ```
 
-> `sscpay-gateway-aggregator`（PGA）是订单系统反向调 WP 收银台的服务端插件；
-> `sscpay-payment-creditcard` / `sscpay-payment-paypal` 是商户商城支付入口；`sscpay-products-api` 为收款站扩展商品接口。
+ZIP 输出到 `storage/app/private/plugin-test-builds/`，含独立的 `vendor/`。在隔离的收款站启用 WooCommerce，安装并启用／升级聚合插件，再停用旧 `sscpay-products-api`。用原 WooCommerce 密钥验证 `/wp-json/wc/v3/products-with-variations` 能分页取得商品和变体、`/wp-json/wc/v3/ninox-status` 正常，再删除旧插件。Laravel 商品同步地址不变。不要用测试包覆盖生产站点。
+
+在 WordPress「支付网关聚合 → 设置」中查看预填的出站回调签名密钥，可直接修改保存；勾选「显示密钥」才显示明文。未保存时读取本站 `wp-config.php` 的 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET`；从该站点的私有配置提供值，不把密钥写入插件包。改动后同时更新 Laravel 的 `PGA_WEBHOOK_SECRET`。仅使用测试配置验收同一 `s_order_id` 重试、付款链接、回调和 WooCommerce 订单详情里的客户 IP。
 
 ### 4.2 平台侧（sscpay-server）准备
 

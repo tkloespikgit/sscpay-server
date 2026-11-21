@@ -40,12 +40,13 @@ class OpenCartDistributionTest extends TestCase
         Storage::fake('oc-release-test');
         $releases = app(PluginReleaseService::class);
         $slug = 'sscpay-opencart'.$major;
-        $build = $releases->build($slug, 'plugins/'.$slug.'/v1.0.0');
+        $version = '1.1.0';
+        $build = $releases->build($slug, 'plugins/'.$slug.'/v'.$version);
         $this->assertSame($filename, basename($build['zip']));
         $zip = new ZipArchive;
         $this->assertTrue($zip->open($build['zip']));
         $installer = json_decode($zip->getFromName('install.json'), true);
-        $this->assertSame('1.0.0', $installer['version']);
+        $this->assertSame($version, $installer['version']);
         $this->assertNotEmpty($installer['author']);
         $prefix = $major === 3 ? 'upload/' : '';
         foreach (['paypal', 'creditcard'] as $channel) {
@@ -55,7 +56,7 @@ class OpenCartDistributionTest extends TestCase
         }
         $this->assertNotFalse($zip->getFromName($prefix.'system/library/sscpay/bootstrap.php'));
         $this->assertNotFalse($zip->getFromName($prefix.'system/library/sscpay/PaymentState.php'));
-        $this->assertSame(['version' => '1.0.0'], json_decode($zip->getFromName($prefix.'system/library/sscpay/release-version.json'), true));
+        $this->assertSame(['version' => $version], json_decode($zip->getFromName($prefix.'system/library/sscpay/release-version.json'), true));
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
             $this->assertDoesNotMatchRegularExpression('/(?:\.env|\.git|artisan|plugin\.json|tests\/|\.\.\/)/', $name);
@@ -69,10 +70,10 @@ class OpenCartDistributionTest extends TestCase
         $this->verifyInstalledEntryPoints($install, $major);
         $releases->publish($build);
         $releases->publish($releases->build($slug));
-        $this->get('/plugins/updates/v1/'.$slug)->assertOk()->assertJsonPath('version', '1.0.0')->assertJsonPath('archive_name', $filename);
-        $response = $this->get('/plugins/'.$slug.'/1.0.0/download')->assertOk()->assertDownload($filename);
+        $this->get('/plugins/updates/v1/'.$slug)->assertOk()->assertJsonPath('version', $version)->assertJsonPath('archive_name', $filename);
+        $response = $this->get("/plugins/{$slug}/{$version}/download")->assertOk()->assertDownload($filename);
         $this->assertSame($build['release']['sha256'], hash('sha256', $response->streamedContent()));
-        $this->get('/plugins')->assertOk()->assertSee('OpenCart '.$major.'.x')->assertSee('/plugins/'.$slug.'/1.0.0/download', false);
+        $this->get('/plugins')->assertOk()->assertSee('OpenCart '.$major.'.x')->assertSee("/plugins/{$slug}/{$version}/download", false);
         $this->assertSame(hash_file('sha256', $build['zip']), $build['release']['sha256']);
     }
 

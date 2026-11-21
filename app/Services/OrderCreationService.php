@@ -481,6 +481,7 @@ class OrderCreationService
                 'payment_method_id' => $paymentMethod->id,
                 'designated_payment_method_key' => filled($data['payment_method_key'] ?? null) ? $data['payment_method_key'] : null,
                 'customer_ip' => $data['customer_ip'] ?? null,
+                'checkout_customer_ip' => $data['checkout_customer_ip'] ?? null,
                 'user_agent' => $data['user_agent'] ?? null,
                 'accept_language' => isset($data['accept_language'])
                     ? mb_substr((string) $data['accept_language'], 0, 255)
@@ -917,6 +918,10 @@ class OrderCreationService
             // 总折扣：商户折扣、应用自动折扣和匹配商品溢出（订单原币种）
             'discount_fee' => (float) $order->discount,
         ];
+
+        if ($order->checkout_customer_ip !== null) {
+            $payload['customer_ip'] = $order->checkout_customer_ip;
+        }
 
         // 优先引用已注册的网关配置（见「同步支付配置」按钮）；尚未同步过时退化为内联明文配置。
         if (filled($paymentMethod->payment_config_id)) {

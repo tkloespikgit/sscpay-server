@@ -1,0 +1,202 @@
+/* Split主题：深色侧栏 + 白色发票明细的分屏布局。原型见
+   src/Frontend/Tpl/checkout-02-split.html，字体改用系统字体栈（不请求Google
+   Fonts，避免每次支付页访问都把访客IP/UA泄漏给第三方字体CDN）。 */
+
+:root {
+  --pga-dark: #15171c; --pga-light: #f5f3ee; --pga-dim: #b7b3aa; --pga-accent: #f0b429;
+  --pga-ink: #15171c; --pga-muted: #6a6d75; --pga-body: #3d4048; --pga-line: #e6e4df; --pga-soft: #f3f2ee;
+  --pga-card: #ffffff;
+  --pga-warning-bg: #fdf5e1; --pga-warning-line: #f0e0ad; --pga-warning-ink: #6a4700; --pga-warning-dot: #d18a00;
+  --pga-paid-bg: #e6f3ea; --pga-paid-line: #c7e4d1; --pga-paid-ink: #1f6b3a; --pga-paid-dot: #2f8a4d;
+  --pga-danger-bg: #fbeaea; --pga-danger-line: #f0cccc; --pga-danger-ink: #a83232; --pga-danger-dot: #c14444;
+  --pga-neutral-bg: #eceae4; --pga-neutral-line: #dcd9d0; --pga-neutral-ink: #55585f; --pga-neutral-dot: #8c8f97;
+  --pga-serif: Georgia, Cambria, "Times New Roman", Times, serif;
+  --pga-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+.pga-payment-page {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--pga-soft);
+  color: var(--pga-ink);
+  font-family: var(--pga-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.screen-reader-text {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* 简单窄盒子，给插件里其它纯文字提示页面用（非发票页）。 */
+.pga-payment-container {
+  max-width: 480px;
+  margin: 48px auto;
+  padding: 32px 24px;
+  background: var(--pga-card);
+  border: 1px solid var(--pga-line);
+  border-radius: 18px;
+}
+
+.pga-payment-container h1 { font-size: 20px; margin: 0 0 16px; }
+
+/* 发票页：这个类"就是"原型里的.layout分屏容器（深色侧栏+白色主区域），
+   PaymentPage::renderShell()直接把h1+renderInvoiceCard()的输出（<aside>+<main>）
+   放进来，不需要再多包一层div。
+   电脑模式下不铺满整个视口——改成页面居中的一个圆角面板（跟Midnight主题
+   一样的"卡片浮在背景上"效果），面板内部仍然是深色侧栏+白色主区域两栏；
+   手机模式下（见下面媒体查询）恢复铺满屏幕，侧栏塌到顶部。 */
+.pga-payment-container--wide {
+  width: 100%;
+  max-width: 1040px;
+  margin: 48px auto;
+  padding: 0;
+  background: var(--pga-card);
+  border: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(21, 23, 28, .18);
+  display: grid;
+  grid-template-columns: minmax(320px, 38%) 1fr;
+}
+
+.pga-split-side {
+  background: var(--pga-dark);
+  color: var(--pga-light);
+  padding: 64px 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 40px;
+}
+
+.pga-split-brand { display: flex; flex-direction: column; gap: 20px; align-items: flex-start; }
+.pga-split-eyebrow { font-size: 14px; letter-spacing: .24em; font-weight: 600; text-transform: uppercase; }
+
+.pga-split-side-mid { display: flex; flex-direction: column; gap: 28px; }
+.pga-split-total-block { display: flex; flex-direction: column; gap: 8px; }
+.pga-split-dim { font-size: 15px; color: var(--pga-dim); }
+.pga-split-total-amount { font-family: var(--pga-serif); font-size: clamp(56px, 6.5vw, 88px); line-height: 1; }
+
+.pga-split-order { font-size: 13px; color: var(--pga-dim); display: flex; flex-direction: column; gap: 6px; }
+.pga-split-order b { color: var(--pga-light); font-weight: 500; word-break: break-all; }
+
+.pga-split-main {
+  padding: 64px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  max-width: 860px;
+}
+
+.pga-split-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 32px; }
+.pga-split-k { font-size: 12px; letter-spacing: .14em; color: var(--pga-muted); font-weight: 600; margin: 0 0 8px; text-transform: uppercase; }
+.pga-split-v { font-size: 16px; font-weight: 500; word-break: break-all; margin: 0; }
+.pga-split-mobile-only { display: none; }
+
+.pga-split-section { padding-top: 28px; border-top: 1px solid var(--pga-line); }
+.pga-split-name { font-family: var(--pga-serif); font-size: 32px; margin: 0 0 10px; font-weight: 400; }
+.pga-split-section address { font-style: normal; font-size: 15px; line-height: 1.6; color: var(--pga-body); }
+
+.pga-split-sum { display: flex; flex-direction: column; gap: 14px; font-size: 16px; }
+.pga-split-row { display: flex; justify-content: space-between; }
+.pga-split-row span:first-child { color: var(--pga-body); }
+.pga-split-row--total { align-items: baseline; padding: 18px 20px; margin-top: 6px; background: var(--pga-soft); border-radius: 10px; font-weight: 600; }
+.pga-split-row--total span:first-child { color: var(--pga-ink); }
+.pga-split-row--total span:last-child { font-size: 22px; }
+
+/* 状态徽章：paid用绿色系、warning用琥珀系（侧栏强调色同色系）、danger用红色系、
+   neutral用灰色系，跟深色侧栏+暖白正文的整体风格协调。 */
+.pga-status-badge {
+  padding: 6px 12px; border: 1px solid var(--pga-warning-dot); color: var(--pga-warning-dot);
+  border-radius: 6px; font-size: 12px; letter-spacing: .12em; font-weight: 600; white-space: nowrap;
+  text-transform: uppercase;
+}
+.pga-status-badge--warning { border-color: var(--pga-accent); color: var(--pga-accent); }
+.pga-status-badge--paid { border-color: var(--pga-paid-dot); color: #6fd393; }
+.pga-status-badge--danger { border-color: var(--pga-danger-dot); color: #f19a9a; }
+.pga-status-badge--neutral { border-color: var(--pga-dim); color: var(--pga-dim); }
+
+.pga-notice {
+  display: flex; gap: 14px; align-items: center; padding: 16px 20px;
+  background: var(--pga-warning-bg); border-radius: 12px; color: var(--pga-warning-ink); font-size: 15px;
+}
+.pga-notice svg { flex-shrink: 0; }
+.pga-notice strong { display: block; font-weight: 600; }
+.pga-notice--paid { background: var(--pga-paid-bg); color: var(--pga-paid-ink); }
+.pga-notice--danger { background: var(--pga-danger-bg); color: var(--pga-danger-ink); }
+.pga-notice--neutral { background: var(--pga-neutral-bg); color: var(--pga-neutral-ink); }
+
+.pga-invoice-actions { display: flex; flex-direction: column; gap: 10px; }
+/* 结账页的actions_html是网关自己输出的markup，外面多包一层
+   <div class="pga-gateway pga-gateway-{method}">（paypal_js还会在里面混入
+   状态文案），这层要在flex列里占位跟.pga-pay-button一样多，宽度撑满。 */
+.pga-invoice-actions .pga-gateway { flex: 1; min-width: 0; }
+.pga-pay-button, .pga-button-secondary {
+  font: inherit; cursor: pointer; border-radius: 10px; text-decoration: none;
+  display: flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box;
+}
+/* .pga-button-secondary width留auto（撑内容），避免作为flex列内直接子项时
+   被当成flex-basis撑满；.pga-pay-button需要width:100%——它有时是
+   .pga-gateway（普通block，非flex容器）里唯一的子元素，需要自己撑满宽度，
+   同时又要在直接作为flex列子项时被flex:1接管（flex-basis:0%优先于width）。 */
+.pga-button-secondary { width: auto; height: 48px; border: 1px solid #3a3d45; background: transparent; color: var(--pga-light); font-size: 15px; font-weight: 500; }
+.pga-pay-button { width: 100%; flex: 1; height: 56px; border: 0; background: var(--pga-accent); color: var(--pga-dark); font-size: 16px; font-weight: 600;padding: 10px }
+.pga-button-secondary:hover { border-color: #5a5e68; }
+.pga-pay-button:hover { filter: brightness(1.06); }
+.pga-pay-button:focus-visible, .pga-button-secondary:focus-visible { outline: 3px solid var(--pga-accent); outline-offset: 2px; }
+
+.pga-result-message { margin: 0 0 24px; font-size: 15px; color: var(--pga-muted); text-align: center; }
+
+@media (max-width: 860px) {
+  /* 手机模式恢复铺满屏幕（不要电脑模式那个居中圆角面板+阴影），侧栏塌到顶部。 */
+  .pga-payment-container--wide {
+    max-width: none; margin: 0; border-radius: 0; box-shadow: none;
+    grid-template-columns: 1fr;
+  }
+  .pga-split-side { padding: 32px 20px 28px; gap: 24px; }
+  .pga-split-brand { flex-direction: row; justify-content: space-between; align-items: center; }
+  .pga-split-eyebrow { font-size: 13px; }
+  .pga-status-badge { font-size: 11px; padding: 5px 10px; }
+  .pga-split-total-amount { font-size: 64px; }
+  .pga-split-order { display: none; }
+  .pga-split-mobile-only { display: block; }
+  .pga-invoice-actions {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0;
+    flex-direction: row-reverse; padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
+    background: var(--pga-dark);
+  }
+  .pga-pay-button { height: 52px; }
+  .pga-button-secondary { height: 52px; padding: 0 18px; }
+  .pga-split-main { padding: 24px 20px 120px; gap: 24px; max-width: none; }
+  .pga-notice { align-items: flex-start; font-size: 14px; line-height: 1.45; }
+  .pga-split-grid2 { grid-template-columns: 1fr; gap: 16px; }
+  .pga-split-v { font-size: 15px; }
+  .pga-split-name { font-size: 28px; }
+  .pga-split-sum { font-size: 15px; }
+  .pga-split-section { padding-top: 20px; }
+}
+
+/* 独立loading页（/payment/{order}?token=xxx），配色改为跟深色侧栏协调。 */
+
+.pga-loading-page {
+  box-sizing: border-box; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 24px; text-align: center;
+  background: var(--pga-dark); color: var(--pga-light);
+}
+.pga-loading-logo { width: 120px; height: 120px; border-radius: 20px; box-shadow: 0 2px 16px rgba(0,0,0,.35); background: var(--pga-card); }
+.pga-loading-spinner {
+  width: 28px; height: 28px; margin-top: 24px; border: 3px solid rgba(240,180,41,.25);
+  border-top-color: var(--pga-accent); border-radius: 50%; animation: pga-spin .8s linear infinite;
+}
+.pga-loading-text { margin-top: 16px; font-size: 14px; color: var(--pga-dim); }
+.pga-loading-text #pga-countdown-num { font-weight: 700; color: var(--pga-light); }
+.pga-jump-link { margin-top: 20px; font-size: 13px; color: var(--pga-accent); }
+@keyframes pga-spin { to { transform: rotate(360deg); } }
+
+/* paypal_js Smart Buttons结账页 */
+#pga-paypal-button-container { min-height: 45px; }
+.pga-paypal-status { margin-top: 16px; font-size: 14px; color: var(--pga-muted); text-align: center; }
+.pga-paypal-error { margin-top: 16px; font-size: 14px; color: var(--pga-danger-ink); text-align: center; }

@@ -10,6 +10,7 @@ use App\Services\PaymentGateway\Exceptions\PaymentGatewayException;
 use App\Support\OrderTelegramSummary;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -303,7 +304,7 @@ class PaymentGatewayService
     {
         Log::debug('支付网关请求数据', [
             'path' => $path,
-            'request_body' => $json,
+            'request_body' => Arr::except($json, ['customer_ip']),
         ]);
         $baseUrl = rtrim((string) ($this->baseUrlOverride ?? $this->config['base_url'] ?? ''), '/');
         if ($baseUrl === '') {

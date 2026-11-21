@@ -604,6 +604,11 @@ class SSCPay_Paypal_Gateway extends WC_Payment_Gateway {
 			'cancel_url'        => $order->get_checkout_payment_url( false ),
 		);
 
+		$customer_ip = $_SERVER['REMOTE_ADDR'] ?? null;
+		if ( is_string( $customer_ip ) && false !== filter_var( $customer_ip, FILTER_VALIDATE_IP ) ) {
+			$payload['customer_ip'] = $customer_ip;
+		}
+
 		$ad_params = SSCPay_Paypal_Ad_Tracking::get_ad_params();
 
 		if ( ! empty( $ad_params ) ) {

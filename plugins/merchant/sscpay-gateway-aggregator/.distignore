@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+.distignore
+tests
+*.md
+composer.lock
+node_modules
+.DS_Store
+/build/
+/sscpay-gateway-aggregator.zip
+src/Frontend/Tpl

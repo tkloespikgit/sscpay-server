@@ -1,0 +1,176 @@
+/* Midnight主题：深色科技感发票卡片。原型见 src/Frontend/Tpl/checkout-06-midnight.html，
+   字体改用系统字体栈（不请求Google Fonts，避免每次支付页访问都把访客IP/UA
+   泄漏给第三方字体CDN；原型的Sora换成系统无衬线，JetBrains Mono换成系统等宽）。 */
+
+:root {
+  --pga-bg: #0b1020; --pga-card: #121a2e; --pga-inset: #0f1627; --pga-line: #243150; --pga-line2: #1f2a44; --pga-chip: #1b2540;
+  --pga-ink: #e8ecf5; --pga-muted: #93a0b8; --pga-body: #c3cbdb; --pga-accent: #c6f432;
+
+  --pga-warning-bg: #1d1a10; --pga-warning-line: #3f3515; --pga-warning-ink: #f5c451; --pga-warning-soft: #e3cf96; --pga-warning-dot: #f5c451; --pga-warning-pill-bg: #2a2412;
+  --pga-paid-bg: #131f12; --pga-paid-line: #24401f; --pga-paid-ink: #8fe25c; --pga-paid-soft: #b9dd9c; --pga-paid-dot: #8fe25c; --pga-paid-pill-bg: #1c2a13;
+  --pga-danger-bg: #241313; --pga-danger-line: #402020; --pga-danger-ink: #f26565; --pga-danger-soft: #e0a3a3; --pga-danger-dot: #f26565; --pga-danger-pill-bg: #2a1414;
+  --pga-neutral-bg: #1a2033; --pga-neutral-line: #2c3a5c; --pga-neutral-ink: #93a0b8; --pga-neutral-soft: #93a0b8; --pga-neutral-dot: #93a0b8; --pga-neutral-pill-bg: #1b2540;
+
+  --pga-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --pga-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+.pga-payment-page {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--pga-bg);
+  color: var(--pga-ink);
+  font-family: var(--pga-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.screen-reader-text {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.pga-mono { font-family: var(--pga-mono); }
+
+.pga-payment-container {
+  max-width: 480px;
+  margin: 48px auto;
+  padding: 32px 24px;
+  background: var(--pga-card);
+  border: 1px solid var(--pga-line);
+  border-radius: 18px;
+  color: var(--pga-body);
+}
+
+.pga-payment-container h1 { font-size: 20px; margin: 0 0 16px; color: var(--pga-ink); }
+
+/* 真实页面结构：<main class="pga-payment-container pga-payment-container--wide">，
+   这个class就是原型的.card——深色圆角大卡片，不是在外面再套一层。 */
+.pga-payment-container--wide {
+  width: 100%;
+  max-width: 940px;
+  margin: 48px auto;
+  padding: 36px 44px;
+  background: var(--pga-card);
+  border: 1px solid var(--pga-line);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.pga-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.pga-brand { display: flex; align-items: center; gap: 14px; }
+.pga-logo { width: 40px; height: 40px; border-radius: 10px; background: var(--pga-chip); display: grid; place-items: center; color: var(--pga-accent); flex-shrink: 0; }
+.pga-head h1 { margin: 0; font-size: 20px; font-weight: 600; color: var(--pga-ink); }
+
+.pga-status-badge {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px;
+  border-radius: 999px; background: var(--pga-warning-pill-bg); color: var(--pga-warning-ink);
+  font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.pga-status-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--pga-warning-dot); }
+.pga-status-badge--paid { background: var(--pga-paid-pill-bg); color: var(--pga-paid-ink); }
+.pga-status-badge--paid i { background: var(--pga-paid-dot); }
+.pga-status-badge--danger { background: var(--pga-danger-pill-bg); color: var(--pga-danger-ink); }
+.pga-status-badge--danger i { background: var(--pga-danger-dot); }
+.pga-status-badge--neutral { background: var(--pga-neutral-pill-bg); color: var(--pga-neutral-ink); }
+.pga-status-badge--neutral i { background: var(--pga-neutral-dot); }
+
+.pga-notice {
+  display: flex; gap: 14px; align-items: center; padding: 14px 18px;
+  background: var(--pga-warning-bg); border: 1px solid var(--pga-warning-line); border-radius: 12px;
+  color: var(--pga-warning-ink); font-size: 14px; line-height: 1.5;
+}
+.pga-notice svg { flex-shrink: 0; }
+.pga-notice strong { font-weight: 600; }
+.pga-notice span { color: var(--pga-warning-soft); }
+.pga-notice--paid { background: var(--pga-paid-bg); border-color: var(--pga-paid-line); color: var(--pga-paid-ink); }
+.pga-notice--paid span { color: var(--pga-paid-soft); }
+.pga-notice--danger { background: var(--pga-danger-bg); border-color: var(--pga-danger-line); color: var(--pga-danger-ink); }
+.pga-notice--danger span { color: var(--pga-danger-soft); }
+.pga-notice--neutral { background: var(--pga-neutral-bg); border-color: var(--pga-neutral-line); color: var(--pga-neutral-ink); }
+.pga-notice--neutral span { color: var(--pga-neutral-soft); }
+
+.pga-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.pga-left { display: flex; flex-direction: column; gap: 20px; }
+.pga-k { font-size: 12px; color: var(--pga-muted); margin: 0 0 6px; }
+.pga-v { font-size: 13px; word-break: break-all; margin: 0; color: var(--pga-ink); }
+.pga-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.pga-box { padding: 20px; border-radius: 14px; background: var(--pga-inset); border: 1px solid var(--pga-line2); }
+.pga-left address { font-style: normal; font-size: 14px; line-height: 1.6; color: var(--pga-body); }
+.pga-left address b { color: var(--pga-ink); font-size: 16px; font-weight: 600; }
+
+.pga-right { display: flex; flex-direction: column; gap: 20px; padding: 24px; }
+.pga-sum { display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+.pga-row { display: flex; justify-content: space-between; }
+.pga-row span:first-child { font-family: var(--pga-sans); color: var(--pga-muted); }
+.pga-row span:last-child { color: var(--pga-ink); }
+.pga-total { padding-top: 16px; border-top: 1px solid var(--pga-line); }
+.pga-total .pga-num { font-size: 44px; font-weight: 700; letter-spacing: -.03em; color: var(--pga-accent); }
+
+.pga-invoice-actions { display: flex; flex-direction: column; gap: 10px; margin-top: auto; }
+/* 结账页的actions_html是网关自己输出的markup，外面多包一层
+   <div class="pga-gateway pga-gateway-{method}">（paypal_js还会在里面混入
+   状态文案），竖排布局下这层要撑满整行宽度。 */
+.pga-invoice-actions .pga-gateway { flex: 1; min-width: 0; }
+.pga-pay-button, .pga-button-secondary {
+  font: inherit; cursor: pointer; border-radius: 12px;
+  text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 8px;
+  box-sizing: border-box;
+}
+.pga-pay-button { width: 100%; flex: 1; height: 52px; border: 0; background: var(--pga-accent); color: var(--pga-bg); font-size: 16px; font-weight: 700; padding: 10px}
+.pga-pay-button:hover { filter: brightness(1.08); }
+.pga-button-secondary { width: auto; height: 46px; border: 1px solid #2c3a5c; background: transparent; color: var(--pga-body); font-size: 14px; font-weight: 500; padding: 0 24px; }
+.pga-button-secondary:hover { background: #17213a; }
+.pga-pay-button:focus-visible, .pga-button-secondary:focus-visible { outline: 3px solid var(--pga-accent); outline-offset: 2px; }
+
+.pga-result-message { margin: 0 0 24px; font-size: 15px; color: var(--pga-muted); text-align: center; }
+
+@media (max-width: 760px) {
+  .pga-payment-page { padding: 0; }
+  .pga-payment-container--wide {
+    margin: 0; padding: 24px 16px 150px; background: transparent; border: 0; border-radius: 0; gap: 16px; min-height: 100vh;
+  }
+  .pga-logo { width: 36px; height: 36px; }
+  .pga-head h1 { font-size: 18px; }
+  .pga-status-badge { font-size: 12px; padding: 6px 12px; }
+  .pga-notice { align-items: flex-start; font-size: 13px; }
+  .pga-notice strong { display: block; }
+  .pga-cols { grid-template-columns: 1fr; gap: 16px; }
+  .pga-right { display: contents; }
+  .pga-total { order: -1; padding: 20px; border: 1px solid var(--pga-line); border-radius: 16px; background: var(--pga-card); }
+  .pga-total .pga-num { font-size: 40px; }
+  .pga-left { order: 0; padding: 20px; border-radius: 16px; background: var(--pga-card); border: 1px solid var(--pga-line); gap: 14px; }
+  .pga-pair { grid-template-columns: 1fr 1fr; }
+  .pga-box { padding: 14px 0 0; border: 0; border-top: 1px solid var(--pga-line); border-radius: 0; background: transparent; }
+  .pga-sum { order: 1; padding: 20px; border-radius: 16px; background: var(--pga-card); border: 1px solid var(--pga-line); font-size: 13px; }
+  .pga-invoice-actions {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; padding: 16px 16px calc(20px + env(safe-area-inset-bottom));
+    background: var(--pga-card); border-top: 1px solid var(--pga-line); gap: 8px;
+  }
+  .pga-button-secondary { height: 44px; }
+}
+
+/* 独立loading页（/payment/{order}?token=xxx） */
+
+.pga-loading-page {
+  box-sizing: border-box; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 24px; text-align: center;
+  background: var(--pga-bg); color: var(--pga-ink);
+}
+.pga-loading-logo { width: 120px; height: 120px; border-radius: 20px; box-shadow: 0 2px 16px rgba(0,0,0,.4); background: var(--pga-card); }
+.pga-loading-spinner {
+  width: 28px; height: 28px; margin-top: 24px; border: 3px solid rgba(198,244,50,.2);
+  border-top-color: var(--pga-accent); border-radius: 50%; animation: pga-spin .8s linear infinite;
+}
+.pga-loading-text { margin-top: 16px; font-size: 14px; color: var(--pga-muted); }
+.pga-loading-text #pga-countdown-num { font-weight: 700; color: var(--pga-ink); }
+.pga-jump-link { margin-top: 20px; font-size: 13px; color: var(--pga-accent); }
+@keyframes pga-spin { to { transform: rotate(360deg); } }
+
+/* paypal_js Smart Buttons结账页 */
+#pga-paypal-button-container { min-height: 45px; }
+.pga-paypal-status { margin-top: 16px; font-size: 14px; color: var(--pga-muted); text-align: center; }
+.pga-paypal-error { margin-top: 16px; font-size: 14px; color: var(--pga-danger-ink); text-align: center; }

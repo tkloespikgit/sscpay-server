@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Midnight</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b1020; --card: #121a2e; --inset: #0f1627; --line: #243150; --line2: #1f2a44; --chip: #1b2540;
+    --ink: #e8ecf5; --muted: #93a0b8; --body: #c3cbdb; --accent: #c6f432;
+    --warn: #f5c451; --warn-soft: #e3cf96; --warn-bg: #1d1a10; --warn-line: #3f3515; --pill-bg: #2a2412;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: Sora, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; padding: 48px 16px; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .card { width: 100%; max-width: 940px; background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 36px 44px; display: flex; flex-direction: column; gap: 24px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo { width: 40px; height: 40px; border-radius: 10px; background: var(--chip); display: grid; place-items: center; color: var(--accent); }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px; background: var(--pill-bg); color: var(--warn); font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+  .notice { display: flex; gap: 14px; align-items: center; padding: 14px 18px; border-radius: 12px; background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn); font-size: 14px; line-height: 1.5; }
+  .notice svg { flex-shrink: 0; }
+  .notice strong { font-weight: 600; }
+  .notice span { color: var(--warn-soft); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .left { display: flex; flex-direction: column; gap: 20px; }
+  .k { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  .v { font-size: 13px; word-break: break-all; margin: 0; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .box { padding: 20px; border-radius: 14px; background: var(--inset); border: 1px solid var(--line2); }
+  address { font-style: normal; font-size: 14px; line-height: 1.6; color: var(--body); }
+  address b { color: var(--ink); font-size: 16px; font-weight: 600; }
+  .right { display: flex; flex-direction: column; gap: 20px; padding: 24px; }
+  .sum { display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+  .row { display: flex; justify-content: space-between; }
+  .row span:first-child { font-family: Sora, sans-serif; color: var(--muted); }
+  .total { padding-top: 16px; border-top: 1px solid var(--line); }
+  .total .num { font-size: 44px; font-weight: 700; letter-spacing: -.03em; color: var(--accent); }
+  .actions { display: flex; flex-direction: column; gap: 10px; margin-top: auto; }
+  button { font: inherit; cursor: pointer; border-radius: 12px; }
+  .btn-pay { height: 52px; border: 0; background: var(--accent); color: var(--bg); font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-pay:hover { filter: brightness(1.08); }
+  .btn-cancel { height: 46px; border: 1px solid #2c3a5c; background: transparent; color: var(--body); font-size: 14px; font-weight: 500; }
+  .btn-cancel:hover { background: #17213a; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 760px) {
+    body { display: block; padding: 24px 16px 150px; }
+    .card { padding: 0; border: 0; background: transparent; gap: 16px; }
+    .logo { width: 36px; height: 36px; }
+    h1 { font-size: 18px; }
+    .pill { font-size: 12px; padding: 6px 12px; }
+    .notice { align-items: flex-start; font-size: 13px; }
+    .notice strong { display: block; }
+    .cols { grid-template-columns: 1fr; gap: 16px; }
+    .right { display: contents; }
+    .total { order: -1; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+    .total .num { font-size: 40px; }
+    .left { order: 0; padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); gap: 14px; }
+    .pair { grid-template-columns: 1fr 1fr; }
+    .box { padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+    .sum { order: 1; padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); font-size: 13px; }
+    .actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); gap: 8px; }
+    .btn-cancel { height: 44px; }
+    .wrap-cols { display: flex; flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="head">
+    <div class="brand">
+      <span class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 3 2V2l-3 2-3-2-3 2-3-2-3 2z"/><path d="M8 9h8"/><path d="M8 13h6"/></svg></span>
+      <h1>Invoice</h1>
+    </div>
+    <span class="pill"><i></i>Awaiting payment</span>
+  </div>
+
+  <div class="notice" role="status">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    <div><strong>Your order is awaiting payment.</strong> <span>Complete payment to confirm your order.</span></div>
+  </div>
+
+  <div class="cols">
+    <div class="left">
+      <div>
+        <p class="k">Invoice number</p>
+        <p class="v mono">LF-INV-_JOHN_DOE_LF_76646545413187212561</p>
+      </div>
+      <div class="pair">
+        <div><p class="k">Order no.</p><p class="v mono">LF_76646545413187212561</p></div>
+        <div><p class="k">Date</p><p class="v" style="font-size:14px">Sep 16, 2026</p></div>
+      </div>
+      <div class="box">
+        <p class="k">Billed to</p>
+        <address>
+          <b>John Doe</b><br>
+          Alexanderplatz 1 Apt. 4B<br>
+          Berlin, Berlin 10178, DE<br>
+          john.doe@example.com<br>
+          +4915112345678
+        </address>
+      </div>
+    </div>
+
+    <div class="right box">
+      <div class="sum mono">
+        <div class="row"><span>Subtotal</span><span>EUR 380.00</span></div>
+        <div class="row"><span>Shipping</span><span>EUR 15.00</span></div>
+        <div class="row"><span>Tax</span><span>EUR 5.00</span></div>
+        <div class="row"><span>Discount</span><span>−EUR 10.00</span></div>
+      </div>
+      <div class="total">
+        <p class="k">Total due</p>
+        <div class="num">EUR 390.00</div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn-pay" id="pay">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          Pay EUR 390.00
+        </button>
+        <button type="button" class="btn-cancel" id="cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

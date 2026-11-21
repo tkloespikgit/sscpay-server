@@ -17,6 +17,11 @@ class CreatePaymentMethod extends CreateRecord
 
     protected ?bool $hasDatabaseTransactions = true;
 
+    protected function getHeaderActions(): array
+    {
+        return [PaymentMethodResource::gatewayPluginDownloadAction()];
+    }
+
     public function setMerchantAuthorization(int $merchantId, bool $authorized, PaymentMethodMerchantAssignmentService $service): void
     {
         abort_unless(blank($this->data['merchant_id'] ?? null)

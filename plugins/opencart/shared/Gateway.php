@@ -126,7 +126,8 @@ final class Gateway {
         }
         $store = (int)$this->service('config')->get('config_store_id');
         $orderId = (int)$session->data['order_id'];
-        $redirect = $this->repository->locked($store, $orderId, function () use ($store, $orderId, $settings) {
+        $customerIp = $request->server['REMOTE_ADDR'] ?? null;
+        $redirect = $this->repository->locked($store, $orderId, function () use ($store, $orderId, $settings, $customerIp) {
             $order = $this->order($orderId, $store);
             $record = $this->repository->find($store, $orderId);
             $isNewRecord = $record === null;
@@ -170,6 +171,9 @@ final class Gateway {
                 'notify' => $this->url('notify'), 'return' => $this->returnUrl($record), 'cancel' => $this->returnUrl($record, 'cancel')];
             $client = $this->client($settings);
             $payload = Payload::create($order, $products, $totals, $settings, $urls, $record['merchant_order_no']);
+            if (is_string($customerIp) && filter_var($customerIp, FILTER_VALIDATE_IP) !== false) {
+                $payload['customer_ip'] = $customerIp;
+            }
             if ($isNewRecord) {
                 $this->repository->insert($record);
             }

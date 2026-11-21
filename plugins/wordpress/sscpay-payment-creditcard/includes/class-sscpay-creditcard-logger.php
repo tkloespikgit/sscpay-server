@@ -111,7 +111,7 @@ class SSCPay_Creditcard_Logger {
 			return $data;
 		}
 
-		$sensitive = array( 'api_key', 'apikey', 'token', 'authorization', 'password', 'secret' );
+		$sensitive = array( 'api_key', 'apikey', 'token', 'authorization', 'password', 'secret', 'customer_ip' );
 		$masked    = array();
 
 		foreach ( $data as $key => $value ) {

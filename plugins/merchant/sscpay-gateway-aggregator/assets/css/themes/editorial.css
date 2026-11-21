@@ -1,0 +1,179 @@
+/* Editorial主题：报刊排版风发票卡片。原型见 src/Frontend/Tpl/checkout-07-editorial.html，
+   字体改用系统字体栈（不请求Google Fonts，避免每次支付页访问都把访客IP/UA
+   泄漏给第三方字体CDN）：原Newsreader（衬线标题字）换成系统serif栈，
+   原Public Sans（正文无衬线字）换成系统sans栈。 */
+
+:root {
+  --pga-bg: #f7f5ef; --pga-card: #fffefa; --pga-ink: #1c1f1a; --pga-muted: #5c5f57;
+  --pga-rule: #cfcabd; --pga-dot: #b9b4a6; --pga-accent: #3f6b4f;
+
+  --pga-warning-bg: var(--pga-ink); --pga-warning-ink: var(--pga-bg);
+  --pga-paid-bg: var(--pga-accent); --pga-paid-ink: #fff;
+  --pga-danger-bg: #8a2e2e; --pga-danger-ink: #fff;
+  --pga-neutral-bg: #8c8776; --pga-neutral-ink: #fff;
+
+  --pga-notice-warning-bg: #f3ecd9; --pga-notice-warning-lbl: #8a6a12;
+  --pga-notice-paid-bg: #e9eee7; --pga-notice-paid-lbl: #3f6b4f;
+  --pga-notice-danger-bg: #f5e6e1; --pga-notice-danger-lbl: #8a2e2e;
+  --pga-notice-neutral-bg: #eceae2; --pga-notice-neutral-lbl: #5c5f57;
+
+  --pga-serif: Georgia, Cambria, "Times New Roman", Times, serif;
+  --pga-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+.pga-payment-page {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--pga-bg);
+  color: var(--pga-ink);
+  font-family: var(--pga-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.screen-reader-text {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* 其它纯文字提示页面（非发票卡片）用的通用容器 */
+.pga-payment-container {
+  max-width: 480px;
+  margin: 48px auto;
+  padding: 32px 24px;
+  background: var(--pga-card);
+  border: 1px solid var(--pga-rule);
+  border-radius: 4px;
+}
+
+.pga-payment-container h1 { font-size: 20px; margin: 0 0 16px; }
+
+/* 报刊排版的masthead式布局没有卡片边框/圆角，直接铺在页面底色上，
+   这层"就是"原型里的 .page 容器，不再额外套一层包装div。 */
+.pga-payment-container--wide {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 52px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.pga-serif { font-family: var(--pga-serif); }
+
+.pga-mast {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 20px;
+  padding-bottom: 18px; border-bottom: 3px double var(--pga-ink);
+}
+.pga-no { font-size: 12px; letter-spacing: .2em; font-weight: 600; color: var(--pga-accent); word-break: break-all; }
+.pga-mast h1 { margin: 4px 0 0; font-size: clamp(56px, 8vw, 84px); font-style: italic; font-weight: 400; line-height: 1; }
+.pga-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.pga-date { font-size: 18px; }
+
+.pga-status-badge {
+  padding: 6px 12px; background: var(--pga-warning-bg); color: var(--pga-warning-ink);
+  font-size: 12px; letter-spacing: .14em; font-weight: 600; white-space: nowrap; text-transform: uppercase;
+}
+.pga-status-badge--paid { background: var(--pga-paid-bg); color: var(--pga-paid-ink); }
+.pga-status-badge--danger { background: var(--pga-danger-bg); color: var(--pga-danger-ink); }
+.pga-status-badge--neutral { background: var(--pga-neutral-bg); color: var(--pga-neutral-ink); }
+
+.pga-notice {
+  display: flex; align-items: baseline; gap: 16px; padding: 14px 20px;
+  background: var(--pga-notice-warning-bg);
+}
+.pga-notice-lbl { font-size: 11px; letter-spacing: .18em; font-weight: 600; color: var(--pga-notice-warning-lbl); flex-shrink: 0; text-transform: uppercase; }
+.pga-notice p { margin: 0; font-size: 20px; font-style: italic; line-height: 1.35; }
+.pga-notice--paid { background: var(--pga-notice-paid-bg); }
+.pga-notice--paid .pga-notice-lbl { color: var(--pga-notice-paid-lbl); }
+.pga-notice--danger { background: var(--pga-notice-danger-bg); }
+.pga-notice--danger .pga-notice-lbl { color: var(--pga-notice-danger-lbl); }
+.pga-notice--neutral { background: var(--pga-notice-neutral-bg); }
+.pga-notice--neutral .pga-notice-lbl { color: var(--pga-notice-neutral-lbl); }
+
+.pga-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pga-col { padding: 0 32px; border-right: 1px solid var(--pga-rule); }
+.pga-col:first-child { padding-left: 0; }
+.pga-col:last-child { padding-right: 0; border-right: 0; }
+.pga-sec { font-size: 15px; color: var(--pga-accent); margin: 0 0 14px; font-weight: 400; }
+.pga-k { font-size: 12px; letter-spacing: .1em; color: var(--pga-muted); margin: 0 0 4px; text-transform: uppercase; }
+.pga-v { font-size: 15px; font-weight: 500; word-break: break-all; margin: 0 0 16px; }
+.pga-name { font-size: 30px; line-height: 1.1; margin: 0 0 10px; font-weight: 400; }
+.pga-col address { font-style: normal; font-size: 15px; line-height: 1.6; }
+.pga-m { color: var(--pga-muted); }
+
+.pga-row { display: flex; justify-content: space-between; padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px dotted var(--pga-dot); font-size: 15px; }
+
+.pga-foot { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding-top: 18px; border-top: 1px solid var(--pga-ink); }
+.pga-tot { display: flex; align-items: baseline; gap: 20px; }
+.pga-tot-lbl { font-size: 28px; font-style: italic; }
+.pga-tot-num { font-size: clamp(38px, 5vw, 60px); font-weight: 500; letter-spacing: -.02em; }
+
+.pga-invoice-actions { display: flex; gap: 12px; }
+/* 结账页的actions_html是网关自己输出的markup，外面多包一层
+   <div class="pga-gateway pga-gateway-{method}">（paypal_js还会在里面混入
+   状态文案），这层要在flex行里占位跟.pga-pay-button一样多，宽度撑满。 */
+.pga-invoice-actions .pga-gateway { flex: 1; min-width: 0; }
+.pga-pay-button, .pga-button-secondary {
+  font: inherit; cursor: pointer; height: 52px; font-size: 13px; letter-spacing: .14em; font-weight: 600;
+  border-radius: 0; text-decoration: none; display: flex; align-items: center; justify-content: center;
+  box-sizing: border-box;
+}
+/* .pga-button-secondary width留auto（撑内容），避免作为flex行内直接子项时
+   被当成flex-basis撑满一整行；.pga-pay-button需要width:100%——它有时是
+   .pga-gateway（普通block，非flex容器）里唯一的子元素，需要自己撑满宽度，
+   同时又要在直接作为flex行子项时被flex:1接管（flex-basis:0%优先于width）。 */
+.pga-button-secondary { width: auto; padding: 0 22px; border: 1px solid var(--pga-ink); background: transparent; color: var(--pga-ink); }
+.pga-pay-button { width: 100%; flex: 1; padding: 0 32px; border: 0; background: var(--pga-accent); color: #fff; }
+.pga-button-secondary:hover { background: #ece9df; }
+.pga-pay-button:hover { background: #335a41; }
+.pga-pay-button:focus-visible, .pga-button-secondary:focus-visible { outline: 3px solid var(--pga-ink); outline-offset: 2px; }
+
+.pga-result-message { margin: 0 0 24px; font-size: 15px; color: var(--pga-muted); text-align: center; }
+
+@media (max-width: 820px) {
+  .pga-payment-container--wide { padding: 32px 20px 24px; gap: 22px; }
+  .pga-mast { flex-direction: column-reverse; align-items: stretch; gap: 8px; padding-bottom: 14px; }
+  .pga-meta { flex-direction: row; justify-content: space-between; align-items: center; }
+  .pga-no { display: none; }
+  .pga-status-badge { font-size: 10px; padding: 4px 8px; }
+  .pga-date { font-size: 13px; }
+  .pga-notice { flex-direction: column; gap: 4px; padding: 14px 16px; }
+  .pga-notice p { font-size: 18px; }
+  .pga-cols { grid-template-columns: 1fr; gap: 18px; }
+  .pga-col, .pga-col:first-child, .pga-col:last-child { padding: 18px 0 0; border-right: 0; border-top: 1px solid var(--pga-rule); }
+  .pga-col:first-child { border-top: 0; padding-top: 0; }
+  .pga-v { font-size: 14px; }
+  .pga-name { font-size: 26px; }
+  .pga-row { font-size: 14px; }
+  .pga-foot {
+    position: sticky; bottom: 0; flex-direction: column; align-items: stretch; gap: 14px;
+    margin: 0 -20px -24px; padding: 16px 20px calc(24px + env(safe-area-inset-bottom)); background: var(--pga-bg);
+  }
+  .pga-tot { justify-content: space-between; }
+  .pga-tot-lbl { font-size: 22px; }
+  .pga-pay-button { flex: 1; }
+  .pga-button-secondary { padding: 0 18px; font-size: 12px; }
+}
+
+/* 独立loading页（/payment/{order}?token=xxx） */
+
+.pga-loading-page {
+  box-sizing: border-box; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 24px; text-align: center;
+}
+.pga-loading-logo { width: 120px; height: 120px; border-radius: 4px; box-shadow: 0 2px 12px rgba(28,31,26,.08); background: var(--pga-card); }
+.pga-loading-spinner {
+  width: 28px; height: 28px; margin-top: 24px; border: 3px solid rgba(63,107,79,.2);
+  border-top-color: var(--pga-accent); border-radius: 50%; animation: pga-spin .8s linear infinite;
+}
+.pga-loading-text { margin-top: 16px; font-size: 14px; color: var(--pga-muted); }
+.pga-loading-text #pga-countdown-num { font-weight: 700; color: var(--pga-ink); }
+.pga-jump-link { margin-top: 20px; font-size: 13px; color: var(--pga-accent); }
+@keyframes pga-spin { to { transform: rotate(360deg); } }
+
+/* paypal_js Smart Buttons结账页 */
+#pga-paypal-button-container { min-height: 45px; }
+.pga-paypal-status { margin-top: 16px; font-size: 14px; color: var(--pga-muted); text-align: center; }
+.pga-paypal-error { margin-top: 16px; font-size: 14px; color: var(--pga-danger-bg); text-align: center; }

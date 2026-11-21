@@ -60,6 +60,9 @@ class CombinedOrderResource extends Resource
                 TextEntry::make('expires_at')->label(__('combined.admin.expires_at'))->dateTime(),
                 TextEntry::make('last_error_code')->label(__('combined.admin.last_error'))
                     ->formatStateUsing(fn (?string $state): ?string => $state ? __('combined.errors.'.$state) : null),
+                TextEntry::make('order_snapshot.checkout_customer_ip')
+                    ->label(__('admin.order.fields.checkout_customer_ip'))->copyable()
+                    ->visible(fn (CombinedOrder $record): bool => filled($record->order_snapshot['checkout_customer_ip'] ?? null)),
                 TextEntry::make('pay_url')->label(__('combined.admin.checkout'))->url(fn (CombinedOrder $record): string => $record->pay_url)
                     ->openUrlInNewTab()->copyable()->columnSpanFull(),
             ]),

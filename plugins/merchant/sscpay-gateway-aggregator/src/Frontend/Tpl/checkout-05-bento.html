@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Bento</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ece8f7; --card: #fff; --soft: #f6f4fb; --ink: #1e1a33; --muted: #5f5a78; --body: #3d3857;
+    --accent: #3b2d7a; --accent-dim: #d9d2f5; --accent-line: #7a6bb8; --avatar: #e3dcfb;
+    --notice-bg: #fff4de; --notice-icon: #ffe2a8; --notice-ink: #6e4200;
+    --pill-bg: #fff0d4; --pill-ink: #7d4a00; --pill-dot: #e59a0f; --good: #1d7a4a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: "Plus Jakarta Sans", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 56px 24px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+  .card { background: var(--card); border-radius: 28px; padding: 30px 34px; }
+  .notice { grid-column: 1 / -1; background: var(--notice-bg); color: var(--notice-ink); border-radius: 22px; padding: 18px 24px; display: flex; align-items: center; gap: 14px; font-size: 14px; }
+  .notice .ico { width: 40px; height: 40px; border-radius: 12px; background: var(--notice-icon); display: grid; place-items: center; flex-shrink: 0; }
+  .notice strong { display: block; font-size: 15px; font-weight: 700; }
+  .head { grid-column: span 2; display: flex; flex-direction: column; gap: 24px; }
+  .title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--pill-bg); color: var(--pill-ink); border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--pill-dot); }
+  .ids { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .chip { background: var(--soft); border-radius: 16px; padding: 16px 18px; }
+  .k { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+  .v { font-size: 14px; font-weight: 700; word-break: break-all; margin: 0; }
+  .pay-card { grid-column: 3; grid-row: 2 / span 2; background: var(--accent); color: #fff; display: flex; flex-direction: column; justify-content: space-between; gap: 32px; }
+  .pay-card .dim { color: var(--accent-dim); font-size: 14px; font-weight: 600; }
+  .amount { display: flex; flex-direction: column; gap: 6px; }
+  .amount .num { font-size: 64px; font-weight: 800; letter-spacing: -.04em; line-height: 1; }
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+  button { font: inherit; cursor: pointer; border-radius: 16px; }
+  .btn-pay { height: 56px; border: 0; background: #fff; color: var(--accent); font-size: 16px; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-cancel { height: 48px; border: 1px solid var(--accent-line); background: transparent; color: #fff; font-size: 15px; font-weight: 600; }
+  .btn-pay:hover { background: #f3f0ff; }
+  .btn-cancel:hover { background: rgba(255,255,255,.06); }
+  button:focus-visible { outline: 3px solid #e59a0f; outline-offset: 2px; }
+  .person { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
+  .avatar { width: 44px; height: 44px; border-radius: 50%; background: var(--avatar); color: var(--accent); display: grid; place-items: center; font-weight: 800; }
+  .person b { font-size: 20px; }
+  address { font-style: normal; font-size: 14px; line-height: 1.65; color: var(--body); }
+  .sum { display: flex; flex-direction: column; gap: 12px; font-size: 15px; }
+  .row { display: flex; justify-content: space-between; }
+  .row span:first-child { color: var(--body); }
+  .row span:last-child { font-weight: 600; }
+  .row.total { align-items: center; margin-top: 4px; padding: 12px 16px; background: var(--soft); border-radius: 14px; }
+  .row.total span:first-child { color: var(--ink); font-weight: 700; }
+  .row.total span:last-child { font-weight: 800; font-size: 18px; }
+
+  @media (max-width: 860px) {
+    .wrap { grid-template-columns: 1fr 1fr; padding: 24px 16px 120px; gap: 12px; }
+    .card { border-radius: 24px; padding: 20px; }
+    .head { grid-column: 1 / -1; background: transparent; padding: 4px 4px 0; order: -2; }
+    .head h1 { font-size: 26px; }
+    .head .pill { font-size: 12px; padding: 6px 12px; }
+    .notice { order: -1; border-radius: 20px; padding: 14px 16px; align-items: flex-start; font-size: 13px; line-height: 1.45; }
+    .notice .ico { width: 36px; height: 36px; border-radius: 10px; }
+    .ids { display: contents; }
+    .chip { background: var(--card); border-radius: 20px; padding: 16px; }
+    .chip .v { font-size: 12px; }
+    .pay-card { grid-column: 1 / -1; grid-row: auto; order: -1; gap: 0; }
+    .amount .num { font-size: 52px; }
+    .pay-card > .dim { display: none; }
+    .billed, .sum-card { grid-column: 1 / -1; }
+    .actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; flex-direction: row-reverse; padding: 14px 16px calc(18px + env(safe-area-inset-bottom)); background: #fff; border-radius: 24px 24px 0 0; box-shadow: 0 -8px 24px rgba(30,26,51,.08); }
+    .btn-pay { flex: 1; background: var(--accent); color: #fff; height: 54px; }
+    .btn-pay:hover { background: var(--accent); }
+    .btn-cancel { height: 54px; padding: 0 20px; border: 0; background: #f1eef9; color: var(--ink); font-weight: 700; }
+    .sum { font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="notice" role="status">
+    <span class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+    <div><strong>Your order is awaiting payment</strong>Complete payment to confirm your order.</div>
+  </div>
+
+  <div class="card head">
+    <div class="title-row">
+      <h1>Invoice</h1>
+      <span class="pill"><i></i>Awaiting payment</span>
+    </div>
+    <div class="ids">
+      <div class="chip"><p class="k">Invoice number</p><p class="v">LF-INV-_JOHN_DOE_LF_76646545413187212561</p></div>
+      <div class="chip"><p class="k">Order no.</p><p class="v">LF_76646545413187212561</p></div>
+    </div>
+  </div>
+
+  <div class="card pay-card">
+    <span class="dim">Total due</span>
+    <div class="amount">
+      <span class="dim">EUR</span>
+      <span class="num">390.00</span>
+      <span class="dim" style="font-weight:500">September 16, 2026</span>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn-pay" id="pay">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        Pay EUR 390.00
+      </button>
+      <button type="button" class="btn-cancel" id="cancel">Cancel</button>
+    </div>
+  </div>
+
+  <div class="card billed">
+    <p class="k">Billed to</p>
+    <div class="person"><span class="avatar">JD</span><b>John Doe</b></div>
+    <address>
+      Alexanderplatz 1 Apt. 4B<br>
+      Berlin, Berlin 10178, DE<br>
+      john.doe@example.com<br>
+      +4915112345678
+    </address>
+  </div>
+
+  <div class="card sum-card">
+    <div class="sum">
+      <p class="k" style="margin:0">Summary</p>
+      <div class="row"><span>Subtotal</span><span>EUR 380.00</span></div>
+      <div class="row"><span>Shipping</span><span>EUR 15.00</span></div>
+      <div class="row"><span>Tax</span><span>EUR 5.00</span></div>
+      <div class="row"><span>Discount</span><span style="color:var(--good)">−EUR 10.00</span></div>
+      <div class="row total"><span>Total</span><span>EUR 390.00</span></div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

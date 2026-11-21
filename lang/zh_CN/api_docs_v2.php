@@ -51,6 +51,7 @@ return [
                         ['customer.last_name', 'string ≤100', '是', '姓氏。'],
                         ['customer.email', 'email ≤255', '是', '客户电子邮箱。'],
                         ['customer.phone', 'string ≤30', '否', '客户电话。'],
+                        ['customer_ip', 'IPv4 / IPv6，≤45 字符', '否', '商城结账时取得的客户地址，放在 JSON 请求体顶层并参与签名；未知时省略。不合法返回 422。'],
                         ['shipping_address', 'object', '是', '收货地址。'],
                         ['shipping_address.line1', 'string ≤255', '是', '地址第一行。'],
                         ['shipping_address.line2', 'string ≤255', '否', '地址第二行。'],

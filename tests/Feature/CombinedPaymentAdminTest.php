@@ -37,7 +37,7 @@ class CombinedPaymentAdminTest extends TestCase
 
     public function test_parent_list_is_read_only_and_isolated_by_merchant(): void
     {
-        $own = $this->combinedParent();
+        $own = $this->combinedParent(['order_snapshot' => ['checkout_customer_ip' => '198.51.100.51']]);
         $child = $this->makeOrder('COMBINED-CHILD', 'COMBINED-CHILD-S001', [
             'combined_order_id' => $own->id, 'combined_sequence' => 1,
         ]);
@@ -50,6 +50,7 @@ class CombinedPaymentAdminTest extends TestCase
             ->assertActionMounted(TestAction::make('view')->table($own));
         $html = $page->instance()->getSchema($page->instance()->getMountedActionSchemaName())->toHtml();
         $this->assertStringContainsString($child->merchant_order_no, $html);
+        $this->assertStringContainsString('198.51.100.51', $html);
         $this->assertStringNotContainsString(OrderResource::getUrl('view', ['record' => $child]), $html);
         $this->assertFalse(OrderResource::canView($child));
         $this->assertFalse(CombinedOrderResource::canView($other));

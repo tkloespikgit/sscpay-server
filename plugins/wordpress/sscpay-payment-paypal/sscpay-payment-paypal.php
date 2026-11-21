@@ -3,7 +3,7 @@
  * Plugin Name:       SSCPay Payment - PayPal
  * Update URI:        false
  * Description:       通过 SSCPay 订单系统收款的 WooCommerce 支付网关（PayPal 渠道）。支持多币种、沙箱模式、异步回调验签、查单兜底、支付方式名称/描述/Logo 自定义，以及 API v2 组合付款与 SSCPay 在线更新。
- * Version:           1.1.0
+ * Version:           1.2.0
  * Author:            SSCPay
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
@@ -20,7 +20,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'SSCPAY_PAYPAL_VERSION', '1.1.0' );
+define( 'SSCPAY_PAYPAL_VERSION', '1.2.0' );
 define( 'SSCPAY_PAYPAL_FILE', __FILE__ );
 define( 'SSCPAY_PAYPAL_PATH', plugin_dir_path( __FILE__ ) );
 define( 'SSCPAY_PAYPAL_URL', plugin_dir_url( __FILE__ ) );

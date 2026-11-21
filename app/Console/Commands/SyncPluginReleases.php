@@ -19,7 +19,7 @@ class SyncPluginReleases extends Command
      *
      * @var string
      */
-    protected $description = '部署时构建并发布全部电商插件，检查协议、版本冲突与稳定版入口';
+    protected $description = '部署时构建并发布商城插件与网关插件，检查协议、版本冲突与稳定版入口';
 
     /**
      * Execute the console command.

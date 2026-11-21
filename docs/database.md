@@ -120,6 +120,7 @@ php artisan db:seed --class=PaymentFailureSettingsSeeder --force --no-interactio
 | `settlement_mode`、`settlement_days` | 首次建单优先保存该商户/渠道的独立起算方式与周期，空值回退商户默认；重试不重算，NULL 标记历史单，不补建结算记录 |
 | `reserve_percent`、`reserve_days`、`refund_fee_snapshot`、`chargeback_fee_snapshot` | 首次建单保存的保证金及反向手续费快照；重试不重算，历史反向手续费快照为 NULL 时沿用原渠道规则 |
 | `refunded_amount` | 累计退款原币种金额，不是 USD |
+| `checkout_customer_ip` | nullable VARCHAR(45)；保存已签名的商城结账 IPv4 / IPv6 快照。组合父单保存在 `order_snapshot`、子单继承。历史 `customer_ip` 仍记录入口请求地址、维持原广告转化用法，不用于补录或显示商城客户 IP |
 | `accept_language` | 浏览器语言偏好列表，nullable VARCHAR(255)；统一建单入口最多保留 255 字符，避免请求头导致建单失败 |
 | `shipping_state`、`shipping_city` | 收款链接按 PayPal `admin_area_1` / `admin_area_2` 语义保存：省州按国家转换为官方代码或名称，城市保存城镇名称；服务端与 Google 回填共用映射。其他入口协议保持原有语义，详见[收款链接地址规则](../doc/checkout-link.md#地址字段与-paypal-rest) |
 | `pay_url`、`wp_order_id`、`transaction_id` | 远端收银台链接、WordPress 订单 ID、网关交易号。缺少 `pay_url` 的本地单可能需要补建远端。加密单的 `pay_url` 为本站 `/payment/{token}` |

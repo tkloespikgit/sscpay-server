@@ -10,10 +10,15 @@ use InvalidArgumentException;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
+use Symfony\Component\Finder\Finder;
 use ZipArchive;
 
 final readonly class PluginReleaseService
 {
+    private const PACKAGE_FILE_PATTERN = '/\.(php|js|css|json|twig|png|jpg|jpeg|gif|svg|webp|woff2?|mo|po|pot)$/i';
+
+    private const VENDOR_SUPPORT_PATTERN = '/^(LICENSE(?:\.txt)?|ca-certificates\.crt)$/i';
+
     public function __construct(private PluginCatalog $catalog, private PluginProtocol $protocol) {}
 
     /** @return array{zip: string, manifest: string, release: array<string, mixed>} */
@@ -22,6 +27,8 @@ final readonly class PluginReleaseService
         $this->protocol->check($this->catalog);
         $plugin = $this->catalog->find($slug);
         $version = $plugin['version'];
+        $isGateway = $slug === PluginCatalog::GATEWAY;
+        $isWordPress = $plugin['platform'] === 'wordpress';
         if ($tag !== null && $tag !== 'plugins/'.$slug.'/v'.$version) {
             throw new InvalidArgumentException('Tag does not match the plugin and version.');
         }
@@ -33,9 +40,12 @@ final readonly class PluginReleaseService
             throw new RuntimeException('Cannot create plugin ZIP.');
         }
         try {
-            $entries = $plugin['platform'] === 'wordpress'
-                ? [$slug.'.php', 'index.php', 'includes', 'assets', 'languages']
-                : ($slug === 'sscpay-opencart3' ? ['upload', 'install.json'] : ['admin', 'catalog', 'install.json']);
+            $entries = match (true) {
+                $isGateway => [$slug.'.php', 'uninstall.php', 'src', 'assets'],
+                $isWordPress => [$slug.'.php', 'index.php', 'includes', 'assets', 'languages'],
+                $slug === 'sscpay-opencart3' => ['upload', 'install.json'],
+                default => ['admin', 'catalog', 'install.json'],
+            };
             foreach ($entries as $entry) {
                 $source = $plugin['path'].'/'.$entry;
                 $files = is_dir($source)
@@ -45,9 +55,16 @@ final readonly class PluginReleaseService
                 foreach ($files as $file) {
                     $file = (string) $file;
                     $relative = substr($file, strlen($plugin['path']) + 1);
-                    $target = ($plugin['platform'] === 'wordpress' ? $slug.'/' : '').$relative;
+                    if ($isGateway
+                        && (str_starts_with($relative, 'src/Frontend/Tpl/') || $relative === 'assets/images/test.html')) {
+                        continue;
+                    }
+                    $target = ($isWordPress ? $slug.'/' : '').$relative;
                     $this->addFile($zip, $file, $target);
                 }
+            }
+            if ($isGateway) {
+                $this->addGatewayDependencies($zip, $plugin['path'].'/vendor');
             }
             if ($plugin['platform'] === 'opencart') {
                 $this->addOpenCartSharedFiles($zip, $plugin);
@@ -60,10 +77,10 @@ final readonly class PluginReleaseService
         $release = [
             'slug' => $slug, 'name' => $plugin['name'], 'version' => $version,
             'platform' => $plugin['platform'], 'archive_name' => $plugin['archive_name'],
-            'api_version' => $plugin['api_version'], 'protocol_hash' => $plugin['protocol_hash'],
+            'api_version' => $plugin['api_version'] ?? null, 'protocol_hash' => $plugin['protocol_hash'] ?? null,
             'requires' => $plugin['requires'], 'requires_php' => $plugin['requires_php'],
-            'tested' => $plugin['tested'], 'wc_requires' => $plugin['wc_requires'] ?? null,
-            'description' => $plugin['description'], 'changelog' => $plugin['changelog'],
+            'tested' => $plugin['tested'] ?? null, 'wc_requires' => $plugin['wc_requires'] ?? null,
+            'description' => $plugin['description'], 'changelog' => $plugin['changelog'] ?? '',
             'sha256' => hash_file('sha256', $path), 'size' => filesize($path),
             'published_at' => now()->toIso8601String(),
         ];
@@ -77,7 +94,8 @@ final readonly class PluginReleaseService
     public function publish(array $build): void
     {
         $release = $this->publication($build);
-        $disk = $this->disk();
+        $disk = $this->disk($release['slug']);
+        $options = $release['slug'] === PluginCatalog::GATEWAY ? ['visibility' => 'private'] : [];
         $prefix = $this->prefix($release['slug']);
         $versionPrefix = $prefix.'/'.$release['version'];
         $metadataPath = $versionPrefix.'/release.json';
@@ -85,8 +103,8 @@ final readonly class PluginReleaseService
         if (! $disk->exists($metadataPath) || ! $disk->exists($packagePath)) {
             $stream = fopen($build['zip'], 'rb');
             try {
-                if (! $disk->put($packagePath, $stream)
-                    || ! $disk->put($metadataPath, json_encode($release, JSON_THROW_ON_ERROR))) {
+                if (! $disk->put($packagePath, $stream, $options)
+                    || ! $disk->put($metadataPath, json_encode($release, JSON_THROW_ON_ERROR), $options)) {
                     throw new RuntimeException('Uploading the plugin release failed.');
                 }
             } finally {
@@ -95,7 +113,7 @@ final readonly class PluginReleaseService
                 }
             }
         }
-        if (! $disk->put($prefix.'/stable.json', json_encode($release, JSON_THROW_ON_ERROR))) {
+        if (! $disk->put($prefix.'/stable.json', json_encode($release, JSON_THROW_ON_ERROR), $options)) {
             throw new RuntimeException('Publishing the stable release failed.');
         }
     }
@@ -104,8 +122,8 @@ final readonly class PluginReleaseService
     public function sync(bool $dryRun = false): array
     {
         $builds = [];
-        foreach ($this->catalog->all() as $plugin) {
-            $builds[] = $this->build($plugin['slug']);
+        foreach ([...array_keys($this->catalog->all()), PluginCatalog::GATEWAY] as $slug) {
+            $builds[] = $this->build($slug);
         }
         $releases = [];
         foreach ($builds as $build) {
@@ -129,8 +147,8 @@ final readonly class PluginReleaseService
         $release = $build['release'];
         $existing = $this->version($release['slug'], $release['version']);
         if ($existing !== null && ($existing['sha256'] !== $release['sha256']
-            || ($existing['protocol_hash'] ?? '') !== $release['protocol_hash']
-            || ($existing['api_version'] ?? '') !== $release['api_version'])) {
+            || ($existing['protocol_hash'] ?? null) !== $release['protocol_hash']
+            || ($existing['api_version'] ?? null) !== $release['api_version'])) {
             throw new RuntimeException('This version is already published with different contents. Increment the plugin version.');
         }
         $latest = $this->latest($release['slug']);
@@ -160,9 +178,14 @@ final readonly class PluginReleaseService
         return $this->read($this->prefix($slug).'/'.$version.'/release.json', $slug, $version);
     }
 
-    public function disk(): Filesystem
+    public function disk(?string $slug = null): Filesystem
     {
-        return Storage::disk(config('plugins.disk'));
+        $disk = config('plugins.disk');
+        if ($slug === PluginCatalog::GATEWAY && ($disk === 'public' || config("filesystems.disks.{$disk}.visibility") === 'public')) {
+            throw new RuntimeException('The gateway plugin requires a private release disk.');
+        }
+
+        return Storage::disk($disk);
     }
 
     public function packagePath(string $slug, string $version): string
@@ -175,9 +198,10 @@ final readonly class PluginReleaseService
         return $this->prefix($slug).'/'.$version.'/'.$plugin['archive_name'];
     }
 
-    private function addFile(ZipArchive $zip, string $file, string $target): void
+    private function addFile(ZipArchive $zip, string $file, string $target, bool $vendor = false): void
     {
-        if (! is_file($file) || is_link($file) || ! preg_match('/\.(php|js|css|json|twig|png|jpg|jpeg|gif|svg|webp|woff2?|mo|po|pot)$/i', $file)) {
+        if (! is_file($file) || is_link($file) || (! preg_match(self::PACKAGE_FILE_PATTERN, $file)
+            && ! ($vendor && preg_match(self::VENDOR_SUPPORT_PATTERN, basename($file))))) {
             throw new RuntimeException('Unexpected file in plugin package: '.$target);
         }
         if (! $zip->addFile($file, $target)) {
@@ -185,6 +209,32 @@ final readonly class PluginReleaseService
         }
         $zip->setMtimeName($target, 315532800);
         $zip->setExternalAttributesName($target, ZipArchive::OPSYS_UNIX, 0100644 << 16);
+    }
+
+    private function addGatewayDependencies(ZipArchive $zip, string $vendor): void
+    {
+        $required = [
+            'autoload.php',
+            'composer/autoload_real.php',
+            'stripe/stripe-php/lib/Stripe.php',
+            'stripe/stripe-php/data/ca-certificates.crt',
+            'yahnis-elsts/plugin-update-checker/plugin-update-checker.php',
+        ];
+        foreach ($required as $file) {
+            if (! is_file($vendor.'/'.$file)) {
+                throw new RuntimeException('Install the gateway plugin dependencies from its composer.lock before building.');
+            }
+        }
+        $files = (new Finder)->files()->in($vendor)
+            ->exclude(['tests', 'test', 'docs', 'examples'])
+            ->notName('auth.json')
+            ->name(self::PACKAGE_FILE_PATTERN)
+            ->name(self::VENDOR_SUPPORT_PATTERN)
+            ->sortByName();
+
+        foreach ($files as $file) {
+            $this->addFile($zip, $file->getPathname(), PluginCatalog::GATEWAY.'/vendor/'.$file->getRelativePathname(), vendor: true);
+        }
     }
 
     /** @param array<string, mixed> $plugin */
@@ -213,10 +263,11 @@ final readonly class PluginReleaseService
     /** @return array<string, mixed>|null */
     private function read(string $path, string $slug, ?string $version = null): ?array
     {
-        if (! $this->disk()->exists($path)) {
+        $disk = $this->disk($slug);
+        if (! $disk->exists($path)) {
             return null;
         }
-        $release = json_decode($this->disk()->get($path), true, flags: JSON_THROW_ON_ERROR);
+        $release = json_decode($disk->get($path), true, flags: JSON_THROW_ON_ERROR);
         if (($release['slug'] ?? '') !== $slug || ! preg_match('/^\d+\.\d+\.\d+$/D', $release['version'] ?? '')
             || ($version !== null && $release['version'] !== $version)
             || ! preg_match('/^[a-f0-9]{64}$/D', $release['sha256'] ?? '')

@@ -50,6 +50,7 @@ class EditPaymentMethod extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            PaymentMethodResource::gatewayPluginDownloadAction(),
             GeneratePurchaseOrderAction::make(),
             PaymentMethodProfileAction::make(),
             $this->getDetachFromAllPaymentGroupsAction(),

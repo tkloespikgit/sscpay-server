@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Split</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --dark: #15171c; --light: #f5f3ee; --dim: #b7b3aa; --accent: #f0b429;
+    --ink: #15171c; --muted: #6a6d75; --body: #3d4048; --line: #e6e4df; --soft: #f3f2ee;
+    --notice-bg: #fdf5e1; --notice-ink: #6a4700;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #fff; color: var(--ink); font-family: "Instrument Sans", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .layout { min-height: 100vh; display: grid; grid-template-columns: minmax(380px, 38%) 1fr; }
+  .side { background: var(--dark); color: var(--light); padding: 64px 56px; display: flex; flex-direction: column; justify-content: space-between; gap: 40px; position: sticky; top: 0; height: 100vh; }
+  .brand { display: flex; flex-direction: column; gap: 20px; align-items: flex-start; }
+  .eyebrow { font-size: 14px; letter-spacing: .24em; font-weight: 600; }
+  .tag { padding: 6px 12px; border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; font-size: 12px; letter-spacing: .12em; font-weight: 600; white-space: nowrap; }
+  .total-block { display: flex; flex-direction: column; gap: 8px; }
+  .dim { font-size: 15px; color: var(--dim); }
+  .big { font-family: "Instrument Serif", serif; font-size: clamp(56px, 6.5vw, 88px); line-height: 1; }
+  .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 28px; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; }
+  .btn-pay { height: 56px; border: 0; background: var(--accent); color: var(--dark); font-size: 16px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-pay:hover { filter: brightness(1.06); }
+  .btn-cancel { height: 48px; border: 1px solid #3a3d45; background: transparent; color: var(--light); font-size: 15px; font-weight: 500; }
+  .btn-cancel:hover { border-color: #5a5e68; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .order { font-size: 13px; color: var(--dim); display: flex; flex-direction: column; gap: 6px; }
+  .order b { color: var(--light); font-weight: 500; word-break: break-all; }
+
+  .main { padding: 64px 72px; display: flex; flex-direction: column; gap: 32px; max-width: 860px; }
+  .notice { display: flex; gap: 14px; align-items: center; padding: 16px 20px; background: var(--notice-bg); border-radius: 12px; color: var(--notice-ink); font-size: 15px; }
+  .notice svg { flex-shrink: 0; }
+  .notice strong { display: block; font-weight: 600; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px 32px; }
+  .k { font-size: 12px; letter-spacing: .14em; color: var(--muted); font-weight: 600; margin: 0 0 8px; }
+  .v { font-size: 16px; font-weight: 500; word-break: break-all; margin: 0; }
+  section { padding-top: 28px; border-top: 1px solid var(--line); }
+  .name { font-family: "Instrument Serif", serif; font-size: 32px; margin: 0 0 10px; font-weight: 400; }
+  address { font-style: normal; font-size: 15px; line-height: 1.6; color: var(--body); }
+  .sum { display: flex; flex-direction: column; gap: 14px; font-size: 16px; }
+  .row { display: flex; justify-content: space-between; }
+  .row span:first-child { color: var(--body); }
+  .row.total { align-items: baseline; padding: 18px 20px; margin-top: 6px; background: var(--soft); border-radius: 10px; font-weight: 600; }
+  .row.total span:first-child { color: var(--ink); }
+  .row.total span:last-child { font-size: 22px; }
+  .mobile-only { display: none; }
+
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    .side { position: static; height: auto; padding: 32px 20px 28px; gap: 24px; }
+    .brand { flex-direction: row; justify-content: space-between; align-items: center; }
+    .eyebrow { font-size: 13px; }
+    .tag { font-size: 11px; padding: 5px 10px; }
+    .big { font-size: 64px; }
+    .order { display: none; }
+    .mobile-only { display: block; }
+    .actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0; flex-direction: row-reverse; padding: 14px 16px calc(18px + env(safe-area-inset-bottom)); background: var(--dark); }
+    .btn-pay { flex: 1; height: 52px; }
+    .btn-cancel { height: 52px; padding: 0 18px; }
+    .main { padding: 24px 20px 120px; gap: 24px; }
+    .notice { align-items: flex-start; font-size: 14px; line-height: 1.45; }
+    .grid2 { grid-template-columns: 1fr; gap: 16px; }
+    .v { font-size: 15px; }
+    .name { font-size: 28px; }
+    .sum { font-size: 15px; }
+    section { padding-top: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <div class="brand">
+      <span class="eyebrow">INVOICE</span>
+      <span class="tag">AWAITING PAYMENT</span>
+    </div>
+    <div>
+      <div class="total-block">
+        <span class="dim">Total</span>
+        <span class="big">€390.00</span>
+        <span class="dim">EUR · September 16, 2026</span>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn-pay" id="pay">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          Pay €390.00
+        </button>
+        <button type="button" class="btn-cancel" id="cancel">Cancel</button>
+      </div>
+    </div>
+    <div class="order">
+      <span>Order no.</span>
+      <b>LF_76646545413187212561</b>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="notice" role="status">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <div><strong>Your order is awaiting payment</strong>Complete payment to confirm your order.</div>
+    </div>
+
+    <div class="grid2">
+      <div>
+        <p class="k">INVOICE NUMBER</p>
+        <p class="v">LF-INV-_JOHN_DOE_LF_76646545413187212561</p>
+      </div>
+      <div>
+        <p class="k">DATE</p>
+        <p class="v">September 16, 2026</p>
+      </div>
+      <div class="mobile-only">
+        <p class="k">ORDER NO.</p>
+        <p class="v">LF_76646545413187212561</p>
+      </div>
+    </div>
+
+    <section>
+      <p class="k">BILLED TO</p>
+      <h2 class="name">John Doe</h2>
+      <div class="grid2">
+        <address>Alexanderplatz 1 Apt. 4B<br>Berlin, Berlin 10178<br>DE</address>
+        <address>john.doe@example.com<br>+4915112345678</address>
+      </div>
+    </section>
+
+    <section class="sum">
+      <div class="row"><span>Subtotal</span><span>EUR 380.00</span></div>
+      <div class="row"><span>Shipping</span><span>EUR 15.00</span></div>
+      <div class="row"><span>Tax</span><span>EUR 5.00</span></div>
+      <div class="row"><span>Discount</span><span>−EUR 10.00</span></div>
+      <div class="row total"><span>Total</span><span>EUR 390.00</span></div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

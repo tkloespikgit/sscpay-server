@@ -57,6 +57,8 @@ flowchart TD
 
 商城插件以 `plugins/{platform}/{slug}/` 为维护源，源码和服务端同仓管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。WordPress PayPal / 信用卡各自一个包；OpenCart 3 / 4 各一个包，每包注册 PayPal 与信用卡。`PluginCatalog` 发现两层目录，`PluginProtocol` 检查商户 API 协议指纹及四个包的版本，`PluginReleaseService` 按平台构建 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件共享代码保留 PHP 7.4 语法，OpenCart 4 运行时要求 PHP 8.0+，与 Laravel 环境分别检查。
 
+法币收款站安装 `plugins/merchant/` 下的 `sscpay-gateway-aggregator`，同时处理远程建单、回调和商品／变体同步。旧商品插件已合并，原 REST 路径、响应形状及 WooCommerce 鉴权方式仍可用。部署通过 `plugins:sync` 发布网关安装包，具备支付方式管理权限的后台账号在创建、编辑支付方式页下载。四个商城插件通过公开目录分发，并受商户 API 指纹校验约束。见 [D-73](decisions.md#d-73-商品-api-并入收款站聚合插件) 和 [D-74](decisions.md#d-74-网关插件随部署发布并在后台下载)。
+
 OpenCart 两代入口分别保留 MVC 类与命名空间结构，复用 `plugins/opencart/shared/` 的签名、十进制计算、v1/v2 状态处理与注册表适配。打包时注入共享代码和模板：3.x 使用 `upload/`，4.x 根目录直接部署到 `extension/sscpay/`，公开下载保留文件名 `sscpay.ocmod.zip`。商城独立保存支付引用、支付进度、事件及物流去重，以 MySQL 同单命名锁串行处理建单、回跳及通知；只有签名通知或主动查询确认收齐全额才调用商城核心历史接口。插件设置提供中英文配置、只读支付查询、物流发送和版本检查；退款/拒付按远端查询映射，不发起扣款或退款。边界与验收范围见 [D-64](decisions.md#d-64-opencart-两代独立安装包与共享协议客户端)。
 
 日常上线由根目录 `deploy.sh` 统一执行：维护模式下更新代码、依赖及资源，预检协议和全部插件版本，执行增量迁移与缓存、同步已配置的平台 Telegram 回调、调用 `plugins:sync` 发布安装包及下载索引，再通知队列重启并恢复访问。`telegram:register-webhook --if-configured` 仅在平台 Telegram 配置全部为空时跳过；部分配置或注册失败会停止部署，独立回调地址通过 `TELEGRAM_WEBHOOK_URL` 持久保存。命令的 `--check` 选项只读核对登记地址、消息订阅、待投递数量及最近错误，不代替实际绑定验收。`PluginReleaseService::sync()` 在写入前构建并预检所有已接入插件，支持 `--dry-run` 和相同版本重试；各插件分别切换稳定入口，不提供跨插件存储事务。GitHub tag 工作流继续承担 Release 附件和旧仓库过渡镜像。边界与重试见[日常自动部署](../doc/deployment.md#9-日常自动部署)。
@@ -160,6 +162,8 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 ## 3. 下单链路
 
 主要入口：[OrderCreationService.php](../app/Services/OrderCreationService.php)。
+
+商城 API 的可选 `customer_ip` 只从签名 JSON 读取，作为独立订单快照保存；组合付款父单与子单共享首单地址。法币有值才透传到收款站的 `/pay`，后台详情按原商户权限且仅有值时显示，不进查询响应、通知或公开收银台。详情见 [D-72](decisions.md#d-72-商城结账客户-ip-透传)。
 
 1. 对 `merchant_id + merchant_order_no` 加缓存锁。查到旧单时比较币种与原始请求金额（`original_amount`，历史单回退 `amount`）；冲突拒绝，匹配则复用本地订单。已有 `pay_url`、已收款或不处于 `pending/failed` 时直接返回；只有无链接且未收款的 `pending/failed` 订单可沿用原渠道补建。普通及指定渠道重提均重新检查原渠道，不另选通道，详见下文。
 2. 校验 `amount = subtotal + shipping_fee - discount + tax`，公式容差由 `Order::AMOUNT_TOLERANCE` 定义（当前 0.01）；商品明细按两位小数核对小计。

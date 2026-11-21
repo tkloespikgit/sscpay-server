@@ -6,7 +6,6 @@ use App\Services\PluginCatalog;
 use App\Services\PluginReleaseService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
-use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PluginDownloadController extends Controller
@@ -38,9 +37,22 @@ class PluginDownloadController extends Controller
     public function download(string $slug, string $version): StreamedResponse
     {
         $this->plugin($slug);
-        $release = $this->releases->version($slug, $version);
+
+        return $this->downloadRelease($this->releases->version($slug, $version), 'public, max-age=86400, immutable');
+    }
+
+    public function gateway(): StreamedResponse
+    {
+        return $this->downloadRelease($this->releases->latest(PluginCatalog::GATEWAY), 'private, no-store');
+    }
+
+    /** @param array<string, mixed>|null $release */
+    private function downloadRelease(?array $release, string $cacheControl): StreamedResponse
+    {
         abort_if($release === null, 404);
-        $stream = $this->releases->disk()->readStream($this->releases->packagePath($slug, $version));
+        $slug = $release['slug'];
+        $version = $release['version'];
+        $stream = $this->releases->disk($slug)->readStream($this->releases->packagePath($slug, $version));
         abort_unless(is_resource($stream), 404);
 
         return response()->streamDownload(function () use ($stream): void {
@@ -52,16 +64,12 @@ class PluginDownloadController extends Controller
         }, ($release['platform'] ?? 'wordpress') === 'opencart' ? $release['archive_name'] : $slug.'-'.$version.'.zip', [
             'Content-Type' => 'application/zip', 'Content-Length' => (string) $release['size'],
             'X-Checksum-Sha256' => $release['sha256'], 'X-Content-Type-Options' => 'nosniff',
-            'Cache-Control' => 'public, max-age=86400, immutable',
+            'Cache-Control' => $cacheControl,
         ]);
     }
 
     private function plugin(string $slug): void
     {
-        try {
-            $this->catalog->find($slug);
-        } catch (InvalidArgumentException) {
-            abort(404);
-        }
+        abort_unless(isset($this->catalog->all()[$slug]), 404);
     }
 }

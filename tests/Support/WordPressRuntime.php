@@ -47,6 +47,8 @@ class WC_Order
 
     public int $paidCalls = 0;
 
+    public string $customerIp = '';
+
     public function __construct(private int $id, private string $method, private string $total = '100.00') {}
 
     public function get_id(): int
@@ -62,6 +64,26 @@ class WC_Order
     public function get_currency(): string
     {
         return 'USD';
+    }
+
+    public function get_customer_ip_address(): string
+    {
+        return $this->customerIp;
+    }
+
+    public function set_customer_ip_address(string $address): void
+    {
+        $this->customerIp = $address;
+    }
+
+    public function get_checkout_payment_url(bool $onCheckout = false): string
+    {
+        return 'https://shop.example.com/checkout/order-pay/'.$this->id;
+    }
+
+    public function get_order_number(): string
+    {
+        return (string) $this->id;
     }
 
     public function get_payment_method(): string
@@ -162,6 +184,10 @@ function apply_filters(string $name, mixed $value, mixed ...$args): mixed
 {
     return $value;
 }
+function add_query_arg(array $parameters, string $url): string
+{
+    return $url.'?'.http_build_query($parameters);
+}
 function get_option(string $name, mixed $default = false): mixed
 {
     return $GLOBALS['wordpress_options'][$name] ?? $default;
@@ -226,6 +252,15 @@ function wc_get_order(int $id): ?WC_Order
 {
     return isset($GLOBALS['wordpress_orders'][$id]) ? clone $GLOBALS['wordpress_orders'][$id] : null;
 }
+function wc_create_order(array $args): WC_Order
+{
+    $order = new WC_Order(100 + count($GLOBALS['wordpress_orders']), '');
+    $order->status = $args['status'];
+    $order->set_customer_ip_address('192.0.2.60');
+    $order->save();
+
+    return $order;
+}
 function wc_get_orders(array $args): array
 {
     $result = [];
@@ -242,6 +277,11 @@ function WC(): object
 {
     return new class
     {
+        public function api_request_url(string $endpoint): string
+        {
+            return 'https://shop.example.com/wc-api/'.$endpoint.'/';
+        }
+
         public function payment_gateways(): object
         {
             return new class
@@ -283,8 +323,8 @@ if (! defined('HOUR_IN_SECONDS')) {
 }
 foreach (['paypal', 'creditcard'] as $channel) {
     define('SSCPAY_'.strtoupper($channel).'_GATEWAY_ID', 'sscpay_'.$channel);
-    define('SSCPAY_'.strtoupper($channel).'_VERSION', '1.1.0');
-    foreach (['logger', 'signature', 'api-client', 'order-helper', 'order-state', 'gateway', 'webhook', 'updater'] as $module) {
+    define('SSCPAY_'.strtoupper($channel).'_VERSION', '1.2.0');
+    foreach (['logger', 'signature', 'api-client', 'order-helper', 'order-state', 'gateway', 'webhook', 'updater', 'ad-tracking'] as $module) {
         require_once dirname(__DIR__, 2).'/plugins/wordpress/sscpay-payment-'.$channel.'/includes/class-sscpay-'.$channel.'-'.$module.'.php';
     }
 }

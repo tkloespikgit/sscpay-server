@@ -22,6 +22,7 @@ use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\RestoreAction;
+use Filament\Facades\Filament;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
@@ -920,6 +921,15 @@ class PaymentMethodResource extends Resource
             'create' => Pages\CreatePaymentMethod::route('/create'),
             'edit' => Pages\EditPaymentMethod::route('/{record}/edit'),
         ];
+    }
+
+    public static function gatewayPluginDownloadAction(): Action
+    {
+        return Action::make('downloadGatewayPlugin')
+            ->label(__('admin.payment_method.actions.download_gateway_plugin'))
+            ->icon(Heroicon::OutlinedArrowDownTray)
+            ->color('gray')
+            ->url(fn (): string => Filament::getCurrentOrDefaultPanel()->route('plugins.gateway.download'));
     }
 
     public static function canViewAny(): bool

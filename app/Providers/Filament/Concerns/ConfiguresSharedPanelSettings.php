@@ -7,6 +7,7 @@ use App\Filament\Auth\Login;
 use App\Filament\Pages\AdminDashboard;
 use App\Filament\Resources\OrderResource;
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
+use App\Http\Controllers\PluginDownloadController;
 use App\Services\CryptoOrderStatisticsService;
 use App\Support\CryptoFinanceAccess;
 use App\Support\Permissions;
@@ -29,6 +30,7 @@ use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Facades\Route;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Livewire\Livewire;
 
@@ -87,6 +89,12 @@ trait ConfiguresSharedPanelSettings
             ->authMiddleware([
                 Authenticate::class,
             ])
+            ->authenticatedRoutes(function (): void {
+                Route::get('/plugins/gateway/download', [PluginDownloadController::class, 'gateway'])
+                    ->can(Permissions::PAYMENT_METHODS_MANAGE)
+                    ->middleware('throttle:60,1')
+                    ->name('plugins.gateway.download');
+            })
             ->renderHook(
                 PanelsRenderHook::USER_MENU_BEFORE,
                 fn (): string => view('filament.account-settings-link')->render(),

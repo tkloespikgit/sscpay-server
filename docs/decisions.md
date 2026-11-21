@@ -771,3 +771,35 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **原因与影响：** 商户导出不包含内部渠道资料，平台账号仍可用名称核对订单。`LogisticsImportService::generateTemplate()` 接收明确的导出账号，重新读取其当前身份、启用状态和物流导出权限决定列；缺省不输出支付方式。订单查询继续沿用已有授权范围、筛选与分批读取。表头、说明行与金额列位置同步调整，文本单元格与数值金额格式保持原口径，商户可继续填写并上传模板；旧模板也能导入。观察者的独立导出沿用原有授权及字段，不变更商户 API 或商城插件协议。
 
 **依据：** [订单列表导出入口](../app/Filament/Resources/OrderResource/Pages/ListOrders.php)、[模板导出与导入](../app/Services/LogisticsImportService.php)、[账号类型导出回归](../tests/Feature/Filament/OrderListFiltersTest.php)、[模板回传回归](../tests/Feature/LogisticsTemplateTest.php)。
+
+## D-71 收款站插件同仓与本地测试包
+
+**状态：2026-11-20 的初始导入记录；独立商品包方案已由 [D-73](#d-73-商品-api-并入收款站聚合插件) 替代。** 当时按用户指定放在 `plugins/merchant/`，保留两个独立插件，便于与 Laravel 调用方一起维护。
+
+**来源与边界：** `sscpay-gateway-aggregator` 从原仓库 `v1.13.7`（`cc1694376d5a30dd4fb91603698a6a06a3cf4c9f`）导入；`sscpay-products-api` 从 `v2.0.0`（`b67bd067843cd9f18b11097599bc9ff72ad077f3`）导入。保留原业务代码、版本和更新器，源码保留 Composer 锁文件；各插件的生产依赖仅装到本地及测试 ZIP，不纳入主仓跟踪。旧仓库的发布工作流、现场配置、未跟踪文件和旧 ZIP 不迁入。
+
+**影响与依据：** 这两个包是 WordPress 收款站的服务端接口，不是商户 API 客户端。不登记 `plugin.json`，不进入公开目录、更新接口或自动发布；[测试打包脚本](../plugins/merchant/build-test-zips.sh)仅在私有本地目录生成安装包。[安装与验收](../doc/wordpress/wordpress-site-setup.md#41-按站点用途安装插件)和[公开分发回归](../tests/Feature/PluginDistributionTest.php)记录本阶段边界。原站点与现有部署不变。
+
+## D-72 商城结账客户 IP 透传
+
+**状态：当前工作区实现，未部署（2026-11-20）。** 商城插件只读取 PHP 的 `REMOTE_ADDR`，依赖商城源站按其可信代理配置恢复客户端地址，不接受浏览器提供的任意转发头。验证单个 IPv4／IPv6 后作为可选字段随订单签名；未知时省略。
+
+**原因与兼容：** 旧 API 的 `customer_ip` 列是调用者的连接地址，不能识别历史订单的买家。另加可空 `checkout_customer_ip` 保存商城签名上报的地址，旧值不迁移，原广告转化不改变。普通单与组合父单保留首次快照，重试不改；子单继承父单地址。收款站聚合插件使用 WooCommerce 原生订单字段；旧请求无地址时不展示 API 调用方地址。该字段不提供给第三方支付通道、商户查询／通知、公开付款页或导出。
+
+**依据：** [商户请求](../app/Http/Requests/Api/CreateOrderRequest.php)、[统一建单](../app/Services/OrderCreationService.php)、[收款站建单](../plugins/merchant/sscpay-gateway-aggregator/src/Core/OrderManager.php)、[兼容用例](../tests/Feature/OrderCustomerIpTest.php)与[部署说明](../doc/deployment.md#商城客户-ip)。
+
+## D-73 商品 API 并入收款站聚合插件
+
+**聚合插件 `1.15.0` 已在本机 WordPress 验证。** 取消独立 `sscpay-products-api` 源码目录和构建目标。原商户 API、四个商城插件协议及 Laravel 商品同步请求不变。现在的网关分发由 [D-74](#d-74-网关插件随部署发布并在后台下载) 说明。
+
+**商品兼容：** 保留 `GET /wp-json/wc/v3/products-with-variations`、兼容状态接口 `GET /wp-json/wc/v3/ninox-status` 和原响应字段。用有读取权限的 WooCommerce 密钥鉴权，要求所属用户具有 `manage_woocommerce`；继续支持 HTTPS query 和旧 Authorization 格式。缓存只按分页和商品版本区分，不使用凭证，缓存命中也附带总数和分页头。旧插件尚启用时由旧插件提供路由；停用后聚合插件接管，无须更改 Laravel 地址或重新生成商品密钥。
+
+**回调密钥：** 仅有后台设置权限的管理员可查看、修改与保存。已保存的站点独立值优先；未保存时可从本站 `wp-config.php` 的 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET` 预填并用于签名。默认值和 Laravel `PGA_WEBHOOK_SECRET` 需一致，不随源码或 ZIP 发布；此默认机制不改变回调签名算法及重试语义。
+
+**依据：** [兼容商品接口](../plugins/merchant/sscpay-gateway-aggregator/src/API/Controllers/ProductCatalogController.php)、[收款站设置页](../plugins/merchant/sscpay-gateway-aggregator/src/Admin/SettingsPage.php)、[出站签名](../plugins/merchant/sscpay-gateway-aggregator/src/Core/OutboundSigner.php)、[升级步骤](../doc/wordpress/wordpress-site-setup.md#41-按站点用途安装插件)。
+
+## D-74 网关插件随部署发布并在后台下载
+
+网关聚合插件随 `deploy.sh` 构建并由 `plugins:sync` 发布，复用现有版本 ZIP、发布清单和稳定版入口。构建前安装锁定的 Composer 运行依赖，网关使用自身的 WordPress 插件版本。商户 API 指纹与公开插件目录继续使用四个商城插件的清单。本决策替代 D-71 中当时仅生成本地测试 ZIP 的分发范围。
+
+平台和商户面板的支付方式创建、编辑页各使用本面板的下载地址。下载经过面板登录和 `payment_methods.manage` 权限校验，从私有存储流式返回已发布的稳定版，并附带 SHA-256 校验值。见[部署说明](../doc/deployment.md#网关插件的后台下载)和[下载回归](../tests/Feature/Filament/GatewayPluginDownloadTest.php)。

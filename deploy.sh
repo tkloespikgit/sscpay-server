@@ -188,7 +188,7 @@ check_deployment_permissions() {
     for permission_path in vendor node_modules; do
         check_tree_access "$permission_path" readable || problems=1
     done
-    for permission_path in bootstrap/cache storage/framework storage/logs storage/app/plugin-builds storage/app/private/plugin-releases public/build public/css public/js public/fonts; do
+    for permission_path in bootstrap/cache storage/framework storage/logs storage/app/plugin-builds storage/app/private/plugin-releases plugins/merchant/sscpay-gateway-aggregator/vendor public/build public/css public/js public/fonts; do
         check_tree_access "$permission_path" writable || problems=1
     done
     for permission_path in storage/app storage/app/private public; do
@@ -363,6 +363,7 @@ if [[ "$deploy_pull" -eq 1 ]]; then
     run_step '更新当前分支代码' git pull --ff-only
 fi
 run_step '安装生产 PHP 依赖' "$deploy_php" "$deploy_composer" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+run_step '安装网关插件 PHP 依赖' env COMPOSER_ROOT_VERSION=dev-main "$deploy_php" "$deploy_composer" install --no-dev --prefer-dist --optimize-autoloader --no-interaction --working-dir=plugins/merchant/sscpay-gateway-aggregator
 run_step '安装前端构建依赖' npm ci --include=dev --engine-strict
 run_step '构建前端资源' npm run build
 run_step '更新 Filament 资源' "$deploy_php" artisan filament:upgrade --no-interaction

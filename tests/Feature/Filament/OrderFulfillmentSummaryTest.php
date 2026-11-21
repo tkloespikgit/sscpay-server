@@ -4,10 +4,12 @@ namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\OrderResource\Pages\ViewOrder;
 use App\Models\Carrier;
+use App\Models\Merchant;
 use App\Models\OrderShipmentSync;
 use App\Models\OrderShipping;
 use App\Models\User;
 use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
+use App\Support\Permissions;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -108,6 +110,27 @@ class OrderFulfillmentSummaryTest extends TestCase
         $this->assertStringContainsString('JD 123', $html);
         $this->assertStringContainsString('（dhl）', $html);
         $this->assertStringContainsString('target="_blank" rel="noopener noreferrer">（dhl）</a>', $html);
+    }
+
+    public function test_customer_ip_is_visible_only_on_authorized_orders_that_have_a_checkout_address(): void
+    {
+        $address = '2001:db8::50';
+        $order = $this->makeOrder('IP-OWN', 'M-IP-OWN', ['checkout_customer_ip' => $address, 'customer_ip' => '192.0.2.30']);
+        $legacyOrder = $this->makeOrder('IP-LEGACY', 'M-IP-LEGACY', ['customer_ip' => '192.0.2.30']);
+        $otherOrder = $this->makeOrder('IP-OTHER', 'M-IP-OTHER', [
+            'merchant_id' => Merchant::create(['name' => 'Other merchant'])->id,
+            'checkout_customer_ip' => '198.51.100.50',
+        ]);
+        $user = User::factory()->create(['merchant_id' => $this->merchant->id, 'status' => true]);
+        $user->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($user);
+        Filament::setCurrentPanel('merchant');
+
+        Livewire::test(ViewOrder::class, ['record' => $order->id])->assertOk()
+            ->assertSee(__('admin.order.fields.checkout_customer_ip'))->assertSee($address)->assertDontSee('192.0.2.30');
+        Livewire::test(ViewOrder::class, ['record' => $legacyOrder->id])->assertOk()
+            ->assertDontSee(__('admin.order.fields.checkout_customer_ip'))->assertDontSee('192.0.2.30');
+        Livewire::test(ViewOrder::class, ['record' => $otherOrder->id])->assertNotFound();
     }
 
     public function test_unshipped_order_shows_the_not_shipped_placeholder(): void

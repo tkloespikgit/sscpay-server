@@ -51,6 +51,7 @@ return [
                         ['customer.last_name', 'string ≤100', 'Yes', 'Last name.'],
                         ['customer.email', 'email ≤255', 'Yes', 'Customer email address.'],
                         ['customer.phone', 'string ≤30', 'No', 'Customer phone number.'],
+                        ['customer_ip', 'IPv4 / IPv6, ≤45 characters', 'No', 'Customer address observed at storefront checkout. Include it in the signed JSON body; omit it when unknown. Invalid addresses return 422.'],
                         ['shipping_address', 'object', 'Yes', 'Shipping address.'],
                         ['shipping_address.line1', 'string ≤255', 'Yes', 'Address line 1.'],
                         ['shipping_address.line2', 'string ≤255', 'No', 'Address line 2.'],

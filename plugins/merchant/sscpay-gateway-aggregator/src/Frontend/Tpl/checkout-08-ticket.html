@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout · Ticket</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root { --accent: #ec6a2c; --paper: #fffaf4; --dark: #1e1b18; --muted: #6e655c; --dim: #c9beb2; --stamp: #9a4a0d; --notice-bg: #fff3e6; --notice-ink: #6b2f05; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--accent); color: var(--dark); font-family: Outfit, system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; padding: 48px 24px; }
+  .mono { font-family: "Space Mono", ui-monospace, monospace; }
+  .notice, .ticket { width: 100%; max-width: 1040px; }
+  .notice { display: flex; align-items: center; gap: 14px; padding: 14px 20px; border-radius: 14px; background: var(--notice-bg); color: var(--notice-ink); font-size: 15px; line-height: 1.45; }
+  .notice svg { flex-shrink: 0; }
+  .notice strong { font-weight: 600; }
+  .ticket { display: flex; filter: drop-shadow(0 20px 40px rgba(60,20,0,.25)); }
+  .main { flex: 1; min-width: 0; background: var(--paper); border-radius: 24px 0 0 24px; padding: 40px 44px; display: flex; flex-direction: column; justify-content: space-between; gap: 28px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 32px; font-weight: 700; }
+  .stamp { padding: 6px 12px; border: 1.5px dashed var(--stamp); color: var(--stamp); border-radius: 6px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 32px; }
+  .k { font-size: 12px; font-weight: 600; letter-spacing: .1em; color: var(--muted); margin: 0 0 4px; }
+  .v { font-size: 13px; font-weight: 700; word-break: break-all; margin: 0; }
+  address { font-style: normal; font-size: 14px; line-height: 1.55; }
+  address b { font-size: 18px; font-weight: 600; }
+  .sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding-top: 18px; border-top: 1.5px solid var(--dark); font-size: 13px; }
+  .sum div { display: flex; flex-direction: column; gap: 2px; }
+  .sum span:first-child { color: var(--muted); font-size: 11px; }
+  .sum span:last-child { font-weight: 700; }
+  .stub { position: relative; width: 300px; flex-shrink: 0; background: var(--dark); color: var(--paper); border-radius: 0 24px 24px 0; border-left: 3px dashed var(--paper); padding: 40px 32px; display: flex; flex-direction: column; justify-content: space-between; gap: 28px; }
+  .stub::before, .stub::after { content: ""; position: absolute; left: -23px; width: 44px; height: 44px; border-radius: 50%; background: var(--accent); }
+  .stub::before { top: -22px; }
+  .stub::after { bottom: -22px; }
+  .stub .k { color: var(--dim); }
+  .stub .date { font-size: 20px; font-weight: 600; }
+  .price { display: flex; align-items: baseline; }
+  .price b { font-size: 72px; font-weight: 700; line-height: 1; letter-spacing: -.03em; }
+  .price span { font-size: 22px; }
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+  button { font: inherit; cursor: pointer; border-radius: 12px; }
+  .btn-pay { height: 54px; border: 0; background: var(--accent); color: var(--dark); font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .btn-pay:hover { filter: brightness(1.08); }
+  .btn-cancel { height: 46px; border: 1px solid #5a524a; background: transparent; color: var(--paper); font-size: 15px; font-weight: 500; }
+  .btn-cancel:hover { border-color: #8a8076; }
+  button:focus-visible { outline: 3px solid var(--paper); outline-offset: 2px; }
+  .top-row { display: flex; flex-direction: column; gap: 28px; }
+
+  @media (max-width: 820px) {
+    body { justify-content: flex-start; padding: 24px 16px 32px; gap: 18px; }
+    .notice { align-items: flex-start; font-size: 14px; }
+    .notice strong { display: block; }
+    .ticket { flex-direction: column; max-width: 480px; }
+    .main { border-radius: 24px 24px 0 0; padding: 26px 24px 28px; gap: 18px; }
+    h1 { font-size: 28px; }
+    .stamp { font-size: 10px; padding: 4px 8px; }
+    .grid { grid-template-columns: 1fr; gap: 16px; }
+    .v { font-size: 12px; }
+    .sum { grid-template-columns: 1fr 1fr; }
+    .stub { width: auto; border-radius: 0 0 24px 24px; border-left: 0; border-top: 3px dashed var(--paper); padding: 26px 24px 24px; gap: 20px; }
+    .stub::before, .stub::after { top: -22px; bottom: auto; width: 40px; height: 40px; }
+    .stub::before { left: -20px; }
+    .stub::after { left: auto; right: -20px; }
+    .top-row { flex-direction: row-reverse; justify-content: space-between; align-items: flex-end; gap: 12px; }
+    .top-row > div:first-child { text-align: right; }
+    .stub .date { font-size: 16px; }
+    .price b { font-size: 56px; }
+    .price span { font-size: 18px; }
+    .actions { flex-direction: row-reverse; }
+    .btn-pay { flex: 1; height: 52px; }
+    .btn-cancel { height: 52px; padding: 0 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="notice" role="status">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+  <div><strong>Your order is awaiting payment.</strong> Complete payment to confirm your order.</div>
+</div>
+
+<main class="ticket">
+  <section class="main">
+    <div class="head">
+      <h1>Invoice</h1>
+      <span class="stamp mono">AWAITING PAYMENT</span>
+    </div>
+    <div class="grid">
+      <div><p class="k">INVOICE NUMBER</p><p class="v mono">LF-INV-_JOHN_DOE_LF_76646545413187212561</p></div>
+      <div><p class="k">ORDER NO.</p><p class="v mono">LF_76646545413187212561</p></div>
+      <div>
+        <p class="k">BILLED TO</p>
+        <address><b>John Doe</b><br>Alexanderplatz 1 Apt. 4B<br>Berlin, Berlin 10178 · DE</address>
+      </div>
+      <div>
+        <p class="k">CONTACT</p>
+        <address>john.doe@example.com<br>+4915112345678</address>
+      </div>
+    </div>
+    <div class="sum mono">
+      <div><span>SUBTOTAL</span><span>EUR 380.00</span></div>
+      <div><span>SHIPPING</span><span>EUR 15.00</span></div>
+      <div><span>TAX</span><span>EUR 5.00</span></div>
+      <div><span>DISCOUNT</span><span>−EUR 10.00</span></div>
+    </div>
+  </section>
+
+  <aside class="stub">
+    <div class="top-row">
+      <div>
+        <p class="k">DATE</p>
+        <div class="date">16 Sep 2026</div>
+      </div>
+      <div>
+        <p class="k">TOTAL · EUR</p>
+        <div class="price"><b>390</b><span class="mono">.00</span></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn-pay" id="pay">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        Pay now
+      </button>
+      <button type="button" class="btn-cancel" id="cancel">Cancel</button>
+    </div>
+  </aside>
+</main>
+</body>
+</html>

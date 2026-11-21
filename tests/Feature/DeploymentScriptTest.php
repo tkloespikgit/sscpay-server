@@ -40,6 +40,7 @@ class DeploymentScriptTest extends TestCase
         $this->assertBefore('node --version', 'php artisan down', $trace);
         $this->assertStringContainsString('plugins:check --base='.str_repeat('a', 40), $trace);
         $this->assertBefore('filament:upgrade', 'config:cache', $trace);
+        $this->assertBefore('--working-dir=plugins/merchant/sscpay-gateway-aggregator', 'plugins:sync --dry-run', $trace);
         $this->assertBefore('plugins:sync --dry-run', 'migrate --force', $trace);
         $this->assertBefore('migrate --force', 'plugins:sync --no-interaction', $trace);
         $this->assertBefore('migrate --force', 'crypto:check-addresses --initialize --no-interaction', $trace);
@@ -69,6 +70,7 @@ class DeploymentScriptTest extends TestCase
         return [
             'Git update' => ['git pull --ff-only', false],
             'frontend build' => ['npm run build', false],
+            'gateway dependencies' => ['composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --working-dir=plugins/merchant/sscpay-gateway-aggregator', false],
             'plugin preflight' => ['php artisan plugins:sync --dry-run --no-interaction', false],
             'migration' => ['php artisan migrate --force --no-interaction', true],
             'crypto address check initialization' => ['php artisan crypto:check-addresses --initialize --no-interaction', true],

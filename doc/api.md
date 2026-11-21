@@ -165,6 +165,7 @@ POST {BASE_URL}/api/order/create
     "email": "john.doe@example.com",
     "phone": "+4915112345678"
   },
+  "customer_ip": "203.0.113.42",
   "shipping_address": {
     "line1": "Alexanderplatz 1",
     "line2": "Apt. 4B",
@@ -212,6 +213,7 @@ POST {BASE_URL}/api/order/create
 | `amount` | string(数字) | ✅ | 应付总额，必须严格等于 `subtotal + shipping_fee - discount + tax`，误差超过 0.01 直接拒单                      |
 | `customer.first_name`/`last_name`/`email` | string | ✅ | 客户信息                                                                                       |
 | `customer.phone` | string ≤30 | 否 | 客户手机号，部分电商网站结账页不采集该字段时可不传                                                                    |
+| `customer_ip` | IPv4 / IPv6，≤45 字符 | 否 | 商城结账时取得的单个客户 IP；放在 JSON 请求体顶层并参与签名。缺省或 `null` 不影响旧客户端下单；非空但无效时返回 422 |
 | `shipping_address.line1` | string ≤255 | ✅ | 地址行 1                                                                                      |
 | `shipping_address.line2` | string ≤255 | 否 | 地址行 2                                                                                      |
 | `shipping_address.city` | string ≤100 | ✅ | 城市                                                                                         |
@@ -285,6 +287,8 @@ POST {BASE_URL}/api/order/create
 补建复用同一本地订单及原渠道，`order_no`、付款 token、远端引用、全部财务快照、原始商品、应付金额、汇率和首次自动折扣不变，复用此前已创建的商品。历史渠道 ID 为空时仅补齐同一渠道关联，不改引用或财务快照。建单失败即返回，不继续尝试其他通道。**超时或建单失败后重试应复用同一个 `merchant_order_no`**，并重新生成 `Timestamp`/`X-Nonce`/`sign`。
 
 历史订单若已保存独立远端引用，重试继续沿用；系统保留历史旧尝试的回调校验，避免迟到结果覆盖当前状态。同渠道补建依赖支付插件对相同远端引用的幂等处理。
+
+客户 IP 只接受签名 JSON 中的 `customer_ip`。商城从服务器已确认的结账请求地址获取；不知道时省略，不传服务器出口 IP，也不直接使用浏览器提供的转发头。同号重试保留首次地址或其缺省状态，组合付款子单继承父单地址。法币建单时有值才传给收款站；商户查询、通知和公开付款页不返回该字段。
 
 ---
 

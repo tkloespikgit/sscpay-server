@@ -189,9 +189,9 @@
 
 ### 4.7 站点商品同步与订单商品自动匹配
 
-**商品同步**（`WooCommerceProductSyncService`）：用支付方式上配置的站点凭证调插件扩展端点 `/wp-json/wc/v3/products-with-variations`，一次请求内联返回商品及其变体，连同名称的中文翻译（百度智能云 `texttrans`，限频 1 QPS）upsert 到 `site_products`，变体逐条写入 `site_product_variations`（简单商品把主商品自身作为唯一变体写入）；远端已删除的商品连同变体一起清理。金额币种统一 USD，整体幂等，可由队列重试（`tries = 3`）。
+**商品同步**（`WooCommerceProductSyncService`）：用支付方式的 WooCommerce REST 凭证调用收款站聚合插件的 `/wp-json/wc/v3/products-with-variations`，分页拉取商品和内联变体至 `site_products` 与 `site_product_variations`；简单商品自身作为唯一变体写入。同步不调用翻译 API，生成进货单时才按需翻译。金额统一按 USD，整体幂等，可由队列重试（`tries = 3`）。
 
-> ⚠️ 该自定义端点**不返回** `X-WP-Total` / `X-WP-TotalPages` 分页头，翻页必须持续请求直到空页并以页数上限兜底，否则只会拉到第一页且清理逻辑会误删其余本地商品。
+聚合插件 `1.15.0` 已内置商品 API。部署发布后，可在后台创建或编辑支付方式页面的右上角下载。商品同步客户端兼容未提供 `X-WP-TotalPages` 的旧站点，以空页和页数上限兜底。
 
 **商品匹配**（`OrderItemService`）——下单时按支付方式配置的 `product_match_mode` 分流，另外**回跳地址与站点同域名时自动走"同站点直连"**（不做匹配，直接用商户传入明细）：
 

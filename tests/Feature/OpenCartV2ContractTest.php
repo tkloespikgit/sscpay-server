@@ -43,6 +43,8 @@ class OpenCartV2ContractTest extends TestCase
         $this->combinedMethod();
         $this->fakeCombinedGateway();
         $registry = OpenCartRuntime::registry($channel, $major);
+        $customerIp = $major === 3 ? '198.51.100.25' : '2001:db8::25';
+        $registry->get('request')->server += ['REMOTE_ADDR' => $customerIp, 'HTTP_X_FORWARDED_FOR' => '203.0.113.25'];
         if ($legacy) {
             $registry->get('session')->data['payment_method'] = 'sscpay'.$channel;
         }
@@ -67,6 +69,7 @@ class OpenCartV2ContractTest extends TestCase
         Http::fake([$gateway->url('notify') => Http::response('', 200)]);
         $gateway->confirm();
         $parent = CombinedOrder::sole();
+        $this->assertSame($customerIp, $parent->order_snapshot['checkout_customer_ip']);
         $this->assertSame('OC'.$major.'-0-42', $parent->merchant_order_no);
         $this->assertSame('opencart', $parent->platform);
         $gateway->confirm();
@@ -74,6 +77,9 @@ class OpenCartV2ContractTest extends TestCase
         $payments = app(CombinedOrderService::class);
         while ($parent->refresh()->status !== 'paid') {
             $child = $payments->pay($parent, $payments->quote($parent)['id']);
+            $this->assertSame($customerIp, $child->checkout_customer_ip);
+            Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/payment-plugin/v1/pay')
+                && $request['s_order_id'] === $child->gatewayOrderReference() && $request['customer_ip'] === $customerIp);
             app(OrderPaymentStatusService::class)->handle([
                 's_order_id' => $child->gatewayOrderReference(), 'status' => 'paid', 'amount' => $child->amount,
                 'currency' => $child->currency, 'paid_at' => now()->toIso8601String(), 'updated_at' => now()->toIso8601String(),

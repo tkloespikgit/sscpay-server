@@ -18,6 +18,8 @@ use ZipArchive;
 
 class PluginDistributionTest extends TestCase
 {
+    private const WORDPRESS_VERSION = '1.2.0';
+
     private string $buildPath;
 
     protected function setUp(): void
@@ -45,7 +47,8 @@ class PluginDistributionTest extends TestCase
         Storage::fake('plugin-test');
         Http::preventStrayRequests();
         $releases = app(PluginReleaseService::class);
-        $build = $releases->build($slug, 'plugins/'.$slug.'/v1.1.0');
+        $version = self::WORDPRESS_VERSION;
+        $build = $releases->build($slug, 'plugins/'.$slug.'/v'.$version);
         $zip = new ZipArchive;
         $this->assertTrue($zip->open($build['zip']));
         $this->assertGreaterThan(15, $zip->numFiles);
@@ -58,12 +61,12 @@ class PluginDistributionTest extends TestCase
         $zip->close();
         $releases->publish($build);
         $releases->publish($releases->build($slug));
-        Storage::disk('plugin-test')->assertExists('plugin-releases/'.$slug.'/1.1.0/'.$slug.'.zip');
+        Storage::disk('plugin-test')->assertExists("plugin-releases/{$slug}/{$version}/{$slug}.zip");
         $this->get(route('plugins.update', ['slug' => $slug]))->assertOk()
-            ->assertJsonPath('slug', $slug)->assertJsonPath('version', '1.1.0')
+            ->assertJsonPath('slug', $slug)->assertJsonPath('version', $version)
             ->assertJsonPath('api_version', '2.0')
-            ->assertJsonPath('download_url', route('plugins.download', ['slug' => $slug, 'version' => '1.1.0']));
-        $download = $this->get(route('plugins.download', ['slug' => $slug, 'version' => '1.1.0']))->assertOk();
+            ->assertJsonPath('download_url', route('plugins.download', ['slug' => $slug, 'version' => $version]));
+        $download = $this->get(route('plugins.download', ['slug' => $slug, 'version' => $version]))->assertOk();
         $this->assertSame($build['release']['sha256'], hash('sha256', $download->streamedContent()));
         $download->assertHeader('X-Checksum-Sha256', $build['release']['sha256']);
         Http::assertNothingSent();
@@ -74,11 +77,52 @@ class PluginDistributionTest extends TestCase
         Storage::fake('plugin-test');
         $this->get('/plugins/updates/v1/sscpay-payment-paypal')->assertNotFound();
         $this->get('/plugins/updates/v1/unknown-plugin')->assertNotFound();
-        $this->get('/plugins/sscpay-payment-paypal/1.1.0/download')->assertNotFound();
+        $this->get('/plugins/sscpay-payment-paypal/'.self::WORDPRESS_VERSION.'/download')->assertNotFound();
         $this->get('/plugins/sscpay-payment-paypal/latest/download')->assertNotFound();
         $this->get('/plugins/../.env/1.1.0/download')->assertNotFound();
-        $this->get('/plugins')->assertOk()->assertSee('SSCPay Payment')->assertDontSee('/1.1.0/download');
+        $this->get('/plugins')->assertOk()->assertSee('SSCPay Payment')->assertDontSee('/'.self::WORDPRESS_VERSION.'/download');
         Storage::disk('plugin-test')->assertMissing('plugin-releases/sscpay-payment-paypal/stable.json');
+    }
+
+    public function test_the_gateway_zip_can_load_its_wordpress_classes_and_stays_out_of_public_distribution(): void
+    {
+        Storage::fake('plugin-test');
+        $releases = app(PluginReleaseService::class);
+        $slug = PluginCatalog::GATEWAY;
+        $built = $releases->build($slug);
+        $releases->publish($built);
+        $receivingPlugins = [$slug => $built['release']['version'], 'sscpay-products-api' => '2.0.0'];
+
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($built['zip']));
+        foreach ([$slug.'.php', 'uninstall.php', 'assets/js/settings.js', 'vendor/autoload.php', 'vendor/stripe/stripe-php/LICENSE'] as $file) {
+            $this->assertNotFalse($zip->locateName($slug.'/'.$file), $file);
+        }
+        foreach (['wp-config.php', '.env', 'composer.lock', 'tests/product-catalog.php', 'src/Frontend/Tpl/checkout-01-paper.html'] as $file) {
+            $this->assertFalse($zip->locateName($slug.'/'.$file), $file);
+        }
+        $installPath = $this->buildPath.'/gateway-install';
+        $this->assertTrue($zip->extractTo($installPath));
+        $zip->close();
+        $bootstrap = <<<'PHP'
+define('ABSPATH', __DIR__ . '/');
+require $argv[1];
+exit(class_exists(\PaymentGatewayAggregator\API\Controllers\ProductCatalogController::class)
+    && class_exists(\YahnisElsts\PluginUpdateChecker\v5\PucFactory::class)
+    && is_readable(\Stripe\Stripe::getCABundlePath()) ? 0 : 1);
+PHP;
+        $process = new Process([PHP_BINARY, '-r', $bootstrap, $installPath.'/'.$slug.'/vendor/autoload.php']);
+        $this->assertSame(0, $process->run(), $process->getErrorOutput());
+
+        $this->get('/plugins')->assertOk()->assertViewHas('plugins', fn (array $plugins): bool => array_intersect(
+            array_keys($receivingPlugins),
+            array_column($plugins, 'slug'),
+        ) === []);
+
+        foreach ($receivingPlugins as $slug => $version) {
+            $this->get("/plugins/updates/v1/{$slug}")->assertNotFound();
+            $this->get("/plugins/{$slug}/{$version}/download")->assertNotFound();
+        }
     }
 
     public function test_homepage_and_download_center_link_to_published_plugins_and_v2_documentation(): void
@@ -88,7 +132,7 @@ class PluginDistributionTest extends TestCase
         $releases->publish($releases->build('sscpay-payment-paypal'));
         $this->get('/')->assertOk()->assertSee(route('plugins.index'), false);
         $this->get('/plugins')->assertOk()->assertSee('PayPal')->assertSee('Credit Card')
-            ->assertSee(route('plugins.download', ['slug' => 'sscpay-payment-paypal', 'version' => '1.1.0']), false)
+            ->assertSee(route('plugins.download', ['slug' => 'sscpay-payment-paypal', 'version' => self::WORDPRESS_VERSION]), false)
             ->assertSee(route('api.documentation', ['version' => '2.0']), false);
     }
 
@@ -135,7 +179,7 @@ class PluginDistributionTest extends TestCase
 
     public function test_build_command_rejects_a_tag_for_another_plugin(): void
     {
-        $this->artisan('plugins:build', ['slug' => 'sscpay-payment-paypal', '--tag' => 'plugins/sscpay-payment-creditcard/v1.1.0'])
+        $this->artisan('plugins:build', ['slug' => 'sscpay-payment-paypal', '--tag' => 'plugins/sscpay-payment-creditcard/v'.self::WORDPRESS_VERSION])
             ->expectsOutputToContain('Tag does not match')->assertFailed();
         $this->artisan('plugins:check')->assertSuccessful();
     }
@@ -184,7 +228,8 @@ class PluginDistributionTest extends TestCase
             foreach ($plugins as $slug => $plugin) {
                 $directory = $fixture.'/plugins/'.$plugin['platform'].'/'.$slug;
                 $previousVersion = $plugin['version'];
-                $plugin['version'] = $plugin['platform'] === 'wordpress' ? '1.1.1' : '1.0.1';
+                [$major, $minor, $patch] = explode('.', $previousVersion);
+                $plugin['version'] = $major.'.'.$minor.'.'.((int) $patch + 1);
                 File::put($directory.'/plugin.json', json_encode($plugin));
                 $entry = $plugin['platform'] === 'wordpress' ? $slug.'.php' : 'install.json';
                 File::put($directory.'/'.$entry, str_replace($previousVersion, $plugin['version'], File::get($directory.'/'.$entry)));

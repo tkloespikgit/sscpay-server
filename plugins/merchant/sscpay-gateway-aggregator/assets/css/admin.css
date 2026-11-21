@@ -1,0 +1,24 @@
+/* 后台管理页面样式（设置页/日志页/网关配置页共用） */
+
+.pga-log-level {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.pga-log-level-info {
+    background: #e5f5ea;
+    color: #1a7f37;
+}
+
+.pga-log-level-warning {
+    background: #fff3cd;
+    color: #8a6100;
+}
+
+.pga-log-level-error {
+    background: #fde2e2;
+    color: #b32d2e;
+}

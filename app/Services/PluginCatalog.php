@@ -8,7 +8,13 @@ use RuntimeException;
 
 final class PluginCatalog
 {
-    /** @return array<string, array<string, mixed>> */
+    public const GATEWAY = 'sscpay-gateway-aggregator';
+
+    /**
+     * Storefront plugins included in the public catalog and merchant API protocol checks.
+     *
+     * @return array<string, array<string, mixed>>
+     */
     public function all(): array
     {
         $plugins = [];
@@ -21,6 +27,7 @@ final class PluginCatalog
                 || ! preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $plugin['slug'] ?? '')
                 || ! preg_match('/^\d+\.\d+\.\d+$/D', $plugin['version'] ?? '')
                 || ! in_array($plugin['platform'] ?? '', ['wordpress', 'opencart'], true)
+                || $plugin['slug'] === self::GATEWAY
                 || isset($plugins[$plugin['slug']])) {
                 throw new RuntimeException('Invalid plugin manifest.');
             }
@@ -44,6 +51,38 @@ final class PluginCatalog
     /** @return array<string, mixed> */
     public function find(string $slug): array
     {
+        if ($slug === self::GATEWAY) {
+            return $this->gateway();
+        }
+
         return $this->all()[$slug] ?? throw new InvalidArgumentException('Unknown plugin.');
+    }
+
+    /** @return array<string, mixed> */
+    private function gateway(): array
+    {
+        $path = config('plugins.source_path').'/merchant/'.self::GATEWAY;
+        $main = File::get($path.'/'.self::GATEWAY.'.php');
+        preg_match_all('/^\h*\*\h*(Plugin Name|Description|Version|Requires at least|Requires PHP|WC requires at least):\h*([^\r\n]+)/m', substr($main, 0, 8192), $header);
+        $fields = array_combine($header[1], array_map('trim', $header[2]));
+        $version = $fields['Version'] ?? '';
+        preg_match("/define\(\s*'PGA_VERSION',\s*'([^']+)'/", $main, $constant);
+        if (($fields['Plugin Name'] ?? '') === '' || ! preg_match('/^\d+\.\d+\.\d+$/D', $version)
+            || $version !== ($constant[1] ?? null)) {
+            throw new RuntimeException('The gateway plugin needs a valid WordPress header and a matching PGA_VERSION.');
+        }
+
+        return [
+            'slug' => self::GATEWAY,
+            'name' => $fields['Plugin Name'],
+            'version' => $version,
+            'platform' => 'wordpress',
+            'archive_name' => self::GATEWAY.'.zip',
+            'requires' => $fields['Requires at least'] ?? null,
+            'requires_php' => $fields['Requires PHP'] ?? null,
+            'wc_requires' => $fields['WC requires at least'] ?? null,
+            'description' => $fields['Description'] ?? '',
+            'path' => $path,
+        ];
     }
 }
