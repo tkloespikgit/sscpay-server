@@ -218,6 +218,13 @@ class LogManager
         $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE created_at < %s", $cutoff));
     }
 
+    public static function clear(): bool
+    {
+        global $wpdb;
+
+        return $wpdb->query('DELETE FROM ' . self::table()) !== false;
+    }
+
     private static function clientIp()
     {
         // 只取REMOTE_ADDR，不信任X-Forwarded-For等可伪造的头，除非部署时明确知道

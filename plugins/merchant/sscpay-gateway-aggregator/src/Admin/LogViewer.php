@@ -16,6 +16,28 @@ if (!defined('ABSPATH')) {
 class LogViewer
 {
     const PAGE_SLUG = 'pga-logs';
+    private const CLEAR_ACTION = 'pga_clear_logs';
+    private const PAGE_SIZES = [25, 50, 100, 200];
+
+    public static function registerHooks(): void
+    {
+        add_action('admin_post_' . self::CLEAR_ACTION, [self::class, 'handleClear']);
+    }
+
+    public static function handleClear(): void
+    {
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST'
+            || !current_user_can('manage_options') || !check_admin_referer(self::CLEAR_ACTION)) {
+            wp_die(esc_html__('权限不足', 'sscpay-gateway-aggregator'), '', ['response' => 403]);
+        }
+        if (($_POST['pga_confirm_clear_logs'] ?? '') !== '1') {
+            wp_die(esc_html__('请先确认清空日志。', 'sscpay-gateway-aggregator'), '', ['response' => 400]);
+        }
+
+        $status = LogManager::clear() ? 'success' : 'error';
+        wp_safe_redirect(add_query_arg(['page' => self::PAGE_SLUG, 'pga_log_clear' => $status], admin_url('admin.php')));
+        exit;
+    }
 
     public static function render()
     {
@@ -27,16 +49,28 @@ class LogViewer
             ? sanitize_text_field(wp_unslash($_GET['s_order_id'])) : '';
         $level = isset($_GET['level']) && is_string($_GET['level'])
             ? sanitize_text_field(wp_unslash($_GET['level'])) : '';
-        if (!in_array($level, ['INFO', 'WARNING', 'ERROR'], true)) { $level = ''; }
+        if (!in_array($level, ['INFO', 'WARNING', 'ERROR'], true)) {
+            $level = '';
+        }
         $page = isset($_GET['paged']) && is_scalar($_GET['paged']) ? max(1, (int) $_GET['paged']) : 1;
+        $perPage = isset($_GET['per_page']) && is_scalar($_GET['per_page']) ? (int) $_GET['per_page'] : 50;
+        if (!in_array($perPage, self::PAGE_SIZES, true)) {
+            $perPage = 50;
+        }
 
-        $result = LogManager::paginate($level ?: null, $page, 50, $sOrderId !== '' ? $sOrderId : null);
+        $result = LogManager::paginate($level ?: null, $page, $perPage, $sOrderId !== '' ? $sOrderId : null);
         $rows = $result['items'];
         ?>
         <div class="wrap">
             <h1><?php esc_html_e('支付日志', 'sscpay-gateway-aggregator'); ?></h1>
 
-            <form method="get">
+            <?php if (($_GET['pga_log_clear'] ?? '') === 'success') : ?>
+                <div class="notice notice-success"><p><?php esc_html_e('支付日志已清空。', 'sscpay-gateway-aggregator'); ?></p></div>
+            <?php elseif (($_GET['pga_log_clear'] ?? '') === 'error') : ?>
+                <div class="notice notice-error"><p><?php esc_html_e('清空支付日志失败，请重试。', 'sscpay-gateway-aggregator'); ?></p></div>
+            <?php endif; ?>
+
+            <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>">
                 <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
                 <input type="hidden" name="paged" value="1">
                 <p>
@@ -47,9 +81,26 @@ class LogViewer
                             <option value="<?php echo esc_attr($lvl); ?>" <?php selected($level, $lvl); ?>><?php echo esc_html($lvl); ?></option>
                         <?php endforeach; ?>
                     </select>
+                    <label for="pga-log-page-size"><?php esc_html_e('每页条数', 'sscpay-gateway-aggregator'); ?></label>
+                    <select id="pga-log-page-size" name="per_page">
+                        <?php foreach (self::PAGE_SIZES as $pageSize) : ?>
+                            <option value="<?php echo esc_attr($pageSize); ?>" <?php selected($perPage, $pageSize); ?>><?php echo esc_html($pageSize); ?></option>
+                        <?php endforeach; ?>
+                    </select>
                     <button type="submit" class="button"><?php esc_html_e('检索', 'sscpay-gateway-aggregator'); ?></button>
                 </p>
             </form>
+
+            <details>
+                <summary class="button"><?php esc_html_e('清空日志', 'sscpay-gateway-aggregator'); ?></summary>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <?php wp_nonce_field(self::CLEAR_ACTION); ?>
+                    <input type="hidden" name="action" value="<?php echo esc_attr(self::CLEAR_ACTION); ?>">
+                    <p><?php esc_html_e('这会删除本站全部支付日志（包括尚未同步的日志），不受当前筛选限制，且不能撤销。不会删除订单或回调队列。', 'sscpay-gateway-aggregator'); ?></p>
+                    <p><label><input type="checkbox" name="pga_confirm_clear_logs" value="1" required> <?php esc_html_e('我确认清空全部支付日志', 'sscpay-gateway-aggregator'); ?></label></p>
+                    <?php submit_button(__('确认清空', 'sscpay-gateway-aggregator'), 'delete'); ?>
+                </form>
+            </details>
 
             <?php self::renderPagination($result, $sOrderId, $level, 'top'); ?>
 
@@ -100,7 +151,7 @@ class LogViewer
     {
         $page = $result['page'];
         $totalPages = $result['total_pages'];
-        $filters = ['page' => self::PAGE_SLUG, 's_order_id' => $sOrderId, 'level' => $level];
+        $filters = ['page' => self::PAGE_SLUG, 's_order_id' => $sOrderId, 'level' => $level, 'per_page' => $result['per_page']];
         $inputId = 'pga-log-page-' . $position;
         ?>
         <div class="tablenav <?php echo esc_attr($position); ?>" style="height:auto;min-height:32px">

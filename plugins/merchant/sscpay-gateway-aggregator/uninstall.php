@@ -25,12 +25,17 @@ $optionsToDelete = [
     'pga_log_retention_days',
     'pga_gateway_display_names',
     'pga_outbound_shared_secret',
+    'pga_default_outbound_shared_secret',
     'pga_product_catalog_cache_generation',
 ];
 
 foreach ($optionsToDelete as $option) {
     delete_option($option);
 }
+
+delete_site_option('pga_plugin_update_source');
+delete_site_option('pga_update_base_url');
+delete_site_option('external_updates-sscpay-gateway-aggregator');
 
 wp_clear_scheduled_hook('pga_process_callback_queue');
 wp_clear_scheduled_hook('pga_purge_old_logs');

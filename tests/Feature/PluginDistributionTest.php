@@ -84,7 +84,7 @@ class PluginDistributionTest extends TestCase
         Storage::disk('plugin-test')->assertMissing('plugin-releases/sscpay-payment-paypal/stable.json');
     }
 
-    public function test_the_gateway_zip_can_load_its_wordpress_classes_and_stays_out_of_public_distribution(): void
+    public function test_the_gateway_zip_can_load_its_wordpress_classes_and_stays_out_of_the_storefront_catalog(): void
     {
         Storage::fake('plugin-test');
         $releases = app(PluginReleaseService::class);
@@ -95,10 +95,10 @@ class PluginDistributionTest extends TestCase
 
         $zip = new ZipArchive;
         $this->assertTrue($zip->open($built['zip']));
-        foreach ([$slug.'.php', 'uninstall.php', 'assets/js/settings.js', 'vendor/autoload.php', 'vendor/stripe/stripe-php/LICENSE'] as $file) {
+        foreach ([$slug.'.php', 'uninstall.php', 'assets/css/admin.css', 'vendor/autoload.php', 'vendor/stripe/stripe-php/LICENSE'] as $file) {
             $this->assertNotFalse($zip->locateName($slug.'/'.$file), $file);
         }
-        foreach (['wp-config.php', '.env', 'composer.lock', 'tests/product-catalog.php', 'src/Frontend/Tpl/checkout-01-paper.html'] as $file) {
+        foreach (['wp-config.php', '.env', 'composer.lock', 'site-setup.php', 'site-setup.php.stub', 'tests/product-catalog.php', 'src/Frontend/Tpl/checkout-01-paper.html'] as $file) {
             $this->assertFalse($zip->locateName($slug.'/'.$file), $file);
         }
         $installPath = $this->buildPath.'/gateway-install';
@@ -123,6 +123,93 @@ PHP;
             $this->get("/plugins/updates/v1/{$slug}")->assertNotFound();
             $this->get("/plugins/{$slug}/{$version}/download")->assertNotFound();
         }
+    }
+
+    public function test_anonymous_gateway_install_and_update_only_serve_public_versions_over_https(): void
+    {
+        Storage::fake('plugin-test');
+        $feed = 'https://updates.example.test/plugins/gateway/updates/v1';
+        $installer = 'https://updates.example.test/plugins/gateway/download';
+        $releases = app(PluginReleaseService::class);
+        $this->get($feed)->assertNotFound();
+        $this->get($installer)->assertNotFound();
+        $build = $releases->build(PluginCatalog::GATEWAY);
+        $legacy = $build;
+        $legacy['release']['version'] = '1.15.1';
+        $releases->publish($legacy);
+        $this->get($feed)->assertNotFound();
+        $this->get($installer)->assertNotFound();
+
+        $releases->publish($build);
+        $version = $build['release']['version'];
+        $package = $feed.'/'.$version.'/download';
+        $this->get($feed.'?installed_version=1.15.0')->assertStatus(409)->assertJsonMissingPath('download_url');
+        $this->get($feed.'?installed_version=1.15.0&site_prepared=1')->assertOk()->assertJsonPath('download_url', $package);
+        $this->get($feed.'?installed_version='.$version)->assertOk()->assertJsonPath('download_url', $package);
+        $manifest = $this->get($feed)->assertOk()
+            ->assertJsonPath('slug', PluginCatalog::GATEWAY)
+            ->assertJsonPath('version', $version)
+            ->assertJsonPath('download_url', $package)
+            ->assertHeader('Cache-Control', 'max-age=60, public');
+        $this->assertSame([], $manifest->headers->getCookies());
+        foreach ([$installer, $package] as $url) {
+            $download = $this->get($url)->assertOk()->assertHeader('X-Checksum-Sha256', $build['release']['sha256']);
+            $this->assertSame([], $download->headers->getCookies());
+            $this->assertSame($build['release']['sha256'], hash('sha256', $download->streamedContent()));
+        }
+        foreach ([$installer, $feed, $package] as $url) {
+            $this->get(str_replace('https://', 'http://', $url))->assertNotFound();
+        }
+        $this->get($feed.'/1.15.1/download')->assertNotFound();
+        $this->get($feed.'/999.999.999/download')->assertNotFound();
+        $unmarked = $build;
+        $unmarked['release']['version'] = '99.0.0';
+        unset($unmarked['release']['public_update']);
+        $releases->publish($unmarked);
+        $this->get($feed)->assertNotFound();
+        $this->get($feed.'/99.0.0/download')->assertNotFound();
+    }
+
+    public function test_private_setup_provisions_the_site_and_legacy_cipher_but_never_enters_the_public_update(): void
+    {
+        Storage::fake('plugin-test');
+        $this->app->useStoragePath($this->buildPath);
+        $privatePath = storage_path('app/gateway-provisioning/sscpay-gateway-site-setup.zip');
+        config(['payment_gateway.webhook_secret' => '']);
+        $this->artisan('plugins:gateway-setup')->assertFailed();
+        $this->assertFileDoesNotExist($privatePath);
+
+        $secret = 'synthetic-private-default-for-setup-test';
+        config(['payment_gateway.webhook_secret' => $secret]);
+        $this->artisan('plugins:gateway-setup')->doesntExpectOutputToContain($secret)->assertSuccessful();
+        $this->assertSame(0600, fileperms($privatePath) & 0777);
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($privatePath));
+        $this->assertSame(2, $zip->numFiles);
+        $this->assertTrue($zip->extractTo($this->buildPath));
+        $zip->close();
+
+        $public = app(PluginReleaseService::class)->build(PluginCatalog::GATEWAY);
+        $this->assertTrue($zip->open($public['zip']));
+        $unsafeEntries = [];
+        for ($index = 0; $index < $zip->numFiles; $index++) {
+            $entry = $zip->getNameIndex($index);
+            $contents = $zip->getFromIndex($index);
+            if (str_contains($contents, $secret) || (! str_contains($entry, '/vendor/') && preg_match(
+                '~\bdefine\s*\(\s*[\'\"](?:PGA_ENCRYPTION_KEY|PGA_DEFAULT_OUTBOUND_SHARED_SECRET|PGA_GITHUB_TOKEN)[\'\"]\s*,\s*[\'\"][^\'\"]+~i',
+                $contents,
+            ))) {
+                $unsafeEntries[] = $entry;
+            }
+        }
+        $this->assertSame([], $unsafeEntries, 'The public archive must not contain the private initializer or baked-in credentials.');
+        $this->assertTrue($zip->extractTo($this->buildPath));
+        $zip->close();
+        foreach (['legacy', 'upgraded'] as $stage) {
+            $process = new Process([PHP_BINARY, base_path('plugins/merchant/sscpay-gateway-aggregator/tests/fixtures/site-setup.php'), $stage, $this->buildPath]);
+            $this->assertSame(0, $process->run(), $process->getErrorOutput());
+        }
+        Storage::disk('plugin-test')->assertDirectoryEmpty('');
     }
 
     public function test_homepage_and_download_center_link_to_published_plugins_and_v2_documentation(): void

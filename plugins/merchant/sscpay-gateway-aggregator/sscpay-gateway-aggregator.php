@@ -2,16 +2,15 @@
 /**
  * Plugin Name: SSCPay Gateway Aggregator
  * Description: 接收Laravel系统S的API请求，创建WordPress订单，提供WooCommerce商品与变体同步，并聚合多个支付网关。
- * Version: 1.15.0
+ * Version: 1.15.2
+ * Update URI: false
  * Requires PHP: 7.4
  * Requires at least: 5.6
  * WC requires at least: 5.0
  * Text Domain: sscpay-gateway-aggregator
  *
  * 版本号说明：
- * - "Version:" 是插件包版本，在线更新检测器（UpdateChecker）靠它判断
- *   "线上是否有新版本"，每次发布都必须改这一行，并且要和GitHub release
- *   的tag（如 v1.0.0）保持一致。
+ * - "Version:" 是插件包版本，须与 PGA_VERSION 一起递增，由发布流程读取。
  * - PGA_DB_VERSION 是数据库结构版本，只有涉及建表/加字段才需要提升，
  *   由 Migrator.php 使用。加数据库变更、新增网关、修数据库以外的bug，
  *   具体怎么操作见压缩包里的 UPGRADE.md。
@@ -26,6 +25,7 @@ use PaymentGatewayAggregator\Core\QueueManager;
 use PaymentGatewayAggregator\Core\Roles;
 use PaymentGatewayAggregator\Core\UpdateChecker;
 use PaymentGatewayAggregator\Admin\GatewayConfigViewer;
+use PaymentGatewayAggregator\Admin\LogViewer;
 use PaymentGatewayAggregator\Admin\OrderMetaBox;
 use PaymentGatewayAggregator\Admin\SettingsPage;
 use PaymentGatewayAggregator\Admin\ThemePreviewController;
@@ -35,38 +35,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('PGA_VERSION', '1.15.0');
+define('PGA_VERSION', '1.15.2');
 // 1.6.0（DB版本）新增平台会话期限与历史引用表，见 Migrator::migrate_1_6_0()。
 define('PGA_DB_VERSION', '1.6.0');
 define('PGA_PLUGIN_FILE', __FILE__);
 define('PGA_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PGA_PLUGIN_URL', plugin_dir_url(__FILE__));
-
-// ------------------------------------------------------------------
-// 内置默认配置：不用再改 wp-config.php，装完插件即生效。
-// 全部用 if (!defined()) 保护，站点如果确实需要在 wp-config.php 里
-// 覆盖（比如私有仓库的 PGA_GITHUB_TOKEN），仍然优先生效。
-//
-// 【重要】PGA_ENCRYPTION_KEY 一旦用于加密过数据就不能再换，换了库里
-// 已存的网关凭证就解不出来了。发布新版本时不要动这一行的值。
-// ------------------------------------------------------------------
-if (!defined('PGA_ENCRYPTION_KEY')) {
-    // base64_encode(random_bytes(32)) 的一次性生成结果，已固定写死，不要重新生成。
-    define('PGA_ENCRYPTION_KEY', 'BR9L9awVqmi0Q5sB9UYraSbNlOG1RSdLAtOvHYBXMAY=');
-}
-if (!defined('PGA_UPDATE_REPO_URL')) {
-    // 在线更新用的GitHub仓库地址，见压缩包里的 UPGRADE.md。
-    // SSCPAY_GITHUB_OWNER 是四个 sscpay-* 插件共用的 GitHub 账号/组织名，
-    // 只需在 wp-config.php 定义一次；没定义时才用下面的默认值兜底。
-    $pga_github_owner = defined('SSCPAY_GITHUB_OWNER') ? SSCPAY_GITHUB_OWNER : 'tkloespikgit';
-    define('PGA_UPDATE_REPO_URL', 'https://github.com/' . $pga_github_owner . '/sscpay-gateway-aggregator');
-}
-if (!defined('PGA_GITHUB_TOKEN')) {
-    // 私有仓库才需要填；有值才会在 UpdateChecker 里启用鉴权。
-    // SSCPAY_GITHUB_TOKEN 是四个 sscpay-* 插件共用的 Access Token，建议放
-    // wp-config.php 里定义，不要写进代码库。
-    define('PGA_GITHUB_TOKEN', defined('SSCPAY_GITHUB_TOKEN') ? SSCPAY_GITHUB_TOKEN : '');
-}
 
 if (!defined('DISABLE_WP_CRON')) {
     // 关掉WP默认的"访问触发"cron：回调重试队列/日志清理的定时任务在低流量站点上
@@ -177,6 +151,7 @@ add_action('plugins_loaded', [ProductCatalogController::class, 'registerHooks'],
 
 if (is_admin()) {
     SettingsPage::registerHooks();
+    LogViewer::registerHooks();
     GatewayConfigViewer::registerHooks();
     OrderMetaBox::registerHooks();
     ThemePreviewController::registerHooks();

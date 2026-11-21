@@ -69,6 +69,11 @@ jobs:
         run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderCustomerIpTest.php tests/Feature/OrderNotificationRetryTest.php
       - name: Test receiving-site product API
         run: php plugins/merchant/sscpay-gateway-aggregator/tests/product-catalog.php
+      - name: Test receiving-site settings, logs and updates
+        run: |
+          php plugins/merchant/sscpay-gateway-aggregator/tests/admin-settings.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/log-pagination.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/update-checker.php
       - name: Test gateway plugin downloads from the payment method pages
         run: php artisan test --compact tests/Feature/Filament/GatewayPluginDownloadTest.php
 

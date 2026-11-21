@@ -62,6 +62,14 @@ Route::get('/payment/expired', fn () => view('payment.expired'))->name('payment.
 Route::get('/', [HomeController::class, 'show'])->name('home.show');
 
 Route::get('/plugins', [PluginDownloadController::class, 'index'])->name('plugins.index');
+Route::prefix('plugins/gateway')->withoutMiddleware('web')->name('plugins.gateway.')->group(function (): void {
+    Route::get('updates/v1', [PluginDownloadController::class, 'gatewayUpdate'])
+        ->middleware('throttle:240,1')->name('update');
+    Route::get('download', [PluginDownloadController::class, 'gatewayUpdateDownload'])
+        ->middleware('throttle:60,1')->name('download');
+    Route::get('updates/v1/{version}/download', [PluginDownloadController::class, 'gatewayUpdateDownload'])
+        ->where('version', '[0-9]+\.[0-9]+\.[0-9]+')->middleware('throttle:60,1')->name('update.download');
+});
 Route::get('/plugins/updates/v1/{slug}', [PluginDownloadController::class, 'update'])
     ->where('slug', '[a-z0-9-]+')->middleware('throttle:240,1')->name('plugins.update');
 Route::get('/plugins/{slug}/{version}/download', [PluginDownloadController::class, 'download'])

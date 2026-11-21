@@ -3,6 +3,7 @@
 .gitignore
 .distignore
 tests
+site-setup.php.stub
 *.md
 composer.lock
 node_modules

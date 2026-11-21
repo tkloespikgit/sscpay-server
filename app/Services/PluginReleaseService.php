@@ -84,6 +84,9 @@ final readonly class PluginReleaseService
             'sha256' => hash_file('sha256', $path), 'size' => filesize($path),
             'published_at' => now()->toIso8601String(),
         ];
+        if ($isGateway) {
+            $release['public_update'] = true;
+        }
         $manifest = $directory.'/release.json';
         File::put($manifest, json_encode($release, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
 

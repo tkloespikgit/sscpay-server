@@ -277,7 +277,9 @@ bash plugins/merchant/build-test-zips.sh
 
 ZIP 输出到 `storage/app/private/plugin-test-builds/`，含独立的 `vendor/`。在隔离的收款站启用 WooCommerce，安装并启用／升级聚合插件，再停用旧 `sscpay-products-api`。用原 WooCommerce 密钥验证 `/wp-json/wc/v3/products-with-variations` 能分页取得商品和变体、`/wp-json/wc/v3/ninox-status` 正常，再删除旧插件。Laravel 商品同步地址不变。不要用测试包覆盖生产站点。
 
-在 WordPress「支付网关聚合 → 设置」中查看预填的出站回调签名密钥，可直接修改保存；勾选「显示密钥」才显示明文。未保存时读取本站 `wp-config.php` 的 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET`；从该站点的私有配置提供值，不把密钥写入插件包。改动后同时更新 Laravel 的 `PGA_WEBHOOK_SECRET`。仅使用测试配置验收同一 `s_order_id` 重试、付款链接、回调和 WooCommerce 订单详情里的客户 IP。
+按[首次设置与旧站升级](../deployment.md#网关插件的后台下载)激活一次私有初始化包即可设置回调默认值，不用修改 `wp-config.php`。旧站在旧版网关仍启用时先完成这一步，再安装公开主插件；以后更新均无需令牌。WordPress「支付网关聚合 → 设置」仅显示是否已配置；展开「修改回调密钥」可覆盖默认值。改动后须与 Laravel 的 `PGA_WEBHOOK_SECRET` 保持一致。用测试凭证验收同一 `s_order_id` 重试、付款链接、回调和订单客户 IP。
+
+「支付网关聚合 → 日志」支持按订单号、级别过滤，选择每页条数与跳转页码。清空前须确认；这会永久删除本站全部支付日志，包括尚未同步到 Laravel 的记录，不影响订单、资金或回调队列。
 
 ### 4.2 平台侧（sscpay-server）准备
 

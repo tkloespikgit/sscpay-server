@@ -751,7 +751,17 @@ php artisan plugins:build sscpay-gateway-aggregator --no-interaction
 
 `deploy.sh` 从 `plugins/merchant/sscpay-gateway-aggregator/composer.lock` 安装生产依赖，随后由 `plugins:sync` 预检并发布网关 ZIP。包内含 WordPress 插件源码、静态资源和运行依赖，站点专用密钥由 WordPress 配置提供。网关版本取自主文件，修改发布内容后同步递增插件头部 `Version` 和 `PGA_VERSION`。使用固定的 Composer 根包版本避免无关的 Git 提交改变同一网关版本的打包内容。
 
-平台和商户后台的「创建支付方式」及「编辑支付方式」页面右上角提供「下载网关插件」。已登录且具备 `payment_methods.manage` 权限的账号可从当前面板下载最新已发布 ZIP。网关 ZIP 使用私有发布磁盘，公开下载中心及更新接口仍只提供商城插件。
+平台和商户后台的「创建支付方式」及「编辑支付方式」页面保留「下载网关插件」。从 `1.15.2` 起，免登录的 HTTPS 地址 `GET /plugins/gateway/download` 也提供最新安装包。文件仍存放在私有发布磁盘；不要把整个历史发布目录设为公开。商城下载中心不混入收款站插件。
+
+**在线更新。** WordPress 默认从 `https://www.ssecurepay.com/plugins/gateway/updates/v1` 查版本，从同源的 `GET /plugins/gateway/updates/v1/{version}/download` 下载 ZIP，不登录、不发送令牌、不跟随重定向。反向代理须正确传递 HTTPS 信息。有更新插件权限的管理员可在「支付网关聚合 → 设置 → 修改更新域名」填写另一个可信 HTTPS 域名。部署中的 `plugins:sync` 自动发布，无须另建清单；`1.15.1` 及以前的包不会通过这三个公开地址分发。
+
+**首次设置与旧站升级（每站一次）。** 不需要编辑收款站 `wp-config.php`：
+
+1. 平台运维执行 `php artisan plugins:gateway-setup --no-interaction`，从平台私有 `PGA_WEBHOOK_SECRET` 生成 `storage/app/gateway-provisioning/sscpay-gateway-site-setup.zip`。也可用 `--from-stdin` 从受保护的标准输入传值，勿在命令行参数中填写。这个包等同于回调凭证，只能私下交给受信任的收款站管理员，不要放到公开下载目录、工单或发布附件。
+2. 备份站点数据库和 WordPress 安全盐。**旧站须保持旧版网关启用，先上传并激活私有初始化包，再更新主插件**，使历史网关凭证密钥在旧代码仍可用时加密保存在本站。新站也可用此包设置默认回调值；已在设置页保存的自定义值不会被覆盖。多站点逐站激活。
+3. 安装 `1.15.2` 或更高版本的公开主插件，确认后停用并删除私有初始化插件。已使用此在线源的旧版在初始化包仍启用时可直接检查更新：只发送迁移已完成的标记，不发送密钥；未做迁移时不会自动覆盖旧版。原先没有接入该源的旧版首次需手动上传主包，以后直接在 WordPress「插件」更新。
+
+公开主包单独安装也可从「修改回调密钥」手动录入；未配置时不会发送未签名回调。新密文不使用旧版内置密钥；迁移站点 ID 或轮换 WordPress 安全盐前，须备份并安排凭证迁移。若曾跳过初始化且无法读取历史凭证，先从升级前备份恢复旧插件及数据再初始化，不要重新生成旧密钥。
 
 ### 商城客户 IP
 

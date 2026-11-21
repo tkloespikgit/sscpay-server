@@ -1,12 +1,18 @@
 # 数据库迁移 + 在线更新：使用说明
 
-这份文档配合 `src/Core/Migrator.php`、`src/Core/UpdateChecker.php`、
-`sscpay-gateway-aggregator.php`、`.github/workflows/release.yml` 一起看。
+这份文档配合 `src/Core/Migrator.php`、`src/Core/UpdateChecker.php` 和
+`sscpay-gateway-aggregator.php` 一起看。
+
+## 1.15.2 公开更新、私有初始化与日志管理
+
+- 主包可匿名下载，更新不再需要令牌。私有初始化包在本站保存回调默认值，不改 `wp-config.php`；已保存的自定义值优先。设置页不回显密钥，仍可展开「修改回调密钥」保存新值。
+- 日志页可选择每页条数，保留首页、上一页、下一页、末页及页码跳转。清空前需确认，且会删除所有日志（包括未归档的记录），不影响订单和回调队列。
+- 旧站先备份数据库和 WordPress 安全盐，在旧版网关仍启用时激活私有初始化包；随后升级主包，再停用并删除初始化插件。未完成迁移的旧客户端不会收到自动升级。旧网关凭证密钥只加密保存在本站，不随公开包发放。新密文使用站点密钥，回滚旧版时应同时恢复升级前备份。数据库结构不变。
 
 ## 1.15.0 商品同步接口与回调密钥
 
 - 更新聚合插件后，停用独立的 `sscpay-products-api`。使用原 WooCommerce REST API 密钥检查 `/wp-json/wc/v3/products-with-variations` 和 `/wp-json/wc/v3/ninox-status` 后移除旧插件。
-- 出站回调签名密钥可在「支付网关聚合 → 设置」直接修改。保存值优先，尚未保存时可通过站点配置 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET` 预填。Laravel 的 `PGA_WEBHOOK_SECRET` 使用相同的值。
+- 出站回调签名密钥支持本站默认值与独立保存值。Laravel 的 `PGA_WEBHOOK_SECRET` 使用相同的值。
 - 本次无需数据库结构迁移，`PGA_DB_VERSION` 仍为 `1.6.0`。
 
 ## 1.13.7：PayPal 付款来源拒绝后继续支付
@@ -109,71 +115,22 @@ Stripe endpoint 应使用 Snapshot 格式；完整订阅列表见 README 的网�
    确认新表/新字段按预期出现，且失败时后台会弹出错误提示（对应
    `admin_notices` 那段代码），而不是静默失败。
 
-6. 打tag发布（见下面第二节），线上站点更新完插件包之后，下一次有人访问网站时
+6. 发布（见下面第二节），线上站点更新完插件包之后，下一次有人访问网站时
    `plugins_loaded` 会自动检测到 `PGA_DB_VERSION` 比数据库里存的旧，
    自动跑完 `1.0.0` 之后、`1.1.0` 之前所有还没跑过的迁移。**这一步不需要人工登录后台点什么，是自动的。**
 
-## 二、在线更新怎么配置（GitHub方案）
+## 二、在线更新怎么配置
 
-选择的是 GitHub私有/公开仓库 + [Plugin Update Checker](https://github.com/YahnisElsts/plugin-update-checker) 库，
-而不是自己实现更新检测——这块涉及版本比较、缓存、私有仓库鉴权，用被广泛验证过的库更稳妥，
-尤其这是一个支付插件，更新机制出问题的代价比较高。
+插件沿用 [Plugin Update Checker](https://github.com/YahnisElsts/plugin-update-checker)，默认从 `https://www.ssecurepay.com/plugins/gateway/updates/v1` 匿名读取已发布版本。稳定版安装包地址为 `https://www.ssecurepay.com/plugins/gateway/download`。在「支付网关聚合 → 设置 → 修改更新域名」输入另一个提供相同接口的可信 HTTPS 域名，留空恢复默认。无需提供更新或付款凭证。公开更新不分发 `1.15.2` 之前的私有包。
 
-### 首次配置
+已有的 `PGA_UPDATE_BASE_URL` 常量优先于页面设置。显式指定旧 `PGA_UPDATE_REPO_URL` 且未改用新域名的站点仍可读取公开 GitHub Release，不再读取 GitHub 访问令牌；旧私有仓库请切换到公开更新域名。私有初始化包生成和旧站迁移见[部署说明](../../../doc/deployment.md#网关插件的后台下载)。
 
-1. 把插件代码推到一个GitHub仓库（比如 `your-org/sscpay-gateway-aggregator`）。
-2. `composer require yahnis-elsts/plugin-update-checker`，确认 `vendor/` 目录生成。
-3. 修改 `src/Core/UpdateChecker.php` 里的默认仓库地址，或者在站点的
-   `wp-config.php` 里加一行覆盖（不改代码也能配置）：
-
-   ```php
-   define('PGA_UPDATE_REPO_URL', 'https://github.com/your-org/sscpay-gateway-aggregator/');
-   ```
-
-4. 如果仓库是**私有**的，还需要一个有 `repo` 读权限的 GitHub Personal Access Token
-   （建议用 fine-grained token，只给这一个仓库的只读权限），同样放进 `wp-config.php`：
-
-   ```php
-   define('PGA_GITHUB_TOKEN', 'github_pat_xxxxxxxxxxxx');
-   ```
-
-   **不要**把token写进代码仓库或数据库——`wp-config.php` 通常不在版本控制里，是相对安全的位置。
-
-5. 在GitHub仓库的 Settings → Secrets 确认 `GITHUB_ACTIONS` 有默认的 `GITHUB_TOKEN`
-   权限（一般不用额外配置，Actions自带）。
-
-### 和其它 sscpay-* 插件共用同一个GitHub账号时
-
-如果 `sscpay-gateway-aggregator`、`sscpay-payment-paypal` 和 `sscpay-payment-creditcard`
-用的是同一个 GitHub 账号，可以在 `wp-config.php` 里定义下面这对共用常量。各插件按自己的目录名推导仓库名。
-
-```php
-define('SSCPAY_GITHUB_OWNER', 'your-org');
-define('SSCPAY_GITHUB_TOKEN', 'github_pat_xxxxxxxxxxxx');
-```
-
-插件专属常量（如上面第3、4步的 `PGA_UPDATE_REPO_URL` / `PGA_GITHUB_TOKEN`）优先级更高，
-只在需要给某个插件单独覆盖时才需要定义。
-
-### 每次发新版本
-
-1. 改代码，按第一节的方式处理数据库变更（如果有的话）。
-2. 把主插件文件里的 `Version:` 头和 `PGA_VERSION` 常量改成新版本号，比如 `1.1.0`。
-3. `git commit`、`git tag v1.1.0`、`git push --tags`。
-4. GitHub Actions（`.github/workflows/release.yml`）会自动：
-   跑 `composer install --no-dev` → 排除 `.git`/测试文件等 → 打包成
-   `sscpay-gateway-aggregator.zip` → 作为这个tag的 Release 资源包上传。
-   **不要**依赖GitHub自动生成的"源码压缩包"，那个包里没打包composer依赖，装上会直接报错——
-   这也是为什么 `UpdateChecker.php` 里显式调用了 `enableReleaseAssets()`，
-   要求只信任手动/CI上传的资源包。
-5. 线上站点的WP后台"插件"页面，12小时内（或管理员手动刷新一次插件列表页）
-   会看到"有新版本可更新"的提示，点更新，WP会下载这个zip资源包并覆盖安装，
-   完成后下一次请求会自动触发数据库迁移检查（见第一节第6点）。
+后续发布版本时同时递增 `Version` 和 `PGA_VERSION`，通过 S 系统现有部署发布稳定包。WordPress 到「插件」检查更新；覆盖安装后仍在下一次请求时检查数据库版本。
 
 ### 版本号对应关系
 
 | 位置 | 作用 |
 |------|------|
 | 主插件文件 `Version:` header | WP判断"线上是否有新版本"的依据，UpdateChecker比较的就是这个值 |
-| GitHub Release tag（如 `v1.1.0`） | 必须和上面的版本号对应，PUC默认会自动去掉tag开头的`v`再比较 |
-| `PGA_DB_VERSION` 常量 | 数据库结构版本，只有涉及建表/加字段才需要提升，和插件包版本是两件独立的事，但建议保持同步 |
+| 已发布稳定版 | S 系统发布清单的版本，取自主文件插件头 |
+| `PGA_DB_VERSION` 常量 | 数据库结构版本，仅涉及数据库结构变更时提升 |

@@ -8,7 +8,9 @@ namespace PaymentGatewayAggregator\Admin;
 use PaymentGatewayAggregator\Core\GatewayFactory;
 use PaymentGatewayAggregator\Core\OutboundSigner;
 use PaymentGatewayAggregator\Core\RouteIdentity;
+use PaymentGatewayAggregator\Core\UpdateChecker;
 use PaymentGatewayAggregator\Frontend\Themes\ThemeManager;
+use PaymentGatewayAggregator\Helpers\SiteCipher;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -24,6 +26,7 @@ class SettingsPage
         add_action('admin_menu', [self::class, 'registerMenu']);
         add_action('admin_init', [self::class, 'registerSettings']);
         add_action('admin_post_pga_save_secret', [self::class, 'handleSaveSecret']);
+        add_action('admin_post_pga_save_update_source', [self::class, 'handleSaveUpdateSource']);
         add_action('admin_enqueue_scripts', [self::class, 'enqueueAssets']);
     }
 
@@ -35,9 +38,6 @@ class SettingsPage
             return;
         }
         wp_enqueue_style('pga-admin', PGA_PLUGIN_URL . 'assets/css/admin.css', [], PGA_VERSION);
-        if ($hook === 'toplevel_page_' . self::PAGE_SLUG) {
-            wp_enqueue_script('pga-settings', PGA_PLUGIN_URL . 'assets/js/settings.js', [], PGA_VERSION, true);
-        }
     }
 
     public static function registerMenu()
@@ -93,22 +93,12 @@ class SettingsPage
 
     public static function handleSaveSecret()
     {
-        if (!current_user_can('manage_options') || !check_admin_referer('pga_save_secret')) {
-            wp_die(esc_html__('权限不足', 'sscpay-gateway-aggregator'));
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST'
+            || !current_user_can('manage_options') || !check_admin_referer('pga_save_secret')) {
+            wp_die(esc_html__('权限不足', 'sscpay-gateway-aggregator'), '', ['response' => 403]);
         }
 
-        $redirectBase = wp_get_referer() ?: admin_url('admin.php?page=' . self::PAGE_SLUG);
-
-        // action=random：随机生成；否则保存用户粘贴/手填的自定义密钥。
-        $mode = isset($_POST['pga_secret_mode']) && $_POST['pga_secret_mode'] === 'random'
-            ? 'random'
-            : 'custom';
-
-        if ($mode === 'random') {
-            update_option(OutboundSigner::SECRET_OPTION, wp_generate_password(64, false, false), false);
-            wp_safe_redirect(add_query_arg('pga_secret_saved', 'generated', $redirectBase));
-            exit;
-        }
+        $redirectBase = admin_url('admin.php?page=' . self::PAGE_SLUG);
 
         $submitted = $_POST['pga_outbound_shared_secret'] ?? '';
         $secret = is_string($submitted) ? trim(wp_unslash($submitted)) : '';
@@ -123,25 +113,32 @@ class SettingsPage
             exit;
         }
 
-        update_option(OutboundSigner::SECRET_OPTION, $secret, false);
+        update_option(OutboundSigner::SECRET_OPTION, SiteCipher::protectCallbackSecret($secret), false);
+        if (OutboundSigner::configuredSecret() !== $secret) {
+            wp_die(esc_html__('回调密钥未保存，请检查数据库后重试。', 'sscpay-gateway-aggregator'), '', ['response' => 500]);
+        }
         wp_safe_redirect(add_query_arg('pga_secret_saved', 'custom', $redirectBase));
         exit;
     }
 
-    private static function renderSecretField(string $secret): void
+    public static function handleSaveUpdateSource(): void
     {
-        ?>
-        <p>
-            <label for="pga_outbound_shared_secret"><?php esc_html_e('出站回调签名密钥（可直接修改）：', 'sscpay-gateway-aggregator'); ?></label><br>
-            <input type="password" id="pga_outbound_shared_secret" name="pga_outbound_shared_secret"
-                   value="<?php echo esc_attr($secret); ?>" required
-                   style="width:100%;max-width:700px;font-family:monospace;" autocomplete="new-password">
-            <label>
-                <input type="checkbox" id="pga_show_outbound_shared_secret">
-                <?php esc_html_e('显示密钥', 'sscpay-gateway-aggregator'); ?>
-            </label>
-        </p>
-        <?php
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || defined('PGA_UPDATE_BASE_URL') || !current_user_can('manage_options')
+            || !current_user_can('update_plugins') || !check_admin_referer('pga_save_update_source')) {
+            wp_die(esc_html__('权限不足', 'sscpay-gateway-aggregator'), '', ['response' => 403]);
+        }
+
+        $input = $_POST[UpdateChecker::BASE_OPTION] ?? null;
+        $value = is_string($input) ? trim(wp_unslash($input)) : null;
+        if ($value === '') {
+            delete_site_option(UpdateChecker::BASE_OPTION);
+        } elseif ($value !== null && ($url = UpdateChecker::normalizeBaseUrl($value)) !== null) {
+            update_site_option(UpdateChecker::BASE_OPTION, $url);
+        } else {
+            wp_die(esc_html__('请输入 HTTPS 域名，不含账号、路径或查询参数。', 'sscpay-gateway-aggregator'), '', ['response' => 400]);
+        }
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
+        exit;
     }
 
     public static function render()
@@ -152,7 +149,12 @@ class SettingsPage
 
         $ttl = (int) get_option('pga_pay_link_ttl_minutes', 0);
         $retention = (int) get_option('pga_log_retention_days', 90);
-        $secret = OutboundSigner::configuredSecret();
+        try {
+            $hasSecret = OutboundSigner::configuredSecret() !== '';
+        } catch (\RuntimeException $error) {
+            $hasSecret = false;
+        }
+        $updateSource = UpdateChecker::sourceUrl();
         $displayNames = get_option('pga_gateway_display_names', []);
         $activeTheme = get_option(ThemeManager::OPTION_NAME, ThemeManager::DEFAULT_SLUG);
         ?>
@@ -179,6 +181,13 @@ class SettingsPage
                     <tr>
                         <th scope="row"><label for="pga_log_retention_days"><?php esc_html_e('日志保留天数（0表示永久保留）', 'sscpay-gateway-aggregator'); ?></label></th>
                         <td><input type="number" min="0" id="pga_log_retention_days" name="pga_log_retention_days" value="<?php echo esc_attr($retention); ?>" class="small-text"></td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e('在线更新地址', 'sscpay-gateway-aggregator'); ?></th>
+                        <td>
+                            <code><?php echo esc_html($updateSource ?? __('更新地址配置无效', 'sscpay-gateway-aggregator')); ?></code>
+                            <p class="description"><?php esc_html_e('插件直接通过 HTTPS 检查和下载公开更新，不需要令牌。', 'sscpay-gateway-aggregator'); ?></p>
+                        </td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="pga_payment_theme"><?php esc_html_e('支付页面外观主题', 'sscpay-gateway-aggregator'); ?></label></th>
@@ -231,6 +240,19 @@ class SettingsPage
                 <?php submit_button(); ?>
             </form>
 
+            <?php if (current_user_can('update_plugins') && !defined('PGA_UPDATE_BASE_URL')) : ?>
+                <details>
+                    <summary><?php esc_html_e('修改更新域名', 'sscpay-gateway-aggregator'); ?></summary>
+                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <?php wp_nonce_field('pga_save_update_source'); ?>
+                        <input type="hidden" name="action" value="pga_save_update_source">
+                        <label for="pga_update_base_url"><?php esc_html_e('可信 HTTPS 域名（留空恢复默认）', 'sscpay-gateway-aggregator'); ?></label>
+                        <input type="url" class="regular-text" id="pga_update_base_url" name="pga_update_base_url" placeholder="https://www.ssecurepay.com" value="<?php echo esc_attr(get_site_option(UpdateChecker::BASE_OPTION, '')); ?>">
+                        <?php submit_button(__('保存更新域名', 'sscpay-gateway-aggregator')); ?>
+                    </form>
+                </details>
+            <?php endif; ?>
+
             <hr>
 
             <h2><?php esc_html_e('本站 Webhook 地址', 'sscpay-gateway-aggregator'); ?></h2>
@@ -269,41 +291,21 @@ class SettingsPage
             <hr>
 
             <h2><?php esc_html_e('出站回调签名密钥', 'sscpay-gateway-aggregator'); ?></h2>
-            <p><?php esc_html_e('插件转发给S系统的回调（payment_status/tracking_sync事件）会用这个密钥做HMAC-SHA256签名，S系统那边需要用同一份密钥验证。', 'sscpay-gateway-aggregator'); ?></p>
-            <?php if ($secret === '') : ?>
-                <p><code><?php esc_html_e('尚未设置', 'sscpay-gateway-aggregator'); ?></code></p>
-            <?php endif; ?>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                <?php wp_nonce_field('pga_save_secret'); ?>
-                <?php self::renderSecretField($secret); ?>
-                <input type="hidden" name="pga_secret_mode" value="custom">
-                <input type="hidden" name="action" value="pga_save_secret">
-                <?php submit_button(__('保存自定义密钥', 'sscpay-gateway-aggregator'), 'primary'); ?>
-            </form>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                <?php wp_nonce_field('pga_save_secret'); ?>
-                <input type="hidden" name="pga_secret_mode" value="random">
-                <input type="hidden" name="action" value="pga_save_secret">
-                <p><?php esc_html_e('没有现成密钥的话，也可以随机生成。修改后请同步更新S系统的验签密钥。', 'sscpay-gateway-aggregator'); ?></p>
-                <?php submit_button($secret ? __('重新随机生成密钥', 'sscpay-gateway-aggregator') : __('随机生成密钥', 'sscpay-gateway-aggregator'), 'secondary'); ?>
-            </form>
-
-            <hr>
-
-            <h2><?php esc_html_e('API认证方式', 'sscpay-gateway-aggregator'); ?></h2>
-            <p><?php esc_html_e('插件的REST接口（/v1/pay、/v1/sync-tracking、/v1/health、/v1/order-logs、/v1/gateway-config）支持以下两种认证方式，任选其一：', 'sscpay-gateway-aggregator'); ?></p>
-            <h3><?php esc_html_e('方式1（推荐）：WooCommerce REST API密钥', 'sscpay-gateway-aggregator'); ?></h3>
-            <ol>
-                <li><?php esc_html_e('在 WooCommerce → 设置 → 高级 → REST API 里创建（或复用已有的）密钥，权限选“读写”，把 consumer_key/consumer_secret 交给S系统。', 'sscpay-gateway-aggregator'); ?></li>
-                <li><?php esc_html_e('请求时在URL参数里带 consumer_key、consumer_secret（或Authorization头），其它什么都不用配。', 'sscpay-gateway-aggregator'); ?></li>
-                <li><?php esc_html_e('注意：密钥只允许走HTTPS（与WooCommerce一致）；/gateway-config接口只接受“读写”权限的密钥。', 'sscpay-gateway-aggregator'); ?></li>
-            </ol>
-            <h3><?php esc_html_e('方式2：WP应用密码（Basic Auth）', 'sscpay-gateway-aggregator'); ?></h3>
-            <ol>
-                <li><?php esc_html_e('在“用户”里新建两个账号：一个分配“支付插件-订单接口账号”角色（用于/v1/pay、/v1/sync-tracking、/v1/health、/v1/order-logs），一个分配“支付插件-网关配置账号”角色（仅用于/v1/gateway-config）。', 'sscpay-gateway-aggregator'); ?></li>
-                <li><?php esc_html_e('分别登录这两个账号，在“个人资料”页面底部的“应用密码”里各生成一个应用密码，交给S系统对应功能使用，不要共用同一个应用密码。', 'sscpay-gateway-aggregator'); ?></li>
-                <li><?php esc_html_e('请求时使用 HTTP Basic 认证：Authorization: Basic base64(用户名:应用密码)，且必须走HTTPS。', 'sscpay-gateway-aggregator'); ?></li>
-            </ol>
+            <p><?php echo esc_html($hasSecret ? __('已配置，不显示现有密钥。', 'sscpay-gateway-aggregator') : __('回调密钥未配置或无法读取，请初始化或保存新密钥。', 'sscpay-gateway-aggregator')); ?></p>
+            <details>
+                <summary><?php esc_html_e('修改回调密钥', 'sscpay-gateway-aggregator'); ?></summary>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <?php wp_nonce_field('pga_save_secret'); ?>
+                    <input type="hidden" name="action" value="pga_save_secret">
+                    <p>
+                        <label for="pga_outbound_shared_secret"><?php esc_html_e('新密钥', 'sscpay-gateway-aggregator'); ?></label><br>
+                        <input type="password" id="pga_outbound_shared_secret" name="pga_outbound_shared_secret"
+                               class="regular-text" autocomplete="new-password" required>
+                    </p>
+                    <p class="description"><?php esc_html_e('保存后，请同步更新 S 系统使用的回调验签密钥。', 'sscpay-gateway-aggregator'); ?></p>
+                    <?php submit_button(__('保存新密钥', 'sscpay-gateway-aggregator'), 'primary'); ?>
+                </form>
+            </details>
         </div>
         <?php
     }

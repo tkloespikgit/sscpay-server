@@ -57,7 +57,7 @@ flowchart TD
 
 商城插件以 `plugins/{platform}/{slug}/` 为维护源，源码和服务端同仓管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。WordPress PayPal / 信用卡各自一个包；OpenCart 3 / 4 各一个包，每包注册 PayPal 与信用卡。`PluginCatalog` 发现两层目录，`PluginProtocol` 检查商户 API 协议指纹及四个包的版本，`PluginReleaseService` 按平台构建 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件共享代码保留 PHP 7.4 语法，OpenCart 4 运行时要求 PHP 8.0+，与 Laravel 环境分别检查。
 
-法币收款站安装 `plugins/merchant/` 下的 `sscpay-gateway-aggregator`，同时处理远程建单、回调和商品／变体同步。旧商品插件已合并，原 REST 路径、响应形状及 WooCommerce 鉴权方式仍可用。部署通过 `plugins:sync` 发布网关安装包，具备支付方式管理权限的后台账号在创建、编辑支付方式页下载。四个商城插件通过公开目录分发，并受商户 API 指纹校验约束。见 [D-73](decisions.md#d-73-商品-api-并入收款站聚合插件) 和 [D-74](decisions.md#d-74-网关插件随部署发布并在后台下载)。
+法币收款站安装 `plugins/merchant/` 下的 `sscpay-gateway-aggregator`，同时处理远程建单、回调和商品／变体同步。旧商品插件已合并，原 REST 路径、响应形状及 WooCommerce 鉴权方式仍可用。`plugins:sync` 发布网关主包；从 `1.15.2` 起安装 ZIP 与 WordPress 更新源可匿名通过 HTTPS 获取。私有初始化包只交给受信任的收款站，用于预置回调密钥及旧站凭证过渡；不进公开发布流程。后台下载权限和四个商城插件的协议指纹边界不变。见 [D-73](decisions.md#d-73-商品-api-并入收款站聚合插件)、[D-74](decisions.md#d-74-网关插件随部署发布并在后台下载) 和 [D-75](decisions.md#d-75-网关公开更新与回调密钥只写)。
 
 OpenCart 两代入口分别保留 MVC 类与命名空间结构，复用 `plugins/opencart/shared/` 的签名、十进制计算、v1/v2 状态处理与注册表适配。打包时注入共享代码和模板：3.x 使用 `upload/`，4.x 根目录直接部署到 `extension/sscpay/`，公开下载保留文件名 `sscpay.ocmod.zip`。商城独立保存支付引用、支付进度、事件及物流去重，以 MySQL 同单命名锁串行处理建单、回跳及通知；只有签名通知或主动查询确认收齐全额才调用商城核心历史接口。插件设置提供中英文配置、只读支付查询、物流发送和版本检查；退款/拒付按远端查询映射，不发起扣款或退款。边界与验收范围见 [D-64](decisions.md#d-64-opencart-两代独立安装包与共享协议客户端)。
 

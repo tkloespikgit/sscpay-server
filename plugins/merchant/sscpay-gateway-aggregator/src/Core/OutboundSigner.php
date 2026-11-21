@@ -7,11 +7,13 @@
  * X-PGA-Signature，S系统拿到原始请求体字节后用同样的算法和共享密钥重新计算，
  * 与header比对（应使用常量时间比较，S系统那边实现时需注意）。
  *
- * 共享密钥在后台保存，未保存时可使用站点的 PGA_DEFAULT_OUTBOUND_SHARED_SECRET。
+ * 后台保存的密钥优先于本站私有初始化包写入的默认值。
  * 需要和S系统配置同一份密钥。
  */
 
 namespace PaymentGatewayAggregator\Core;
+
+use PaymentGatewayAggregator\Helpers\SiteCipher;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -22,15 +24,19 @@ class OutboundSigner
     const HEADER_NAME = 'X-PGA-Signature';
 
     public const SECRET_OPTION = 'pga_outbound_shared_secret';
+    public const DEFAULT_OPTION = 'pga_default_outbound_shared_secret';
 
     public static function configuredSecret(): string
     {
-        $configured = get_option(self::SECRET_OPTION, '');
-        if (is_string($configured) && $configured !== '') {
+        $configured = SiteCipher::readCallbackSecret(get_option(self::SECRET_OPTION, ''));
+        if ($configured !== '') {
             return $configured;
         }
 
-        $default = defined('PGA_DEFAULT_OUTBOUND_SHARED_SECRET') ? PGA_DEFAULT_OUTBOUND_SHARED_SECRET : '';
+        $default = SiteCipher::readCallbackSecret(get_option(self::DEFAULT_OPTION, ''));
+        if ($default === '' && defined('PGA_DEFAULT_OUTBOUND_SHARED_SECRET')) {
+            $default = PGA_DEFAULT_OUTBOUND_SHARED_SECRET;
+        }
 
         return is_string($default) ? $default : '';
     }
@@ -58,7 +64,7 @@ class OutboundSigner
     {
         $secret = self::configuredSecret();
         if ($secret === '') {
-            throw new \RuntimeException('未配置出站回调签名密钥（pga_outbound_shared_secret），请先在设置页粘贴/生成');
+            throw new \RuntimeException('未配置回调签名密钥，请激活本站私有初始化包或在插件设置中保存新密钥');
         }
         return $secret;
     }

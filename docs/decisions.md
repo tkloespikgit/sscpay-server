@@ -794,7 +794,7 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **商品兼容：** 保留 `GET /wp-json/wc/v3/products-with-variations`、兼容状态接口 `GET /wp-json/wc/v3/ninox-status` 和原响应字段。用有读取权限的 WooCommerce 密钥鉴权，要求所属用户具有 `manage_woocommerce`；继续支持 HTTPS query 和旧 Authorization 格式。缓存只按分页和商品版本区分，不使用凭证，缓存命中也附带总数和分页头。旧插件尚启用时由旧插件提供路由；停用后聚合插件接管，无须更改 Laravel 地址或重新生成商品密钥。
 
-**回调密钥：** 仅有后台设置权限的管理员可查看、修改与保存。已保存的站点独立值优先；未保存时可从本站 `wp-config.php` 的 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET` 预填并用于签名。默认值和 Laravel `PGA_WEBHOOK_SECRET` 需一致，不随源码或 ZIP 发布；此默认机制不改变回调签名算法及重试语义。
+**回调密钥：** `1.15.0` 允许有设置权限的管理员查看、修改与保存。查看能力已由 [D-75](#d-75-网关公开更新与回调密钥只写) 撤销；已保存的值仍优先，签名算法和重试语义不变。
 
 **依据：** [兼容商品接口](../plugins/merchant/sscpay-gateway-aggregator/src/API/Controllers/ProductCatalogController.php)、[收款站设置页](../plugins/merchant/sscpay-gateway-aggregator/src/Admin/SettingsPage.php)、[出站签名](../plugins/merchant/sscpay-gateway-aggregator/src/Core/OutboundSigner.php)、[升级步骤](../doc/wordpress/wordpress-site-setup.md#41-按站点用途安装插件)。
 
@@ -803,3 +803,11 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 网关聚合插件随 `deploy.sh` 构建并由 `plugins:sync` 发布，复用现有版本 ZIP、发布清单和稳定版入口。构建前安装锁定的 Composer 运行依赖，网关使用自身的 WordPress 插件版本。商户 API 指纹与公开插件目录继续使用四个商城插件的清单。本决策替代 D-71 中当时仅生成本地测试 ZIP 的分发范围。
 
 平台和商户面板的支付方式创建、编辑页各使用本面板的下载地址。下载经过面板登录和 `payment_methods.manage` 权限校验，从私有存储流式返回已发布的稳定版，并附带 SHA-256 校验值。见[部署说明](../doc/deployment.md#网关插件的后台下载)和[下载回归](../tests/Feature/Filament/GatewayPluginDownloadTest.php)。
+
+## D-75 网关公开更新与回调密钥只写
+
+**状态：当前工作区，未部署。** `1.15.2` 起，网关安装包和更新元数据允许匿名 HTTPS 下载，默认域名可在 WordPress 设置中修改。只公开不含共享凭证的新版本，保留 D-74 的私有存储及后台下载，商城目录与协议校验不变。默认更新源拒绝重定向和跨源 ZIP。
+
+**密钥与日志：** 付款回调使用共享密钥验签，不能与可匿名下载的程序一起分发。受信任站点用私有初始化包写入默认值；后台只可替换，不回显，自定义值优先。旧收款站须在升级前用该初始化包封存旧版网关凭证解密密钥；公开包不含该密钥。日志清空须后台权限、nonce 和确认，只删除本站支付日志且不重置 ID；未同步日志会永久丢失。
+
+**依据：** [更新客户端](../plugins/merchant/sscpay-gateway-aggregator/src/Core/UpdateChecker.php)、[发布接口](../app/Http/Controllers/PluginDownloadController.php)、[部署说明](../doc/deployment.md#网关插件的后台下载)。

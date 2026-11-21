@@ -6,24 +6,7 @@
 ## 安装前必做
 
 1. `composer install --no-dev`（生产环境）或 `composer install`（本地开发，会额外装测试工具，如果以后加了的话）。
-2. 运行配置已内置在插件主文件 `sscpay-gateway-aggregator.php` 里，**不需要再改 `wp-config.php`**：
-
-   - `PGA_ENCRYPTION_KEY`：网关凭证AES-256-GCM加密密钥，已固定写死。
-     【不要再改/重新生成】，改了就没法解密已经存在库里的历史配置了。
-   - `PGA_UPDATE_REPO_URL` / `PGA_GITHUB_TOKEN`：在线更新用，见压缩包里的 UPGRADE.md。
-   - `DISABLE_WP_CRON = true`：关掉WP默认的"访问触发"cron，
-     否则回调重试队列/日志清理的定时任务在低流量站点上可能不准时触发。
-
-   这些常量都用 `if (!defined())` 保护，如需在特定站点覆盖（比如私有仓库的token），
-   仍可在 `wp-config.php` 里定义，优先生效。
-
-   如果 `sscpay-gateway-aggregator`、`sscpay-payment-paypal` 和 `sscpay-payment-creditcard`
-   使用同一个 GitHub 账号，可以在 `wp-config.php` 里定义下面这对共用常量。各插件按自己的目录名推导仓库名。
-
-   ```php
-   define( 'SSCPAY_GITHUB_OWNER', 'your-github-owner' );
-   define( 'SSCPAY_GITHUB_TOKEN', 'github_pat_xxx' );
-   ```
+2. 收款站首次使用平台默认回调密钥时，先激活一次平台私下提供的初始化插件。旧站须在旧版网关仍启用时先完成这一步，避免历史网关凭证无法解密。装好公开主包后停用并删除初始化插件。详见[升级说明](UPGRADE.md#二在线更新怎么配置)。主插件默认从 `www.ssecurepay.com` 检查更新，无需令牌。
 3. 服务器crontab里加一行（每分钟触发一次真实cron，和 DISABLE_WP_CRON 配套）：
 
 ```
@@ -31,12 +14,12 @@
 ```
 
 4. 确保WooCommerce已安装并启用（Requires WC >= 5.0）。
-5. 启用后，在「支付网关聚合 → 设置」确认出站回调签名密钥。可使用预填的站点默认值、手动保存或生成新值。S 系统使用同一密钥验证插件回调。
+5. 启用后，在「支付网关聚合 → 设置」确认回调密钥已配置。也可展开「修改回调密钥」保存新值；页面及 HTML 均不包含现有密钥。S 系统使用同一密钥验证插件回调。
 6. API认证：插件接口同时支持两种认证，任选其一：
    - （推荐）直接复用 WooCommerce REST API 密钥：S系统已保存过WC密钥的话，
      请求时在URL参数里带 `consumer_key`/`consumer_secret` 即可，不需要单独建账号；
      注意密钥必须“读写”权限才能调 `/v1/gateway-config`，且只允许HTTPS。
-   - 或按"设置"页底部"方式2"的指引创建两个应用密码账号（订单账号 / 配置账号）。
+   - 或分别给「支付插件-订单接口账号」和「支付插件-网关配置账号」创建 WordPress 应用密码，走 HTTPS Basic Auth。
 
 ## 商品与变体同步（1.15.0）
 
@@ -44,7 +27,7 @@
 
 从独立 `sscpay-products-api` 升级时，先更新聚合插件，再停用旧插件。用原地址和密钥确认两个接口正常后，即可删掉独立插件。没有额外数据库迁移。
 
-出站回调签名密钥在插件设置页预填且可修改。未保存密钥时，默认值可以由本站 `wp-config.php` 的 `PGA_DEFAULT_OUTBOUND_SHARED_SECRET` 提供；后台保存值优先，密钥不随安装包分发。修改后须同步更新 Laravel 的 `PGA_WEBHOOK_SECRET`。
+后台保存值优先于私有初始化包预置的默认值，公开更新不会覆盖两者。原先显式配置过站点常量的安装保留兼容。轮换时须同步更新 Laravel 的 `PGA_WEBHOOK_SECRET` 和使用该密钥的收款站。
 
 ## /v1/pay 客户 IP（1.14.0）
 
