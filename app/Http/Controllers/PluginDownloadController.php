@@ -7,6 +7,11 @@ use App\Services\PluginReleaseService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\HtmlString;
+use Illuminate\Support\Str;
+use League\CommonMark\Extension\HeadingPermalink\HeadingPermalinkExtension;
+use League\CommonMark\Extension\TableOfContents\TableOfContentsExtension;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PluginDownloadController extends Controller
@@ -23,6 +28,20 @@ class PluginDownloadController extends Controller
         }
 
         return view('plugins.index', compact('plugins'));
+    }
+
+    public function guide(): View
+    {
+        $markdown = File::get(base_path('doc/payment-plugin-installation.md'));
+        $html = Str::markdown($markdown, [
+            'html_input' => 'strip',
+            'allow_unsafe_links' => false,
+            'heading_permalink' => ['min_heading_level' => 2, 'max_heading_level' => 2, 'apply_id_to_heading' => true, 'insert' => 'after', 'title' => '本节链接', 'symbol' => '#'],
+            'table_of_contents' => ['position' => 'before-headings', 'style' => 'ordered', 'html_class' => 'guide-contents'],
+            'table' => ['wrap' => ['enabled' => true, 'attributes' => ['class' => 'guide-table', 'tabindex' => '0', 'role' => 'region', 'aria-label' => '对照表，可左右滚动']]],
+        ], [new HeadingPermalinkExtension, new TableOfContentsExtension]);
+
+        return view('plugins.guide', ['guide' => new HtmlString($html)]);
     }
 
     public function update(string $slug): JsonResponse

@@ -62,6 +62,7 @@ Route::get('/payment/expired', fn () => view('payment.expired'))->name('payment.
 Route::get('/', [HomeController::class, 'show'])->name('home.show');
 
 Route::get('/plugins', [PluginDownloadController::class, 'index'])->name('plugins.index');
+Route::get('/plugins/guide', [PluginDownloadController::class, 'guide'])->withoutMiddleware('web')->name('plugins.guide');
 Route::prefix('plugins/gateway')->withoutMiddleware('web')->name('plugins.gateway.')->group(function (): void {
     Route::get('updates/v1', [PluginDownloadController::class, 'gatewayUpdate'])
         ->middleware('throttle:240,1')->name('update');

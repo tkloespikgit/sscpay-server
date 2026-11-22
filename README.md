@@ -629,7 +629,7 @@ environment=APP_ENV="production"
 |---|---|
 | `doc/api-order-implete.md` | 订单系统 API 完整对接文档（鉴权签名、create / ship / query、webhook） |
 | `doc/order-create-api.md` | 创建订单接口详解（字段说明、指定渠道行为差异、错误码、幂等性、常见对接问题） |
-| `doc/wordpress-integration.md` | WordPress / WooCommerce 插件对接指南（含签名参考实现、状态映射、插件设计建议、踩坑清单） |
+| [付款侧与收款侧插件安装指南](doc/payment-plugin-installation.md) | 网页入口：本站「插件下载 → 付款侧与收款侧插件安装指南」（`/plugins/guide`）。按站点领取配置，安装后用沙箱订单验收 |
 | `doc/s-system-payment-status-notify.md` | 支付状态回调说明（payload、状态清单、主动查询接口、订单日志接口） |
 | `doc/s-system-sync-tracking.md` | 物流同步接口说明（参数、承运商字段、各渠道支持情况、幂等性、升级检查清单） |
 | `doc/i18n.md` | 多语言支持现状与新增语言步骤 |

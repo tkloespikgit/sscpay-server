@@ -1,0 +1,42 @@
+@layer components {
+    .guide-link, .plugin-guide a {
+        @apply rounded-xs text-emerald-800 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-4 dark:text-emerald-300;
+    }
+
+    .plugin-guide {
+        @apply text-base leading-8 text-slate-700 dark:text-slate-300;
+        overflow-wrap: anywhere;
+    }
+    .plugin-guide h1 { @apply mt-4 mb-5 text-balance text-3xl leading-tight font-bold tracking-tight text-slate-950 sm:text-4xl dark:text-white; }
+    .plugin-guide h2 { @apply mt-12 mb-5 scroll-mt-6 border-t border-slate-200 pt-7 text-2xl leading-snug font-semibold tracking-tight text-slate-950 dark:border-slate-800 dark:text-white; }
+    .plugin-guide h3 { @apply mt-7 mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100; }
+    .plugin-guide strong { @apply font-semibold text-slate-900 dark:text-slate-100; }
+    .plugin-guide p + p, .plugin-guide ol + p { @apply mt-4; }
+    .plugin-guide p a, .plugin-guide li a { @apply underline; }
+    .plugin-guide code { @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.87em] dark:bg-slate-800; }
+    .plugin-guide .heading-permalink { @apply ms-2 text-base font-normal text-slate-500 dark:text-slate-400; }
+
+    .plugin-guide ol:not(.guide-contents) { @apply list-decimal space-y-3 ps-6 marker:font-semibold marker:text-emerald-800 dark:marker:text-emerald-300; }
+    .plugin-guide .guide-contents { @apply my-7 grid gap-x-7 gap-y-1 rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 sm:grid-cols-2 dark:border-emerald-900 dark:bg-emerald-950/35; counter-reset: guide-section; }
+    .guide-contents::before { @apply col-span-full mb-1 text-sm font-semibold text-emerald-950 dark:text-emerald-200; content: '本页目录'; }
+    .guide-contents li { counter-increment: guide-section; }
+    .plugin-guide .guide-contents a { @apply flex items-baseline gap-2.5 py-1 text-sm font-medium no-underline hover:underline; }
+    .guide-contents a::before { @apply font-mono text-xs text-emerald-700 dark:text-emerald-400; content: counter(guide-section, decimal-leading-zero); }
+
+    .guide-table { @apply my-5 max-w-full overflow-x-auto rounded-xl border border-slate-200 focus-visible:outline-2 focus-visible:outline-emerald-600 dark:border-slate-700; }
+    .guide-table table { @apply w-full min-w-[34rem] border-collapse text-left text-sm leading-7; }
+    .guide-table th { @apply bg-slate-100 font-semibold text-slate-900 dark:bg-slate-800 dark:text-slate-100; }
+    .guide-table :is(th, td) { @apply px-4 py-3 align-top; }
+    .guide-table tr + tr, .guide-table tbody { @apply border-t border-slate-200 dark:border-slate-700; }
+    .guide-table :is(th, td):first-child { @apply w-1/4; }
+    @media (width < 40rem) {
+        .guide-table::before { @apply block px-4 py-1 text-xs text-slate-600 dark:text-slate-400; content: '左右滑动查看完整表格'; }
+    }
+    @media print {
+        .plugin-guide .guide-contents, .plugin-guide .heading-permalink, .guide-table::before { display: none; }
+        .guide-table { overflow: visible; }
+        .guide-table table { min-width: 0; }
+        .plugin-guide h2, .plugin-guide h3 { break-after: avoid; }
+        .guide-table tr { break-inside: avoid; }
+    }
+}

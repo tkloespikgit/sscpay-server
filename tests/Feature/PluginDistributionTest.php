@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Services\PluginCatalog;
 use App\Services\PluginReleaseService;
 use App\Support\PluginProtocol;
+use DOMDocument;
+use DOMXPath;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -220,7 +222,33 @@ PHP;
         $this->get('/')->assertOk()->assertSee(route('plugins.index'), false);
         $this->get('/plugins')->assertOk()->assertSee('PayPal')->assertSee('Credit Card')
             ->assertSee(route('plugins.download', ['slug' => 'sscpay-payment-paypal', 'version' => self::WORDPRESS_VERSION]), false)
+            ->assertSee(route('plugins.guide'), false)
             ->assertSee(route('api.documentation', ['version' => '2.0']), false);
+    }
+
+    public function test_guest_installation_guide_has_working_section_links_and_only_public_downloads(): void
+    {
+        $response = $this->get('https://plugins.example.test/plugins/guide')->assertOk()
+            ->assertSeeText('付款侧：安装网关站插件')->assertSeeText('收款侧：安装商城站插件')
+            ->assertSeeText('Consumer Secret')->assertSeeText('App-ID')->assertSeeText('group_key')
+            ->assertSeeText('WooCommerce 商城')->assertSeeText('OpenCart 商城')->assertSeeText('沙箱订单')
+            ->assertSeeText('回调密钥未配置或无法读取')->assertSee('href="https://plugins.example.test/plugins/gateway/download"', false)
+            ->assertSee('/plugins#platform-wordpress', false)->assertSee('/plugins#platform-opencart', false);
+
+        $html = $response->getContent();
+        $this->assertDoesNotMatchRegularExpression('/href="[^"]*(?:site-setup|\.md["#?]|\/storage\/)/i', $html);
+        $document = new DOMDocument;
+        $document->loadHTML('<?xml encoding="UTF-8" ?>'.$html, LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new DOMXPath($document);
+        $links = $xpath->query('//ol[@class="guide-contents"]//a');
+        $this->assertGreaterThan(0, $links->length);
+        $this->assertSame($xpath->query('//article/h2')->length, $links->length);
+        foreach ($links as $link) {
+            $target = $document->getElementById(substr($link->getAttribute('href'), 1));
+            $this->assertSame('h2', $target?->tagName);
+        }
+
+        $this->get('http://plugins.example.test/plugins/guide')->assertOk()->assertDontSee('/plugins/gateway/download"', false);
     }
 
     public function test_published_version_cannot_be_overwritten_with_different_bytes(): void

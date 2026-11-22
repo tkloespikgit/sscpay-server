@@ -1726,7 +1726,9 @@ return [
             'total_merchants' => '交易商户数',
             'today_new_orders' => '今日新增订单',
             'incomplete' => '所选区间部分统计尚未更新，数据可能不完整。',
-            'data_note' => '订单统计定时更新，数据可能存在延迟。',
+            'data_note' => '订单统计每 3 小时自动更新，数据可能存在延迟。',
+            'refresh_today' => '实时更新数据',
+            'refresh_today_success' => '今日统计数据已更新。',
         ],
         'balance' => [
             'heading' => '账户余额',

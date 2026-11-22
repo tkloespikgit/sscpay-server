@@ -9,7 +9,9 @@ use App\Filament\Resources\OrderResource;
 use App\Filament\Resources\RefundOrders\RefundOrderResource;
 use App\Models\Application;
 use App\Models\Merchant;
+use App\Models\OrderStatsRun;
 use App\Models\User;
+use App\Services\OrderStatsAggregator;
 use App\Support\Permissions;
 use Database\Seeders\PermissionSeeder;
 use Filament\Facades\Filament;
@@ -17,13 +19,18 @@ use Filament\Navigation\NavigationGroup;
 use Filament\Navigation\NavigationItem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Exceptions;
 use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\TestWith;
+use RuntimeException;
+use Tests\Concerns\CreatesTestOrders;
 use Tests\TestCase;
 
 class AdminDashboardTest extends TestCase
 {
+    use CreatesTestOrders;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -55,6 +62,120 @@ class AdminDashboardTest extends TestCase
             ->assertSet('filters.period', 'last_7_days')
             ->assertSet('filters.date_from', null)
             ->assertSet('filters.date_to', null);
+    }
+
+    public function test_live_refresh_is_only_available_for_a_range_of_just_today(): void
+    {
+        $this->actingAs($this->administrator());
+        $label = __('admin.dashboard.stats.refresh_today');
+
+        Livewire::test(AdminDashboard::class)
+            ->assertSee($label)
+            ->call('selectPeriod', 'yesterday')
+            ->assertDontSee($label)
+            ->call('selectPeriod', 'last_7_days')
+            ->assertDontSee($label)
+            ->call('mountAction', 'refreshTodayStats')
+            ->callAction('customDateRange', data: ['date_from' => '2026-11-02', 'date_to' => '2026-11-03'])
+            ->assertDontSee($label)
+            ->callAction('customDateRange', data: ['date_from' => '2026-11-03', 'date_to' => '2026-11-03'])
+            ->assertSee($label);
+
+        $this->assertDatabaseEmpty(OrderStatsRun::class);
+    }
+
+    public function test_live_refresh_cannot_be_triggered_without_order_view_permission(): void
+    {
+        $merchant = Merchant::create(['name' => 'Viewer merchant']);
+        $this->actingAs(User::factory()->create(['merchant_id' => $merchant->id, 'is_super_admin' => false, 'status' => true]));
+        Filament::setCurrentPanel('merchant');
+
+        Livewire::test(AdminDashboard::class)
+            ->assertOk()
+            ->assertDontSee(__('admin.dashboard.stats.refresh_today'))
+            ->call('mountAction', 'refreshTodayStats');
+
+        $this->assertDatabaseEmpty(OrderStatsRun::class);
+    }
+
+    #[TestWith(['overview'])]
+    #[TestWith(['application'])]
+    public function test_live_refresh_updates_the_visible_report_without_changing_filters_or_history(string $report): void
+    {
+        $this->createMerchantAndApplication();
+        $otherMerchant = Merchant::create(['name' => 'Other merchant']);
+        $otherApplication = Application::createWithCredentials([
+            'merchant_id' => $otherMerchant->id,
+            'name' => 'Other app',
+            'website' => 'https://other.example.com',
+        ]);
+        app(OrderStatsAggregator::class)->aggregateRecentDays(2);
+        $this->makeOrder('DASH-TODAY', 'DASH-TODAY', [
+            'status' => 'paid', 'paid_at' => now(), 'converted_amount' => '321.45',
+        ]);
+        $this->makeOrder('DASH-OTHER', 'DASH-OTHER', [
+            'merchant_id' => $otherMerchant->id, 'application_id' => $otherApplication->id,
+            'status' => 'paid', 'paid_at' => now(), 'converted_amount' => '987.65',
+        ]);
+        $this->makeOrder('DASH-YESTERDAY', 'DASH-YESTERDAY', [
+            'status' => 'paid', 'paid_at' => now()->subDay(),
+        ])->forceFill(['created_at' => now()->subDay()])->saveQuietly();
+
+        $viewer = User::factory()->create(['merchant_id' => $this->merchant->id, 'is_super_admin' => false, 'status' => true]);
+        $viewer->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($viewer);
+        Filament::setCurrentPanel('merchant');
+
+        $page = Livewire::withoutLazyLoading()->test(AdminDashboard::class)
+            ->set('dimensionFilters.application_id', $this->application->id)
+            ->set('activeReport', $report)
+            ->assertDontSee('$321.45');
+
+        Livewire::withoutLazyLoading();
+
+        $page->callAction('refreshTodayStats')
+            ->assertNotified(__('admin.dashboard.stats.refresh_today_success'))
+            ->assertNoRedirect()
+            ->assertSet('activeReport', $report)
+            ->assertSet('filters.period', 'today')
+            ->assertSet('filters.application_id', $this->application->id)
+            ->assertSee('$321.45')
+            ->assertDontSee('$987.65');
+
+        $this->assertDatabaseHas(OrderStatsRun::class, ['stat_date' => '2026-11-03', 'rows_written' => 2]);
+        $this->assertDatabaseHas(OrderStatsRun::class, ['stat_date' => '2026-11-02', 'rows_written' => 0]);
+    }
+
+    public function test_live_refresh_can_be_retried_after_a_concurrent_run(): void
+    {
+        $this->actingAs($this->administrator());
+        $page = Livewire::test(AdminDashboard::class);
+        $lock = Cache::lock(OrderStatsAggregator::DATE_LOCK_PREFIX.'2026-11-03', 120);
+        $this->assertTrue($lock->get());
+
+        try {
+            $page->callAction('refreshTodayStats')->assertNotified(__('admin.order_stats.actions.refresh_busy'));
+            $this->assertDatabaseEmpty(OrderStatsRun::class);
+        } finally {
+            $lock->release();
+        }
+
+        $page->callAction('refreshTodayStats')->assertNotified(__('admin.dashboard.stats.refresh_today_success'));
+        $this->assertDatabaseHas(OrderStatsRun::class, ['stat_date' => '2026-11-03', 'rows_written' => 0]);
+    }
+
+    public function test_live_refresh_reports_failure_without_exposing_exception_details(): void
+    {
+        Exceptions::fake();
+        $this->mock(OrderStatsAggregator::class)->shouldReceive('aggregateDate')->andThrow(new RuntimeException('Internal aggregation error'));
+        $this->actingAs($this->administrator());
+
+        Livewire::test(AdminDashboard::class)
+            ->callAction('refreshTodayStats')
+            ->assertNotified(__('admin.order_stats.actions.refresh_failed'))
+            ->assertDontSee('Internal aggregation error');
+
+        Exceptions::assertReported(RuntimeException::class);
     }
 
     #[TestWith(['super_admin', true, true])]

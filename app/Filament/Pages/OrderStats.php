@@ -20,6 +20,7 @@ use Filament\Schemas\Components\EmbeddedSchema;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Schema;
 use Filament\Widgets\Widget;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 
@@ -191,6 +192,10 @@ class OrderStats extends Page
 
                 try {
                     $written = app(OrderStatsAggregator::class)->aggregateDateRange($from, $to);
+                } catch (LockTimeoutException) {
+                    Notification::make()->title(__('admin.order_stats.actions.refresh_busy'))->danger()->send();
+
+                    return;
                 } catch (\Throwable $e) {
                     Notification::make()
                         ->title(__('admin.order_stats.actions.refresh_failed'))

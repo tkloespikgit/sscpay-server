@@ -12,9 +12,11 @@ use App\Filament\Widgets\StatsOverview;
 use App\Filament\Widgets\TransactionAmountTrendChart;
 use App\Models\User;
 use App\Services\DashboardService;
+use App\Services\OrderStatsAggregator;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
+use Filament\Notifications\Notification;
 use Filament\Pages\Dashboard as BaseDashboard;
 use Filament\Panel;
 use Filament\Schemas\Components\Tabs;
@@ -22,9 +24,13 @@ use Filament\Schemas\Components\Tabs\Tab;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Locked;
+use Throwable;
 
 /**
  * 订单指标共用已确认的统计筛选，余额卡片始终展示当前余额。
@@ -46,6 +52,9 @@ class AdminDashboard extends BaseDashboard
     public array $dimensionFilters = [];
 
     public string $activeReport = self::OVERVIEW_REPORT;
+
+    #[Locked]
+    public int $statsRefreshVersion = 0;
 
     /** 面板根路径交由 Filament 按可访问导航跳转，客服直接进入订单查询。 */
     protected static string $routePath = '/dashboard';
@@ -144,6 +153,47 @@ class AdminDashboard extends BaseDashboard
             });
     }
 
+    public function refreshTodayStatsAction(): Action
+    {
+        return Action::make('refreshTodayStats')
+            ->label(__('admin.dashboard.stats.refresh_today'))
+            ->icon(Heroicon::ArrowPath)
+            ->authorize(fn (): bool => $this->todayStatsRefreshDate() !== null)
+            ->action(function (OrderStatsAggregator $aggregator): void {
+                $date = $this->todayStatsRefreshDate();
+                abort_unless($date !== null, 403);
+
+                try {
+                    $aggregator->aggregateDate($date);
+                } catch (LockTimeoutException) {
+                    Notification::make()->title(__('admin.order_stats.actions.refresh_busy'))->warning()->send();
+
+                    return;
+                } catch (Throwable $exception) {
+                    report($exception);
+                    Notification::make()->title(__('admin.order_stats.actions.refresh_failed'))->danger()->send();
+
+                    return;
+                }
+
+                $this->statsRefreshVersion++;
+
+                Notification::make()->title(__('admin.dashboard.stats.refresh_today_success'))->success()->send();
+            });
+    }
+
+    private function todayStatsRefreshDate(): ?Carbon
+    {
+        if (! static::canAccess() || ! OrderStats::canAccess()) {
+            return null;
+        }
+
+        [$from, $to] = app(DashboardService::class)->dateRange($this->filters);
+        $today = Carbon::today(config('app.timezone'));
+
+        return $from->isSameDay($today) && $to->isSameDay($today) ? $today : null;
+    }
+
     /** @return array<string, string> */
     public function getPeriodOptions(): array
     {
@@ -205,7 +255,7 @@ class AdminDashboard extends BaseDashboard
             View::make('filament.pages.dashboard-period-filter'),
             Tabs::make(__('admin.dashboard.overview'))
                 ->id(self::REPORTS_ANCHOR)
-                ->key(self::REPORTS_ANCHOR)
+                ->key(fn (): string => self::REPORTS_ANCHOR.'-'.$this->statsRefreshVersion)
                 ->extraAttributes(['style' => 'scroll-margin-top: 5rem'])
                 ->livewireProperty('activeReport')
                 ->tabs(fn (): array => $this->getReportTabs()),

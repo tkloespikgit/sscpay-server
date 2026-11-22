@@ -13,6 +13,7 @@ use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -46,6 +47,8 @@ use Illuminate\Support\Facades\DB;
  */
 class OrderStatsAggregator
 {
+    public const DATE_LOCK_PREFIX = 'order-stats:aggregate:';
+
     /** 分组键的维度列，顺序即 groupBy 顺序。 */
     private const DIMENSIONS = ['merchant_id', 'application_id', 'payment_method_id'];
 
@@ -56,9 +59,15 @@ class OrderStatsAggregator
      */
     public function aggregateDate(\DateTimeInterface $date): int
     {
-        $startedAt = microtime(true);
-
         $day = Carbon::parse($date->format('Y-m-d'), config('app.timezone'));
+
+        return Cache::lock(self::DATE_LOCK_PREFIX.$day->toDateString(), 120)
+            ->block(0, fn (): int => $this->replaceDailyStats($day));
+    }
+
+    private function replaceDailyStats(Carbon $day): int
+    {
+        $startedAt = microtime(true);
         [$from, $to] = [$day->copy()->startOfDay(), $day->copy()->endOfDay()];
 
         $buckets = [];

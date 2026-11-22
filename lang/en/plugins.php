@@ -2,6 +2,7 @@
 
 return [
     'title' => 'Plugins',
+    'installation_guide' => 'Gateway and storefront installation guide (中文)',
     'intro' => 'Find SSCPay payment plugins, installation guides and release notes for your commerce platform.',
     'platform_navigation' => 'Commerce platforms',
     'platforms' => ['wordpress' => 'WordPress', 'opencart' => 'OpenCart', 'zencart' => 'Zen Cart', 'innoshop' => 'InnoShop'],

@@ -43,6 +43,7 @@
             <div class="mb-10 flex flex-col gap-5 border-b border-slate-200 pb-8 dark:border-slate-800 sm:mb-12">
                 <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">{{ __('plugins.title') }}</h1>
                 <p class="max-w-3xl text-base leading-8 text-slate-600 dark:text-slate-400">{{ __('plugins.intro') }}</p>
+                <a href="{{ route('plugins.guide') }}" hreflang="zh-CN" class="inline-flex w-fit items-center gap-2 rounded-sm text-sm font-semibold text-emerald-700 underline decoration-emerald-300 underline-offset-4 hover:text-emerald-900 focus-visible:outline-2 focus-visible:outline-offset-4 dark:text-emerald-300 dark:hover:text-emerald-200">{{ __('plugins.installation_guide') }} <span aria-hidden="true">→</span></a>
             </div>
 
             <details class="mb-8 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:hidden" data-mobile-platform-navigation>

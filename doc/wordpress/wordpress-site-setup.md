@@ -5,6 +5,7 @@
 > 凡属「生产建议、本地未验证」的段落会显式标注。
 >
 > 配套文档：
+> - 只需安装插件或领取配置？从[付款侧与收款侧插件安装指南](../payment-plugin-installation.md)开始，无需重做建站流程。
 > - 支付状态协议：[s-system-payment-status-notify.md](s-system-payment-status-notify.md)
 > - 物流同步协议：[s-system-sync-tracking.md](s-system-sync-tracking.md)
 
@@ -287,7 +288,7 @@ ZIP 输出到 `storage/app/private/plugin-test-builds/`，含独立的 `vendor/`
 
 | 步骤 | 后台路径 | 产出 |
 | --- | --- | --- |
-| ① 建应用 | `/admin/applications/create` | **App-ID**（如 `APP_B7VUP8QZPPYO`）与 **API Key**（只展示一次，插件里是 password 字段） |
+| ① 建应用 | 后台「商户配置 → 应用」 | 创建后在「查看 → API 凭证」复制同一应用的 **App-ID** 和 **API Key** |
 | ② 填应用 website | 应用编辑页 | 商户电商站域名，本机为 `https://shop.sscpay.test` |
 | ③ 建支付组 | `/admin/payment-groups` | `group_key`，本机为 `group_stripe`（必须 `is_active`） |
 | ④ 建支付方式 | `/admin/payment-methods` | `method_code`（本机 `stripe_card`）+ **domain**（本机 `https://www.wordpress.local`）+ 费率 |
@@ -305,7 +306,7 @@ ZIP 输出到 `storage/app/private/plugin-test-builds/`，含独立的 `vendor/`
 | 生产环境 API Base URL | `live_base_url` | （空） | **订单系统**地址，不带 `/api`、不带尾部斜杠 |
 | 沙箱环境 API Base URL | `sandbox_base_url` | `https://www.ssecurepay.local` | 同上 |
 | 生产/沙箱 App-ID | `live_app_id` / `sandbox_app_id` | `APP_B7VUP8QZPPYO` | 与 4.2① 对应 |
-| 生产/沙箱 API Key | `live_api_key` / `sandbox_api_key` | （已配置） | password 字段，只展示一次 |
+| 生产/沙箱 API Key | `live_api_key` / `sandbox_api_key` | （已配置） | 商城用密码框录入；在订单平台有权限的应用详情页可查看 |
 | 支付组 group_key | `group_key` | `group_stripe` | 必填，即使指定了支付方式也必填 |
 | 指定支付渠道 | `payment_method_key` | `stripe_card` | 留空则由支付组路由决定 |
 | 平台标识 platform | `platform` | `wordpress` | 必须在订单系统 `order.platforms` 枚举内，否则拒单 |
@@ -408,10 +409,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST https://www.ssecurepay.local/ap
 2. **SSL 互信**：删除 `wp-content/mu-plugins/sscpay-local-ssl.php`（生产域名走公网证书，不需要）。
 3. **插件 Base URL**：`live_base_url` 填生产订单系统地址；生产 `API_DOMAIN` 若已配置，host 必须一致。
 4. **应用绑定**：把 sscpay-server 后台应用的 `website` 改成新商城域名。
-5. **支付方式 domain**：改成新商城域名，否则指定渠道的下单会被 `PaymentMethodDomainMismatchException` 拒单。
-6. **域名校验开关**：`OrderCreationService.php:177` 处应用域名校验当前被 `&& false` 关闭（注释「关闭域名验证」），
-   属于本地旁路，**上线前需确认是否恢复**。
-7. **wp-config**：`WP_DEBUG=false`；`DISALLOW_FILE_EDIT` 打开；盐值重新生成（`wp salt regenerate`）。
+5. **支付方式 domain**：填写实际网关站域名，不要因为商城换域就改这里。商城和网关不同域时，商城插件留空 `payment_method_key`，通过支付组路由。
+6. **回跳域名**：指定法币渠道时，通知、返回、取消地址须与该渠道的网关站同域。普通组路由不校验回跳域名与应用官网域名一致；不需要为了安装插件修改服务端代码。
+7. **wp-config**：`WP_DEBUG=false`；`DISALLOW_FILE_EDIT` 打开。新站在初始化前设置独立随机安全盐；已初始化的网关站不要直接替换安全盐，否则已有凭证可能无法解密。
 8. **权限**：`wp-config.php` 640；Web 根目录无备份与 SQL dump。
 9. **定时任务**：确认 `wp cron` 有真实访问触发（禁用系统 crontab 时用 `wp cron event run --due-now` 或系统 cron）。
 10. **备份**：数据库定时导出 + `wp-content/uploads` 同步备份。

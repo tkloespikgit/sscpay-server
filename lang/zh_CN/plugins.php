@@ -2,6 +2,7 @@
 
 return [
     'title' => '插件下载',
+    'installation_guide' => '付款侧与收款侧插件安装指南',
     'intro' => '按电商平台获取 SSCPay 支付插件、安装说明和版本更新。',
     'platform_navigation' => '电商平台',
     'platforms' => ['wordpress' => 'WordPress', 'opencart' => 'OpenCart', 'zencart' => 'Zen Cart', 'innoshop' => 'InnoShop'],

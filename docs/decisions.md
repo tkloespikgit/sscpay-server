@@ -760,7 +760,7 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 
 **筛选与范围：** 超级管理员可选择统计周期、代理、商户、应用和支付方式。代理按商户当前 `owner_id` 匹配商户级管理员。商户级管理员从名下商户筛选，普通商户从本商户的应用筛选。选项逐级收窄，提交值按当前登录账号及上级选择重新校验。支付方式选项来自可见订单日汇总，包含有历史交易的共享及软删除渠道。
 
-**影响：** 首页交易指标和明细共用已确认的筛选条件及原日汇总口径。明细沿用 `orders.view`，商户分组限平台人员，代理分组仅超级管理员可查。代理统计按商户当前归属汇总，没有商户级管理员归属的交易归入“平台直管”。余额卡继续读取实时余额。首页读取预先聚合的数据，聚合与手动刷新仍走既有入口。
+**影响：** 首页交易指标和明细共用已确认的筛选条件及原日汇总口径。明细沿用 `orders.view`，商户分组限平台人员，代理分组仅超级管理员可查。代理统计按商户当前归属汇总，没有商户级管理员归属的交易归入“平台直管”。余额卡继续读取实时余额。首页读取预先聚合的数据；仅查看今天且有 `orders.view` 时，可复用日聚合器刷新当天数据，读数的商户范围不变。
 
 **依据：** [仪表盘](../app/Filament/Pages/AdminDashboard.php)、[筛选与查询](../app/Services/DashboardService.php)、[明细表](../app/Filament/Widgets/OrderStatsBreakdownTable.php)、[页面测试](../tests/Feature/AdminDashboardTest.php)、[统计范围测试](../tests/Feature/DashboardOrderStatsAlignmentTest.php)。
 

@@ -7,6 +7,12 @@
         {{ $this->getDateRangeLabel() }}
     </x-slot>
 
+    @if ($this->refreshTodayStatsAction->isVisible())
+        <x-slot name="afterHeader">
+            {{ $this->refreshTodayStatsAction }}
+        </x-slot>
+    @endif
+
     <x-filament::tabs :label="__('admin.dashboard.filters.period')">
         @foreach ($this->getPeriodOptions() as $period => $label)
             <x-filament::tabs.item

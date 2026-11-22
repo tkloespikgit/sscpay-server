@@ -1725,7 +1725,9 @@ return [
             'total_merchants' => 'Transacting Merchants',
             'today_new_orders' => 'New Orders Today',
             'incomplete' => 'Some statistics in this range are not up to date; totals may be incomplete.',
-            'data_note' => 'Order statistics update periodically and may be delayed.',
+            'data_note' => 'Order statistics update automatically every 3 hours and may be delayed.',
+            'refresh_today' => 'Refresh live data',
+            'refresh_today_success' => 'Today’s statistics are up to date.',
         ],
         'balance' => [
             'heading' => 'Account balances',
