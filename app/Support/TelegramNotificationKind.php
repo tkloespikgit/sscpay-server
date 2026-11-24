@@ -18,6 +18,8 @@ enum TelegramNotificationKind: string
     case DisputeReviewGatewayStatusIgnored = 'dispute_review_gateway_status_ignored';
     case OrderDisputeOpened = 'order_dispute_opened';
     case OrderDisputeDueSoon = 'order_dispute_due_soon';
+    case ChargebackAlertReceived = 'chargeback_alert_received';
+    case ChargebackAlertDueSoon = 'chargeback_alert_due_soon';
     case LogisticsImportCompleted = 'logistics_import_completed';
     case LogisticsAnomaly = 'logistics_anomaly';
     case UnshippedOverdue = 'unshipped_overdue';
@@ -46,7 +48,8 @@ enum TelegramNotificationKind: string
 
     public function hasOrderSummary(): bool
     {
-        return ! in_array($this, [self::LogisticsImportCompleted, self::SiteProductsSyncCompleted, self::SiteProductsSyncFailed], true);
+        return ! in_array($this, [self::LogisticsImportCompleted, self::SiteProductsSyncCompleted, self::SiteProductsSyncFailed,
+            self::ChargebackAlertReceived, self::ChargebackAlertDueSoon], true);
     }
 
     public function isOrderBatch(): bool
@@ -88,6 +91,7 @@ enum TelegramNotificationKind: string
             self::DisputeReviewGatewayStatusIgnored => ['order_no', 'status'],
             self::OrderDisputeOpened => ['event_no', 'due_at'],
             self::OrderDisputeDueSoon => ['order_no', 'event_no', 'due_at'],
+            self::ChargebackAlertReceived, self::ChargebackAlertDueSoon => ['alert_id', 'service', 'order_no', 'due_at'],
             self::LogisticsImportCompleted => ['file_name', 'total', 'success', 'failed'],
             self::LogisticsAnomaly => ['order_no', 'merchant_order_no', 'tracking_number', 'status', 'reason'],
             self::UnshippedOverdue => ['count', 'hours'],

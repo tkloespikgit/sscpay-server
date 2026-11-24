@@ -31,6 +31,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // 与 CSRF 保护（表单提交要带 @csrf）。
         then: function () {
             Route::middleware('web')->group(base_path('routes/checkout.php'));
+            Route::middleware('api')->prefix('api')->group(base_path('routes/chargeback-webhooks.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware) {

@@ -30,6 +30,12 @@ Schedule::command('order-disputes:close-due')->everyFiveMinutes()->withoutOverla
 
 Schedule::command('order-disputes:send-reminders')->everyFiveMinutes()->withoutOverlapping();
 
+Schedule::command('chargeback-alerts:process')->everyMinute()->runInBackground()->withoutOverlapping(10)->onOneServer()
+    ->onFailure(fn () => Log::error('Chargeback alert workflow needs attention.'));
+
+Schedule::command('chargeback-alerts:sync')->everyMinute()->runInBackground()->withoutOverlapping(10)->onOneServer()
+    ->onFailure(fn () => Log::error('Chargeback provider reconciliation did not finish.'));
+
 Schedule::command('ad-conversions:process-due')->everyMinute()->withoutOverlapping();
 
 Schedule::command('fund-freezes:release-due')->everyTenSeconds()->runInBackground()->withoutOverlapping(5)

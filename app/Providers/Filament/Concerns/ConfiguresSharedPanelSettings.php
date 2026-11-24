@@ -167,6 +167,21 @@ body, .fi-main, .fi-layout {
 .dark .order-fulfillment-link {
     color: #93c5fd;
 }
+.fi-input-wrp.payment-method-domain-binding .fi-input-wrp-suffix {
+    align-items: stretch;
+    padding-inline: 0;
+    border-inline-start: 0;
+}
+.payment-method-domain-binding .fi-input-wrp-actions {
+    display: grid;
+    align-items: stretch;
+    flex: 1;
+}
+.payment-method-domain-binding .fi-btn {
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+    white-space: nowrap;
+}
                 </style>
                 '
             )

@@ -12,6 +12,7 @@ use App\Services\WooCommerceAuthorizationService;
 use App\Support\Permissions;
 use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
+use Filament\Forms\Components\TextInput;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
@@ -93,6 +94,8 @@ class WooCommerceAuthorizationTest extends TestCase
         $admin = $this->administrator();
         $method = $this->makePaymentMethod('existing-channel');
         $page = Livewire::actingAs($admin)->test(EditPaymentMethod::class, ['record' => $method->id])
+            ->assertSeeText(__('admin.payment_method.fields.domain_client_id'))
+            ->assertSeeText(__('admin.payment_method.fields.domain_client_sk'))
             ->fillForm(['method_name' => 'Unsaved name'])
             ->mountAction(TestAction::make('authorizeWooCommerce')->schemaComponent('domain'));
         $parameters = $this->parameters($page->get('wooCommerceAuthorizationUrl'));
@@ -103,6 +106,39 @@ class WooCommerceAuthorizationTest extends TestCase
 
         $this->assertSame('cs_test', $method->fresh()->domain_client_sk);
         $this->assertSame('EXISTING-CHANNEL', $method->fresh()->method_name);
+    }
+
+    public function test_create_form_offers_binding_beside_the_domain_and_requests_it_when_missing(): void
+    {
+        $admin = $this->administrator();
+        Http::preventStrayRequests();
+
+        Livewire::actingAs($admin)->test(CreatePaymentMethod::class)
+            ->assertFormFieldExists('domain', fn (TextInput $field): bool => isset($field->getSuffixActions()['authorizeWooCommerce']))
+            ->assertSeeText(__('admin.payment_method.woocommerce.bind_website'))
+            ->assertDontSeeText(__('admin.payment_method.fields.domain_client_id'))
+            ->assertDontSeeText(__('admin.payment_method.fields.domain_client_sk'))
+            ->fillForm(['method_name' => 'Unbound website', 'method_code' => 'unbound_website', 'domain' => self::DOMAIN])
+            ->call('create')
+            ->assertHasFormErrors(['domain'])
+            ->assertSeeText(__('admin.payment_method.woocommerce.binding_required'));
+
+        $this->assertDatabaseCount('payment_methods', 0);
+        Http::assertNothingSent();
+    }
+
+    public function test_changing_a_bound_domain_on_creation_clears_its_keys(): void
+    {
+        $admin = $this->administrator();
+        $page = Livewire::actingAs($admin)->test(CreatePaymentMethod::class)->fillForm(['domain' => self::DOMAIN])
+            ->mountAction(TestAction::make('authorizeWooCommerce')->schemaComponent('domain'));
+        $parameters = $this->parameters($page->get('wooCommerceAuthorizationUrl'));
+        $this->postJson($parameters['callback_url'], $this->payload($parameters))->assertOk();
+        $page->call('refreshWooCommerceAuthorization')
+            ->assertSet('data.domain_client_id', self::KEY)->assertSet('data.domain_client_sk', self::SECRET);
+
+        $page->set('data.domain', 'https://replacement.example.com')
+            ->assertSet('data.domain_client_id', null)->assertSet('data.domain_client_sk', null);
     }
 
     public function test_wordpress_subdirectory_is_preserved_in_the_normalized_authorization_url(): void

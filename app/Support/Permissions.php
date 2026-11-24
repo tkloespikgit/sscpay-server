@@ -94,6 +94,10 @@ final class Permissions
 
     public const ORDER_DISPUTES_CLOSE = 'order_disputes.close';   // 手动结束争议审核事件（释放资金）
 
+    public const CHARGEBACK_ALERTS_VIEW = 'chargeback_alerts.view';
+
+    public const CHARGEBACK_ALERTS_PROCESS = 'chargeback_alerts.process';
+
     /**
      * 客服订单查询模块的访问权限。
      *
@@ -152,6 +156,8 @@ final class Permissions
             self::ORDER_DISPUTES_OPEN,
             self::ORDER_DISPUTES_REPLY,
             self::ORDER_DISPUTES_CLOSE,
+            self::CHARGEBACK_ALERTS_VIEW,
+            self::CHARGEBACK_ALERTS_PROCESS,
             self::CUSTOMER_SERVICE_ORDERS_VIEW,
         ];
     }

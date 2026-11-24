@@ -811,3 +811,15 @@ ETH 通过 Geth callTracer 补齐内部价值转移；整块 trace 必须完整�
 **密钥与日志：** 付款回调使用共享密钥验签，不能与可匿名下载的程序一起分发。受信任站点用私有初始化包写入默认值；后台只可替换，不回显，自定义值优先。旧收款站须在升级前用该初始化包封存旧版网关凭证解密密钥；公开包不含该密钥。日志清空须后台权限、nonce 和确认，只删除本站支付日志且不重置 ID；未同步日志会永久丢失。
 
 **依据：** [更新客户端](../plugins/merchant/sscpay-gateway-aggregator/src/Core/UpdateChecker.php)、[发布接口](../app/Http/Controllers/PluginDownloadController.php)、[部署说明](../doc/deployment.md#网关插件的后台下载)。
+
+## D-76 拒付预警按服务商驱动接入
+
+**状态：已实现 WeTech 首期，待真实接口联调。**
+
+WeTech 是预警服务商，Ethoca 和 RDR 是服务类型。统一的公网入口通过驱动读取待验签账号标识，驱动负责验签和回执。不同驱动可以从请求头或原始报文读取凭证，并分别实现补查或反馈能力。匹配、历史绑定、租户权限、后台和审计由公共模块处理。
+
+同一个收单账号可关联多个本地支付方式。支付方式复制只复制本地渠道，服务商绑定由有权管理员显式选择。验签账户确定允许匹配的交易范围，订单实际商户确定预警查看和处理权限。相同商户单号、相同金额或相同 MID 都不足以自动确定订单。
+
+WeTech 预警和 Ethoca 处理反馈独立保存。已退款反馈需要支付机构的退款凭证号并由后台显式提交，反馈成功不代表本站已记账。RDR 收费级别变更只维护外部案件资料。自动退款、预警费入账和 RDR 自主决策需要独立的资金执行和验证方案。
+
+代码依据：[驱动接口](../app/Services/ChargebackAlerts/ChargebackAlertDriver.php)、[Webhook 收件](../app/Services/ChargebackAlerts/ChargebackAlertInbox.php)、[订单匹配](../app/Services/ChargebackAlerts/ChargebackAlertMatcher.php)、[后台绑定](../app/Filament/Resources/ChargebackProviderAccounts/Pages/EditChargebackProviderAccount.php)。

@@ -7,6 +7,8 @@ use App\Models\OrderShipping;
 use App\Models\User;
 use App\Observers\MerchantObserver;
 use App\Observers\OrderShippingObserver;
+use App\Services\ChargebackAlerts\ChargebackAlertDrivers;
+use App\Services\ChargebackAlerts\Drivers\WeTech\WeTechDriver;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -17,7 +19,7 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        $this->app->tag([WeTechDriver::class], ChargebackAlertDrivers::TAG);
     }
 
     public function boot(): void

@@ -97,7 +97,7 @@ Telegram 支持平台机器人快速绑定与原有自建机器人两种模式�
 
 每商户和每名管理员仍只有一个接收目标，个人与群聊二选一；新绑定完成才替换旧配置并启用通知。页面等待期间每 3 秒查询绑定状态，完成后只重载 Telegram 区块；解除绑定软删除配置并撤销未完成链接。`TelegramNotificationService` 根据 `uses_platform_bot` 显式选用平台或商户 Token，未绑定或已关闭通知时继续跳过，自建机器人缺少 Token 不回退平台。部署步骤见 [Telegram 快速绑定](../doc/deployment.md#31-telegram-快速绑定)，边界见 [D-43](decisions.md#d-43-telegram-平台机器人快速绑定)。
 
-Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商户通知 13 项和支付通道通知 7 项。订单、资金、物流及支付组无可用通道的通知只发给事件所属商户；通道禁用、支付链接创建失败、源网站建单/付款成功、商品同步完成/失败按当前通道归属发送：商户专属通道发给该商户，系统级通道发给 `owner_id` 对应管理员。缺少归属管理员时跳过并提示配置异常，不广播给其他管理员或已分配商户。超级管理员在平台管理的「Telegram 通知管理」维护各项开关、正文和适用发送参数，也可只读预览实际接收人。`TelegramNotificationSettings` 保存配置；`TelegramMessageTemplate` 仅替换白名单变量并转义 HTML，不执行模板代码。不新增发送记录表或页面，见 [D-58](decisions.md#d-58-telegram-按业务归属统一管理)。
+Telegram 业务通知统一由 `TelegramNotificationRouter` 发送，分为商户通知 15 项和支付通道通知 7 项。订单、资金、物流及支付组无可用通道的通知只发给事件所属商户；通道禁用、支付链接创建失败、源网站建单/付款成功、商品同步完成/失败按当前通道归属发送：商户专属通道发给该商户，系统级通道发给 `owner_id` 对应管理员。缺少归属管理员时跳过并提示配置异常，不广播给其他管理员或已分配商户。超级管理员在平台管理的「Telegram 通知管理」维护各项开关、正文和适用发送参数，也可只读预览实际接收人。`TelegramNotificationSettings` 保存配置；`TelegramMessageTemplate` 仅替换白名单变量并转义 HTML，不执行模板代码。不新增发送记录表或页面，见 [D-58](decisions.md#d-58-telegram-按业务归属统一管理)。
 
 订单相关 Telegram 通知通过 `OrderTelegramSummary` 构造订单数据，默认包含系统订单号、商户订单号、三方交易号（`transaction_id`）、支付方式名称、系统时区付款时间和原币实际交易金额（`currency` + `amount`，不取折算 USD 或折扣前金额）。通知编辑页用一个「完整消息」编辑框展示正文及订单字段，可删除、重排或改写；发送时不再隐式追加订单信息。订单变量使用 `:order.*`，与通知事件的金额等变量区分。未发货和物流回传失败汇总使用 `[orders]…[/orders]` 重复订单内容，物流回传的应用、运单号、错误原因也在模板内。预览和发送共用 `TelegramMessageTemplate` 的变量替换、HTML 转义、限长与分条逻辑；物流回传每条最多 5 笔，提醒 ID 随对应消息保留。旧正文和订单模板读取时合成完整消息，下次保存采用新字段，见 [D-59](decisions.md#d-59-telegram-完整消息统一编辑)。空订单字段显示暂无，未付款显示未付款。创建支付链接失败和物流异常事件携带标量摘要快照。`OrderDisputeService::open()` 成功后在事务提交时派发 `OrderDisputeOpened`，事务回滚不发通知，派发异常不改变已成功的冻结结果。商户自有渠道自动禁用时，只有触发订单属于该商户才提供其订单数据。下单前无可用渠道时仅传入已知商户订单号和原币金额，其余字段保留空值，不为通知提前建单；文件导入、商品同步等批次通知不关联单笔订单，也不提供订单变量。
 
@@ -201,6 +201,17 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 ## 4. 支付状态与账务
 
+### 拒付预警
+
+平台统一接收服务商的预警，按驱动注册回调协议。WeTech 的 Ethoca 预警、反馈和注册状态，以及 RDR 普通预警和注册状态共用 POST 回调。路由见 [独立回调路由](../routes/chargeback-webhooks.php)，由 [ChargebackAlertDrivers](../app/Services/ChargebackAlerts/ChargebackAlertDrivers.php) 解析服务商，每个驱动单独识别账户、验签、解析并返回确认。扩展其他服务商时注册新驱动，主动补查和提交反馈为可选接口。
+
+[账户配置](../app/Filament/Resources/ChargebackProviderAccounts/ChargebackProviderAccountResource.php) 在平台后台选择驱动、服务、环境、数据时区并填写加密验签配置。超管可为平台账户绑定不同管理员名下的法币渠道；商户级管理员可配置自己名下的账户及有权维护的渠道。支付方式通过与商户渠道授权共用的双栏列表即时绑定。一个实际收单账号可覆盖原渠道和多个合法副本，按付款时间匹配有效的绑定记录。
+
+[ChargebackAlertMatcher](../app/Services/ChargebackAlerts/ChargebackAlertMatcher.php) 先限于已验签账号、服务类型和收单标识，再核对已付法币订单的交易引用以及原交易金额、币种。组合付款直接按实际支付子单匹配。匹配成功由订单决定商户归属；金额时间近似只列入候选。待匹配、冲突及候选待办由超管核对，已关联记录按商户隔离。后台通过 [预警列表](../app/Filament/Resources/ChargebackAlerts/ChargebackAlertResource.php) 查看详情、关联订单、记录核对和提交 Ethoca 反馈。首次匹配及反馈到期提醒按实际订单商户发送。
+
+预警、处理反馈与订单资金事实分别保存。此批次接收 RDR 普通预警及收费级别更新，Ethoca 反馈仅报告已有处理结果。真实退款执行及 RDR 实时自主决策分别安排后续接入。协议边界和上线步骤见 [D-76](decisions.md#d-76-拒付预警按服务商驱动接入) 与 [WeTech 拒付预警配置](../doc/deployment.md#34-wetech-拒付预警配置)。
+
+
 [OrderPaymentStatusService](../app/Services/OrderPaymentStatusService.php) 共用 webhook 的 `handle()` 与主动查询的 `queryAndApply()`，负责网关事实、接收审计、重复/乱序保护、首次 `paid_at`/`failed_at`、可靠记账及首次支付通知。[OrderLifecycleService](../app/Services/OrderLifecycleService.php) 根据网关、真实结算、有效物流、退款/拒付及活动审核事件推导本地主状态；后台入口不自行拼装状态机。
 
 当前网关尝试的 webhook 被状态机拦截（保护、冲突、过期等）时，在状态事务释放行锁后主动调用一次 `queryAndApply()`，按查询结果走相同的状态、账务与通知流程。查询结果仍保留时间、版本和网关尝试引用校验，不递归补查；旧尝试回调和正常重复回调不触发补查。查询失败向上传播，webhook 返回失败以便插件重试。
@@ -279,6 +290,8 @@ API 创建、查询及上传物流统一保留兼容 `status`（待结算映射�
 | `merchant-shipments:process-due` | 每分钟，后台执行、防重叠；投递到期商户物流回传、回收两分钟处理超时任务、合并失败 Telegram 提醒 |
 | `ad-conversions:process-due` | 每分钟，防重叠 |
 | `order-disputes:close-due`、`order-disputes:send-reminders` | 各每 5 分钟，防重叠；提醒提前小时数和开关由 Telegram 通知配置读取（默认 24 小时） |
+| `chargeback-alerts:process` | 每分钟，后台及单节点，处理到期匹配、Ethoca 反馈与商户提醒 |
+| `chargeback-alerts:sync` | 每分钟检查到期账户，后台及单节点，按持久分页进度补查预警及注册状态 |
 | `fund-freezes:release-due` | 每 10 秒，后台执行、防重叠；默认每次最多 500 条 |
 | `orders:settle-due` | 每 10 秒，后台执行、防重叠；补偿记账、启动发货周期、到期结算，每类默认最多 500 条 |
 | `order-stats:aggregate --days=8` | 每天 02:00，防重叠 |

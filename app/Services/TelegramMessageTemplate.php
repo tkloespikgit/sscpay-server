@@ -248,7 +248,8 @@ final readonly class TelegramMessageTemplate
     {
         $samples = [
             'order_no' => 'SYS-DEMO-001', 'merchant_order_no' => 'SHOP-DEMO-001',
-            'event_no' => 'DISPUTE-DEMO-001', 'currency' => 'USD', 'amount' => '100.00',
+            'event_no' => 'DISPUTE-DEMO-001', 'alert_id' => 'ALERT-DEMO-001', 'service' => 'Ethoca',
+            'currency' => 'USD', 'amount' => '100.00',
             'converted_amount' => '100.00', 'gateway_amount' => '95.00', 'order_amount' => '100.00',
             'customer_email' => 'customer@example.com', 'domain' => 'shop.example.com',
             'gateway_host' => 'shop.example.com', 'method_code' => 'demo_channel',

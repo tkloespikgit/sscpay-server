@@ -232,6 +232,21 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 部分退款经人工确认转拒付时，拒付本金取 `converted_amount - sum(order_refunds.amount_usd)`，先用 bcmath 核对退款单原币种合计与 `refunded_amount`、退款 USD 合计与 `type=refund` 台账实际扣减相符。不得按剩余原币金额重新换汇舍入，也不把原退款费从拒付费中抵扣。`refunded_amount` 保留原已退款金额，剩余本金进入独立 `chargeback` 台账；两类本金合计为订单折算本金。反向待办和资金释放查询需同时识别拒付凭证，不能仅因 `refunded_amount < amount` 重复收款或阻止出款。统计保留各自事件和实际本金。详见 [D-63](decisions.md#d-63-部分退款人工转拒付扣剩余本金及拒付费)。
 
+### 拒付预警
+
+迁移增加以下独立记录及两项可分配权限。原订单状态、结算和退款台账沿用现有表。
+
+| 表 | 关键语义 |
+|---|---|
+| `chargeback_provider_accounts` | 驱动加外部账户标识唯一。平台账户的 `owner_id` 为空，商户级管理员可拥有自己的配置。密钥以加密数组持久化，服务、时区和补查进度按账户保存。 |
+| `chargeback_channel_bindings` | 账号、服务、外部收单标识与本地支付方式的关联。标识按精确值摘要查找。用 `valid_from <= paid_at < valid_until` 区分历史区间，结束绑定保留原记录。 |
+| `chargeback_provider_settings` | 按账户、服务和远端设置编号保存观察到的注册状态。注册状态与本地支付方式绑定独立。 |
+| `chargeback_alerts`、`chargeback_alert_events` | 按账户、服务和外部预警编号幂等。记录原交易金额和币种、案件金额和币种、匹配、远端状态和反馈。事件只保存白名单字段，不保存原始报文、签名或完整卡号。 |
+| `order_chargeback_references` | 保存人工从收单记录核实的 ARN，绑定订单、真实商户和当前网关尝试引用。相同 ARN 多候选转人工。 |
+| `chargeback_alert_feedback` | 保存人工提交、结果和重试时间。结果未知时等待远端反馈或补查核对，保留本地审计。 |
+
+新迁移不生成历史订单或资金记录。配置和审计产生后拒绝回滚删除。
+
 ## 5. 收款链接与域名
 
 | 表 | 语义 |

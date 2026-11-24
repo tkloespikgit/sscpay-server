@@ -18,6 +18,7 @@ use App\Services\PaymentGateway\PaymentGatewayService;
 use App\Services\PaymentMethodMerchantAssignmentService;
 use App\Services\WooCommerceAuthorizationService;
 use App\Support\Permissions;
+use Closure;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -33,6 +34,7 @@ use Filament\Forms\Components\ViewField;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\FusedGroup;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
@@ -93,6 +95,7 @@ class PaymentMethodResource extends Resource
         $isViewerSuperAdmin = (bool) $viewer?->is_super_admin;
         $isViewerMerchantManager = (bool) $viewer?->isMerchantManager();
         $canPickMerchant = $isViewerSuperAdmin || $isViewerMerchantManager;
+        $isCreating = $schema->getOperation() === 'create';
 
         return $schema->components([
             // 两栏布局：基本信息占左侧 2/3，网关配置 / 风控阈值 / 手续费堆叠在右侧 1/3。
@@ -232,42 +235,22 @@ class PaymentMethodResource extends Resource
                         ->state(new HtmlString('<h3 class="fi-section-header-heading">电商网站配置</h3>'))
                         ->columnSpanFull(),
 
-                    TextInput::make('domain')
-                        ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
-                        ->label(__('admin.payment_method.fields.domain'))
-                        ->placeholder('https://example.com')
-                        ->required()
-                        ->url()
-                        // 失焦同步状态，让右侧网关配置里的 webhook 地址能跟随域名实时更新。
-                        ->live(onBlur: true)
-                        // 强制 https://example.com 格式：https 协议开头 + 合法 URL。
-                        ->regex('#^https://#i')
-                        ->validationMessages([
-                            'regex' => __('admin.payment_method.validation.domain_format'),
-                            'url' => __('admin.payment_method.validation.domain_format'),
-                        ])
-                        ->belowContent(Action::make('authorizeWooCommerce')
-                            ->label(__('admin.payment_method.woocommerce.action'))
-                            ->icon(Heroicon::Key)
-                            ->modalHeading(__('admin.payment_method.woocommerce.heading'))
-                            ->modalDescription(__('admin.payment_method.woocommerce.description'))
-                            ->mountUsing(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire, WooCommerceAuthorizationService $service) => $livewire->startWooCommerceAuthorization($service))
-                            ->modalContent(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire): View => view('filament.woocommerce-authorization', ['authorizationUrl' => $livewire->wooCommerceAuthorizationUrl]))
-                            ->modalSubmitAction(false)
-                            ->modalCancelActionLabel(__('admin.payment_method.modals.close')))
-                        ->columnSpanFull(),
-
+                    static::websiteDomainInput($isCreating),
                     TextInput::make('domain_client_id')
+                        ->hidden($isCreating)
                         ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
+                        ->dehydratedWhenHidden(fn (Get $get): bool => $isCreating && $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.domain_client_id'))
                         ->placeholder('ck_xxxxxxxx')
-                        ->required()
+                        ->required(! $isCreating)
                         ->maxLength(255),
                     TextInput::make('domain_client_sk')
+                        ->hidden($isCreating)
                         ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
+                        ->dehydratedWhenHidden(fn (Get $get): bool => $isCreating && $get('payment_type') !== 'crypto')
                         ->label(__('admin.payment_method.fields.domain_client_sk'))
                         ->placeholder('cs_xxxxxxxx')
-                        ->required()
+                        ->required(! $isCreating)
                         ->maxLength(255),
                     // 支付插件的所有接口（/pay /sync-tracking /gateway-config /order-logs 等）
                     // 统一用上面这对 WooCommerce REST API 密钥做 Basic Auth；
@@ -281,7 +264,7 @@ class PaymentMethodResource extends Resource
                         // 选项来自系统配置 payment.product_match_modes（见 PaymentMethod::supportedProductMatchModes()）
                         ->options(fn () => static::matchModeOptions())
                         ->default('MATCH')
-                        ->columnSpanFull()
+                        ->columnSpan(['default' => $isCreating ? 1 : 'full'])
                         ->required(),
                     TextInput::make('invoice_prefix')
                         ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
@@ -295,23 +278,29 @@ class PaymentMethodResource extends Resource
                         ->label(__('admin.payment_method.fields.order_no_prefix'))
                         ->maxLength(10)
                         ->placeholder('PAY'),
-                    Select::make('order_no_format')
-                        ->label(__('admin.payment_method.fields.order_no_format'))
-                        ->options([
-                            'numeric' => __('admin.payment_method.order_no_formats.numeric'),
-                            'alnum' => __('admin.payment_method.order_no_formats.alnum'),
-                        ])
-                        ->native(false)
-                        ->live()
-                        ->helperText(__('admin.payment_method.help.order_no_format')),
-                    TextInput::make('order_no_length')
-                        ->label(__('admin.payment_method.fields.order_no_length'))
-                        ->numeric()
-                        ->minValue(15)
-                        ->maxValue(30)
-                        ->default(20)
-                        ->required(fn (Get $get) => filled($get('order_no_format')))
-                        ->helperText(__('admin.payment_method.help.order_no_length')),
+                    FusedGroup::make([
+                        Select::make('order_no_format')
+                            ->label(__('admin.payment_method.fields.order_no_format'))
+                            ->placeholder(__('admin.payment_method.order_no_formats.default'))
+                            ->options([
+                                'numeric' => __('admin.payment_method.order_no_formats.numeric'),
+                                'alnum' => __('admin.payment_method.order_no_formats.alnum'),
+                            ])
+                            ->native(false)
+                            ->live()
+                            ->columnSpan(['default' => 2]),
+                        TextInput::make('order_no_length')
+                            ->label(__('admin.payment_method.fields.order_no_length'))
+                            ->numeric()
+                            ->minValue(15)
+                            ->maxValue(30)
+                            ->default(20)
+                            ->required(fn (Get $get): bool => filled($get('order_no_format'))),
+                    ])
+                        ->key('order_number_settings')
+                        ->label(__('admin.payment_method.fields.order_no_format_and_length'))
+                        ->helperText(__('admin.payment_method.help.order_no_format_and_length'))
+                        ->columns(['default' => 3]),
 
                 ])->columns(2)->columnSpan(2),
             ]),
@@ -663,6 +652,50 @@ class PaymentMethodResource extends Resource
         }
 
         return $override?->{$field} ?? $record->{$field};
+    }
+
+    protected static function websiteDomainInput(bool $isCreating): TextInput
+    {
+        $authorize = Action::make('authorizeWooCommerce')
+            ->label(__($isCreating ? 'admin.payment_method.woocommerce.bind_website' : 'admin.payment_method.woocommerce.action'))
+            ->icon(Heroicon::Key)
+            ->modalHeading(__('admin.payment_method.woocommerce.heading'))
+            ->modalDescription(__('admin.payment_method.woocommerce.description'))
+            ->mountUsing(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire, WooCommerceAuthorizationService $service) => $livewire->startWooCommerceAuthorization($service))
+            ->modalContent(fn (Pages\CreatePaymentMethod|Pages\EditPaymentMethod $livewire): View => view('filament.woocommerce-authorization', ['authorizationUrl' => $livewire->wooCommerceAuthorizationUrl]))
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel(__('admin.payment_method.modals.close'));
+
+        $domain = TextInput::make('domain')
+            ->visible(fn (Get $get): bool => $get('payment_type') !== 'crypto')
+            ->label(__('admin.payment_method.fields.domain'))
+            ->placeholder('https://example.com')
+            ->required()
+            ->url()
+            ->live(onBlur: true)
+            ->regex('#^https://#i')
+            ->validationMessages([
+                'regex' => __('admin.payment_method.validation.domain_format'),
+                'url' => __('admin.payment_method.validation.domain_format'),
+            ]);
+
+        if (! $isCreating) {
+            return $domain->belowContent($authorize)->columnSpanFull();
+        }
+
+        return $domain
+            ->extraAttributes(['class' => 'payment-method-domain-binding'])
+            ->suffixAction($authorize->button())
+            ->columnSpan(1)
+            ->afterStateUpdated(function (Set $set): void {
+                $set('domain_client_id', null);
+                $set('domain_client_sk', null);
+            })
+            ->rule(fn (Get $get): Closure => function (string $attribute, mixed $value, Closure $fail) use ($get): void {
+                if ($get->blank('domain_client_id') || $get->blank('domain_client_sk')) {
+                    $fail(__('admin.payment_method.woocommerce.binding_required'));
+                }
+            });
     }
 
     /**
