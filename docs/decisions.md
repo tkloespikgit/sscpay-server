@@ -823,3 +823,9 @@ WeTech 是预警服务商，Ethoca 和 RDR 是服务类型。统一的公网入�
 WeTech 预警和 Ethoca 处理反馈独立保存。已退款反馈需要支付机构的退款凭证号并由后台显式提交，反馈成功不代表本站已记账。RDR 收费级别变更只维护外部案件资料。自动退款、预警费入账和 RDR 自主决策需要独立的资金执行和验证方案。
 
 代码依据：[驱动接口](../app/Services/ChargebackAlerts/ChargebackAlertDriver.php)、[Webhook 收件](../app/Services/ChargebackAlerts/ChargebackAlertInbox.php)、[订单匹配](../app/Services/ChargebackAlerts/ChargebackAlertMatcher.php)、[后台绑定](../app/Filament/Resources/ChargebackProviderAccounts/Pages/EditChargebackProviderAccount.php)。
+
+## D-77 拒付预警按产品启停、按账号验签
+
+**状态：当前工作区，未部署。** 在 D-76 的驱动之上，管理员分别管理 WeTech · Ethoca 和 WeTech · RDR。服务开关和支付方式绑定可以不同；同一 Secret ID 的签名身份、密钥、环境和 webhook 只配置一次。服务停用不解除渠道绑定，不删除历史预警，也不代表向 WeTech 注销产品。继续使用现有账号和服务代码，无需重建账号或回填历史数据。
+
+代码依据：[账号配置服务](../app/Services/ChargebackAlerts/ChargebackAccountConfiguration.php)、[预警服务管理](../app/Filament/Resources/ChargebackProviderAccounts/Pages/EditChargebackProviderAccount.php)。

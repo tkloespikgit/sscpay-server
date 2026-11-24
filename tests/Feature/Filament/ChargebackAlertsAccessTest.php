@@ -49,16 +49,20 @@ class ChargebackAlertsAccessTest extends TestCase
             ->set('data.provider', 'wetech')
             ->fillForm([
                 'name' => 'WeTech Test', 'external_id' => 'config-ui', 'environment' => 'test',
-                'timezone' => 'Asia/Shanghai', 'services' => ['ethoca', 'rdr'],
+                'timezone' => 'Asia/Shanghai',
                 'signing_config' => ['secret_key' => $secret], 'enabled' => true,
             ])->call('create')->assertHasNoFormErrors();
         $account = ChargebackProviderAccount::query()->sole();
-        $this->assertNotSame($secret, DB::table('chargeback_provider_accounts')->value('signing_config'));
+        $encryptedCredentials = DB::table('chargeback_provider_accounts')->value('signing_config');
+        $this->assertNotSame($secret, $encryptedCredentials);
         $this->assertSame($secret, $account->signing_config['secret_key']);
+        $this->assertSame([], $account->services);
 
-        Livewire::test(EditChargebackProviderAccount::class, ['record' => $account->id])
+        $staleEditor = Livewire::test(EditChargebackProviderAccount::class, ['record' => $account->id]);
+        $page = Livewire::test(EditChargebackProviderAccount::class, ['record' => $account->id])
             ->assertDontSee($secret)
-            ->mountAction('bindPaymentMethods')->assertActionMounted('bindPaymentMethods')
+            ->call('setChargebackServiceEnabled', 'ethoca', true)
+            ->mountAction(TestAction::make('bindPaymentMethods')->arguments(['service' => 'ethoca']))
             ->set('mountedActions.0.data.scope_key', 'SHARED-DESCRIPTOR')
             ->assertMountedActionModalSeeHtml("setChargebackChannelBinding({$first->id}, true)")
             ->call('setChargebackChannelBinding', $first->id, true)
@@ -67,11 +71,27 @@ class ChargebackAlertsAccessTest extends TestCase
             ->assertMountedActionModalSeeHtml("setChargebackChannelBinding({$second->id}, false)")
             ->call('setChargebackChannelBinding', $first->id, false)
             ->assertMountedActionModalSeeHtml("setChargebackChannelBinding({$first->id}, true)")
-            ->assertHasNoErrors();
+            ->assertHasNoErrors()->unmountAction();
 
         $this->assertDatabaseCount('chargeback_channel_bindings', 2);
         $this->assertNotNull(ChargebackChannelBinding::query()->where('payment_method_id', $first->id)->sole()->valid_until);
         $this->assertNull(ChargebackChannelBinding::query()->where('payment_method_id', $second->id)->sole()->valid_until);
+        $page->call('setChargebackServiceEnabled', 'rdr', true)
+            ->mountAction(TestAction::make('bindPaymentMethods')->arguments(['service' => 'rdr']))
+            ->set('mountedActions.0.data.scope_key', 'SHARED-DESCRIPTOR')
+            ->assertMountedActionModalSeeHtml("setChargebackChannelBinding({$second->id}, true)")
+            ->call('setChargebackChannelBinding', $first->id, true)
+            ->call('setChargebackChannelBinding', $second->id, true)
+            ->assertHasNoErrors()->unmountAction()
+            ->call('setChargebackServiceEnabled', 'ethoca', false);
+
+        $staleEditor->fillForm(['name' => 'Renamed connection'])->call('save')->assertHasNoFormErrors();
+        $this->assertSame(['rdr'], $account->fresh()->services);
+        $this->assertSame($encryptedCredentials, DB::table('chargeback_provider_accounts')->sole()->signing_config);
+        $this->assertDatabaseHas('chargeback_channel_bindings', ['service' => 'ethoca', 'payment_method_id' => $second->id, 'valid_until' => null]);
+        foreach ([$first, $second] as $method) {
+            $this->assertDatabaseHas('chargeback_channel_bindings', ['service' => 'rdr', 'payment_method_id' => $method->id, 'valid_until' => null]);
+        }
         $this->assertDatabaseCount('merchant_payment_methods', 0);
     }
 
@@ -84,12 +104,25 @@ class ChargebackAlertsAccessTest extends TestCase
         $this->actingAs($manager);
 
         Livewire::test(EditChargebackProviderAccount::class, ['record' => $account->id])
-            ->mountAction('bindPaymentMethods')
+            ->mountAction(TestAction::make('bindPaymentMethods')->arguments(['service' => 'ethoca']))
             ->set('mountedActions.0.data.scope_key', 'SHARED-DESCRIPTOR')
             ->assertMountedActionModalDontSee('PRIVATE-FOREIGN-METHOD')
             ->call('setChargebackChannelBinding', $foreign->id, true)
             ->assertForbidden();
         $this->assertDatabaseCount('chargeback_channel_bindings', 0);
+    }
+
+    public function test_a_manager_with_an_open_service_panel_cannot_pause_a_transferred_connection(): void
+    {
+        $manager = User::factory()->create(['status' => true, 'merchant_id' => null]);
+        $manager->givePermissionTo(Permissions::PAYMENT_METHODS_MANAGE);
+        $account = ChargebackProviderAccount::factory()->create(['owner_id' => $manager->id]);
+        $this->actingAs($manager);
+        $page = Livewire::test(EditChargebackProviderAccount::class, ['record' => $account->id]);
+        $account->update(['owner_id' => null]);
+
+        $page->call('setChargebackServiceEnabled', 'ethoca', false)->assertForbidden();
+        $this->assertSame(['ethoca', 'rdr'], $account->fresh()->services);
     }
 
     public function test_every_alert_opens_a_detail_and_candidate_orders_are_scoped_to_the_provider_binding(): void
@@ -108,7 +141,15 @@ class ChargebackAlertsAccessTest extends TestCase
             'scope_key' => 'SHOP', 'trade_at' => now(), 'trade_amount' => '100.00', 'trade_currency' => 'USD',
         ]);
         $this->actingAs($operator);
+        $rdrAlert = ChargebackAlert::query()->create([
+            'chargeback_provider_account_id' => $account->id, 'service' => 'rdr', 'external_id' => 'rdr-ref',
+        ]);
         Livewire::test(ManageChargebackAlerts::class)
+            ->assertCanSeeTableRecords([$alert, $rdrAlert])
+            ->assertSee('WeTech · Ethoca')
+            ->filterTable('service', 'ethoca')
+            ->assertCanSeeTableRecords([$alert])
+            ->assertCanNotSeeTableRecords([$rdrAlert])
             ->mountAction(TestAction::make('view')->table($alert))
             ->assertMountedActionModalSee(__('chargeback_alerts.candidate_orders'))
             ->assertMountedActionModalSee($order->order_no)

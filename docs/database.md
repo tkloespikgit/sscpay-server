@@ -238,7 +238,7 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 | 表 | 关键语义 |
 |---|---|
-| `chargeback_provider_accounts` | 驱动加外部账户标识唯一。平台账户的 `owner_id` 为空，商户级管理员可拥有自己的配置。密钥以加密数组持久化，服务、时区和补查进度按账户保存。 |
+| `chargeback_provider_accounts` | 驱动加外部账户标识唯一。平台账户的 `owner_id` 为空，商户级管理员可拥有自己的配置。账号共用一份加密凭证与时区，`enabled` 是账号总开关，`services` 保存独立开启的服务代码；空数组表示全部服务停用。关闭服务不删除绑定或预警。 |
 | `chargeback_channel_bindings` | 账号、服务、外部收单标识与本地支付方式的关联。标识按精确值摘要查找。用 `valid_from <= paid_at < valid_until` 区分历史区间，结束绑定保留原记录。 |
 | `chargeback_provider_settings` | 按账户、服务和远端设置编号保存观察到的注册状态。注册状态与本地支付方式绑定独立。 |
 | `chargeback_alerts`、`chargeback_alert_events` | 按账户、服务和外部预警编号幂等。记录原交易金额和币种、案件金额和币种、匹配、远端状态和反馈。事件只保存白名单字段，不保存原始报文、签名或完整卡号。 |

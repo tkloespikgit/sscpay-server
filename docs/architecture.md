@@ -205,7 +205,7 @@ API 文档页覆盖创建订单、查询订单、上传物流、商户网站物�
 
 平台统一接收服务商的预警，按驱动注册回调协议。WeTech 的 Ethoca 预警、反馈和注册状态，以及 RDR 普通预警和注册状态共用 POST 回调。路由见 [独立回调路由](../routes/chargeback-webhooks.php)，由 [ChargebackAlertDrivers](../app/Services/ChargebackAlerts/ChargebackAlertDrivers.php) 解析服务商，每个驱动单独识别账户、验签、解析并返回确认。扩展其他服务商时注册新驱动，主动补查和提交反馈为可选接口。
 
-[账户配置](../app/Filament/Resources/ChargebackProviderAccounts/ChargebackProviderAccountResource.php) 在平台后台选择驱动、服务、环境、数据时区并填写加密验签配置。超管可为平台账户绑定不同管理员名下的法币渠道；商户级管理员可配置自己名下的账户及有权维护的渠道。支付方式通过与商户渠道授权共用的双栏列表即时绑定。一个实际收单账号可覆盖原渠道和多个合法副本，按付款时间匹配有效的绑定记录。
+[账户配置](../app/Filament/Resources/ChargebackProviderAccounts/ChargebackProviderAccountResource.php) 保存共享的驱动、环境、数据时区和加密验签凭证。WeTech · Ethoca 与 WeTech · RDR 分别启停，账户总开关控制两者是否实际运行。每项服务都有自己的支付方式绑定面板：Ethoca 按 Descriptor、RDR 按 MID 绑定，点击双栏列表即可选择多个渠道。超管可为平台账户绑定不同管理员名下的法币渠道；商户级管理员限于自己的账户和有权维护的渠道。一个实际收单账号可覆盖原渠道和多个合法副本，按付款时间匹配有效的绑定记录。
 
 [ChargebackAlertMatcher](../app/Services/ChargebackAlerts/ChargebackAlertMatcher.php) 先限于已验签账号、服务类型和收单标识，再核对已付法币订单的交易引用以及原交易金额、币种。组合付款直接按实际支付子单匹配。匹配成功由订单决定商户归属；金额时间近似只列入候选。待匹配、冲突及候选待办由超管核对，已关联记录按商户隔离。后台通过 [预警列表](../app/Filament/Resources/ChargebackAlerts/ChargebackAlertResource.php) 查看详情、关联订单、记录核对和提交 Ethoca 反馈。首次匹配及反馈到期提醒按实际订单商户发送。
 

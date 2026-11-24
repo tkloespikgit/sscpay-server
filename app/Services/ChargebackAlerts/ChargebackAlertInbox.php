@@ -27,7 +27,7 @@ final class ChargebackAlertInbox
             }
 
             foreach ($driver->authenticate($webhook, $account) as $event) {
-                if (! in_array($event->service, $account->services, true)) {
+                if (! array_key_exists($event->service, $driver->services())) {
                     throw new WebhookRejected;
                 }
                 $this->record($account, $event, 'webhook');
@@ -38,6 +38,9 @@ final class ChargebackAlertInbox
     /** Caller holds the provider account lock and has authenticated the event or queried the provider. */
     public function record(ChargebackProviderAccount $account, ChargebackProviderEvent $event, string $source): void
     {
+        if (! $account->isServiceActive($event->service)) {
+            return;
+        }
         if ($event->kind === ChargebackProviderEvent::SETTING) {
             $this->storeSetting($account, $event);
 

@@ -18,6 +18,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
@@ -82,32 +83,29 @@ class ChargebackProviderAccountResource extends Resource
 
     public static function form(Schema $schema): Schema
     {
-        return $schema->components([
+        return $schema->components([Section::make(__('chargeback_alerts.connection_settings'))->columnSpanFull()->columns(2)->schema([
             TextInput::make('name')->label(__('chargeback_alerts.name'))->required()->maxLength(120),
             Select::make('provider')->label(__('chargeback_alerts.driver'))
                 ->options(fn (ChargebackAlertDrivers $drivers): array => $drivers->options())
-                ->required()->live()->disabledOn('edit')
-                ->afterStateUpdated(fn (Set $set) => $set('services', [])),
+                ->required()->live()->disabledOn('edit')->afterStateUpdated(fn (Set $set) => $set('signing_config', [])),
             TextInput::make('external_id')->label(fn (Get $get, ChargebackAlertDrivers $drivers): string => $drivers->find((string) $get('provider'))?->accountIdentifierLabel() ?? __('chargeback_alerts.external_id'))
                 ->required()->maxLength(120)->disabledOn('edit'),
             Select::make('environment')->label(__('chargeback_alerts.environment'))->options([
                 'test' => __('chargeback_alerts.test'), 'production' => __('chargeback_alerts.production'),
             ])->default('test')->required()->disabledOn('edit'),
             TextInput::make('timezone')->label(__('chargeback_alerts.provider_timezone'))->default('Asia/Shanghai')->required()->disabledOn('edit'),
-            Select::make('services')->label(__('chargeback_alerts.services'))->multiple()->required()
-                ->options(fn (Get $get, ChargebackAlertDrivers $drivers): array => $drivers->find((string) $get('provider'))?->services() ?? []),
             Grid::make(2)->columnSpanFull()->schema(fn (Get $get, ChargebackAlertDrivers $drivers): array => collect($drivers->find((string) $get('provider'))?->signingFields() ?? [])
                 ->map(fn (string $label, string $field) => TextInput::make('signing_config.'.$field)
                     ->label($label)->password()->required(fn (string $operation): bool => $operation === 'create')
                     ->helperText(fn (string $operation): ?string => $operation === 'edit' ? __('chargeback_alerts.keep_secret') : null)
                     ->maxLength(512))
                 ->values()->all()),
-            Toggle::make('enabled')->label(__('chargeback_alerts.enabled'))->default(false)
+            Toggle::make('enabled')->label(__('chargeback_alerts.connection_enabled'))->default(false)
                 ->helperText(__('chargeback_alerts.enabled_help')),
             TextInput::make('callback_path')->label(__('chargeback_alerts.webhook'))->readOnly()->dehydrated(false)
                 ->visible(fn (?ChargebackProviderAccount $record): bool => $record !== null)
                 ->formatStateUsing(fn (?ChargebackProviderAccount $record): ?string => $record ? route('webhooks.chargeback', ['provider' => $record->provider], absolute: false) : null),
-        ]);
+        ])]);
     }
 
     public static function table(Table $table): Table
@@ -117,10 +115,13 @@ class ChargebackProviderAccountResource extends Resource
             TextColumn::make('provider')->label(__('chargeback_alerts.driver'))->formatStateUsing(fn (string $state, ChargebackAlertDrivers $drivers): string => $drivers->find($state)?->label() ?? $state),
             TextColumn::make('environment')->label(__('chargeback_alerts.environment'))->formatStateUsing(fn (string $state): string => __('chargeback_alerts.'.$state)),
             TextColumn::make('bindings_count')->counts('bindings')->label(__('chargeback_alerts.bindings')),
-            IconColumn::make('enabled')->label(__('chargeback_alerts.enabled'))->boolean(),
+            TextColumn::make('services')->label(__('chargeback_alerts.services'))->badge()
+                ->formatStateUsing(fn (string $state, ChargebackProviderAccount $record, ChargebackAlertDrivers $drivers): string => $drivers->find($record->provider)?->services()[$state] ?? $state)
+                ->placeholder(__('chargeback_alerts.none_enabled')),
+            IconColumn::make('enabled')->label(__('chargeback_alerts.connection_enabled'))->boolean(),
             TextColumn::make('last_sync_at')->label(__('chargeback_alerts.last_sync'))->dateTime()->placeholder('—'),
             TextColumn::make('sync_error')->label(__('chargeback_alerts.sync_error'))->badge()->placeholder('—'),
-        ])->recordActions([EditAction::make()])->defaultSort('id', 'desc');
+        ])->recordActions([EditAction::make()->label(__('chargeback_alerts.manage_services'))])->defaultSort('id', 'desc');
     }
 
     public static function getRelations(): array

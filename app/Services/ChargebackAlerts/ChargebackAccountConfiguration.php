@@ -45,10 +45,12 @@ final readonly class ChargebackAccountConfiguration
             $rules = [
                 'name' => ['required', 'string', 'max:120'],
                 'enabled' => ['required', 'boolean'],
-                'services' => ['required', 'array', 'min:1'],
-                'services.*' => ['required', 'string', 'distinct', Rule::in(array_keys($driver->services()))],
                 'signing_config' => ['sometimes', 'array:'.implode(',', $fields)],
             ];
+            if ($account === null) {
+                $rules['services'] = ['sometimes', 'array'];
+                $rules['services.*'] = ['required', 'string', 'distinct', Rule::in(array_keys($driver->services()))];
+            }
             foreach ($fields as $key) {
                 $rules['signing_config.'.$key] = [$account ? 'nullable' : 'required', 'string', 'max:512', 'not_regex:/[\x00-\x1f\x7f]/'];
             }
@@ -58,8 +60,11 @@ final readonly class ChargebackAccountConfiguration
                 array_filter($valid['signing_config'] ?? [], fn ($value): bool => $value !== null && $value !== ''),
             );
 
-            $record = $account ?? new ChargebackProviderAccount($identity + ['owner_id' => $actor->is_super_admin ? null : $actor->id]);
-            $record->fill(['name' => $valid['name'], 'enabled' => $valid['enabled'], 'services' => array_values($valid['services'])]);
+            $record = $account ?? new ChargebackProviderAccount($identity + [
+                'owner_id' => $actor->is_super_admin ? null : $actor->id,
+                'services' => array_values($valid['services'] ?? []),
+            ]);
+            $record->fill(['name' => $valid['name'], 'enabled' => $valid['enabled']]);
             if ($account === null || $credentials !== $account->signing_config) {
                 $record->signing_config = $credentials;
             }
@@ -69,6 +74,30 @@ final readonly class ChargebackAccountConfiguration
             $record->save();
 
             return $record;
+        }, 3);
+    }
+
+    public function setServiceEnabled(User $actor, ChargebackProviderAccount $account, string $service, bool $enabled): ChargebackProviderAccount
+    {
+        return DB::transaction(function () use ($actor, $account, $service, $enabled): ChargebackProviderAccount {
+            $actor = User::query()->findOrFail($actor->id);
+            $account = ChargebackProviderAccount::query()->lockForUpdate()->findOrFail($account->id);
+            abort_unless($this->policy->update($actor, $account), 403);
+            $driver = $this->drivers->find($account->provider);
+            abort_unless($driver && array_key_exists($service, $driver->services()), 422);
+            if (in_array($service, $account->services, true) === $enabled) {
+                return $account;
+            }
+
+            $services = $enabled ? [...$account->services, $service] : array_values(array_diff($account->services, [$service]));
+            $cursor = $account->sync_cursor ?? [];
+            if ($driver instanceof PullsChargebackRecords) {
+                $cursor = array_diff_key($cursor, array_filter($driver->syncStreams(), fn (string $product): bool => $product === $service));
+            }
+            $account->update(['services' => $services, 'sync_cursor' => $cursor, 'next_sync_at' => null,
+                'sync_error' => collect($cursor)->pluck('error')->filter()->first()]);
+
+            return $account;
         }, 3);
     }
 
@@ -99,7 +128,7 @@ final readonly class ChargebackAccountConfiguration
             abort_unless($driver, 422);
             $service = is_string($input['service'] ?? null) ? $input['service'] : '';
             $data = Validator::make($input, [
-                'service' => ['required', Rule::in($account->services)],
+                'service' => ['required', Rule::in(array_keys($driver->services()))],
                 'scope_key' => ['required', 'string', 'max:255', 'not_regex:/[\x00-\x1f\x7f]/'],
                 'reference_type' => [Rule::requiredIf($selected), Rule::in($driver->referenceTypes($service))],
                 'valid_from' => [Rule::requiredIf($selected), 'nullable', 'date_format:Y-m-d H:i:s', 'before_or_equal:now'],

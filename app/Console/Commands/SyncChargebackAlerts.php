@@ -21,7 +21,7 @@ class SyncChargebackAlerts extends Command
             return self::FAILURE;
         }
 
-        $ids = ChargebackProviderAccount::query()->where('enabled', true)
+        $ids = ChargebackProviderAccount::query()->where('enabled', true)->whereJsonLength('services', '>', 0)
             ->when($account === null, fn ($query) => $query->where(fn ($due) => $due->whereNull('next_sync_at')->orWhere('next_sync_at', '<=', now())),
                 fn ($query) => $query->whereKey($account))
             ->orderBy('next_sync_at')->orderBy('id')->limit(10)->pluck('id');

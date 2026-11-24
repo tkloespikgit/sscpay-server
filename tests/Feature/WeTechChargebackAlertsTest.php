@@ -214,6 +214,45 @@ class WeTechChargebackAlertsTest extends TestCase
         $this->assertSame('Shop', ChargebackProviderSetting::query()->where('service', 'ethoca')->sole()->scope_key);
     }
 
+    public function test_pausing_ethoca_holds_its_work_while_rdr_uses_the_same_signed_webhook_and_keeps_its_sync_page(): void
+    {
+        $admin = User::factory()->create(['is_super_admin' => true, 'status' => true]);
+        $config = app(ChargebackAccountConfiguration::class);
+        $this->push($this->ethoca())->assertOk();
+        $alert = ChargebackAlert::query()->sole();
+        $feedback = app(ChargebackFeedback::class)->request($admin, $alert->id, ['outcome' => 'notfound', 'refund_status' => 'not_refunded']);
+        $this->account->update(['sync_cursor' => ['rdr_alerts' => [
+            'start' => now()->subDay()->toDateTimeString(), 'end' => now()->toDateTimeString(), 'page' => 3,
+        ]]]);
+        $config->setServiceEnabled($admin, $this->account, 'ethoca', false);
+
+        $this->push($this->ethoca(['rw_id' => 'paused-case']))->assertOk();
+        $this->push(['data' => [['rw_id' => $alert->external_id, 'mid' => 'MID-1', 'receive_time' => now()->toDateTimeString()]]])->assertOk();
+        $this->assertDatabaseMissing('chargeback_alerts', ['external_id' => 'paused-case']);
+        $this->assertDatabaseHas('chargeback_alerts', ['service' => 'rdr', 'external_id' => $alert->external_id]);
+        $this->artisan('chargeback-alerts:process')->assertSuccessful();
+        $this->assertSame('pending', $feedback->fresh()->status);
+        $this->assertSame(0, $feedback->fresh()->attempts);
+        Http::assertNothingSent();
+
+        Http::fake([
+            'https://xp.test.wetech.vip/api/open/rw/rdr/*' => Http::response(['code' => 0, 'data' => ['records' => [], 'pages' => 3]]),
+            'https://xp.test.wetech.vip/api/open/rw/eth_oca/feedback' => Http::response(['code' => 0]),
+        ]);
+        $this->artisan('chargeback-alerts:sync')->assertSuccessful();
+        Http::assertSent(function (Request $request): bool {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY), $query);
+
+            return str_ends_with(parse_url($request->url(), PHP_URL_PATH), '/rdr/list') && (int) $query['page'] === 3;
+        });
+        Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), 'eth_oca'));
+
+        $config->setServiceEnabled($admin, $this->account, 'ethoca', true);
+        $this->artisan('chargeback-alerts:process')->assertSuccessful();
+        $this->assertSame('submitted', $feedback->fresh()->status);
+        $this->assertSame(1, $feedback->fresh()->attempts);
+    }
+
     public function test_operator_can_verify_arn_and_later_alerts_reuse_it_even_after_the_binding_ends(): void
     {
         $admin = User::factory()->create(['is_super_admin' => true, 'status' => true]);

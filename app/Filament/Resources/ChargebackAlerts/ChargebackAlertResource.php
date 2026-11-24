@@ -90,7 +90,7 @@ class ChargebackAlertResource extends Resource
     {
         return $table->columns([
             TextColumn::make('external_id')->label(__('chargeback_alerts.external_id'))->searchable(),
-            TextColumn::make('service')->label(__('chargeback_alerts.service'))->formatStateUsing(fn (string $state): string => strtoupper($state))->badge(),
+            TextColumn::make('service')->label(__('chargeback_alerts.service'))->formatStateUsing(self::serviceLabel(...))->badge(),
             TextColumn::make('order.order_no')->label(__('chargeback_alerts.order_no'))->searchable()->placeholder('—'),
             TextColumn::make('merchant.name')->label(__('chargeback_alerts.merchant'))->searchable()->placeholder('—'),
             TextColumn::make('case_amount')->label(__('chargeback_alerts.case_amount'))->formatStateUsing(fn ($state, ChargebackAlert $record): string => trim($state.' '.$record->case_currency))->placeholder('—'),
@@ -99,6 +99,7 @@ class ChargebackAlertResource extends Resource
             TextColumn::make('feedback_due_at')->label(__('chargeback_alerts.deadline'))->dateTime()->sortable()->placeholder('—'),
             TextColumn::make('occurred_at')->label(__('chargeback_alerts.occurred_at'))->dateTime()->sortable()->placeholder('—'),
         ])->filters([
+            SelectFilter::make('service')->label(__('chargeback_alerts.service'))->options(fn (ChargebackAlertDrivers $drivers): array => $drivers->serviceOptions()),
             SelectFilter::make('match_status')->label(__('chargeback_alerts.match_status'))->options(__('chargeback_alerts.match_states')),
         ])->recordActions([
             ViewAction::make()->authorize(fn (ChargebackAlert $record): bool => self::canView($record))->modalWidth(Width::SixExtraLarge),
@@ -112,7 +113,7 @@ class ChargebackAlertResource extends Resource
     {
         return $schema->components([
             TextEntry::make('external_id')->label(__('chargeback_alerts.external_id'))->copyable(),
-            TextEntry::make('service')->label(__('chargeback_alerts.service'))->formatStateUsing(fn (string $state): string => strtoupper($state)),
+            TextEntry::make('service')->label(__('chargeback_alerts.service'))->formatStateUsing(self::serviceLabel(...)),
             TextEntry::make('scope_key')->label(__('chargeback_alerts.scope'))->placeholder('—'),
             TextEntry::make('descriptor')->label(__('chargeback_alerts.descriptor'))->placeholder('—'),
             TextEntry::make('arn')->label('ARN')->copyable()->placeholder('—'),
@@ -165,6 +166,14 @@ class ChargebackAlertResource extends Resource
                     TextEntry::make('created_at')->label(__('chargeback_alerts.observed_at'))->dateTime(),
                 ])->columns(4),
         ])->columns(3);
+    }
+
+    private static function serviceLabel(ChargebackAlert $record, string $state, ChargebackAlertDrivers $drivers): string
+    {
+        $provider = $record->account->provider;
+        $driver = $drivers->find($provider);
+
+        return ($driver?->label() ?? $provider).' · '.($driver?->services()[$state] ?? $state);
     }
 
     private static function attachAction(): Action
@@ -234,7 +243,7 @@ class ChargebackAlertResource extends Resource
         $account = $record->account;
         $driver = app(ChargebackAlertDrivers::class)->find($account->provider);
 
-        return $account->enabled && in_array($record->service, $account->services, true) && $driver instanceof SendsChargebackFeedback ? $driver : null;
+        return $account->isServiceActive($record->service) && $driver instanceof SendsChargebackFeedback ? $driver : null;
     }
 
     private static function authorized(string $ability, ChargebackAlert $record): bool

@@ -23,7 +23,8 @@ final readonly class ChargebackAlertMatcher
     {
         DB::transaction(function () use ($alertId): void {
             $alert = ChargebackAlert::query()->withoutGlobalScope(MerchantScope::class)->lockForUpdate()->findOrFail($alertId);
-            if ($alert->order_id !== null || $alert->next_match_at === null || $alert->next_match_at->isFuture()) {
+            if ($alert->order_id !== null || $alert->next_match_at === null || $alert->next_match_at->isFuture()
+                || ! $alert->account->isServiceActive($alert->service)) {
                 return;
             }
 

@@ -27,7 +27,7 @@ final readonly class ChargebackFeedback
             abort_unless($this->policy->feedback($actor, $alert), 403);
             $account = $alert->account;
             $driver = $this->drivers->find($account->provider);
-            if (! $account->enabled || ! in_array($alert->service, $account->services, true)
+            if (! $account->isServiceActive($alert->service)
                 || ! $driver instanceof SendsChargebackFeedback || $alert->evidence_conflict
                 || $alert->remote_feedback_at !== null || $alert->feedback()->whereIn('status', ['pending', 'sending', 'unknown', 'submitted'])->exists()) {
                 throw ValidationException::withMessages(['outcome' => __('chargeback_alerts.feedback_unavailable')]);
@@ -129,7 +129,7 @@ final readonly class ChargebackFeedback
                 return null;
             }
             $account = ChargebackProviderAccount::query()->lockForUpdate()->find($alert->chargeback_provider_account_id);
-            if (! $account?->enabled) {
+            if (! $account?->isServiceActive($alert->service)) {
                 return null;
             }
 
@@ -140,7 +140,7 @@ final readonly class ChargebackFeedback
             }
 
             $driver = $this->drivers->find($account->provider);
-            if (! $driver instanceof SendsChargebackFeedback || ! in_array($alert->service, $account->services, true)
+            if (! $driver instanceof SendsChargebackFeedback
                 || $alert->evidence_conflict || $alert->remote_feedback_at !== null) {
                 $feedback->update(['status' => 'unknown', 'result_code' => 'provider_feedback_conflict', 'next_attempt_at' => null, 'finished_at' => now()]);
 

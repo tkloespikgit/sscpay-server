@@ -22,6 +22,17 @@ final readonly class ChargebackAlertDrivers
         return array_map(static fn (ChargebackAlertDriver $driver): string => $driver->label(), $this->registered());
     }
 
+    /** @return array<string, string> */
+    public function serviceOptions(): array
+    {
+        $options = [];
+        foreach ($this->registered() as $driver) {
+            $options += $driver->services();
+        }
+
+        return $options;
+    }
+
     /** @return array<string, ChargebackAlertDriver> */
     private function registered(): array
     {

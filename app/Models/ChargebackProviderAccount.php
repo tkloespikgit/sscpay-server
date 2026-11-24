@@ -34,6 +34,11 @@ class ChargebackProviderAccount extends Model
         return $this->hasMany(ChargebackChannelBinding::class);
     }
 
+    public function isServiceActive(string $service): bool
+    {
+        return $this->enabled && in_array($service, $this->services, true);
+    }
+
     public function settings(): HasMany
     {
         return $this->hasMany(ChargebackProviderSetting::class);

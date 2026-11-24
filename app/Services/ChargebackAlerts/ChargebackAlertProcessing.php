@@ -36,7 +36,8 @@ final readonly class ChargebackAlertProcessing
     {
         Cache::lock('chargeback-alert-notice:'.$alertId, 60)->get(function () use ($alertId): void {
             $alert = ChargebackAlert::query()->withoutGlobalScope(MerchantScope::class)->findOrFail($alertId);
-            if ($alert->next_notice_at === null || $alert->next_notice_at->isFuture() || $alert->merchant_id === null || $alert->order_id === null) {
+            if ($alert->next_notice_at === null || $alert->next_notice_at->isFuture() || $alert->merchant_id === null || $alert->order_id === null
+                || ! $alert->account->isServiceActive($alert->service)) {
                 return;
             }
 

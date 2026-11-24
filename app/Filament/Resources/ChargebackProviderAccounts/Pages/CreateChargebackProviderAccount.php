@@ -12,6 +12,11 @@ class CreateChargebackProviderAccount extends CreateRecord
 {
     protected static string $resource = ChargebackProviderAccountResource::class;
 
+    protected function getRedirectUrl(): string
+    {
+        return $this->getResourceUrl('edit');
+    }
+
     protected function handleRecordCreation(array $data): ChargebackProviderAccount
     {
         $actor = auth()->user();
