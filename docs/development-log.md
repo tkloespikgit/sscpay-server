@@ -2,6 +2,12 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-25 莱特币测试网派生改用 ttub（未部署）
+
+- Tatum 的莱特币测试网地址接口只接受 `ttub`（版本字节 `0436f6e1`）。Electrum-LTC 导出的是比特币测试网 `tpub`（`043587cf`），直接提交会得到 HTTP 400：`xpub must be a valid testnet LTC xpub`。付款请求因此不会创建。
+- 后台仍只保存 `xpub`／`tpub`。`litecoin-testnet` 在调用 `/v3/litecoin/address` 前，只替换版本字节并重算校验和，链码和公钥不变。比特币测试网仍发送原来的 `tpub`。
+- 验证：`CryptoPublicKeyTest` 与 `TatumReadClientTest` 共 17 项通过。未对生产 Tatum 重新发起派生，也未处理报价接口 `code=0` 的连接失败。
+
 ## 2026-11-24 WeTech 预警服务独立管理（未部署）
 
 - 在同一账号下分别启停 Ethoca 和 RDR，各自按 Descriptor 或 MID 多选绑定支付方式。共享凭证、webhook 和已有预警编号保持不变，无需迁移。配置入口、开关和补查范围见[部署说明](../doc/deployment.md#34-wetech-拒付预警配置)及 [D-77](decisions.md#d-77-拒付预警按产品启停按账号验签)。

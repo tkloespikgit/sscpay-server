@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
+use Tests\Unit\CryptoPublicKeyTest;
 
 class TatumReadClientTest extends TestCase
 {
@@ -70,6 +71,33 @@ class TatumReadClientTest extends TestCase
         $this->assertSame('0x'.str_repeat('c', 40), $address);
         Http::assertSent(fn (Request $r): bool => $r->method() === 'GET' && $r->hasHeader('x-api-key', 'testnet') && $r['testnetType'] === 'ethereum-sepolia');
         Http::assertSentCount(1);
+    }
+
+    public function test_litecoin_testnet_derivation_sends_ttub_with_the_testnet_key(): void
+    {
+        $this->setCryptoSettings(['crypto.api_key' => 'mainnet', 'crypto.testnet_key' => 'testnet']);
+        Http::preventStrayRequests();
+        Http::fake(['https://api.tatum.io/v3/litecoin/address/*' => Http::response(['address' => 'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef'])]);
+
+        $address = app(TatumReadClient::class)->deriveAddress('litecoin-testnet', CryptoPublicKeyTest::TPUB, 0);
+
+        $this->assertSame('mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef', $address);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+            && str_contains($request->url(), '/v3/litecoin/address/'.CryptoPublicKeyTest::TTUB.'/0')
+            && ! str_contains($request->url(), CryptoPublicKeyTest::TPUB)
+            && $request->hasHeader('x-api-key', 'testnet'));
+    }
+
+    public function test_bitcoin_testnet_derivation_keeps_the_stored_tpub(): void
+    {
+        $this->setCryptoSettings(['crypto.testnet_key' => 'testnet']);
+        Http::preventStrayRequests();
+        Http::fake(['https://api.tatum.io/v3/bitcoin/address/*' => Http::response(['address' => 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn'])]);
+
+        app(TatumReadClient::class)->deriveAddress('bitcoin-testnet', CryptoPublicKeyTest::TPUB, 1);
+
+        Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/v3/bitcoin/address/'.CryptoPublicKeyTest::TPUB.'/1')
+            && ! str_contains($request->url(), CryptoPublicKeyTest::TTUB));
     }
 
     public function test_read_failure_is_sanitized_and_does_not_leak_key_or_public_wallet_url(): void

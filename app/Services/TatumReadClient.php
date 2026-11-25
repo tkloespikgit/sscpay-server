@@ -22,7 +22,11 @@ final class TatumReadClient
 
     public function deriveAddress(string $network, string $extendedPublicKey, int $index): string
     {
-        CryptoPublicKey::payload($extendedPublicKey);
+        if ($network === 'litecoin-testnet') {
+            $extendedPublicKey = CryptoPublicKey::litecoinTestnetKey($extendedPublicKey);
+        } else {
+            CryptoPublicKey::payload($extendedPublicKey);
+        }
         $family = explode('-', $network, 2)[0];
         $this->assets->get($network.':'.match ($family) {
             'bitcoin' => 'BTC', 'litecoin' => 'LTC', 'ethereum' => 'ETH', 'tron' => 'USDT',
