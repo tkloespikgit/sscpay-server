@@ -2,6 +2,12 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-25 通知订阅改用 Tatum 的链名（未部署）
+
+- Tatum 创建地址通知不接受内部名 `litecoin-testnet` 和 `tron-shasta`，返回 HTTP 400 `validation.failed`。允许值分别是 `litecoin-core-testnet` 和 `tron-testnet`；莱特币主网对应 `litecoin-core-mainnet`。订阅没有建成，付款页一直停在准备中。
+- 只在创建、按地址回查、Shasta 的 `finality` 能力查询，以及订阅列表和回调的链名核对时转换。数据库、地址派生和创世块配置仍用内部网络名。主网和测试网不能互相认成同一条链。BTC／LTC 仍不发送 `finality`。
+- 验证：`TatumSubscriptionClientTest`、`TatumWebhookTest`、`CryptoAddressMonitorTest` 共 81 项、294 个断言通过。未部署。监控表上的一小时退避只约束 `crypto:maintain-subscriptions`。付款准备会直接重建订阅，部署后执行 `crypto:prepare-checkouts` 即可，不必等到 2026-11-25 18:57（Asia/Shanghai）。
+
 ## 2026-11-25 波场创世块允许没有时间（未部署）
 
 - Shasta 和主网高度 0 的区块头没有 `number` 和 `timestamp`。准备付款核对网络时必读这一块，空时间被当成整数后抛出 `Invalid history integer.`，付款请求不会创建。

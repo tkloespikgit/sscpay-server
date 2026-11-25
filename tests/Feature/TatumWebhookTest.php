@@ -118,6 +118,38 @@ class TatumWebhookTest extends TestCase
         $this->assertDatabaseCount('crypto_webhook_receipts', 0);
     }
 
+    #[DataProvider('providerChains')]
+    public function test_provider_chain_name_matches_the_internal_network_and_rejects_the_other_environment(
+        string $network,
+        string $asset,
+        int $decimals,
+        string $address,
+        string $remote,
+        string $other,
+    ): void {
+        $monitor = $this->createCryptoMonitor(['network' => $network, 'asset' => $asset, 'decimals' => $decimals],
+            ['network' => $network, 'address' => $address]);
+        Http::preventStrayRequests();
+        $payload = $this->payload($monitor);
+        $payload['chain'] = $remote;
+        $payload['address'] = $address;
+
+        $this->deliver($monitor, json_encode($payload))->assertAccepted();
+
+        $this->assertSame(1, CryptoWebhookReceipt::query()->count());
+        $payload['chain'] = $other;
+        $this->deliver($monitor, json_encode($payload))->assertUnprocessable();
+        $this->assertSame(1, CryptoWebhookReceipt::query()->count());
+    }
+
+    public static function providerChains(): array
+    {
+        return [
+            'LTC testnet' => ['litecoin-testnet', 'LTC', 8, 'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef', 'litecoin-core-testnet', 'litecoin-core-mainnet'],
+            'TRON Shasta' => ['tron-shasta', 'USDT', 6, 'TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL', 'tron-testnet', 'tron-mainnet'],
+        ];
+    }
+
     public function test_enriched_outgoing_hint_and_late_cold_callback_are_kept_without_assuming_income(): void
     {
         $monitor = $this->createCryptoMonitor();

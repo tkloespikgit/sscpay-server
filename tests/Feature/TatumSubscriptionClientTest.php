@@ -345,6 +345,72 @@ class TatumSubscriptionClientTest extends TestCase
         }
     }
 
+    #[DataProvider('notificationChainNames')]
+    public function test_create_and_reconciliation_use_the_chain_name_tatum_accepts(
+        string $network,
+        string $asset,
+        int $decimals,
+        string $address,
+        string $remote,
+    ): void {
+        $monitor = $this->createCryptoMonitor(['network' => $network, 'asset' => $asset, 'decimals' => $decimals],
+            ['network' => $network, 'address' => $address]);
+        $alert = $this->alertData($monitor);
+        $alert['attr']['chain'] = $remote;
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api.tatum.io/v4/subscription/chains' => Http::response($this->alertCapabilities()),
+            'https://api.tatum.io/v4/subscription*' => fn (Request $request) => $request->method() === 'POST'
+                ? Http::response(['id' => 'alert-1']) : Http::response([$alert]),
+        ]);
+        $client = app(TatumSubscriptionClient::class);
+
+        $this->assertSame('alert-1', $client->create($monitor));
+        $this->assertSame(['alert-1'], $client->matchingIds($monitor));
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'POST' && ($request['attr']['chain'] ?? null) === $remote
+            && ($network === 'tron-shasta' ? $request['finality'] === 'final' : ! isset($request['finality'])));
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET' && ($request['chain'] ?? null) === $remote);
+        if ($network !== 'tron-shasta') {
+            Http::assertNotSent(fn (Request $request): bool => str_ends_with((string) parse_url($request->url(), PHP_URL_PATH), '/chains'));
+        }
+    }
+
+    public static function notificationChainNames(): array
+    {
+        return [
+            'LTC mainnet' => ['litecoin-mainnet', 'LTC', 8, 'LZMFvW5GSFwwz6bAsAT37h6ej8H8QwMSHk', 'litecoin-core-mainnet'],
+            'LTC testnet' => ['litecoin-testnet', 'LTC', 8, 'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef', 'litecoin-core-testnet'],
+            'TRON Shasta' => ['tron-shasta', 'USDT', 6, 'TNPeeaaFB7K9cmo4uQpcU32zGK8G1NYqeL', 'tron-testnet'],
+        ];
+    }
+
+    #[DataProvider('litecoinCurrencyAliases')]
+    public function test_litecoin_currency_alias_requires_the_matching_provider_network(?string $chain, string $attribute, bool $accepted): void
+    {
+        $monitor = $this->createCryptoMonitor(['network' => 'litecoin-testnet', 'asset' => 'LTC', 'decimals' => 8],
+            ['network' => 'litecoin-testnet', 'address' => 'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef']);
+        $alert = $this->alertData($monitor);
+        if ($chain !== null) {
+            $alert['chain'] = $chain;
+        }
+        $alert['attr']['chain'] = $attribute;
+        Http::preventStrayRequests();
+
+        $this->assertSame($accepted, app(TatumSubscriptionClient::class)->identifies($monitor, $alert));
+
+        Http::assertNothingSent();
+    }
+
+    public static function litecoinCurrencyAliases(): array
+    {
+        return [
+            'provider chain' => ['litecoin-core-testnet', 'LTC', true],
+            'mainnet provider chain' => ['litecoin-core-mainnet', 'LTC', false],
+            'currency without a chain' => [null, 'LTC', false],
+        ];
+    }
+
     public function test_redirect_cannot_send_credentials_to_another_host(): void
     {
         $monitor = $this->createCryptoMonitor();
