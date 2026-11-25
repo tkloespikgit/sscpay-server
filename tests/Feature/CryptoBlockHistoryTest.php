@@ -162,6 +162,35 @@ class CryptoBlockHistoryTest extends TestCase
         return [['tron-mainnet'], ['tron-shasta']];
     }
 
+    #[DataProvider('tronNetworks')]
+    public function test_tron_genesis_without_number_or_timestamp_still_identifies_the_network(string $network): void
+    {
+        $this->freezeTime();
+        [$block, $infos, $genesis] = $this->tronFixture();
+        unset($genesis['block_header']['raw_data']['timestamp']);
+        $this->fakeTron($network, $block, $infos, $genesis);
+        $reader = app(CryptoBlockHistoryService::class);
+
+        $reader->assertNetwork($network, $genesis['blockID']);
+        $header = $reader->header($network, 0);
+
+        $this->assertSame(0, $header['height']);
+        $this->assertSame(strtolower($genesis['blockID']), $header['hash']);
+        $this->assertSame(1, $header['time']->getTimestampMs());
+    }
+
+    public function test_tron_block_after_genesis_still_requires_a_timestamp(): void
+    {
+        $this->freezeTime();
+        [$block, $infos, $genesis] = $this->tronFixture();
+        unset($block['block_header']['raw_data']['timestamp']);
+        $this->fakeTron('tron-shasta', $block, $infos, $genesis);
+        $this->expectException(DomainException::class);
+        $this->expectExceptionMessage('Invalid history integer.');
+
+        app(CryptoBlockHistoryService::class)->header('tron-shasta', 100);
+    }
+
     #[DataProvider('incompleteTron')]
     public function test_incomplete_or_wrong_tron_receipts_do_not_advance_history(string $case): void
     {

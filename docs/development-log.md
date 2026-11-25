@@ -2,6 +2,12 @@
 
 仅记录影响后续开发判断的重要变化，最新记录放在前面。历史提交的简短标题不足以证明具体业务决策；本文件不反推未核实的历史。
 
+## 2026-11-25 波场创世块允许没有时间（未部署）
+
+- Shasta 和主网高度 0 的区块头没有 `number` 和 `timestamp`。准备付款核对网络时必读这一块，空时间被当成整数后抛出 `Invalid history integer.`，付款请求不会创建。
+- 高度仍从 `blockID` 前 16 位推断。仅高度 0 且时间缺失或小于 1 毫秒时，用 1 毫秒占位；后续区块仍必须带时间。创世块继续只用于核对 `blockID`。
+- 验证：`CryptoBlockHistoryTest` 与 `CryptoTronVerificationTest` 共 67 项通过。未部署，也未对生产节点重跑准备。
+
 ## 2026-11-25 莱特币测试网派生改用 ttub（未部署）
 
 - Tatum 的莱特币测试网地址接口只接受 `ttub`（版本字节 `0436f6e1`）。Electrum-LTC 导出的是比特币测试网 `tpub`（`043587cf`），直接提交会得到 HTTP 400：`xpub must be a valid testnet LTC xpub`。付款请求因此不会创建。

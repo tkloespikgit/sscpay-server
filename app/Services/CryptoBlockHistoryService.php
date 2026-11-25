@@ -279,9 +279,14 @@ final class CryptoBlockHistoryService
         if (substr($hash, 0, 16) !== str_pad(dechex($height), 16, '0', STR_PAD_LEFT)) {
             throw new DomainException('TRON block ID height mismatch.');
         }
+        $timestamp = $raw['timestamp'] ?? null;
+        // Official genesis blocks omit number and timestamp. One millisecond keeps the header usable.
+        if ($height === 0 && (! is_int($timestamp) || $timestamp < 1)) {
+            $timestamp = 1;
+        }
 
         return ['height' => $height, 'hash' => $hash, 'parent' => $height === 0 ? str_repeat('0', 64) : $this->hash($raw['parentHash'] ?? null),
-            'time' => $this->timestamp($this->integer($raw['timestamp'] ?? null), true)];
+            'time' => $this->timestamp($this->integer($timestamp), true)];
     }
 
     private function hash(mixed $value): string
