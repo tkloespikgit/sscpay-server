@@ -104,7 +104,8 @@ class CryptoAddressMonitorTest extends TestCase
         $this->assertSame('alert-1', $monitor->fresh()->subscription_id);
         $this->assertDatabaseCount('crypto_address_checks', 2);
         Http::assertSentCount(2);
-        Http::assertSent(fn (Request $request): bool => $request->method() === 'DELETE' && str_ends_with($request->url(), '/alert-1'));
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'DELETE'
+            && parse_url($request->url(), PHP_URL_PATH) === '/v4/subscription/alert-1' && $request['type'] === 'testnet');
     }
 
     public function test_expiry_cancels_without_continuous_history_and_schedules_only_two_order_checks(): void
@@ -158,7 +159,8 @@ class CryptoAddressMonitorTest extends TestCase
         $this->assertDatabaseCount('crypto_addresses', 1);
         $this->assertDatabaseCount('crypto_address_monitors', 1);
         Http::assertSentCount(2);
-        Http::assertSent(fn (Request $r): bool => $r->method() === 'DELETE' && str_ends_with($r->url(), '/alert-1'));
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'DELETE'
+            && parse_url($r->url(), PHP_URL_PATH) === '/v4/subscription/alert-1' && $r['type'] === 'testnet');
     }
 
     #[DataProvider('blockingReceiptStates')]

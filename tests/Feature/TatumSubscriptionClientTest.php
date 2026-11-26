@@ -183,7 +183,7 @@ class TatumSubscriptionClientTest extends TestCase
         $monitor = $this->createCryptoMonitor();
         Http::preventStrayRequests();
         Sleep::fake();
-        Http::fake(['https://api.tatum.io/v4/subscription/alert-1' => Http::sequence()
+        Http::fake(['https://api.tatum.io/v4/subscription/alert-1*' => Http::sequence()
             ->push([], 429, ['Retry-After' => '1'])->push($this->alertData($monitor))]);
 
         $this->assertSame('alert-1', app(TatumSubscriptionClient::class)->get('testnet', 'alert-1')['id']);
@@ -202,7 +202,7 @@ class TatumSubscriptionClientTest extends TestCase
         $alert['attr']['chain'] = $currency;
         Http::preventStrayRequests();
         Http::fake([
-            'https://api.tatum.io/v4/subscription/alert-1' => Http::response($alert),
+            'https://api.tatum.io/v4/subscription/alert-1*' => Http::response($alert),
             'https://api.tatum.io/v4/subscription?*' => Http::response([$alert]),
         ]);
         $client = app(TatumSubscriptionClient::class);
@@ -324,14 +324,55 @@ class TatumSubscriptionClientTest extends TestCase
     {
         $this->createCryptoMonitor();
         Http::preventStrayRequests();
-        Http::fake(['https://api.tatum.io/v4/subscription/absent' => Http::response([], 404)]);
+        Http::fake(['https://api.tatum.io/v4/subscription/absent*' => Http::response([], 404)]);
         $client = app(TatumSubscriptionClient::class);
 
         $this->assertNull($client->get('testnet', 'absent'));
         $client->cancel('testnet', 'absent');
 
         Http::assertSentCount(2);
-        Http::assertSent(fn (Request $r): bool => $r->method() === 'DELETE');
+        Http::assertSent(fn (Request $r): bool => $r->method() === 'DELETE' && $r['type'] === 'testnet');
+    }
+
+    #[DataProvider('absentSubscriptions')]
+    public function test_missing_subscription_on_either_network_is_absent_when_tatum_returns_403(string $environment, int $status, array $body): void
+    {
+        $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Http::fake(['https://api.tatum.io/v4/subscription/absent*' => Http::response($body, $status)]);
+        $client = app(TatumSubscriptionClient::class);
+
+        $this->assertNull($client->get($environment, 'absent'));
+        $client->cancel($environment, 'absent');
+
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'GET' && $request['type'] === $environment);
+        Http::assertSent(fn (Request $request): bool => $request->method() === 'DELETE' && $request['type'] === $environment);
+    }
+
+    public static function absentSubscriptions(): array
+    {
+        return [
+            'mainnet does not exist' => ['mainnet', 403, ['statusCode' => 403, 'errorCode' => 'subscription.not.exists', 'message' => 'No such subscription.']],
+            'testnet does not exist' => ['testnet', 403, ['statusCode' => 403, 'errorCode' => 'subscription.not.exists', 'message' => 'No such subscription.']],
+            'testnet namespace mismatch' => ['testnet', 403, ['statusCode' => 403, 'errorCode' => 'subscription.subscription.not.match', 'message' => 'No such subscription absent for testnet.']],
+        ];
+    }
+
+    public function test_other_forbidden_subscription_responses_are_not_treated_as_missing(): void
+    {
+        $this->createCryptoMonitor();
+        Http::preventStrayRequests();
+        Http::fake(['https://api.tatum.io/v4/subscription/absent*' => Http::response([
+            'statusCode' => 403, 'errorCode' => 'subscription.plan.exceeded', 'message' => 'Maximum overall subscriptions count for free plan is 5.',
+        ], 403)]);
+        $client = app(TatumSubscriptionClient::class);
+
+        try {
+            $client->get('mainnet', 'absent');
+            $this->fail('A plan limit is not a missing subscription.');
+        } catch (DomainException $exception) {
+            $this->assertSame('Tatum subscription lookup failed.', $exception->getMessage());
+        }
     }
 
     public function test_unsafe_identifier_never_reaches_any_provider_endpoint(): void
