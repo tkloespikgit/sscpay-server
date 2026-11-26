@@ -122,6 +122,7 @@ final class CryptoPaymentRequestService
                 $asset['network'].':'.$asset['asset'], (string) $order->amount, $order->currency,
                 $order->currency === 'USD' ? '1' : (string) $order->original_exchange_rate,
                 $priceUsd, $markup, (string) $settings['fee_percent'], (string) $settings['fee_fixed'],
+                $this->assets->payableDecimals($asset['network'], $asset['asset']),
             );
             $address = CryptoAddress::query()->create([
                 'crypto_address_allocation_id' => $allocationId,

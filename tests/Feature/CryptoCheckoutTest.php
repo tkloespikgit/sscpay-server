@@ -70,8 +70,8 @@ class CryptoCheckoutTest extends TestCase
         $this->getJson($this->endpoint($order))->assertOk()->assertJsonPath('state', 'checking')->assertJsonPath('address', null);
         $service->process($order->merchant_id, $order->id);
         $this->getJson($this->endpoint($order))->assertOk()->assertJsonPath('state', 'ready')
-            ->assertJsonPath('due_amount', '0.040800000000000000')->assertJsonPath('address', $monitor->address->address)
-            ->assertJsonPath('received_amount', '0.000000000000000000')->assertJsonMissingPath('quote_snapshot');
+            ->assertJsonPath('due_amount', '0.04080000')->assertJsonPath('address', $monitor->address->address)
+            ->assertJsonPath('received_amount', '0.00000000')->assertJsonMissingPath('quote_snapshot');
         $this->assertDatabaseCount('crypto_address_monitors', 1);
         $this->assertDatabaseCount('crypto_ledger_entries', 0);
         $this->assertTrue(Http::recorded(fn ($request) => $request->method() === 'POST' && str_contains($request->url(), '/subscription'))->count() === 1);

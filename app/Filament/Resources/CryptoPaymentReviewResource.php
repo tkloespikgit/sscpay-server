@@ -14,6 +14,7 @@ use App\Services\CryptoBalanceService;
 use App\Services\CryptoPaymentEvidenceService;
 use App\Services\CryptoQuoteService;
 use App\Support\CryptoAmount;
+use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoFinanceAccess;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -99,13 +100,14 @@ class CryptoPaymentReviewResource extends CryptoFinanceResource
             ->fillForm(function (Order $record): array {
                 $evidence = app(CryptoPaymentEvidenceService::class)->capture($record);
                 $fee = app(CryptoQuoteService::class)->feeForGross($evidence['gross'], $record->cryptoIncome?->fee_snapshot ?? $evidence['request']->quote_snapshot);
-                $decimals = $evidence['request']->decimals;
-                $asset = $evidence['request']->asset;
+                $request = $evidence['request'];
+                $places = app(CryptoAssetRegistry::class)->payableDecimals($request->network, $request->asset);
+                $asset = $request->asset;
 
-                return ['proposed_fee' => CryptoAmount::format($fee, $decimals).' '.$asset,
-                    'proposed_net' => CryptoAmount::format(bcsub($evidence['gross'], $fee, 0), $decimals).' '.$asset,
+                return ['proposed_fee' => CryptoAmount::present($fee, $request->decimals, $places).' '.$asset,
+                    'proposed_net' => CryptoAmount::present(bcsub($evidence['gross'], $fee, 0), $request->decimals, $places).' '.$asset,
                     'current_net' => CryptoOrderDisplay::amount($record), 'request_key' => (string) Str::uuid(), 'evidence_hash' => $evidence['hash'],
-                    'actual_received' => CryptoAmount::format($evidence['gross'], $evidence['request']->decimals).' '.$evidence['request']->asset];
+                    'actual_received' => CryptoAmount::present($evidence['gross'], $request->decimals, $places).' '.$asset];
             })
             ->schema([
                 Hidden::make('request_key')->required()->rules(['uuid']),

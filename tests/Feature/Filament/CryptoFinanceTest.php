@@ -42,11 +42,11 @@ class CryptoFinanceTest extends TestCase
     public function test_all_finance_pages_render_exact_amounts_and_read_only_receipt_details(): void
     {
         Livewire::test(ManageCryptoAssetBalances::class)->assertOk()->assertCanSeeTableRecords([$this->assetBalance])
-            ->assertSee('0.040392000000000000 ETH')
+            ->assertSee('0.04039200 ETH')
             ->assertActionVisible(TestAction::make('requestWithdrawal')->table($this->assetBalance));
         Livewire::test(ManageCryptoLedgerEntries::class)->assertOk()->assertCanSeeTableRecords([$this->income])
             ->mountAction(TestAction::make('view')->table($this->income))
-            ->assertMountedActionModalSee('0.000408000000000000 ETH')->assertMountedActionModalSee('0.040392000000000000 ETH')
+            ->assertMountedActionModalSee('0.00040800 ETH')->assertMountedActionModalSee('0.04039200 ETH')
             ->assertDontSee('test-mainnet-credential');
         Livewire::test(ManageCryptoChainEvents::class)->assertOk()->assertCanSeeTableRecords([$this->chainEvent])
             ->mountAction(TestAction::make('view')->table($this->chainEvent))
@@ -93,7 +93,7 @@ class CryptoFinanceTest extends TestCase
         $this->assertSame('completed', $withdrawal->refresh()->status);
         Livewire::test(ManageCryptoWithdrawals::class)
             ->mountAction(TestAction::make('view')->table($withdrawal))
-            ->assertMountedActionModalSee('OFFLINE-001')->assertMountedActionModalSee('0.029392000000000000 ETH')
+            ->assertMountedActionModalSee('OFFLINE-001')->assertMountedActionModalSee('0.02939200 ETH')
             ->assertMountedActionModalSee($this->reviewer->name)->assertMountedActionModalSee(__('crypto.finance.states.completed'));
         $this->assertSame('0', $this->assetBalance->refresh()->reserved_units);
         Http::assertNothingSent();

@@ -82,15 +82,27 @@ if (root) {
         else wallet.removeAttribute('href');
     }
 
+    function decimalQuantity(amount) {
+        const match = /^(0|[1-9]\d*)(?:\.(\d+))?$/.exec(amount ?? '');
+        if (!match) return null;
+
+        return { value: BigInt(match[1] + (match[2] ?? '')), scale: (match[2] ?? '').length };
+    }
+
     function receivedPercent(data) {
         if (data.state === 'paid') return 100;
-        if (!data.due_amount || !data.received_amount) return 0;
 
-        // The presenter formats both amounts at the same asset precision.
-        const due = BigInt(data.due_amount.replace('.', ''));
-        const received = BigInt(data.received_amount.replace('.', ''));
-        if (due <= 0n || received <= 0n) return 0;
-        return received >= due ? 100 : Math.max(1, Number(received * 100n / due));
+        const due = decimalQuantity(data.due_amount);
+        const received = decimalQuantity(data.received_amount);
+        if (!due || !received || due.value <= 0n || received.value <= 0n) return 0;
+
+        // ETH can show 8 places while an off-grid receipt still shows 18.
+        const scale = Math.max(due.scale, received.scale);
+        const dueUnits = due.value * 10n ** BigInt(scale - due.scale);
+        const receivedUnits = received.value * 10n ** BigInt(scale - received.scale);
+        if (receivedUnits >= dueUnits) return 100;
+
+        return Math.max(1, Number(receivedUnits * 100n / dueUnits));
     }
 
     function updateCountdown() {

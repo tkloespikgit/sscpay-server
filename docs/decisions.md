@@ -829,3 +829,11 @@ WeTech 预警和 Ethoca 处理反馈独立保存。已退款反馈需要支付�
 **状态：当前工作区，未部署。** 在 D-76 的驱动之上，管理员分别管理 WeTech · Ethoca 和 WeTech · RDR。服务开关和支付方式绑定可以不同；同一 Secret ID 的签名身份、密钥、环境和 webhook 只配置一次。服务停用不解除渠道绑定，不删除历史预警，也不代表向 WeTech 注销产品。继续使用现有账号和服务代码，无需重建账号或回填历史数据。
 
 代码依据：[账号配置服务](../app/Services/ChargebackAlerts/ChargebackAccountConfiguration.php)、[预警服务管理](../app/Filament/Resources/ChargebackProviderAccounts/Pages/EditChargebackProviderAccount.php)。
+
+## D-78 ETH 报价与显示使用 8 位小数
+
+**状态：当前工作区，未部署。** 账本、`decimals` 和链上核验继续使用 18 位 wei，已有付款请求不改写。新的 ETH 报价先按 [D-33](#d-33-新版区块链基础分阶段接入与精确账务) 向上取整到 1 wei，再向上取整到 8 位 ETH（步长 10^10 wei）。手续费按取整后的应付数量计算。取整规则名仍是 `due_ceil_fee_total_ceil_v1`；步长写在报价快照的 `payment_decimals`。没有该字段的旧报价按 1 wei 重算，避免结算对不上。
+
+收款页、订单、账务和统计对能被该步长整除的数量显示 8 位，例如 `1.00000000`。不能整除的数量（旧报价、1 wei 到账）仍显示全部 18 位，避免把差额显示成 `0.00000000`。付款页进度条按这两段显示各自的小数位数对齐后再计算，差 1 wei 不会显示为已收齐。BTC、LTC、USDT 的应付步长等于链上位数，显示不变。EIP-681 仍传 wei 整数。
+
+代码依据：[报价](../app/Services/CryptoQuoteService.php)、[应付位数](../app/Support/CryptoAssetRegistry.php)、[显示](../app/Support/CryptoAmount.php)。

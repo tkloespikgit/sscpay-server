@@ -8,6 +8,7 @@ use App\Models\CryptoCheckout;
 use App\Models\CryptoPaymentRequest;
 use App\Models\Order;
 use App\Support\CryptoAmount;
+use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoCheckoutGuard;
 use chillerlan\QRCode\QRCode;
 use Illuminate\Support\Facades\Cache;
@@ -48,7 +49,7 @@ final class CryptoCheckoutPresenter
             'state' => $state, 'message' => __('crypto.checkout.states.'.$state),
             'request_id' => $current?->id, 'can_requote' => $state === 'expired',
             'network' => $current?->network, 'asset' => $current?->asset,
-            'due_amount' => $current ? CryptoAmount::format($current->due_units, $current->decimals) : null,
+            'due_amount' => $current ? $this->amount($current, $current->due_units) : null,
             'expires_at' => $current?->expires_at->toIso8601String(),
             'markup_percent' => $current?->quote_snapshot['markup_percent'] ?? null,
             'price_usd' => $current?->quote_snapshot['price_usd'] ?? null,
@@ -63,7 +64,7 @@ final class CryptoCheckoutPresenter
 
     private function paymentUri(CryptoPaymentRequest $request, string $address): string
     {
-        $amount = CryptoAmount::format($request->due_units, $request->decimals);
+        $amount = $this->amount($request, $request->due_units);
         if ($request->asset === 'BTC' && in_array($request->network, ['bitcoin-mainnet', 'bitcoin-testnet'], true)) {
             return 'bitcoin:'.$address.'?amount='.$amount;
         }
@@ -96,8 +97,13 @@ final class CryptoCheckoutPresenter
         }
         $remaining = bccomp($received, $request->due_units, 0) >= 0 ? '0' : bcsub($request->due_units, $received, 0);
 
-        return ['received_amount' => CryptoAmount::format($received, $request->decimals),
-            'confirmed_amount' => CryptoAmount::format($confirmed, $request->decimals),
-            'remaining_amount' => CryptoAmount::format($remaining, $request->decimals)];
+        return ['received_amount' => $this->amount($request, $received),
+            'confirmed_amount' => $this->amount($request, $confirmed),
+            'remaining_amount' => $this->amount($request, $remaining)];
+    }
+
+    private function amount(CryptoPaymentRequest $request, string $units): string
+    {
+        return CryptoAmount::present($units, $request->decimals, app(CryptoAssetRegistry::class)->payableDecimals($request->network, $request->asset));
     }
 }

@@ -21,6 +21,14 @@ final class CryptoAssetRegistry
         return compact('network', 'asset', 'decimals');
     }
 
+    /** Customer-facing quote step. ETH stops at 8 decimal places; other assets use their chain precision. */
+    public function payableDecimals(string $network, string $asset): int
+    {
+        $decimals = $this->get($network.':'.$asset)['decimals'];
+
+        return in_array($network, ['ethereum-mainnet', 'ethereum-sepolia'], true) && $asset === 'ETH' ? 8 : $decimals;
+    }
+
     /** Input must already be verified by the chain adapter; this only canonicalizes its identity. */
     public function addressKey(string $network, string $address): string
     {
