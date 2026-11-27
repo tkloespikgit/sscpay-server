@@ -70,6 +70,8 @@ function captureSettings(): string
 
 $default = 'fake-private-bootstrap-default';
 expect(OutboundSigner::configuredSecret() === '', 'A public install has no shared signing credential.');
+$html = captureSettings();
+expect(strpos($html, '<details open>') !== false && strpos($html, 'name="pga_outbound_shared_secret"') !== false, 'A fresh site can enter its callback secret immediately.');
 update_option(OutboundSigner::DEFAULT_OPTION, SiteCipher::protectCallbackSecret($default), false);
 $html = captureSettings();
 expect(OutboundSigner::configuredSecret() === $default, 'Default is active without a stored option.');

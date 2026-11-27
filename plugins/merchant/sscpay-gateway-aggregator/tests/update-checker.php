@@ -15,6 +15,10 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 $hooks = [];
 $siteOptions = ['external_updates-sscpay-gateway-aggregator' => 'stale metadata'];
 $clearedTransients = [];
+$installedDbVersion = false;
+$multisite = false;
+$canUpdatePlugins = true;
+$autoUpdatesAllowed = true;
 function add_filter($name, $callback, $priority = 10, $accepted = 1) { $GLOBALS['hooks'][$name][$priority][] = [$callback, $accepted]; }
 function add_action($name, $callback, $priority = 10, $accepted = 1) { add_filter($name, $callback, $priority, $accepted); }
 function remove_filter($name, $callback, $priority = 10)
@@ -37,6 +41,10 @@ function apply_filters($name, $value, ...$args)
 }
 function did_action($name) { return 0; }
 function is_admin() { return false; }
+function is_multisite() { return $GLOBALS['multisite']; }
+function get_option($name, $default = false) { return $name === 'pga_db_version' ? $GLOBALS['installedDbVersion'] : $default; }
+function current_user_can($capability) { return $capability === 'update_plugins' && $GLOBALS['canUpdatePlugins']; }
+function wp_is_auto_update_enabled_for_type($type) { return $type === 'plugin' && $GLOBALS['autoUpdatesAllowed']; }
 function wp_parse_url($url, $component = -1) { return parse_url($url, $component); }
 function plugin_basename($path) { return basename(dirname($path)) . '/' . basename($path); }
 function wp_next_scheduled($name) { return 1; }
@@ -54,6 +62,22 @@ function expect(bool $condition, string $description): void
 }
 
 $pluginFile = ABSPATH . 'sscpay-gateway-aggregator.php';
+$otherPlugins = ['woocommerce/woocommerce.php'];
+update_site_option('auto_update_plugins', $otherPlugins);
+foreach (['multisite' => true, 'canUpdatePlugins' => false, 'autoUpdatesAllowed' => false] as $setting => $value) {
+    $GLOBALS[$setting] = $value;
+    UpdateChecker::enableAutoUpdatesOnFirstInstall($pluginFile);
+    expect(get_site_option('auto_update_plugins') === $otherPlugins, 'Honor the site update policy: ' . $setting);
+    $GLOBALS[$setting] = !$value;
+}
+UpdateChecker::enableAutoUpdatesOnFirstInstall($pluginFile);
+UpdateChecker::enableAutoUpdatesOnFirstInstall($pluginFile);
+expect(get_site_option('auto_update_plugins') === array_merge($otherPlugins, [plugin_basename($pluginFile)]), 'Enable background installation for only this plugin.');
+$installedDbVersion = '1.7.0';
+update_site_option('auto_update_plugins', $otherPlugins);
+UpdateChecker::enableAutoUpdatesOnFirstInstall($pluginFile);
+expect(get_site_option('auto_update_plugins') === $otherPlugins, 'Respect an existing site that disabled automatic installation.');
+
 expect(UpdateChecker::sourceUrl() === 'https://www.ssecurepay.com/plugins/gateway/updates/v1', 'Default update server.');
 UpdateChecker::init($pluginFile);
 expect(UpdateChecker::instance() !== null, 'The default feed starts without credentials.');

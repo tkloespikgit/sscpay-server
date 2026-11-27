@@ -90,6 +90,7 @@ jobs:
       - name: Test receiving-site settings, logs and updates
         run: |
           php plugins/merchant/sscpay-gateway-aggregator/tests/admin-settings.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/legacy-upgrade.php
           php plugins/merchant/sscpay-gateway-aggregator/tests/log-pagination.php
           php plugins/merchant/sscpay-gateway-aggregator/tests/update-checker.php
       - name: Test gateway plugin downloads from the payment method pages

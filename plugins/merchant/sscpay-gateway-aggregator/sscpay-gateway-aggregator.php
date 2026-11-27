@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSCPay Gateway Aggregator
  * Description: 接收Laravel系统S的API请求，创建WordPress订单，提供WooCommerce商品与变体同步，并聚合多个支付网关。
- * Version: 1.16.0
+ * Version: 1.17.0
  * Update URI: false
  * Requires PHP: 7.4
  * Requires at least: 5.6
@@ -36,7 +36,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('PGA_VERSION', '1.16.0');
+define('PGA_VERSION', '1.17.0');
 // 1.7.0 新增退款收件及逐笔退款凭证。
 define('PGA_DB_VERSION', '1.7.0');
 define('PGA_PLUGIN_FILE', __FILE__);
@@ -73,6 +73,7 @@ require_once PGA_PLUGIN_DIR . 'src/API/Routes/api.php';
 // ------------------------------------------------------------------
 
 register_activation_hook(__FILE__, function () {
+    UpdateChecker::enableAutoUpdatesOnFirstInstall(__FILE__);
     Migrator::activate();
     Roles::activate();
 

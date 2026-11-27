@@ -7,7 +7,7 @@
  * X-PGA-Signature，S系统拿到原始请求体字节后用同样的算法和共享密钥重新计算，
  * 与header比对（应使用常量时间比较，S系统那边实现时需注意）。
  *
- * 后台保存的密钥优先于本站私有初始化包写入的默认值。
+ * 后台保存的密钥优先于本站保留的历史默认值。
  * 需要和S系统配置同一份密钥。
  */
 
@@ -64,7 +64,7 @@ class OutboundSigner
     {
         $secret = self::configuredSecret();
         if ($secret === '') {
-            throw new \RuntimeException('未配置回调签名密钥，请激活本站私有初始化包或在插件设置中保存新密钥');
+            throw new \RuntimeException('未配置回调签名密钥，请在支付网关聚合设置中填写平台提供的回调密钥。');
         }
         return $secret;
     }

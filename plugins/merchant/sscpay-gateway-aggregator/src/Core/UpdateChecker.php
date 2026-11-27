@@ -18,6 +18,27 @@ class UpdateChecker
 
     private static ?object $instance = null;
 
+    public static function enableAutoUpdatesOnFirstInstall(string $pluginFile): void
+    {
+        if (is_multisite() || get_option(Migrator::OPTION_DB_VERSION) !== false || !current_user_can('update_plugins')) {
+            return;
+        }
+
+        if (!function_exists('wp_is_auto_update_enabled_for_type')) {
+            require_once ABSPATH . 'wp-admin/includes/update.php';
+        }
+        if (!wp_is_auto_update_enabled_for_type('plugin')) {
+            return;
+        }
+
+        $plugins = (array) get_site_option('auto_update_plugins', []);
+        $basename = plugin_basename($pluginFile);
+        if (!in_array($basename, $plugins, true)) {
+            $plugins[] = $basename;
+            update_site_option('auto_update_plugins', $plugins);
+        }
+    }
+
     public static function sourceUrl(): ?string
     {
         if (self::usesLegacyRepository()) {

@@ -57,7 +57,7 @@ flowchart TD
 
 商城插件以 `plugins/{platform}/{slug}/` 为维护源，源码和服务端同仓管理，GitHub Release 使用独立 `plugins/{slug}/v{version}` tag。WordPress PayPal / 信用卡各自一个包；OpenCart 3 / 4 各一个包，每包注册 PayPal 与信用卡。`PluginCatalog` 发现两层目录，`PluginProtocol` 检查商户 API 协议指纹及四个包的版本，`PluginReleaseService` 按平台构建 ZIP 并发布到配置磁盘；稳定入口只在文件上传成功后更新。插件共享代码保留 PHP 7.4 语法，OpenCart 4 运行时要求 PHP 8.0+，与 Laravel 环境分别检查。
 
-法币收款站安装 `plugins/merchant/` 下的 `sscpay-gateway-aggregator`，同时处理远程建单、回调和商品／变体同步。旧商品插件已合并，原 REST 路径、响应形状及 WooCommerce 鉴权方式仍可用。`plugins:sync` 发布网关主包；从 `1.15.2` 起安装 ZIP 与 WordPress 更新源可匿名通过 HTTPS 获取。私有初始化包只交给受信任的收款站，用于预置回调密钥及旧站凭证过渡；不进公开发布流程。后台下载权限和四个商城插件的协议指纹边界不变。见 [D-73](decisions.md#d-73-商品-api-并入收款站聚合插件)、[D-74](decisions.md#d-74-网关插件随部署发布并在后台下载) 和 [D-75](decisions.md#d-75-网关公开更新与回调密钥只写)。
+法币收款站安装 `plugins/merchant/` 下的 `sscpay-gateway-aggregator`，同时处理远程建单、回调和商品／变体同步。旧商品插件已合并，原 REST 路径、响应形状及 WooCommerce 鉴权方式仍可用。从 `1.17.0` 起，部署通过 `plugins:sync` 发布一个不含密钥的公开网关 ZIP，WordPress 通过 HTTPS 获取更新。新站在插件设置页录入回调密钥，旧站沿用已有配置。低于 `1.15.2` 的未迁移网关可使用同一 ZIP 中的 WP-CLI 脚本在覆盖安装前封存本站历史凭证。见 [D-73](decisions.md#d-73-商品-api-并入收款站聚合插件)、[D-74](decisions.md#d-74-网关插件随部署发布并在后台下载) 和 [D-81](decisions.md#d-81-付款侧网关使用单一公开包)。
 
 法币退款走独立的逐笔通知。付款侧网关插件保存已验签的渠道退款凭证和投递任务，向同一签名入口发送 `payment_refund`。本系统 [GatewayRefundService](../app/Services/GatewayRefundService.php) 绑定原交易、查验重复及冲突，随后通过 [BalanceService](../app/Services/BalanceService.php) 扣款。原币累计决定部分或全额退款，定时任务 `orders:settle-due` 同时重试未完成凭证。旧版整单退款状态只触发核对。见[逐笔退款协议](../doc/wordpress/s-system-payment-status-notify.md#逐笔退款通知)。
 
@@ -71,7 +71,7 @@ OpenCart 两代入口分别保留 MVC 类与命名空间结构，复用 `plugins
 
 主页的 `/plugins` 提供公开下载，`/plugins/updates/v1/{slug}` 提供按插件隔离的更新元数据，固定版本下载由 `/plugins/{slug}/{version}/download` 读取私有存储并流式输出。生产可复用 OSS，工作流与运行应用的 bucket/prefix 必须对齐；旧 GitHub Release 镜像仅用于把既有安装接到新更新器。商城插件支持 V1 与 V2 普通单、组合父单进度、完整体验签、事件去重、版本保护和逐子单物流；部分付款不确认 WooCommerce 付款成功。同单重试复用原商户订单号，状态落地通过 MySQL 连接级订单锁串行化。商户站的 `sscpay_shipment` WooCommerce API 入口按实际支付方式的凭据接收物流回传，父商户号＋运单号去重；只写配送 meta 和备注，不改变付款状态。协议联调由 `WordPressV2ContractTest` 覆盖实际服务端建单、通知、查单、发货与物流回传。发布配置见[部署说明](../doc/deployment.md#电商插件发布与更新)。
 
-插件下载中心的 `/plugins/guide` 免登录展示[双端插件安装指南](../doc/payment-plugin-installation.md)。网页从这份中文手册生成目录和正文，不提供私有初始化包。
+插件下载中心的 `/plugins/guide` 免登录展示[双端插件安装指南](../doc/payment-plugin-installation.md)。网页从这份中文手册生成目录和正文，并在 HTTPS 页面提供公开网关 ZIP 下载入口。
 
 路由装配在 [bootstrap/app.php](../bootstrap/app.php)。
 

@@ -97,7 +97,7 @@ class PluginDistributionTest extends TestCase
 
         $zip = new ZipArchive;
         $this->assertTrue($zip->open($built['zip']));
-        foreach ([$slug.'.php', 'uninstall.php', 'assets/css/admin.css', 'vendor/autoload.php', 'vendor/stripe/stripe-php/LICENSE'] as $file) {
+        foreach ([$slug.'.php', 'uninstall.php', 'src/prepare-legacy-upgrade.php', 'assets/css/admin.css', 'vendor/autoload.php', 'vendor/stripe/stripe-php/LICENSE'] as $file) {
             $this->assertNotFalse($zip->locateName($slug.'/'.$file), $file);
         }
         foreach (['wp-config.php', '.env', 'composer.lock', 'site-setup.php', 'site-setup.php.stub', 'tests/product-catalog.php', 'src/Frontend/Tpl/checkout-01-paper.html'] as $file) {
@@ -145,7 +145,9 @@ PHP;
         $releases->publish($build);
         $version = $build['release']['version'];
         $package = $feed.'/'.$version.'/download';
-        $this->get($feed.'?installed_version=1.15.0')->assertStatus(409)->assertJsonMissingPath('download_url');
+        $blocked = $this->get($feed.'?installed_version=1.15.0')->assertConflict()->assertJsonMissingPath('download_url');
+        $this->assertStringContainsString('备份', $blocked->json('message'));
+        $this->assertStringContainsString('安装指南', $blocked->json('message'));
         $this->get($feed.'?installed_version=1.15.0&site_prepared=1')->assertOk()->assertJsonPath('download_url', $package);
         $this->get($feed.'?installed_version='.$version)->assertOk()->assertJsonPath('download_url', $package);
         $manifest = $this->get($feed)->assertOk()
@@ -172,27 +174,20 @@ PHP;
         $this->get($feed.'/99.0.0/download')->assertNotFound();
     }
 
-    public function test_private_setup_provisions_the_site_and_legacy_cipher_but_never_enters_the_public_update(): void
+    public function test_the_public_gateway_package_is_independent_of_the_build_hosts_callback_secret(): void
     {
-        Storage::fake('plugin-test');
-        $this->app->useStoragePath($this->buildPath);
-        $privatePath = storage_path('app/gateway-provisioning/sscpay-gateway-site-setup.zip');
+        $releases = app(PluginReleaseService::class);
         config(['payment_gateway.webhook_secret' => '']);
-        $this->artisan('plugins:gateway-setup')->assertFailed();
-        $this->assertFileDoesNotExist($privatePath);
-
-        $secret = 'synthetic-private-default-for-setup-test';
+        $expectedChecksum = $releases->build(PluginCatalog::GATEWAY)['release']['sha256'];
+        $secret = 'synthetic-callback-secret-for-build-test';
         config(['payment_gateway.webhook_secret' => $secret]);
-        $this->artisan('plugins:gateway-setup')->doesntExpectOutputToContain($secret)->assertSuccessful();
-        $this->assertSame(0600, fileperms($privatePath) & 0777);
-        $zip = new ZipArchive;
-        $this->assertTrue($zip->open($privatePath));
-        $this->assertSame(2, $zip->numFiles);
-        $this->assertTrue($zip->extractTo($this->buildPath));
-        $zip->close();
 
-        $public = app(PluginReleaseService::class)->build(PluginCatalog::GATEWAY);
-        $this->assertTrue($zip->open($public['zip']));
+        $build = $releases->build(PluginCatalog::GATEWAY);
+
+        $this->assertSame($expectedChecksum, $build['release']['sha256']);
+        $this->assertStringNotContainsString($secret, File::get($build['manifest']));
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($build['zip']));
         $unsafeEntries = [];
         for ($index = 0; $index < $zip->numFiles; $index++) {
             $entry = $zip->getNameIndex($index);
@@ -205,13 +200,7 @@ PHP;
             }
         }
         $this->assertSame([], $unsafeEntries, 'The public archive must not contain the private initializer or baked-in credentials.');
-        $this->assertTrue($zip->extractTo($this->buildPath));
         $zip->close();
-        foreach (['legacy', 'upgraded'] as $stage) {
-            $process = new Process([PHP_BINARY, base_path('plugins/merchant/sscpay-gateway-aggregator/tests/fixtures/site-setup.php'), $stage, $this->buildPath]);
-            $this->assertSame(0, $process->run(), $process->getErrorOutput());
-        }
-        Storage::disk('plugin-test')->assertDirectoryEmpty('');
     }
 
     public function test_homepage_and_download_center_link_to_published_plugins_and_v2_documentation(): void

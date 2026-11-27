@@ -52,7 +52,7 @@ final class SiteCipher
             }
         }
         if ($key === null || strlen($key) !== 32) {
-            throw new RuntimeException('缺少旧版网关凭证密钥，请从升级前备份恢复后运行本站初始化包。');
+            throw new RuntimeException('缺少旧版网关凭证密钥，请恢复升级前备份，并在旧插件启用时按升级说明保存本站凭证。');
         }
 
         return self::open($encoded, $key);

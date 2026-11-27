@@ -74,7 +74,7 @@ class PluginDownloadController extends Controller
         $installed = $request->query('installed_version');
         if (is_string($installed) && preg_match('/^\d+\.\d+\.\d+$/D', $installed) && version_compare($installed, self::FIRST_PUBLIC_GATEWAY_VERSION, '<')
             && $request->query('site_prepared') !== '1') {
-            return response()->json(['message' => '请先在旧插件仍启用时激活收款站初始化包，再检查更新。'], 409)
+            return response()->json(['message' => '旧版网关尚未确认凭证迁移，已暂停自动更新。请先备份旧插件、数据库和 WordPress 安全盐，再按安装指南处理旧版凭证。'], 409)
                 ->header('Cache-Control', 'no-store');
         }
 

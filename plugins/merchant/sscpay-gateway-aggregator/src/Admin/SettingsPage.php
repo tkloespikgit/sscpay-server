@@ -162,7 +162,7 @@ class SettingsPage
             <h1><?php esc_html_e('支付网关聚合插件 - 设置', 'sscpay-gateway-aggregator'); ?></h1>
 
             <?php if (isset($_GET['pga_secret_saved'])) : ?>
-                <div class="notice notice-success"><p><?php esc_html_e('出站回调签名密钥已保存，请把它同步给S系统那边用于验证回调签名。', 'sscpay-gateway-aggregator'); ?></p></div>
+                <div class="notice notice-success"><p><?php esc_html_e('出站回调签名密钥已保存。', 'sscpay-gateway-aggregator'); ?></p></div>
             <?php endif; ?>
             <?php if (isset($_GET['pga_secret_error'])) : ?>
                 <div class="notice notice-error"><p><?php esc_html_e('密钥未保存。请输入非空的可打印 ASCII 字符。', 'sscpay-gateway-aggregator'); ?></p></div>
@@ -291,8 +291,8 @@ class SettingsPage
             <hr>
 
             <h2><?php esc_html_e('出站回调签名密钥', 'sscpay-gateway-aggregator'); ?></h2>
-            <p><?php echo esc_html($hasSecret ? __('已配置，不显示现有密钥。', 'sscpay-gateway-aggregator') : __('回调密钥未配置或无法读取，请初始化或保存新密钥。', 'sscpay-gateway-aggregator')); ?></p>
-            <details>
+            <p><?php echo esc_html($hasSecret ? __('已配置，不显示现有密钥。', 'sscpay-gateway-aggregator') : __('回调密钥未配置或无法读取，请在下方填写。', 'sscpay-gateway-aggregator')); ?></p>
+            <details<?php echo $hasSecret ? '' : ' open'; ?>>
                 <summary><?php esc_html_e('修改回调密钥', 'sscpay-gateway-aggregator'); ?></summary>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field('pga_save_secret'); ?>
@@ -302,7 +302,7 @@ class SettingsPage
                         <input type="password" id="pga_outbound_shared_secret" name="pga_outbound_shared_secret"
                                class="regular-text" autocomplete="new-password" required>
                     </p>
-                    <p class="description"><?php esc_html_e('保存后，请同步更新 S 系统使用的回调验签密钥。', 'sscpay-gateway-aggregator'); ?></p>
+                    <p class="description"><?php esc_html_e('填写平台运维为当前环境提供的回调签名密钥。', 'sscpay-gateway-aggregator'); ?></p>
                     <?php submit_button(__('保存新密钥', 'sscpay-gateway-aggregator'), 'primary'); ?>
                 </form>
             </details>
