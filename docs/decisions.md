@@ -838,3 +838,17 @@ WeTech 预警和 Ethoca 处理反馈独立保存。已退款反馈需要支付�
 按渠道成功退款号、原币及实际金额入账，回调、查单、重试共用同一凭证。累计原币退款折算后的本次增量用于扣本金，整笔订单最多扣至实际净收入。每个成功退款号另收一次订单约定的退款手续费，剩余可扣本金为零时仍记该笔费。无可核对的入账流水或既有退款无法对应时转人工。历史欠缺渠道退款号的退款单可在核验凭据后关联，保留原账并登记操作人。
 
 代码依据见 [GatewayRefundService](../app/Services/GatewayRefundService.php)、[BalanceService](../app/Services/BalanceService.php) 和[回调契约](../doc/wordpress/s-system-payment-status-notify.md#逐笔退款通知)。
+
+## D-79 ETH 报价与显示使用 8 位小数
+
+**状态：当前工作区，未部署。** 账本、`decimals` 和链上核验继续使用 18 位 wei，已有付款请求不改写。新的 ETH 报价先按 [D-33](#d-33-新版区块链基础分阶段接入与精确账务) 向上取整到 1 wei，再向上取整到 8 位 ETH（步长 10^10 wei）。手续费按取整后的应付数量计算。取整规则名仍是 `due_ceil_fee_total_ceil_v1`；步长写在报价快照的 `payment_decimals`。没有该字段的旧报价按 1 wei 重算，避免结算对不上。
+
+收款页、订单、账务和统计对能被该步长整除的数量显示 8 位，例如 `1.00000000`。不能整除的数量（旧报价、1 wei 到账）仍显示全部 18 位，避免把差额显示成 `0.00000000`。付款页进度条按这两段显示各自的小数位数对齐后再计算，差 1 wei 不会显示为已收齐。BTC、LTC、USDT 的应付步长等于链上位数，显示不变。EIP-681 仍传 wei 整数。
+
+代码依据：[报价](../app/Services/CryptoQuoteService.php)、[应付位数](../app/Support/CryptoAssetRegistry.php)、[显示](../app/Support/CryptoAmount.php)。
+
+## D-80 已删除的地址订阅按 403 释放
+
+**状态：当前工作区，未部署。** 按订阅编号查询和取消都带上 `type=mainnet` 或 `type=testnet`。Tatum 对已经不存在的订阅返回 HTTP 403，不是 404：主网范围是 `subscription.not.exists`，测试网曾经是 `subscription.subscription.not.match`，正文都以 `No such subscription` 开头。这两种响应和 404 一样视为订阅已不存在，本地监控可以进入退订。额度用尽等其他 403 仍视为失败，不释放本地监控。
+
+代码依据：[订阅客户端](../app/Services/TatumSubscriptionClient.php)。

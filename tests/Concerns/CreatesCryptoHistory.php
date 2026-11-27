@@ -111,7 +111,9 @@ trait CreatesCryptoHistory
                 return $rpc['provider_handler']($request);
             }
             if (isset($rpc['subscription']) && str_starts_with($request->url(), 'https://api.tatum.io/v4/subscription/')) {
-                $this->assertSame('https://api.tatum.io/v4/subscription/alert-1', $request->url());
+                $this->assertSame('/v4/subscription/alert-1', parse_url($request->url(), PHP_URL_PATH));
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+                $this->assertContains($query['type'] ?? null, ['mainnet', 'testnet']);
                 $this->assertContains($request->method(), ['GET', 'DELETE']);
 
                 return $request->method() === 'DELETE' ? Http::response('', 204) : Http::response($rpc['subscription']);

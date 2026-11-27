@@ -13,9 +13,9 @@ final class CryptoQuoteService
     /**
      * Pure calculation; callers must supply a verified USD market price and the original fiat rate.
      *
-     * @return array{version: int, network: string, asset: string, decimals: int, currency: string, fiat_amount: string, fiat_usd_rate: string, price_usd: string, markup_percent: string, fee_percent: string, fee_fixed_usd: string, due_units: string, fee_units: string, net_units: string, rounding: string}
+     * @return array{version: int, network: string, asset: string, decimals: int, payment_decimals: int, currency: string, fiat_amount: string, fiat_usd_rate: string, price_usd: string, markup_percent: string, fee_percent: string, fee_fixed_usd: string, due_units: string, fee_units: string, net_units: string, rounding: string}
      */
-    public function calculate(string $assetKey, string $amount, string $currency, string $fiatUsdRate, string $priceUsd, string $markupPercent, string $feePercent, string $feeFixedUsd): array
+    public function calculate(string $assetKey, string $amount, string $currency, string $fiatUsdRate, string $priceUsd, string $markupPercent, string $feePercent, string $feeFixedUsd, ?int $paymentDecimals = null): array
     {
         $asset = $this->assets->get($assetKey);
         [$a, $ad] = CryptoAmount::fraction($amount);
@@ -35,6 +35,14 @@ final class CryptoQuoteService
         $numerator = bcmul(bcmul(bcmul(bcmul($a, $r, 0), $pd, 0), bcadd(bcmul('100', $md, 0), $m, 0), 0), $scale, 0);
         $denominator = bcmul(bcmul(bcmul(bcmul($ad, $rd, 0), $p, 0), '100', 0), $md, 0);
         $due = CryptoAmount::ceilRatio($numerator, $denominator);
+        $paymentDecimals ??= $asset['decimals'];
+        if ($paymentDecimals < 1 || $paymentDecimals > $asset['decimals']) {
+            throw new InvalidArgumentException('Invalid crypto quote precision.');
+        }
+        if ($paymentDecimals < $asset['decimals']) {
+            $step = bcpow('10', (string) ($asset['decimals'] - $paymentDecimals), 0);
+            $due = bcmul(CryptoAmount::ceilRatio($due, $step), $step, 0);
+        }
 
         $fee = $this->feeForGross($due, ['fee_percent' => $feePercent, 'fee_fixed_usd' => $feeFixedUsd,
             'price_usd' => $priceUsd, 'decimals' => $asset['decimals']]);
@@ -46,6 +54,7 @@ final class CryptoQuoteService
         return [
             'version' => 1,
             ...$asset,
+            'payment_decimals' => $paymentDecimals,
             'currency' => $currency,
             'fiat_amount' => $amount,
             'fiat_usd_rate' => $fiatUsdRate,

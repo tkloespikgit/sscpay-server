@@ -59,4 +59,17 @@ final class CryptoAmount
 
         return bcdiv($units, '1'.str_repeat('0', $decimals), $decimals);
     }
+
+    /** Show an exact multiple of the payable step at that step. Any remainder keeps the chain scale. */
+    public static function present(string $units, int $decimals, int $places): string
+    {
+        if (! preg_match('/^(0|[1-9][0-9]*)$/D', $units) || $decimals < 0 || $decimals > 36 || $places < 1 || $places > $decimals) {
+            throw new InvalidArgumentException('Invalid crypto quantity or precision.');
+        }
+        if ($places < $decimals && bcmod($units, bcpow('10', (string) ($decimals - $places), 0), 0) !== '0') {
+            return bcdiv($units, '1'.str_repeat('0', $decimals), $decimals);
+        }
+
+        return bcdiv($units, '1'.str_repeat('0', $decimals), $places);
+    }
 }

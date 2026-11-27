@@ -15,6 +15,36 @@
 - 隔离 MySQL 回归已验证相同退款号并发重发、不同退款号并发、部分退款、结算与拒付竞争，以及付款和退款乱序恢复。付款站用 WordPress 核心和独立 MySQL 8.0.33 验证了升级、重复迁移、30＋70 两次部分退款以及投递表写入失败后的整笔回滚与重试。四类渠道的报文及补查使用离线样本和模拟接口，尚未对真实支付账号联调。
 - 本次运行的全量 SQLite 套件共 2,758 项，12 项跳过，仅链上凭证轮换测试的 HTTP 请求次数失败（预期 4，实际 5）；在修改前 HEAD 的独立副本上复现相同结果。商城插件协议检查和付款站 1.16.0 发布预检通过。
 
+## 2026-11-26 已删除的地址订阅不再占着名额（未部署）
+
+- 按编号查询和取消现在带上主网或测试网。订阅已经不存在时，Tatum 返回 403 `subscription.not.exists` 或 `subscription.subscription.not.match`，正文以 `No such subscription` 开头。这两种和 404 一样视为已删除，本地监控可以退订并释放名额。其他 403，例如免费套餐已满，仍保持失败。见 [D-79](decisions.md#d-79-已删除的地址订阅按-403-释放)。
+- 验证：订阅客户端、监控退订、凭证轮换、收款页、历史扫描和入账回归通过。未对生产订阅执行删除。
+
+## 2026-11-26 ETH 新报价与显示改为 8 位（未部署）
+
+- 新的 ETH 报价在向上取整到 1 wei 之后，再向上取整到 8 位 ETH。正好 1 ETH 显示为 `1.00000000`。账本仍保存 wei，`decimals` 仍是 18，到账仍须与应付 wei 完全一致。已有报价不改写；快照没有 `payment_decimals` 时继续按 1 wei 重算。见 [D-78](decisions.md#d-78-eth-报价与显示使用-8-位小数)。
+- 不能被 10^10 wei 整除的数量仍显示 18 位，避免把 1 wei 显示成 `0.00000000`。BTC、LTC、USDT 的位数不变。
+- 付款页进度条按应付和已收各自的小数位数对齐后再计算。应付 `0.04080000`、已收少 1 wei 时进度为 99。
+- 验证：报价、收款页与后台展示回归 163 项通过。进度条用页面函数核对 9 组金额，少 1 wei 为 99；`npm run build` 通过。未在浏览器打开付款页。未部署。
+
+## 2026-11-25 通知订阅改用 Tatum 的链名（未部署）
+
+- Tatum 创建地址通知不接受内部名 `litecoin-testnet` 和 `tron-shasta`，返回 HTTP 400 `validation.failed`。允许值分别是 `litecoin-core-testnet` 和 `tron-testnet`；莱特币主网对应 `litecoin-core-mainnet`。订阅没有建成，付款页一直停在准备中。
+- 只在创建、按地址回查、Shasta 的 `finality` 能力查询，以及订阅列表和回调的链名核对时转换。数据库、地址派生和创世块配置仍用内部网络名。主网和测试网不能互相认成同一条链。BTC／LTC 仍不发送 `finality`。
+- 验证：`TatumSubscriptionClientTest`、`TatumWebhookTest`、`CryptoAddressMonitorTest` 共 81 项、294 个断言通过。未部署。监控表上的一小时退避只约束 `crypto:maintain-subscriptions`。付款准备会直接重建订阅，部署后执行 `crypto:prepare-checkouts` 即可，不必等到 2026-11-25 18:57（Asia/Shanghai）。
+
+## 2026-11-25 波场创世块允许没有时间（未部署）
+
+- Shasta 和主网高度 0 的区块头没有 `number` 和 `timestamp`。准备付款核对网络时必读这一块，空时间被当成整数后抛出 `Invalid history integer.`，付款请求不会创建。
+- 高度仍从 `blockID` 前 16 位推断。仅高度 0 且时间缺失或小于 1 毫秒时，用 1 毫秒占位；后续区块仍必须带时间。创世块继续只用于核对 `blockID`。
+- 验证：`CryptoBlockHistoryTest` 与 `CryptoTronVerificationTest` 共 67 项通过。未部署，也未对生产节点重跑准备。
+
+## 2026-11-25 莱特币测试网派生改用 ttub（未部署）
+
+- Tatum 的莱特币测试网地址接口只接受 `ttub`（版本字节 `0436f6e1`）。Electrum-LTC 导出的是比特币测试网 `tpub`（`043587cf`），直接提交会得到 HTTP 400：`xpub must be a valid testnet LTC xpub`。付款请求因此不会创建。
+- 后台仍只保存 `xpub`／`tpub`。`litecoin-testnet` 在调用 `/v3/litecoin/address` 前，只替换版本字节并重算校验和，链码和公钥不变。比特币测试网仍发送原来的 `tpub`。
+- 验证：`CryptoPublicKeyTest` 与 `TatumReadClientTest` 共 17 项通过。未对生产 Tatum 重新发起派生，也未处理报价接口 `code=0` 的连接失败。
+
 ## 2026-11-24 WeTech 预警服务独立管理（未部署）
 
 - 在同一账号下分别启停 Ethoca 和 RDR，各自按 Descriptor 或 MID 多选绑定支付方式。共享凭证、webhook 和已有预警编号保持不变，无需迁移。配置入口、开关和补查范围见[部署说明](../doc/deployment.md#34-wetech-拒付预警配置)及 [D-77](decisions.md#d-77-拒付预警按产品启停按账号验签)。

@@ -316,7 +316,8 @@ final class CryptoBalanceService
             }
             $quote = $income?->fee_snapshot ?? $request->quote_snapshot;
             $calculated = $this->quotes->calculate($request->network.':'.$request->asset, $quote['fiat_amount'], $quote['currency'],
-                $quote['fiat_usd_rate'], $quote['price_usd'], $quote['markup_percent'], $quote['fee_percent'], $quote['fee_fixed_usd']);
+                $quote['fiat_usd_rate'], $quote['price_usd'], $quote['markup_percent'], $quote['fee_percent'], $quote['fee_fixed_usd'],
+                self::paymentDecimals($quote));
             foreach (['due_units', 'fee_units', 'net_units', 'network', 'asset', 'decimals'] as $field) {
                 if ((string) $request->$field !== (string) $calculated[$field]) {
                     throw new BalanceOperationException(__('crypto.review.errors.evidence'));
@@ -422,6 +423,7 @@ final class CryptoBalanceService
             $calculated = $this->quotes->calculate(
                 $fresh->network.':'.$fresh->asset, $quote['fiat_amount'], $quote['currency'],
                 $quote['fiat_usd_rate'], $quote['price_usd'], $quote['markup_percent'], $quote['fee_percent'], $quote['fee_fixed_usd'],
+                self::paymentDecimals($quote),
             );
             foreach (['due_units', 'fee_units', 'net_units', 'network', 'asset', 'decimals'] as $field) {
                 if ((string) $fresh->$field !== (string) $calculated[$field]) {
@@ -470,5 +472,19 @@ final class CryptoBalanceService
 
             return $ledger;
         }, 3);
+    }
+
+    /** @param array<string, mixed> $quote */
+    private static function paymentDecimals(array $quote): ?int
+    {
+        $scale = $quote['payment_decimals'] ?? null;
+        if ($scale === null) {
+            return null;
+        }
+        if (! is_int($scale)) {
+            throw new DomainException('Unsupported crypto quote version.');
+        }
+
+        return $scale;
     }
 }

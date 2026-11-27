@@ -4,6 +4,7 @@ namespace App\Filament\Support;
 
 use App\Models\Order;
 use App\Support\CryptoAmount;
+use App\Support\CryptoAssetRegistry;
 
 final class CryptoOrderDisplay
 {
@@ -34,7 +35,7 @@ final class CryptoOrderDisplay
             return __('crypto.order.uncredited');
         }
 
-        return CryptoAmount::format($totals[$field], $request->decimals).' '.$totals['asset'];
+        return CryptoAmount::present($totals[$field], $request->decimals, app(CryptoAssetRegistry::class)->payableDecimals($request->network, $request->asset)).' '.$totals['asset'];
     }
 
     public static function denomination(Order $order): string

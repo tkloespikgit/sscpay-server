@@ -55,6 +55,20 @@ class CryptoQuoteTest extends TestCase
 
         $this->assertSame('1', $quote['due_units']);
         $this->assertSame('0.000000000000000001', CryptoAmount::format($quote['net_units'], 18));
+        $this->assertSame('0.000000000000000001', CryptoAmount::present($quote['net_units'], 18, 8));
+
+        $payable = app(CryptoQuoteService::class)->calculate('ethereum-mainnet:ETH', '0.000000000000000000000000000000000001', 'USD', '1', '1000000000000000000000000000000000000000', '0', '0', '0', 8);
+
+        $this->assertSame('10000000000', $payable['due_units']);
+        $this->assertSame(8, $payable['payment_decimals']);
+        $this->assertSame('0.00000001', CryptoAmount::present($payable['due_units'], 18, 8));
+        $this->assertSame('1.00000000', CryptoAmount::present('1000000000000000000', 18, 8));
+
+        $aligned = app(CryptoQuoteService::class)->calculate('ethereum-mainnet:ETH', '200.00', 'AUD', '0.50', '2500', '2', '1', '0', 8);
+
+        $this->assertSame('40800000000000000', $aligned['due_units']);
+        $this->assertSame('408000000000000', $aligned['fee_units']);
+        $this->assertSame('0.04080000', CryptoAmount::present($aligned['due_units'], 18, 8));
     }
 
     #[DataProvider('invalidQuotes')]
@@ -79,6 +93,8 @@ class CryptoQuoteTest extends TestCase
             'markup too high' => [[5 => '101']],
             'zero amount' => [[1 => '0']],
             'leading zero decimal' => [[1 => '001']],
+            'zero payment scale' => [[8 => 0]],
+            'payment scale above chain' => [[8 => 9]],
         ];
     }
 

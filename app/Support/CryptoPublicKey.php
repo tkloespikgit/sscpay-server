@@ -34,8 +34,36 @@ final class CryptoPublicKey
         return $payload;
     }
 
+    /** Tatum's Litecoin testnet parser accepts ttub (0436f6e1), not a Bitcoin testnet tpub. */
+    public static function litecoinTestnetKey(string $key): string
+    {
+        $payload = self::payload($key);
+        if (! str_starts_with($key, 'tpub') || bin2hex(substr($payload, 0, 4)) !== '043587cf') {
+            throw new InvalidArgumentException('Litecoin testnet derivation requires a tpub.');
+        }
+
+        return self::encode("\x04\x36\xf6\xe1".substr($payload, 4));
+    }
+
     public static function fingerprint(string $family, string $key): string
     {
         return hash('sha256', $family.':'.bin2hex(substr(self::payload($key), 13)));
+    }
+
+    private static function encode(string $payload): string
+    {
+        $body = $payload.substr(hash('sha256', hash('sha256', $payload, true), true), 0, 4);
+        $zeros = strspn($body, "\x00");
+        $number = '0';
+        foreach (str_split($body) as $character) {
+            $number = bcadd(bcmul($number, '256', 0), (string) ord($character), 0);
+        }
+        $encoded = '';
+        while (bccomp($number, '0', 0) > 0) {
+            $encoded = self::ALPHABET[(int) bcmod($number, '58', 0)].$encoded;
+            $number = bcdiv($number, '58', 0);
+        }
+
+        return str_repeat('1', $zeros).$encoded;
     }
 }

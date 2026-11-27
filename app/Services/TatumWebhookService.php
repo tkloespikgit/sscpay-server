@@ -9,6 +9,7 @@ use App\Models\CryptoWebhookReceipt;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Support\CryptoAssetRegistry;
+use App\Support\TatumAlertChain;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -27,7 +28,7 @@ final class TatumWebhookService
         }
         $txid = $hint['txId'] ?? null;
         if (! is_string($txid) || ! preg_match('/^(?:0x)?[a-fA-F0-9]{64}$/D', $txid)
-            || (isset($hint['chain']) && $hint['chain'] !== $monitor->network)
+            || (isset($hint['chain']) && ! TatumAlertChain::matches($monitor->network, $hint['chain']))
             || ($monitor->subscription_id !== null && isset($hint['subscriptionId']) && $hint['subscriptionId'] !== $monitor->subscription_id)) {
             throw ValidationException::withMessages(['notification' => 'Notification does not match the monitored chain or subscription.']);
         }

@@ -158,7 +158,7 @@ class CryptoRuntimeSettingsTest extends TestCase
         $this->assertSame(hash('sha256', 'rotated-api-key'), $next->credential_fingerprint);
         Http::preventStrayRequests();
         Http::fake([
-            'https://api.tatum.io/v4/subscription/alert-new' => Http::response($this->alertData($next, 'alert-new')),
+            'https://api.tatum.io/v4/subscription/alert-new*' => Http::response($this->alertData($next, 'alert-new')),
             'https://api.tatum.io/v4/subscription*' => fn (Request $request) => match ($request->method()) {
                 'PUT' => Http::response('', 204), 'GET' => Http::response([]), 'POST' => Http::response(['id' => 'alert-new'], 201),
             },
@@ -169,7 +169,7 @@ class CryptoRuntimeSettingsTest extends TestCase
         Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
             && $request['hmacSecret'] === 'rotated-hmac-secret-123456' && $request->hasHeader('x-api-key', 'rotated-api-key'));
         Http::assertSent(fn (Request $request): bool => $request->method() === 'POST' && $request->hasHeader('x-api-key', 'rotated-api-key'));
-        Http::assertSentCount(4);
+        Http::assertSentCount(5);
     }
 
     public function test_save_rechecks_admin_status_instead_of_trusting_a_stale_authenticated_user(): void

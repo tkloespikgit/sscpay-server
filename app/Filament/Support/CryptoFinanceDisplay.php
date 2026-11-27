@@ -18,7 +18,10 @@ final class CryptoFinanceDisplay
             return '—';
         }
 
-        return CryptoAmount::format($units, app(CryptoAssetRegistry::class)->get($record->network.':'.$record->asset)['decimals']).' '.$record->asset;
+        $registry = app(CryptoAssetRegistry::class);
+        $asset = $registry->get($record->network.':'.$record->asset);
+
+        return CryptoAmount::present($units, $asset['decimals'], $registry->payableDecimals($record->network, $record->asset)).' '.$record->asset;
     }
 
     public static function column(string $field, ?string $label = null): TextColumn

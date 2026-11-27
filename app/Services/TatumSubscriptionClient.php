@@ -6,6 +6,7 @@ use App\Models\CryptoAddress;
 use App\Models\CryptoAddressMonitor;
 use App\Support\CryptoAssetRegistry;
 use App\Support\CryptoRuntimeSettings;
+use App\Support\TatumAlertChain;
 use App\Support\TatumHttpRetry;
 use DomainException;
 use Illuminate\Http\Client\ConnectionException;
@@ -43,7 +44,7 @@ final class TatumSubscriptionClient
     {
         $body = [
             'type' => 'ADDRESS_EVENT',
-            'attr' => ['chain' => $monitor->network, 'address' => $this->address($monitor), 'url' => $monitor->callback_url],
+            'attr' => ['chain' => TatumAlertChain::name($monitor->network), 'address' => $this->address($monitor), 'url' => $monitor->callback_url],
         ];
         if ($this->supportsFinality($monitor)) {
             $body['finality'] = 'final';
@@ -98,7 +99,7 @@ final class TatumSubscriptionClient
                 }
             });
         }
-        $chain = $chains[$monitor->network] ?? [];
+        $chain = $chains[TatumAlertChain::name($monitor->network)] ?? [];
 
         return ($chain['testnet'] ?? null) === ($monitor->environment === 'testnet') && ($chain['finality'] ?? false) === true;
     }
@@ -107,8 +108,8 @@ final class TatumSubscriptionClient
     public function get(string $environment, string $id): ?array
     {
         $this->validateId($id);
-        $response = $this->request('GET', '/v4/subscription/'.$id, $environment);
-        if ($response->status() === 404) {
+        $response = $this->request('GET', '/v4/subscription/'.$id, $environment, [], ['type' => $environment]);
+        if ($this->absent($response)) {
             return null;
         }
         $data = $response->json();
@@ -122,10 +123,24 @@ final class TatumSubscriptionClient
     public function cancel(string $environment, string $id): void
     {
         $this->validateId($id);
-        $response = $this->request('DELETE', '/v4/subscription/'.$id, $environment);
-        if (! in_array($response->status(), [204, 404], true)) {
+        $response = $this->request('DELETE', '/v4/subscription/'.$id, $environment, [], ['type' => $environment]);
+        if ($response->status() !== 204 && ! $this->absent($response)) {
             throw new DomainException('Tatum subscription cancellation was not confirmed.');
         }
+    }
+
+    /** A missing alert is 404, or 403 "No such subscription" on either network. Other 403 responses stay failures. */
+    private function absent(Response $response): bool
+    {
+        if ($response->status() === 404) {
+            return true;
+        }
+        $code = $response->json('errorCode');
+        $message = $response->json('message');
+
+        return $response->status() === 403 && is_string($code) && is_string($message)
+            && str_starts_with($message, 'No such subscription')
+            && in_array($code, ['subscription.not.exists', 'subscription.subscription.not.match'], true);
     }
 
     /** Fully scans bounded filtered pages before declaring that no matching alert exists.
@@ -137,7 +152,7 @@ final class TatumSubscriptionClient
         for ($page = 0; $page < 3; $page++) {
             $response = $this->request('GET', '/v4/subscription', $monitor->environment, [], [
                 'pageSize' => 50, 'offset' => $page * 50, 'address' => $this->address($monitor),
-                'type' => 'ADDRESS_EVENT', 'chain' => $monitor->network,
+                'type' => 'ADDRESS_EVENT', 'chain' => TatumAlertChain::name($monitor->network),
             ]);
             $data = $response->json();
             $items = is_array($data) && array_is_list($data) ? $data : (is_array($data) ? ($data['data'] ?? null) : null);
@@ -193,10 +208,10 @@ final class TatumSubscriptionClient
      */
     private function matchesNetwork(CryptoAddressMonitor $monitor, array $alert, array $attr): bool
     {
-        if (array_key_exists('chain', $alert) && $alert['chain'] !== $monitor->network) {
+        if (array_key_exists('chain', $alert) && ! TatumAlertChain::matches($monitor->network, $alert['chain'])) {
             return false;
         }
-        if (($attr['chain'] ?? null) === $monitor->network) {
+        if (TatumAlertChain::matches($monitor->network, $attr['chain'] ?? null)) {
             return true;
         }
         $currency = match ($monitor->network) {
@@ -207,7 +222,8 @@ final class TatumSubscriptionClient
             default => null,
         };
 
-        return $currency !== null && ($alert['chain'] ?? null) === $monitor->network && ($attr['chain'] ?? null) === $currency;
+        return $currency !== null && array_key_exists('chain', $alert)
+            && TatumAlertChain::matches($monitor->network, $alert['chain']) && ($attr['chain'] ?? null) === $currency;
     }
 
     private function key(string $environment): string

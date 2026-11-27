@@ -51,10 +51,10 @@ class CryptoOrderPresentationTest extends TestCase
 
     public function test_order_list_and_detail_display_exact_crypto_net_and_frozen_rates(): void
     {
-        Livewire::test(ListOrders::class)->assertOk()->assertSee('0.040392000000000000 ETH')
-            ->assertSee('ETH / Ethereum Sepolia')->assertSee(__('crypto.order.summary'))->assertSee('0.000408000000000000 ETH');
+        Livewire::test(ListOrders::class)->assertOk()->assertSee('0.04039200 ETH')
+            ->assertSee('ETH / Ethereum Sepolia')->assertSee(__('crypto.order.summary'))->assertSee('0.00040800 ETH');
         Livewire::test(ViewOrder::class, ['record' => $this->creditedRequest->order_id])->assertOk()
-            ->assertSee('0.040392000000000000 ETH')->assertSee('1 USD = 1 USD; 1 ETH = 2500 USD')
+            ->assertSee('0.04039200 ETH')->assertSee('1 USD = 1 USD; 1 ETH = 2500 USD')
             ->assertSee(__('crypto.order.markup', ['rate' => '2']));
     }
 
@@ -77,9 +77,9 @@ class CryptoOrderPresentationTest extends TestCase
                 'acknowledge' => true, 'mfa_code' => $code,
             ])->assertHasNoActionErrors()->assertNotified();
         $this->assertNotNull($request->order->fresh()->paid_at);
-        $this->assertSame('0.019800000000000000 ETH', CryptoOrderDisplay::amount($request->order->fresh()));
+        $this->assertSame('0.01980000 ETH', CryptoOrderDisplay::amount($request->order->fresh()));
         Livewire::test(ManageCryptoPaymentReviews::class)->mountAction(TestAction::make('view')->table($request->order))
-            ->assertMountedActionModalSee('0.019800000000000000 ETH')->assertMountedActionModalSee('&lt;script&gt;', escape: false);
+            ->assertMountedActionModalSee('0.01980000 ETH')->assertMountedActionModalSee('&lt;script&gt;', escape: false);
         Http::assertNothingSent();
     }
 
@@ -109,14 +109,14 @@ class CryptoOrderPresentationTest extends TestCase
         $service = app(CryptoOrderStatisticsService::class);
         $query = Order::query()->where('merchant_id', $this->merchant->id);
         $row = $service->summarize($query)[0];
-        $this->assertSame('0.000408000000000000 ETH', $row['fee']);
-        $this->assertSame('0.040392000000000000 ETH', $row['net']);
+        $this->assertSame('0.00040800 ETH', $row['fee']);
+        $this->assertSame('0.04039200 ETH', $row['net']);
         $this->assertSame([], $service->summarize((clone $query)->where('order_no', 'missing')));
         $this->chainEvent->update(['orphaned_at' => now(), 'confirmed_at' => null]);
         $this->reconcileCrypto();
         $row = $service->summarize($query)[0];
-        $this->assertSame('0.000000000000000000 ETH', $row['fee']);
-        $this->assertSame('0.000000000000000000 ETH', $row['net']);
+        $this->assertSame('0.00000000 ETH', $row['fee']);
+        $this->assertSame('0.00000000 ETH', $row['net']);
         $this->assertSame(1, $row['count']);
         $this->assertSame(__('crypto.order.reversed'), CryptoOrderDisplay::state($this->creditedRequest->order->fresh()));
         app(OrderStatsAggregator::class)->aggregateDate(now());

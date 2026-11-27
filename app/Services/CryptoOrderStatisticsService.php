@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\CryptoAmount;
 use App\Support\CryptoAssetRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -36,10 +37,12 @@ final class CryptoOrderStatisticsService
         }
         ksort($rows);
         foreach ($rows as $key => &$row) {
-            $decimals = app(CryptoAssetRegistry::class)->get($key)['decimals'];
+            $registry = app(CryptoAssetRegistry::class);
+            $decimals = $registry->get($key)['decimals'];
+            $places = $registry->payableDecimals($row['network'], $row['asset']);
             foreach (['gross', 'fee', 'net'] as $field) {
                 // A report total can exceed one address's uint256 cap. Format with exact division.
-                $row[$field] = bcdiv($row[$field], '1'.str_repeat('0', $decimals), $decimals).' '.$row['asset'];
+                $row[$field] = CryptoAmount::present($row[$field], $decimals, $places).' '.$row['asset'];
             }
         }
 
