@@ -24,10 +24,10 @@ if (root) {
         }
     }
 
-    function rememberQuote({ request_id, expires_at, asset, due_amount, network, address }) {
+    function rememberQuote({ request_id, expires_at, asset, asset_label, due_amount, network_label, address }) {
         if (displayedQuote?.request_id === request_id) return;
 
-        displayedQuote = { request_id, expires_at, asset, due_amount, network, address };
+        displayedQuote = { request_id, expires_at, asset, asset_label, due_amount, network_label, address };
         try {
             sessionStorage.setItem(storageKey, JSON.stringify(displayedQuote));
         } catch {
@@ -58,13 +58,13 @@ if (root) {
         activeQuote = payable ? quote : null;
 
         element('payment-quote').hidden = !quote;
-        element('quote-asset').textContent = quote?.asset ?? '';
+        element('quote-asset').textContent = quote?.asset_label || quote?.asset || '';
         element('quote-asset').dataset.asset = quote?.asset ?? '';
         renderValue(element('quote-amount'), element('expired-amount'), quote?.due_amount ?? '', payable);
         element('copy-amount').hidden = !payable;
 
         element('payment-recipient').hidden = !quote?.address;
-        element('quote-network').textContent = quote?.network ?? '';
+        element('quote-network').textContent = quote?.network_label || '';
         renderValue(element('payment-address'), element('expired-address'), quote?.address ?? '', payable);
         element('copy-address').hidden = !payable;
         element('payment-instructions').hidden = !payable;
@@ -151,7 +151,7 @@ if (root) {
         if (payable) {
             expiresTimer = setTimeout(() => {
                 render(current);
-                refresh('open');
+                refresh(null);
             }, Math.min(expiresAt - now, 2147483647));
         }
     }
@@ -220,7 +220,7 @@ if (root) {
     }
 
     element('requote').addEventListener('click', () => refresh('requote'));
-    element('check-payment').addEventListener('click', () => refresh('open'));
+    element('check-payment').addEventListener('click', () => refresh(null));
     element('copy-amount').addEventListener('click', () => copyValue('quote-amount'));
     element('copy-address').addEventListener('click', () => copyValue('payment-address'));
     wallet.addEventListener('click', (event) => {
@@ -232,7 +232,7 @@ if (root) {
             element('quote-countdown').hidden = true;
             renderQuote(null, false);
         } else {
-            refresh('open');
+            refresh(null);
         }
     });
 
@@ -242,8 +242,7 @@ if (root) {
     }, 1000);
     setInterval(() => {
         if (!document.hidden && current?.state !== 'paid') {
-            const needsOpen = !current || current.state === 'checking'
-                || (current.state === 'ready' && Date.parse(current.expires_at) <= Date.now());
+            const needsOpen = !current || current.state === 'checking';
             refresh(needsOpen && Date.now() - lastOpen >= 30000 ? 'open' : null);
         }
     }, 5000);

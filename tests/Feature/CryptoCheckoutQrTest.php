@@ -34,7 +34,13 @@ class CryptoCheckoutQrTest extends TestCase
         PaymentMethod::query()->findOrFail($monitor->paymentRequest->payment_method_id)
             ->update(['config' => ['contract_address' => '0x'.str_repeat('b', 40)]]);
 
+        $standard = $asset === 'USDT' ? 'erc20' : null;
         $this->getJson($this->endpoint($monitor))->assertOk()->assertJsonPath('state', 'ready')
+            ->assertJsonPath('network', $network)
+            ->assertJsonPath('network_label', __('crypto.networks.'.$network))
+            ->assertJsonPath('asset_label', $standard === null ? $asset : __('crypto.checkout.asset_with_standard', [
+                'asset' => $asset, 'standard' => __('crypto.checkout.standards.'.$standard),
+            ]))
             ->assertJsonPath('address', $address)->assertJsonPath('qr_type', 'amount')
             ->assertJsonPath('payment_uri', $expectedUri)->assertJsonPath('qr', (new QRCode)->render($expectedUri))
             ->assertJsonMissingPath('tron_payment')->assertJsonMissingPath('quote_snapshot')
@@ -88,6 +94,12 @@ class CryptoCheckoutQrTest extends TestCase
         [$monitor] = $this->readyCheckout($network, 'USDT', 6, '9007199254740993', self::TRON_ADDRESS);
 
         $this->getJson($this->endpoint($monitor))->assertOk()->assertJsonPath('state', 'ready')
+            ->assertJsonPath('network', $network)
+            ->assertJsonPath('network_label', __('crypto.networks.'.$network))
+            ->assertJsonPath('asset', 'USDT')
+            ->assertJsonPath('asset_label', __('crypto.checkout.asset_with_standard', [
+                'asset' => 'USDT', 'standard' => __('crypto.checkout.standards.trc20'),
+            ]))
             ->assertJsonPath('address', self::TRON_ADDRESS)
             ->assertJsonPath('qr_type', 'address')->assertJsonPath('payment_uri', self::TRON_ADDRESS)
             ->assertJsonPath('qr', (new QRCode)->render(self::TRON_ADDRESS))

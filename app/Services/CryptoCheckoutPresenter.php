@@ -48,7 +48,8 @@ final class CryptoCheckoutPresenter
         return [
             'state' => $state, 'message' => __('crypto.checkout.states.'.$state),
             'request_id' => $current?->id, 'can_requote' => $state === 'expired',
-            'network' => $current?->network, 'asset' => $current?->asset,
+            'network' => $current?->network, 'network_label' => $this->networkLabel($current),
+            'asset' => $current?->asset, 'asset_label' => $current ? $this->assetLabel($current) : null,
             'due_amount' => $current ? $this->amount($current, $current->due_units) : null,
             'expires_at' => $current?->expires_at->toIso8601String(),
             'markup_percent' => $current?->quote_snapshot['markup_percent'] ?? null,
@@ -60,6 +61,24 @@ final class CryptoCheckoutPresenter
             'qr' => $paymentUri ? Cache::remember('crypto-payment-qr:'.hash('sha256', $paymentUri), 86400, fn () => (new QRCode)->render($paymentUri)) : null,
             ...$amounts,
         ];
+    }
+
+    private function networkLabel(?CryptoPaymentRequest $request): ?string
+    {
+        return $request === null ? null : __('crypto.networks.'.$request->network);
+    }
+
+    private function assetLabel(CryptoPaymentRequest $request): string
+    {
+        $standard = match (true) {
+            $request->asset === 'USDT' && str_starts_with($request->network, 'tron-') => 'trc20',
+            $request->asset === 'USDT' && str_starts_with($request->network, 'ethereum-') => 'erc20',
+            default => null,
+        };
+
+        return $standard === null ? $request->asset : __('crypto.checkout.asset_with_standard', [
+            'asset' => $request->asset, 'standard' => __('crypto.checkout.standards.'.$standard),
+        ]);
     }
 
     private function paymentUri(CryptoPaymentRequest $request, string $address): string
