@@ -32,6 +32,10 @@ class ChargebackProviderAccountResource extends Resource
 {
     protected static ?string $model = ChargebackProviderAccount::class;
 
+    protected static bool $shouldRegisterNavigation = false;
+
+    protected static bool $isGloballySearchable = false;
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedShieldCheck;
 
     protected static ?string $recordTitleAttribute = 'name';

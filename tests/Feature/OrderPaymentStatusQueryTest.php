@@ -99,7 +99,7 @@ class OrderPaymentStatusQueryTest extends TestCase
         Bus::fake([SendOrderNotificationJob::class, NotifyAdConversionJob::class]);
         $this->fakeQuery('paid');
 
-        $expected = in_array($status, ['refunded', 'chargeback'], true) ? $status : 'partially_refunded';
+        $expected = $status === 'chargeback' ? 'chargeback' : 'partially_refunded';
         $result = app(OrderPaymentStatusService::class)->queryAndApply($order);
 
         $this->assertSame([

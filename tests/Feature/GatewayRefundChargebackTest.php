@@ -60,7 +60,7 @@ class GatewayRefundChargebackTest extends TestCase
     {
         $order = $this->paidOrder();
 
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
 
         // 余额扣减 = 退款本金 200 + 退款手续费 2
         $this->assertSame('798.00', (string) $this->merchant->refresh()->balance);
@@ -104,7 +104,7 @@ class GatewayRefundChargebackTest extends TestCase
     {
         $order = $this->paidOrder();
         $order->update(['chargeback_fee_snapshot' => $feeSnapshot]);
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
         $refundBefore = OrderRefund::query()->withoutGlobalScopes()->sole()->toArray();
         $operator = $this->operator();
 
@@ -142,7 +142,7 @@ class GatewayRefundChargebackTest extends TestCase
     {
         $this->freezeTime();
         $order = $this->paidOrder();
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
         $this->travel(1)->minutes();
         Http::fake([
             'https://shop.example.com/wp-json/payment-plugin/v1/order-query*' => Http::response([
@@ -175,7 +175,7 @@ class GatewayRefundChargebackTest extends TestCase
     public function test_refund_callbacks_and_paid_queries_cannot_undo_a_manual_refund_to_chargeback_conversion(): void
     {
         $order = $this->paidOrder();
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
         app(BalanceService::class)->chargeback($order->refresh(), $this->operator(), '拒付拦截');
         Http::fake([
             'https://shop.example.com/wp-json/payment-plugin/v1/order-query*' => Http::response([
@@ -183,14 +183,14 @@ class GatewayRefundChargebackTest extends TestCase
             ]),
         ]);
 
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
         app(OrderPaymentStatusService::class)->queryAndApply($order);
 
         $this->assertSame('chargeback', $order->refresh()->status);
         $this->assertSame('paid', $order->gateway_status);
         $this->assertSame('783.00', (string) $this->merchant->refresh()->balance);
         $this->assertDatabaseCount('order_refunds', 1);
-        $this->assertSame(4, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->count());
+        $this->assertSame(4, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->where('type', '!=', 'order_paid')->count());
     }
 
     public function test_an_unaccounted_refund_cannot_be_converted_to_a_fee_only_chargeback(): void
@@ -207,7 +207,7 @@ class GatewayRefundChargebackTest extends TestCase
 
         $this->assertSame('1000.00', (string) $this->merchant->refresh()->balance);
         $this->assertSame('refunded', $order->refresh()->status);
-        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        $this->assertSame([], $this->ledgerFor($order));
     }
 
     /** 插件文档明确会重试投递同一条 payload，重复扣款是这里最不能出的错。 */
@@ -215,34 +215,25 @@ class GatewayRefundChargebackTest extends TestCase
     {
         $order = $this->paidOrder();
 
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
         $balanceAfterFirst = (string) $this->merchant->refresh()->balance;
 
-        $this->pushGatewayStatus($order, 'refunded');
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
 
         $this->assertSame($balanceAfterFirst, (string) $this->merchant->refresh()->balance);
         $this->assertSame(1, OrderRefund::query()->withoutGlobalScopes()->count());
     }
 
-    public function test_gateway_refund_after_a_manual_partial_refund_only_deducts_the_remainder(): void
+    public function test_legacy_refund_notice_after_a_manual_partial_refund_requires_detail(): void
     {
         $order = $this->paidOrder();
-        $operator = $this->operator();
-
-        // 人工先退 50
-        app(BalanceService::class)->refund($order, '50.00', $operator, '客户少收一件');
-        $balanceAfterPartial = (string) $this->merchant->refresh()->balance;
-
+        app(BalanceService::class)->refund($order, '50.00', $this->operator());
         $this->pushGatewayStatus($order->refresh(), 'refunded');
-
-        // 只补扣剩余 150 + 一次退款手续费 2
-        $this->assertSame(
-            bcsub($balanceAfterPartial, '152.00', 2),
-            (string) $this->merchant->refresh()->balance,
-        );
-        $this->assertSame(self::ORDER_AMOUNT, (string) $order->refresh()->refunded_amount);
-        $this->assertSame('refunded', $order->status);
+        $this->assertSame('948.00', $this->merchant->refresh()->balance);
+        $this->assertSame('50.00', $order->refresh()->refunded_amount);
+        $this->assertSame('partially_refunded', $order->status);
+        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'manual_review']);
     }
 
     /**
@@ -307,6 +298,7 @@ class GatewayRefundChargebackTest extends TestCase
     {
         $order = $this->paidOrder();
         $order->update(['currency' => 'EUR', 'amount' => '3.00', 'converted_amount' => '10.00']);
+        $order->balanceTransactions()->where('type', 'order_paid')->update(['amount' => '10.00', 'balance_before' => '990.00']);
         $service = app(BalanceService::class);
         $operator = $this->operator();
         $service->refund($order, '1.00', $operator);
@@ -334,7 +326,7 @@ class GatewayRefundChargebackTest extends TestCase
 
         $this->assertSame('1000.00', $this->merchant->refresh()->balance);
         $this->assertSame('partially_refunded', $order->refresh()->status);
-        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        $this->assertSame([], $this->ledgerFor($order));
     }
 
     public function test_a_later_refund_notification_does_not_recharge_a_partial_refund_converted_to_chargeback(): void
@@ -347,7 +339,7 @@ class GatewayRefundChargebackTest extends TestCase
         $this->pushGatewayStatus($order->refresh(), 'refunded');
 
         $this->assertSame('chargeback', $order->refresh()->status);
-        $this->assertSame('refunded', $order->gateway_status);
+        $this->assertNull($order->gateway_status);
         $this->assertSame('50.00', $order->refunded_amount);
         $this->assertSame('783.00', $this->merchant->refresh()->balance);
         $this->assertDatabaseCount('order_refunds', 1);
@@ -400,7 +392,7 @@ class GatewayRefundChargebackTest extends TestCase
     public function test_a_fully_settled_refund_cannot_be_refunded_again(): void
     {
         $order = $this->paidOrder();
-        $this->pushGatewayStatus($order, 'refunded');
+        $this->receiveRefund($order, self::ORDER_AMOUNT);
 
         $this->expectExceptionMessage('该订单已全额退款并完成扣款，不能重复退款。');
 
@@ -436,7 +428,7 @@ class GatewayRefundChargebackTest extends TestCase
             ['chargeback' => '-200.00', 'chargeback_fee' => '-15.00'],
             $this->ledgerFor($order),
         );
-        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->count());
+        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->where('type', '!=', 'order_paid')->count());
     }
 
     public function test_a_settled_chargeback_cannot_be_refunded_after_status_is_corrected_to_paid(): void
@@ -460,13 +452,13 @@ class GatewayRefundChargebackTest extends TestCase
             ['chargeback' => '-200.00', 'chargeback_fee' => '-15.00'],
             $this->ledgerFor($order),
         );
-        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->count());
+        $this->assertSame(2, MerchantBalanceTransaction::query()->withoutGlobalScopes()->where('order_id', $order->id)->where('type', '!=', 'order_paid')->count());
     }
 
     public function test_pending_settlement_scope_only_matches_unsettled_orders(): void
     {
         $settledRefund = $this->paidOrder('SSC-A');
-        $this->pushGatewayStatus($settledRefund, 'refunded');
+        $this->receiveRefund($settledRefund, self::ORDER_AMOUNT);
 
         $settledChargeback = $this->paidOrder('SSC-B');
         $this->pushGatewayStatus($settledChargeback, 'confused');
@@ -504,7 +496,7 @@ class GatewayRefundChargebackTest extends TestCase
     {
         return MerchantBalanceTransaction::query()
             ->withoutGlobalScopes()
-            ->where('order_id', $order->id)
+            ->where('order_id', $order->id)->where('type', '!=', 'order_paid')
             ->pluck('amount', 'type')
             ->map(fn ($amount) => (string) $amount)
             ->all();
@@ -512,9 +504,9 @@ class GatewayRefundChargebackTest extends TestCase
 
     private function paidOrder(string $orderNo = 'SSC-1'): Order
     {
-        return $this->makeOrder($orderNo, 'M-'.$orderNo, [
+        $order = $this->makeOrder($orderNo, 'M-'.$orderNo, [
             'status' => 'paid',
-            'paid_at' => now(),
+            'paid_at' => now(), 'transaction_id' => 'txn_1',
             'payment_method' => $this->paymentMethod->method_code,
             'payment_method_id' => $this->paymentMethod->id,
             'amount' => self::ORDER_AMOUNT,
@@ -522,6 +514,12 @@ class GatewayRefundChargebackTest extends TestCase
             'subtotal' => self::ORDER_AMOUNT,
             'subtotal_converted' => self::ORDER_AMOUNT,
         ]);
+        MerchantBalanceTransaction::create([
+            'merchant_id' => $order->merchant_id, 'order_id' => $order->id, 'type' => 'order_paid',
+            'amount' => self::ORDER_AMOUNT, 'balance_before' => '800.00', 'balance_after' => '1000.00',
+        ]);
+
+        return $order;
     }
 
     private function operator(): User

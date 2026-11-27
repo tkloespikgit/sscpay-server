@@ -238,7 +238,7 @@ BTC 测试需在独立数据库／Redis 环境填写以下后台键；这里的 
 
 同一交易已排队回调共用一次核验；后到的新回调和新一轮地址查询仍可重新核查。未确认及失败重查以 BTC 600 秒、LTC 150 秒、其他网络 60 秒起步并退避，最多一小时，由每分钟任务到期执行。收件在 48 次观察或首次接收后 24 小时仍未完成时转 `verification_exhausted`，停止自动重查并进入异常款复核；积压的零次收件先核查一次。后台可再发起地址查询，完成后仍按现有权限／TOTP 人工核账，不凭超时入账。沿用现有 `deploy.sh` 代码更新、队列重启和调度中断，无新增迁移或手工上线命令。
 
-初次配置仍需初始化支付模板和权限（有需要时运行 `CryptoPaymentTemplatesSeeder`／`PermissionSeeder`），本次迁移不授权商户。测试步骤和验收结果记录沿用[开发方案第 13 节](../docs/blockchain-payment-plan.md#13-测试容量与实施顺序)。仅关闭 `crypto.checkout_enabled` 会停止新建链上订单，已有订单继续处理；其余开关是独立的运维控制，关闭会停止对应监听／核验／补查／入账能力。
+初次配置缺少区块链支付模板时，运行 `CryptoPaymentTemplatesSeeder`。权限目录由[日常自动部署](#9-日常自动部署)同步，商户角色按现有授权流程分配。测试步骤和验收结果记录沿用[开发方案第 13 节](../docs/blockchain-payment-plan.md#13-测试容量与实施顺序)。仅关闭 `crypto.checkout_enabled` 会停止新建链上订单，已有订单继续处理；其余开关是独立的运维控制，关闭会停止对应监听／核验／补查／入账能力。
 
 #### 3.2.1 BTC 测试网络、钱包和平台凭证
 
@@ -368,10 +368,10 @@ php artisan queue:restart --no-interaction
 
 常规 `deploy.sh` 执行增量迁移、缓存路由并完成上线。已有每分钟的 Laravel 调度会运行 `chargeback-alerts:process` 和 `chargeback-alerts:sync`。新账户默认停用，测试账号和生产账号分别配置。统一入口通过 Secret ID 定位账户，同一驱动下该编号唯一。密钥保存在后台的加密配置中。
 
-1. 进入「平台管理 → 预警服务商配置」。已有相同 Secret ID 就打开已有账号；新账号选择 WeTech，填写一次环境、WeTech 数据时区、Secret ID 和 Secret Key 后保存。存量商户角色按需分配「查看拒付预警」和「处理拒付预警」，后者配合查看权限使用。
+1. 使用有权限的平台账号登录后，直接打开 `/admin/chargeback-provider-accounts`。预警相关入口已暂时从后台菜单和全局搜索中隐藏。已有相同 Secret ID 就打开已有账号；新账号选择 WeTech，填写一次环境、WeTech 数据时区、Secret ID 和 Secret Key 后保存。存量商户角色按需分配「查看拒付预警」和「处理拒付预警」，后者配合查看权限使用。
 2. 在账号编辑页分别管理 **WeTech · Ethoca** 和 **WeTech · RDR**。按需启用服务，在对应服务下点「绑定支付方式」：Ethoca 填已注册的 Descriptor，RDR 填推送里完整的 MID。选择起始时间，再逐个点击需要的支付方式；同一支付方式可以同时绑定到两个服务。A、B 共用收单账号时由超管在相应服务下绑定两条渠道。历史订单按付款是否落在绑定区间匹配。默认使用核过的 ARN，其他交易引用需先确认服务商字段和本地含义一致。现有支付插件回调没有 ARN 字段，可在待核对预警关联订单时根据收单记录核实并保存，供以后匹配。
 3. 将平台固定的公网 HTTPS 域名与配置页中的 `/api/webhooks/chargeback/wetech` 组成完整回调地址，并在 WeTech 设置普通预警、Ethoca 反馈和注册状态推送。各类型可使用相同的本站入口。平台密钥能覆盖哪些事件由服务商账号决定。开启账户后确认 WAF 允许该路径接收服务器发来的 JSON POST。
-4. 用 WeTech 测试投递核对回执与原始签名格式。重点核对 RDR 的 `data` 数组、Ethoca 设置变更的 `data`、RDR 设置字段及时间口径。在「订单管理 → 拒付预警」验证详情、收费级别重推、实际订单归属和 Ethoca 反馈。只返回 HTTP 200 不代表已匹配订单，待核对记录由超管处理。
+4. 用 WeTech 测试投递核对回执与原始签名格式。重点核对 RDR 的 `data` 数组、Ethoca 设置变更的 `data`、RDR 设置字段及时间口径。在 `/admin/chargeback-alerts` 验证详情、收费级别重推、实际订单归属和 Ethoca 反馈。只返回 HTTP 200 不代表已匹配订单，待核对记录由超管处理。
 
 存量账号沿用原来已开启的服务、密钥和各自绑定，没有额外迁移或重填步骤。只想暂停一个服务时，使用该服务的开关；账号总开关会同时暂停两者。账号开启期间，已停用服务的合法推送仍会收到正常回执，但不会写入预警；重新启用后，补查只能找回服务商查询窗口内仍可获取的记录。本站开关不会变更 WeTech 侧的注册或计费约定。
 
@@ -667,7 +667,9 @@ npm 缓存固定为本站 `storage/app/deploy-cache/npm`，通过大小写两种
 
 `--check` 执行上述预检及 Git 工作区/上游分支检查后退出，不创建部署锁、拉取代码、进入维护模式、执行迁移或发布文件；Git 状态检查关闭可选索引锁。正式部署也会自动执行同样的预检，失败时站点保持原访问状态。预检反映当前文件系统权限，后续磁盘空间、外部存储或并发变更造成的失败仍按部署错误处理。
 
-脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、路由缓存、`telegram:register-webhook --if-configured`、视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。Telegram 全部未配置时跳过，已配置时按[快速绑定说明](#31-telegram-快速绑定)同步回调；注册期间站点仍处维护模式，实际投递需恢复访问后验证。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
+脚本先检查工作区干净并取得本机部署锁，使用维护模式保护更新窗口，通过 `git pull --ff-only` 更新当前分支；随后安装生产 PHP 依赖、构建前端、更新 Filament 资源并缓存当前环境配置。插件协议检查与 `plugins:sync --dry-run` 在迁移前完成，提前发现协议遗漏、构建错误、版本冲突或降级；之后执行 `migrate --force`、权限同步、路由缓存、`telegram:register-webhook --if-configured`、视图缓存、`plugins:sync`、`queue:restart`，全部成功才恢复站点访问。Telegram 全部未配置时跳过，已配置时按[快速绑定说明](#31-telegram-快速绑定)同步回调；注册期间站点仍处维护模式，实际投递需恢复访问后验证。`filament:upgrade` 会清除配置、路由和视图缓存，因此这些最终缓存必须在它之后生成。
+
+每次迁移后，脚本自动执行 `php artisan db:seed --class=PermissionSeeder --force --no-interaction`，补齐 `web` 权限记录、刷新权限缓存，并按预设同步平台共享的「商户级管理员」角色。若旧版本建号时提示缺少 `crypto_finance.view`，升级后用超级管理员打开「平台管理 → 管理员」，按登录账号查找。已有记录时，确认账号类型为「商户级管理员」并保存，以补上角色绑定。没有记录时可重新创建。
 
 物流批量上传支持商户订单号的升级包含[新增明细字段迁移](../database/migrations/2026_11_18_171052_add_merchant_order_no_to_logistics_import_task_records_table.php)，由上述 `migrate --force` 自动执行，随后 `queue:restart` 让物流导入 Worker 加载新匹配规则，无需额外手工命令或历史数据回填。原系统订单号模板继续兼容；商户订单号模板最少保留 `merchant_order_no`、`logistics_company`、`tracking_number` 三列。本次仅调整文件导入，不变更商户 API 或商城插件物流协议。
 
@@ -871,3 +873,9 @@ V2 使用原建单、查单和发货路径；使用组合付款时，清空插�
 ---
 
 > 相关文档：README「11. 环境要求与部署」、「9. 异步任务与定时调度」；`doc/wordpress-integration.md`（插件对接）；`doc/s-system-payment-status-notify.md`（支付回调）。
+
+## 法币逐笔退款上线
+
+先运行现有 `deploy.sh` 部署平台。它会执行退款凭证及实扣本金的增量迁移，并通过 `plugins:sync` 发布付款侧聚合插件 1.16.0。随后在各收款 WordPress 站更新该插件并确认 WP-Cron 正常运行。按插件[升级说明](../plugins/merchant/sscpay-gateway-aggregator/UPGRADE.md)核对支付渠道的退款事件订阅；在测试环境重发一笔部分退款，核对订单详情中的渠道退款号、本金和手续费。
+
+升级期间收到旧 `refunded` 状态时，`orders:settle-due` 分批对已锁定渠道的订单退避补查；财务也可从订单详情立即查询最新明细。已在旧系统或后台扣过的记录先核对渠道退款凭据，再关联已有退款或确认该笔独立退款。缺少凭据的历史订单保留待核对状态。参见[逐笔退款协议](wordpress/s-system-payment-status-notify.md#逐笔退款通知)。

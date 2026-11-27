@@ -230,7 +230,12 @@ MATCH / VIRTUAL 的商品保留站点原价（折算为订单币种的两位小�
 
 全额退款转拒付保留 `orders.refunded_amount`、`order_refunds` 及原退款费；新增 `type=chargeback, amount=0.00` 的结清凭证，仅 `chargeback_fee` 扣除额外费用。零费用仍有结清凭证，不能把“拒付本金必须为负数”作为已完成拒付的判据；现有 `hasChargebackLedger()`、反向待办及待入账筛选统一按凭证存在性判断。转换不再次计入收入或消耗结算/保证金分类；部分退款仍需人工核对。统计原退款金额保留，转换当天拒付笔数增加 1、拒付新增本金为 0，手续费不计入拒付本金。详见 [D-62](decisions.md#d-62-全额退款后转拒付仅补扣拒付费)。
 
-部分退款经人工确认转拒付时，拒付本金取 `converted_amount - sum(order_refunds.amount_usd)`，先用 bcmath 核对退款单原币种合计与 `refunded_amount`、退款 USD 合计与 `type=refund` 台账实际扣减相符。不得按剩余原币金额重新换汇舍入，也不把原退款费从拒付费中抵扣。`refunded_amount` 保留原已退款金额，剩余本金进入独立 `chargeback` 台账；两类本金合计为订单折算本金。反向待办和资金释放查询需同时识别拒付凭证，不能仅因 `refunded_amount < amount` 重复收款或阻止出款。统计保留各自事件和实际本金。详见 [D-63](decisions.md#d-63-部分退款人工转拒付扣剩余本金及拒付费)。
+部分退款经人工确认转拒付时，从该单实际入账扣除已记账退款本金，拒付费另计。历史扣减以实际流水核对。详见 [D-78](decisions.md#d-78-逐笔退款按实际入账封顶)。
+
+`gateway_refunds` 按支付渠道家族、正式或测试环境、渠道退款号的 SHA-256 摘要唯一，另对订单与退款号的摘要加唯一约束。PayPal JS 与 REST 共用渠道家族。不同收单账号碰巧使用同号且本地无法区分时，冲突保存在 `gateway_refund_conflicts` 供核对。`order_refund_id` 唯一关联已记账退款；待处理或审核中的凭证参与出款、保证金释放和结算检查。
+
+`order_refunds.amount` 是原币退款额，`amount_usd` 是该笔退款折合美元的金额，`principal_deducted_usd` 是实际扣除的美元本金，`fee` 是另扣的手续费。历史记录新列为 NULL，旧扣款按原退款记录及本金流水核对。实际入账以该订单的 `order_paid` 台账为准。
+
 
 ### 拒付预警
 

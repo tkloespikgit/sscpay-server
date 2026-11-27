@@ -12,6 +12,8 @@ class CreateUser extends CreateRecord
 {
     protected static string $resource = UserResource::class;
 
+    protected ?bool $hasDatabaseTransactions = true;
+
     /**
      * 'roles'、'is_merchant_manager'、'account' 都不是 users 表的真实字段，是表单里的
      * 虚拟字段，创建用户前必须先摘掉/转换，否则 User::create() 会因为多出不存在的

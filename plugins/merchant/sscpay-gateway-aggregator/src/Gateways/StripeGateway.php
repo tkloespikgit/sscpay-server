@@ -520,7 +520,7 @@ class StripeGateway extends PaymentBase
     }
 
     /** Recover old PI-only notifications using Stripe's server-side Session association. */
-    public function findCheckoutSessionForPaymentIntent($piId): ?string
+    public function findCheckoutSessionForPaymentIntent($piId, ?string $account = null): ?string
     {
         if (!is_string($piId) || !preg_match('/\Api_[A-Za-z0-9_]+\z/', $piId)) {
             throw new \RuntimeException('Stripe支付意图编号无效');
@@ -531,7 +531,7 @@ class StripeGateway extends PaymentBase
         self::configureStripeProxy($this->config['proxy'] ?? null);
         $stripe = new \Stripe\StripeClient($this->config['secret_key']);
         try {
-            $sessions = $stripe->checkout->sessions->all(['payment_intent' => $piId, 'limit' => 1]);
+            $sessions = $stripe->checkout->sessions->all(['payment_intent' => $piId, 'limit' => 1], $account ? ['stripe_account' => $account] : []);
         } catch (\Throwable $e) {
             throw new \RuntimeException('Stripe支付意图所属Checkout Session查询失败', 0, $e);
         }
@@ -546,6 +546,156 @@ class StripeGateway extends PaymentBase
             throw new \RuntimeException('Stripe支付意图所属Checkout Session不匹配');
         }
         return $sessionId;
+    }
+
+    public function refundReferences(array $event): array
+    {
+        $object = $event['data']['object'] ?? [];
+        $charge = ($event['type'] ?? '') === 'charge.refunded' ? ($object['id'] ?? null) : ($object['charge'] ?? null);
+        return RefundEvidence::refs($object['payment_intent'] ?? null, $charge);
+    }
+
+    public function readRefund(array $event, ?array $transaction): array
+    {
+        $object = $event['data']['object'] ?? [];
+        $refs = $this->refundReferences($event);
+        $extra = ['event_id' => $event['id'] ?? null];
+        if (isset($event['account'])) {
+            $extra['provider_account'] = $event['account'];
+        }
+        if (is_bool($event['livemode'] ?? null)) {
+            $extra['livemode'] = $event['livemode'];
+        }
+        if (($event['type'] ?? '') === 'charge.refunded') {
+            $charge = $object['id'] ?? '';
+            if (!is_string($charge) || !preg_match('/\A(?:ch|py)_[A-Za-z0-9_]+\z/', $charge)) {
+                return RefundEvidence::result('lookup', $extra + ['payment_refs' => $refs]);
+            }
+            return $this->listRefunds(['charge' => $charge], $refs, $extra, $event['created'] ?? null, $transaction === null);
+        }
+        if ($transaction === null && ($object['status'] ?? '') === 'succeeded') {
+            $refs = $this->withRefundSession($refs, $extra['provider_account'] ?? null);
+        }
+        return $this->stripeRefund($object, $refs, $event['created'] ?? null, $extra, $event['type'] ?? '');
+    }
+
+    private function withRefundSession(array $refs, ?string $account): array
+    {
+        foreach ($refs as $ref) {
+            if (strpos($ref, 'pi_') === 0) {
+                $session = $this->findCheckoutSessionForPaymentIntent($ref, $account);
+                return RefundEvidence::refs(...array_merge($refs, [$session]));
+            }
+        }
+        foreach ($refs as $ref) {
+            if (!preg_match('/\A(?:ch|py)_[A-Za-z0-9_]+\z/', $ref)) {
+                continue;
+            }
+            $options = $account ? ['stripe_account' => $account] : [];
+            $charge = $this->refundClient()->charges->retrieve($ref, [], $options)->toArray();
+            $intent = self::stripeObjectId($charge['payment_intent'] ?? null);
+            if (($charge['id'] ?? null) !== $ref) {
+                throw new \RuntimeException('Stripe查询返回了其他Charge');
+            }
+            if ($intent && preg_match('/\Api_[A-Za-z0-9_]+\z/', $intent)) {
+                $session = $this->findCheckoutSessionForPaymentIntent($intent, $account);
+                return RefundEvidence::refs(...array_merge($refs, [$intent, $session]));
+            }
+        }
+        return $refs;
+    }
+
+    protected function refundClient()
+    {
+        self::configureStripeProxy($this->config['proxy'] ?? null);
+        return new \Stripe\StripeClient($this->config['secret_key']);
+    }
+
+    public function queryRefunds(array $transaction): array
+    {
+        $refs = RefundEvidence::refs($transaction['transaction_id'] ?? null, $transaction['payment_intent'] ?? null);
+        foreach ($refs as $ref) {
+            if (preg_match('/\A(?:pi|ch|py)_[A-Za-z0-9_]+\z/', $ref)) {
+                return $this->listRefunds([strpos($ref, 'pi_') === 0 ? 'payment_intent' : 'charge' => $ref], [$ref]);
+            }
+        }
+        foreach ($refs as $ref) {
+            if (strpos($ref, 'cs_') === 0) {
+                $session = $this->refundClient()->checkout->sessions->retrieve($ref)->toArray();
+                $intent = self::stripeObjectId($session['payment_intent'] ?? null);
+                if (($session['id'] ?? '') === $ref && is_string($intent) && strpos($intent, 'pi_') === 0) {
+                    return $this->listRefunds(['payment_intent' => $intent], [$intent, $ref]);
+                }
+            }
+        }
+        return RefundEvidence::result('lookup', ['payment_refs' => $refs]);
+    }
+
+    private function listRefunds(array $filter, array $refs, array $extra = [], $observedAt = null, bool $recoverSession = false): array
+    {
+        $client = $this->refundClient();
+        $options = $filter + ['limit' => 100, 'expand' => ['data.balance_transaction']];
+        $requestOptions = isset($extra['provider_account']) ? ['stripe_account' => $extra['provider_account']] : [];
+        $pages = [];
+        $observations = [];
+        $field = key($filter);
+        do {
+            $response = $client->refunds->all($options, $requestOptions)->toArray();
+            if (!is_array($response['data'] ?? null) || !is_bool($response['has_more'] ?? null)) {
+                throw new \RuntimeException('Stripe退款列表不完整');
+            }
+            $cursor = null;
+            foreach ($response['data'] as $refund) {
+                if (self::stripeObjectId($refund[$field] ?? null) !== $filter[$field]) {
+                    throw new \RuntimeException('Stripe退款不属于所查的原付款');
+                }
+                $refundIntent = self::stripeObjectId($refund['payment_intent'] ?? null);
+                foreach ($refs as $verifiedRef) {
+                    if (strpos($verifiedRef, 'pi_') === 0 && $refundIntent && $refundIntent !== $verifiedRef) {
+                        throw new \RuntimeException('Stripe退款详情与原Payment Intent冲突');
+                    }
+                }
+                $cursor = $refund['id'] ?? null;
+                $rowRefs = RefundEvidence::refs($refund['payment_intent'] ?? null, $refund['charge'] ?? null, ...$refs);
+                if ($recoverSession && $rowRefs) {
+                    $rowRefs = $this->withRefundSession($rowRefs, $extra['provider_account'] ?? null);
+                    $refs = $rowRefs;
+                    $recoverSession = false;
+                }
+                $time = $refund['balance_transaction']['created'] ?? null;
+                $rowExtra = $extra;
+                if (is_bool($refund['livemode'] ?? null)) {
+                    $rowExtra['livemode'] = $refund['livemode'];
+                }
+                $observations[] = $this->stripeRefund($refund, $rowRefs, $time, $rowExtra);
+            }
+            if ($response['has_more']) {
+                if (!is_string($cursor) || $cursor === '' || isset($pages[$cursor])) {
+                    throw new \RuntimeException('Stripe退款分页未前进');
+                }
+                $pages[$cursor] = true;
+                $options['starting_after'] = $cursor;
+            }
+        } while ($response['has_more']);
+        $result = RefundEvidence::collection($observations, $refs);
+        $result['evidence'] += $extra;
+        if (!$observations && $observedAt !== null) {
+            $result['kind'] = 'lookup';
+        }
+        return $result;
+    }
+
+    private function stripeRefund(array $refund, array $refs, $time, array $extra, string $eventType = ''): array
+    {
+        $status = $refund['status'] ?? '';
+        $states = ['succeeded' => 'succeeded', 'failed' => 'failed', 'canceled' => 'failed', 'pending' => 'pending', 'requires_action' => 'pending'];
+        $kind = $states[$status] ?? 'lookup';
+        if (($refund['object'] ?? 'refund') !== 'refund' || !preg_match('/\A(?:re|pyr)_[A-Za-z0-9_]+\z/', (string) ($refund['id'] ?? ''))
+            || ($eventType === 'refund.failed' && $kind !== 'failed')) {
+            $kind = 'lookup';
+        }
+        return RefundEvidence::observation($kind, $refund['id'] ?? null, $refund['amount'] ?? null, $refund['currency'] ?? null,
+            $refs, $time, $status, $extra, 'stripe');
     }
 
     /**

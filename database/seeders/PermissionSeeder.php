@@ -22,9 +22,7 @@ class PermissionSeeder extends Seeder
             ]);
         }
 
-        // 生产用 Redis 缓存权限列表（默认 24h TTL）：老部署上跑本 seeder 新增权限后，
-        // 若不清缓存，下面 syncPermissions() 仍会读到不含新权限的旧缓存，抛
-        // PermissionDoesNotExist。必须在创建权限记录之后、分配给角色之前清掉。
+        // Seeder 禁用了模型事件，需要显式清除旧的权限目录缓存。
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         // 平台级"商户级管理员"角色也在这里种好，必须晚于上面的权限记录创建。

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Filament;
 
 use App\Filament\Pages\MerchantRolePermissions;
+use App\Filament\Resources\AdminResource\Pages\CreateAdmin;
 use App\Filament\Resources\SystemConfigResource;
 use App\Filament\Resources\UserResource\Pages\ListUsers;
 use App\Models\Merchant;
@@ -16,6 +17,8 @@ use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
+use PHPUnit\Framework\Attributes\TestWith;
+use RuntimeException;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
@@ -32,6 +35,61 @@ class MerchantRolePermissionsTest extends TestCase
         $this->seed(PermissionSeeder::class);
         Filament::setCurrentPanel('admin');
         $this->actingAs(User::factory()->create(['is_super_admin' => true, 'merchant_id' => null, 'status' => true]));
+    }
+
+    public function test_creating_a_platform_merchant_manager_restores_missing_web_permissions_for_the_shared_role(): void
+    {
+        $platformRole = Role::query()->whereNull('merchant_id')
+            ->where('name', PlatformRoleProvisioningService::ROLE_MERCHANT_MANAGER)
+            ->where('guard_name', 'web')->sole();
+        $existingManager = User::factory()->create(['merchant_id' => null, 'is_super_admin' => false]);
+        $existingManager->assignRole($platformRole);
+        Permission::create(['name' => Permissions::CRYPTO_FINANCE_VIEW, 'guard_name' => 'observer']);
+        Permission::query()->where('name', Permissions::CRYPTO_FINANCE_VIEW)->where('guard_name', 'web')->delete();
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+        $this->assertFalse($existingManager->can(Permissions::CRYPTO_FINANCE_VIEW));
+
+        Livewire::test(CreateAdmin::class)
+            ->fillForm(['name' => 'Merchant Manager', 'account' => 'merchant-manager', 'password' => 'manager-password'])
+            ->call('create')
+            ->assertHasNoFormErrors()
+            ->assertRedirect();
+
+        $manager = User::where('email', User::emailForAccount('merchant-manager'))->sole();
+        $this->assertTrue($manager->isMerchantManager());
+        $this->assertSame([$platformRole->id], $manager->roles->modelKeys());
+        $this->assertEqualsCanonicalizing(Permissions::platformMerchantManager(), $manager->getAllPermissions()->pluck('name')->all());
+        $this->assertTrue($manager->can(Permissions::CRYPTO_FINANCE_VIEW));
+        $this->assertFalse($manager->can(Permissions::SYSTEM_CONFIGS_MANAGE));
+        $this->assertTrue($existingManager->fresh()->can(Permissions::CRYPTO_FINANCE_VIEW));
+        $this->assertDatabaseHas('permissions', ['name' => Permissions::CRYPTO_FINANCE_VIEW, 'guard_name' => 'observer']);
+    }
+
+    #[TestWith(['admin panel'])]
+    #[TestWith(['artisan'])]
+    public function test_creating_a_merchant_manager_rolls_back_the_account_if_role_provisioning_fails(string $entryPoint): void
+    {
+        $failure = new RuntimeException('Role provisioning failed.');
+        $this->mock(PlatformRoleProvisioningService::class)
+            ->shouldReceive('provisionMerchantManagerRole')->once()->andThrow($failure);
+        $account = 'manager-to-retry';
+        $this->expectExceptionObject($failure);
+
+        try {
+            if ($entryPoint === 'artisan') {
+                $this->artisan('make:merchant-manager', [
+                    '--name' => 'Merchant Manager',
+                    '--account' => $account,
+                    '--password' => 'manager-password',
+                ])->run();
+            } else {
+                Livewire::test(CreateAdmin::class)
+                    ->fillForm(['name' => 'Merchant Manager', 'account' => $account, 'password' => 'manager-password'])
+                    ->call('create');
+            }
+        } finally {
+            $this->assertDatabaseMissing('users', ['email' => User::emailForAccount($account)]);
+        }
     }
 
     public function test_save_syncs_existing_and_future_merchants_and_preserves_user_assignments(): void
@@ -186,14 +244,14 @@ class MerchantRolePermissionsTest extends TestCase
         $this->role($merchant, '物流管理员')->delete();
         Role::creating(function (Role $role) {
             if ($role->name === '物流管理员') {
-                throw new \RuntimeException('Simulated sync failure');
+                throw new RuntimeException('Simulated sync failure');
             }
         });
 
         try {
             app(MerchantRoleProvisioningService::class)->saveAndSync($next);
             $this->fail('Sync should fail.');
-        } catch (\RuntimeException $e) {
+        } catch (RuntimeException $e) {
             $this->assertSame('Simulated sync failure', $e->getMessage());
         } finally {
             Role::flushEventListeners();

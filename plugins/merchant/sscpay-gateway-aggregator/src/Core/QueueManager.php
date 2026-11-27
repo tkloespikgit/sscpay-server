@@ -1,11 +1,11 @@
 <?php
 /**
- * 回调重试队列（wp_payment_callback_queue）：负责把 payment_status /
+ * 回调重试队列（wp_payment_callback_queue）：负责把 payment_status、payment_refund 和
  * tracking_sync 事件可靠地投递给S系统的 callback_url，失败按指数退避重试。
  *
  * 重试节奏：1分钟、5分钟、30分钟、2小时、6小时（对应设计文档第十三节），
  * 即最多重试5次，第5次仍失败则标记为failed，不再自动重试（需人工介入，
- * 可在日志/队列表里看到last_error）。
+ * 可在日志/队列表里看到last_error）。逐笔退款需要对应退款编号的回执，第五次起每六小时继续重试。
  *
  * 依赖真实的系统级crontab调用 wp-cron.php 来准时触发——WP默认的
  * "有人访问页面才触发cron"方式在低流量站点上不可靠。DISABLE_WP_CRON 已由插件主文件
@@ -95,7 +95,7 @@ class QueueManager
 
     /**
      * @param string $sOrderId
-     * @param string $eventType 'payment_status' | 'tracking_sync'
+     * @param string $eventType 'payment_status' | 'payment_refund' | 'tracking_sync'
      * @param array $payload
      * @return int 插入行的id，供调用方需要立即投递时传给 deliverNow()
      */
@@ -179,7 +179,12 @@ class QueueManager
         ), ARRAY_A);
 
         foreach ($rows ?: [] as $row) {
-            self::deliver($row);
+            try {
+                self::deliver($row);
+            } catch (\Throwable $exception) {
+                LogManager::warning($row['s_order_id'], '队列任务暂未完成',
+                    ['response_data' => ['queue_id' => (int) $row['id'], 'error_class' => get_class($exception)]]);
+            }
         }
     }
 
@@ -211,10 +216,34 @@ class QueueManager
         $row['updated_at'] = $claimedAt;
 
         $transaction = TransactionManager::findBySOrderId($row['s_order_id']);
+        $payload = json_decode($row['payload'], true);
+        if ($row['event_type'] === 'payment_status' && ($payload['status'] ?? null) === 'refunded') {
+            // Older installations can still have unsent payment-level refund status messages.
+            try {
+                $complete = false;
+                $refunds = $transaction ? RefundRecords::reconcile($transaction, $complete) : [];
+                if (!$refunds || !$complete) { throw new \RuntimeException('等待逐笔退款凭证'); }
+                $wpdb->update($table, ['status' => 'success', 'last_error' => '已改用逐笔退款凭证',
+                    'updated_at' => current_time('mysql', true)], self::claimCondition($row));
+            } catch (\Throwable $exception) {
+                self::scheduleRetry($row, '旧退款状态等待逐笔退款核实', true);
+            }
+            return;
+        }
+        if ($row['event_type'] === 'payment_refund') {
+            try {
+                if (RefundRecords::hasFailedNotice($row['s_order_id'], $payload['refund_id'])) {
+                    self::markFailedPermanently($row, '同一退款另有已核实的失败凭证，需人工复核');
+                    return;
+                }
+            } catch (\Throwable $exception) {
+                self::scheduleRetry($row, '待复核渠道退款终态');
+                return;
+            }
+        }
         // Stripe同一支付可在失败后重试成功；旧的失败回调不能在收款后重试，
         // 否则会把S系统已经收到的成功状态覆盖为失败。
         if (($transaction['payment_method'] ?? null) === 'stripe' && $row['event_type'] === 'payment_status') {
-            $payload = json_decode($row['payload'], true);
             $hasPaid = !empty($transaction['paid_at']) || in_array($transaction['status'], [
                 TransactionStateMachine::PAID, TransactionStateMachine::REFUNDED,
                 TransactionStateMachine::DISPUTING, TransactionStateMachine::CONFUSED,
@@ -272,6 +301,15 @@ class QueueManager
             throw $e;
         }
 
+        if ($row['event_type'] === 'payment_refund' && $result['ok']) {
+            $payload = json_decode($row['payload'], true);
+            $ack = $result['body'] ?? null;
+            if (!is_array($ack) || ($ack['code'] ?? null) !== 0 || ($ack['received'] ?? null) !== true
+                || !isset($payload['refund_id']) || ($ack['refund_id'] ?? null) !== $payload['refund_id']) {
+                $result['ok'] = false;
+                $result['error'] = '平台未确认接收该笔退款';
+            }
+        }
         $logOptions['response_data'] = [
             'http_status' => $result['status'],
             'body' => $result['body'] ?? $result['raw'] ?? null,
@@ -296,14 +334,14 @@ class QueueManager
         self::scheduleRetry($row, $errorMessage);
     }
 
-    private static function scheduleRetry(array $row, $errorMessage)
+    private static function scheduleRetry(array $row, $errorMessage, bool $keepRetrying = false)
     {
         global $wpdb;
         $table = self::table();
 
         $nextRetryCount = (int) $row['retry_count'] + 1;
 
-        if ($nextRetryCount >= (int) $row['max_retries']) {
+        if (!$keepRetrying && $row['event_type'] !== 'payment_refund' && $nextRetryCount >= (int) $row['max_retries']) {
             self::markFailedPermanently($row, $errorMessage);
             return;
         }
@@ -311,7 +349,7 @@ class QueueManager
         $delaySeconds = self::$backoffSeconds[$nextRetryCount - 1] ?? end(self::$backoffSeconds);
 
         $wpdb->update($table, [
-            'retry_count' => $nextRetryCount,
+            'retry_count' => min($nextRetryCount, (int) $row['max_retries']),
             'next_retry_at' => gmdate('Y-m-d H:i:s', time() + $delaySeconds),
             'status' => 'pending',
             'last_error' => $errorMessage,

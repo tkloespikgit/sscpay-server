@@ -280,3 +280,28 @@ payload本身不会额外标注"这是胜诉"）。
 - **和第五节争议日志的配合**：收到 `disputing`/`confused` 回调通知后，如果S系统想看到更完整的
   上下文（比如争议原因、涉及的三方交易ID、原始webhook payload），可以用这个接口按 `s_order_id`
   查一遍，`callback_data` 字段里就是插件解析出的完整事件详情。
+
+## 逐笔退款通知
+
+付款侧网关插件从 1.16.0 起向原 `callback_url` 发送 `payment_refund`，沿用请求原文的 `X-PGA-Signature` 验签。一次请求只对应一个成功退款单，包括部分退款。
+
+```json
+{
+  "event": "payment_refund",
+  "status": "succeeded",
+  "s_order_id": "SSC-1001",
+  "payment_method": "stripe",
+  "livemode": true,
+  "refund_id": "re_example",
+  "payment_reference": "pi_example",
+  "amount": "20.00",
+  "currency": "USD",
+  "refunded_at": "2026-11-25T08:00:00Z"
+}
+```
+
+`refund_id` 是支付渠道退款单号，`payment_reference` 对应原成功收款的 `transaction_id`。`amount` 是该笔退款的原币金额，以十进制字符串传输。手续费由本系统根据订单费率快照计算。退款号和支付引用区分大小写。系统校验网关订单引用、锁定渠道、环境、币种及收款交易号，留存逐笔凭证；同号不同金额或跨订单的冲突单独记录。
+
+持久接收成功回执为 `{"code":0,"received":true,"refund_id":"re_example"}`。签名错误返回 401，协议字段错误或订单无法定位返回 422。只有带相同退款号的成功回执才能结束该笔投递。账务待处理或需人工核实时，平台继续从保存的凭证处理。
+
+认证查单 `POST /order-query` 支持 `include_refunds: true`。返回的 `data.refunds` 使用相同格式，每条依据同一退款号处理。`refunds_complete` 表示是否已取得完整清单；为 false 时仅处理已经确认的明细。仅有支付总额、累计退款额或订单级退款状态时，等待逐笔明细或财务核实。

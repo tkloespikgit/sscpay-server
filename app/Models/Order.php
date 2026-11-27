@@ -256,6 +256,11 @@ class Order extends Model
         return $this->hasMany(MerchantFundFreeze::class);
     }
 
+    public function gatewayRefunds(): HasMany
+    {
+        return $this->hasMany(GatewayRefund::class);
+    }
+
     public function accountingTasks(): HasMany
     {
         return $this->hasMany(OrderAccountingTask::class);
@@ -537,37 +542,26 @@ class Order extends Model
     /** 网关已确认反转但本金未记账的订单不得释放资金。 */
     public function scopeWithoutUnresolvedGatewayReversal(Builder $query): Builder
     {
-        return $query->where(function (Builder $query): void {
-            $query->whereNull('gateway_status')
-                ->orWhereNotIn('gateway_status', ['refunded', 'chargeback'])
-                ->orWhere(fn (Builder $refund) => $refund->where('gateway_status', 'refunded')
-                    ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
-                        ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
-                ->orWhere(fn (Builder $chargeback) => $chargeback->where('gateway_status', 'chargeback')
-                    ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
-        })->where(function (Builder $query): void {
-            $query->whereNotIn('status', ['refunded', 'chargeback'])
-                ->orWhere(fn (Builder $refund) => $refund->where('status', 'refunded')
-                    ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
-                        ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
-                ->orWhere(fn (Builder $chargeback) => $chargeback->where('status', 'chargeback')
-                    ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
-        });
+        return $query->whereDoesntHave('gatewayRefunds', fn (Builder $receipts) => $receipts->withoutGlobalScopes()->unsettled())
+            ->where(function (Builder $query): void {
+                $query->whereNull('gateway_status')
+                    ->orWhereNotIn('gateway_status', ['refunded', 'chargeback'])
+                    ->orWhere(fn (Builder $refund) => $refund->where('gateway_status', 'refunded')
+                        ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
+                            ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
+                    ->orWhere(fn (Builder $chargeback) => $chargeback->where('gateway_status', 'chargeback')
+                        ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
+            })->where(function (Builder $query): void {
+                $query->whereNotIn('status', ['refunded', 'chargeback'])
+                    ->orWhere(fn (Builder $refund) => $refund->where('status', 'refunded')
+                        ->where(fn (Builder $accounted) => $accounted->whereColumn('refunded_amount', '>=', 'amount')
+                            ->orWhereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback'))))
+                    ->orWhere(fn (Builder $chargeback) => $chargeback->where('status', 'chargeback')
+                        ->whereHas('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()->where('type', 'chargeback')));
+            });
     }
 
-    /**
-     * 「已标记退款/拒付但钱还没从商户余额扣掉」的订单。
-     *
-     * 这批数据的来源：早期版本收到网关的 refunded/confused 时只改订单状态、
-     * 不动余额，而人工补录的入口当时又被状态校验挡死（见
-     * OrderPaymentStatusService 类注释），于是订单卡在"显示已退款、钱还在"的
-     * 状态里。现在网关回调会自动入账，这个作用域用于捞出历史遗留的那一批，
-     * 供财务在订单列表按「待入账」筛出来逐单处理。
-     *
-     * 判定口径与 BalanceService 的补录放行条件严格对应：
-     *   - 退款：还有未退金额（refunded_amount < amount）
-     *   - 拒付：没有落过拒付本金流水
-     */
+    /** 财务待入账列表，同时覆盖历史反向状态、旧网关待办和新收到的逐笔退款。 */
     public function scopePendingReversalSettlement(Builder $query): Builder
     {
         return $query->where(function (Builder $q) {
@@ -576,6 +570,8 @@ class Order extends Model
                 ->whereColumn('refunded_amount', '<', 'amount')
                 ->whereDoesntHave('balanceTransactions', fn (Builder $ledger) => $ledger->withoutGlobalScopes()
                     ->where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)))
+                ->orWhereHas('gatewayRefunds', fn (Builder $receipts) => $receipts->withoutGlobalScopes()->unsettled())
+                ->orWhereHas('accountingTasks', fn (Builder $tasks) => $tasks->withoutGlobalScopes()->unsettledReversals())
                 ->orWhere(fn (Builder $chargeback) => $chargeback
                     ->where('status', 'chargeback')
                     ->whereDoesntHave('balanceTransactions', fn (Builder $t) => $t

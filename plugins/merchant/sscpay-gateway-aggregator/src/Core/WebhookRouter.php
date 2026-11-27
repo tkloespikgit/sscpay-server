@@ -10,6 +10,7 @@
 
 namespace PaymentGatewayAggregator\Core;
 
+use PaymentGatewayAggregator\Gateways\RefundDriver;
 use PaymentGatewayAggregator\Models\WebhookEvent;
 
 if (!defined('ABSPATH')) {
@@ -34,6 +35,15 @@ class WebhookRouter
      */
     public static function handle($paymentMethod, $rawBody, array $headers)
     {
+        if (RefundDriver::supports($paymentMethod, $rawBody)) {
+            try {
+                return RefundInbox::receive($paymentMethod, $rawBody, $headers);
+            } catch (\Throwable $exception) {
+                LogManager::warning(LogManager::SYSTEM_ORDER_ID, '退款通知未确认接收',
+                    ['response_data' => ['exception' => get_class($exception)]]);
+                return self::result(false, 503, self::CODE_PROCESSING_FAILED, 'Refund receipt unavailable; retry required');
+            }
+        }
         if ($paymentMethod === 'stripe') {
             return self::handleStripe($rawBody, $headers);
         }
@@ -501,7 +511,9 @@ class WebhookRouter
         }
         self::applyOrderSideEffects($updatedTransaction, $updateFields['transaction_id'] ?? '');
 
-        CallbackHandler::forwardPaymentStatus($updatedTransaction, $accountForbidden, $deferDelivery);
+        if ($targetStatus !== TransactionStateMachine::REFUNDED) {
+            CallbackHandler::forwardPaymentStatus($updatedTransaction, $accountForbidden, $deferDelivery);
+        }
 
         return $updatedTransaction;
     }

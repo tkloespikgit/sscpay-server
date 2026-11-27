@@ -255,7 +255,7 @@ class PaymentGatewayService
      */
     public function orderQuery(string $sOrderId): array
     {
-        return $this->request('order-query', ['s_order_id' => $sOrderId]);
+        return $this->request('order-query', ['s_order_id' => $sOrderId, 'include_refunds' => true]);
     }
 
     /**

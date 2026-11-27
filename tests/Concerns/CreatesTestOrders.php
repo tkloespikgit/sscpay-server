@@ -3,10 +3,12 @@
 namespace Tests\Concerns;
 
 use App\Models\Application;
+use App\Models\GatewayRefund;
 use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Models\PaymentMethodConfigMap;
+use App\Services\GatewayRefundService;
 use Database\Seeders\PermissionSeeder;
 
 /**
@@ -56,6 +58,16 @@ trait CreatesTestOrders
             'domain_client_id' => 'ck_test',
             'domain_client_sk' => 'cs_test',
             'product_match_mode' => PaymentMethod::MODE_MATCH,
+        ]);
+    }
+
+    protected function receiveRefund(Order $order, string $amount, string $refundId = 're_test'): GatewayRefund
+    {
+        return app(GatewayRefundService::class)->receive([
+            'event' => 'payment_refund', 'status' => 'succeeded', 's_order_id' => $order->gatewayOrderReference(),
+            'payment_method' => 'stripe', 'livemode' => true, 'refund_id' => $refundId,
+            'payment_reference' => 'txn_1', 'amount' => $amount, 'currency' => $order->currency,
+            'refunded_at' => '2026-11-25T10:00:00Z',
         ]);
     }
 

@@ -370,12 +370,17 @@ class OrderStatsAggregatorTest extends TestCase
             'payment_method_id' => $this->paymentMethod->id,
             'amount' => '100.00',
             'converted_amount' => '100.00',
+            'settlement_amount' => '100.00',
             'subtotal' => '100.00',
             'subtotal_converted' => '100.00',
         ], $overrides));
 
         if ($createdAt !== null) {
             $order->forceFill(['created_at' => $createdAt])->save();
+        }
+
+        if ($order->status === 'paid') {
+            app(BalanceService::class)->creditForPaidOrder($order);
         }
 
         return $order;

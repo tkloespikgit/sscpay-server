@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\User;
 use App\Services\PlatformRoleProvisioningService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
@@ -53,17 +54,17 @@ class MakeMerchantManager extends Command
             return self::FAILURE;
         }
 
-        $user = User::create([
-            'name' => $name,
-            'email' => $email,
-            'email_verified_at' => now(),
-            'password' => Hash::make($password),
-            'is_super_admin' => false,
-            // merchant_id 不传，保持 NULL —— 和超管一样是平台侧账号，
-            // 但只能管理 ownedMerchants() 名下的商户（见 User::isMerchantManager()）。
-        ]);
+        $user = DB::transaction(function () use ($name, $email, $password, $roleService): User {
+            $user = User::create([
+                'name' => $name,
+                'email' => $email,
+                'email_verified_at' => now(),
+                'password' => Hash::make($password),
+                'is_super_admin' => false,
+            ]);
 
-        $user->assignRole($roleService->provisionMerchantManagerRole());
+            return $user->assignRole($roleService->provisionMerchantManagerRole());
+        });
 
         $this->info("商户级管理员创建成功：{$account}（ID: {$user->id}）");
         $this->comment('提示：登录后台后可以在"商户管理"里创建/名下商户，也可以在"用户管理"里给自己名下商户建用户账号。');

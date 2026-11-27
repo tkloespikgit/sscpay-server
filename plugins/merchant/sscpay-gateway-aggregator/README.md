@@ -21,6 +21,12 @@
      注意密钥必须“读写”权限才能调 `/v1/gateway-config`，且只允许HTTPS。
    - 或分别给「支付插件-订单接口账号」和「支付插件-网关配置账号」创建 WordPress 应用密码，走 HTTPS Basic Auth。
 
+## 逐笔退款（1.16.0）
+
+Stripe、PayPal、Airwallex 和 Antom 的成功退款按渠道退款编号和实际原币金额回传 S 系统。同一支付可以有多笔部分退款。确认金额累计达到订单金额后，付款站才把订单标记为已退款。出站队列在收到对应退款号的确认后结束投递。查单附带 `include_refunds: true` 可读取、补查同一组凭证。协议和升级顺序见[退款通知协议](docs/s-system-payment-status-notify.md#逐笔退款通知)及[升级说明](UPGRADE.md#1160-逐笔退款通知)。
+
+本地执行 `php tests/refund-delivery.php` 和 `php tests/callback-queue-recovery.php` 可验证部分退款、重复推送、查询补单、投递确认与断点恢复。
+
 ## 商品与变体同步（1.15.0）
 
 `GET /wp-json/wc/v3/products-with-variations` 返回商品和内联变体；参数为 `page`、`per_page`（默认 20，最多 100）及可选 `force_refresh=true`。分页头沿用 `X-WP-Total` 和 `X-WP-TotalPages`；`GET /wp-json/wc/v3/ninox-status` 保留旧兼容信息。两条路由都需要有读权限且属于具备 `manage_woocommerce` 的用户的 WooCommerce REST 密钥，只走 HTTPS（显式本地开发模式除外）。兼容原 query 凭证、Basic Auth 和原明文 Authorization 格式。
@@ -414,8 +420,7 @@ src/Models/     数据表名的唯一出处（表结构定义在Core/Migrator.ph
 
 ## 这次实现没有覆盖的部分
 
-- 退款：数据库状态位（`refunded`）预留了，但没有实现发起退款的接口——
-  设计文档v2第十二节12.4里也提到这个留到后续单独设计。
+- 发起退款仍在各支付渠道操作，插件负责接收并回传已经发生的退款。
 - 自动化测试：运行 `php tests/webhook-paypal-alias.php` 可在不连接WordPress数据库或
   支付网关的情况下验证PayPal共享Webhook入口、验签失败和跨入口去重。
   `php tests/payment-expiry.php` 验证链接过期、到账补正、历史会话引用、PayPal Capture 锁及并发状态更新。

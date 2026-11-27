@@ -122,12 +122,12 @@ class HttpClient
      * @param ?string $proxy
      * @return array{ok:bool,status:int,body:mixed,raw:string,error:?string}
      */
-    public static function postRawJson($url, $rawJsonBody, array $headers = [], $timeout = self::DEFAULT_TIMEOUT, $proxy = null)
+    public static function postRawJson($url, $rawJsonBody, array $headers = [], $timeout = self::DEFAULT_TIMEOUT, $proxy = null, bool $signatureHeaders = false)
     {
         $headers = array_merge(['Content-Type' => 'application/json'], $headers);
 
         if ($proxy !== null && $proxy !== '') {
-            return self::requestViaProxy('POST', $url, $headers, $rawJsonBody, $timeout, $proxy);
+            return self::requestViaProxy('POST', $url, $headers, $rawJsonBody, $timeout, $proxy, $signatureHeaders);
         }
 
         $response = wp_remote_post($url, [
@@ -136,7 +136,13 @@ class HttpClient
             'body' => $rawJsonBody,
         ]);
 
-        return self::normalize($response);
+        $result = self::normalize($response);
+        if ($signatureHeaders && !is_wp_error($response)) {
+            foreach (['signature', 'client-id', 'response-time'] as $name) {
+                $result['signature_headers'][$name] = wp_remote_retrieve_header($response, $name);
+            }
+        }
+        return $result;
     }
 
     /**
@@ -185,7 +191,7 @@ class HttpClient
      * @param string $proxy
      * @return array{ok:bool,status:int,body:mixed,raw:string,error:?string}
      */
-    private static function requestViaProxy($method, $url, array $headers, $body, $timeout, $proxy)
+    private static function requestViaProxy($method, $url, array $headers, $body, $timeout, $proxy, bool $signatureHeaders = false)
     {
         try {
             $proxyOptions = ProxyConfig::curlOptions($proxy);
@@ -215,6 +221,22 @@ class HttpClient
             CURLOPT_CONNECTTIMEOUT => $timeout,
         ] + $proxyOptions);
 
+        $receivedHeaders = [];
+        if ($signatureHeaders) {
+            curl_setopt($handle, CURLOPT_HEADERFUNCTION, static function ($handle, string $line) use (&$receivedHeaders): int {
+                if (strpos($line, 'HTTP/') === 0) {
+                    $receivedHeaders = [];
+                } elseif (strpos($line, ':') !== false) {
+                    list($name, $value) = explode(':', $line, 2);
+                    $name = strtolower(trim($name));
+                    if (in_array($name, ['signature', 'client-id', 'response-time'], true)) {
+                        $receivedHeaders[$name] = trim($value);
+                    }
+                }
+                return strlen($line);
+            });
+        }
+
         if ($body !== null) {
             curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
         }
@@ -239,6 +261,6 @@ class HttpClient
             'body' => $decodedBody,
             'raw' => $raw,
             'error' => null,
-        ];
+        ] + ($signatureHeaders ? ['signature_headers' => $receivedHeaders] : []);
     }
 }

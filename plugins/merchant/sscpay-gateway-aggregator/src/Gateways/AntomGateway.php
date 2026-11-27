@@ -170,7 +170,7 @@ class AntomGateway extends PaymentBase
         $method = $headers['x-pga-http-method'] ?? 'POST';
         $path = $headers['x-pga-http-path'] ?? '';
 
-        if (!$signatureHeader || !$requestTime || empty($config['antom_public_key'])) {
+        if (!$signatureHeader || !$requestTime || !$path || !$clientId || $clientId !== ($config['client_id'] ?? null) || empty($config['antom_public_key'])) {
             return false;
         }
 
@@ -179,7 +179,7 @@ class AntomGateway extends PaymentBase
             return false;
         }
 
-        $stringToSign = "{$method} {$path}\n{$clientId}.{$requestTime}.{$rawBody}\n";
+        $stringToSign = "{$method} {$path}\n{$clientId}.{$requestTime}.{$rawBody}";
 
         return $this->verifyRsaSignature($stringToSign, $signature, $config['antom_public_key']);
     }
@@ -272,6 +272,93 @@ class AntomGateway extends PaymentBase
      * 见gateway_session里的payment_request_id——优先用它，因为它是我们自己生成、
      * 一定存在的id；paymentId是Antom分配的，preparePayment()响应里可能没有）。
      */
+    public function refundReferences(array $event): array
+    {
+        return RefundEvidence::refs($event['paymentId'] ?? null, $event['paymentRequestId'] ?? null);
+    }
+
+    public function readRefund(array $event, ?array $transaction): array
+    {
+        $refs = $this->refundReferences($event);
+        if (($event['notifyType'] ?? '') !== 'REFUND_RESULT') {
+            return $transaction ? $this->queryRefunds($transaction) : RefundEvidence::result('lookup', ['payment_refs' => $refs]);
+        }
+        $observation = $this->antomRefund($event, $refs);
+        if (($event['refundStatus'] ?? '') === 'SUCCESS' && isset($event['result']['resultStatus']) && $event['result']['resultStatus'] !== 'S') {
+            return RefundEvidence::result('lookup', $observation['evidence']);
+        }
+        if (in_array($observation['kind'], ['failed', 'pending'], true)) {
+            return $observation;
+        }
+        if (!empty($event['refundRequestId']) && empty($event['refundId'])) {
+            $detail = $this->inquireRefund(null, $event['refundRequestId']);
+            $observation = $this->antomRefund($detail, $refs);
+        }
+        if ((!$transaction || !$refs) && $observation['kind'] === 'succeeded') {
+            return RefundEvidence::result('lookup', $observation['evidence']);
+        }
+        return $observation;
+    }
+
+    private function antomRefund(array $refund, array $refs): array
+    {
+        $states = ['SUCCESS' => 'succeeded', 'FAIL' => 'failed', 'PROCESSING' => 'pending'];
+        $status = $refund['refundStatus'] ?? '';
+        return RefundEvidence::observation($states[$status] ?? 'lookup', $refund['refundId'] ?? null, $refund['refundAmount']['value'] ?? null,
+            $refund['refundAmount']['currency'] ?? null, $refs, $refund['refundTime'] ?? null, $status,
+            ['refund_request_id' => $refund['refundRequestId'] ?? null], 'antom');
+    }
+
+    private function inquireRefund(?string $id, ?string $requestId): array
+    {
+        $query = $id ? ['refundId' => $id] : ['refundRequestId' => $requestId];
+        $refund = $this->signedRequest('POST', '/v1/payments/inquiryRefund', $query, true);
+        if (($refund['result']['resultStatus'] ?? '') !== 'S' || ($id && ($refund['refundId'] ?? '') !== $id)
+            || ($requestId && ($refund['refundRequestId'] ?? '') !== $requestId)) {
+            throw new \RuntimeException('Antom退款详情查询失败或返回了其他退款');
+        }
+        return $refund;
+    }
+
+    public function queryRefunds(array $transaction): array
+    {
+        $session = TransactionManager::getGatewaySession($transaction);
+        $paymentId = $transaction['transaction_id'] ?? ($session['payment_id'] ?? null);
+        $requestId = $session['payment_request_id'] ?? null;
+        if (!$paymentId && !$requestId) {
+            return RefundEvidence::result('lookup', ['payment_refs' => RefundEvidence::refs($transaction['payment_intent'] ?? null)]);
+        }
+        $selector = $paymentId ? ['paymentId' => $paymentId] : ['paymentRequestId' => $requestId];
+        $payment = $this->signedRequest('POST', '/v1/payments/inquiryPayment', $selector, true);
+        if (($payment['result']['resultStatus'] ?? '') !== 'S' || ($paymentId && ($payment['paymentId'] ?? '') !== $paymentId)
+            || ($requestId && ($payment['paymentRequestId'] ?? '') !== $requestId)) {
+            throw new \RuntimeException('Antom原付款查询失败或付款编号不匹配');
+        }
+        $refs = RefundEvidence::refs($payment['paymentId'] ?? null, $payment['paymentRequestId'] ?? null);
+        $observations = [];
+        $rows = $payment['transactions'] ?? [];
+        if (!is_array($rows)) {
+            throw new \RuntimeException('Antom付款明细格式错误');
+        }
+        foreach ($rows as $row) {
+            if (($row['transactionType'] ?? '') !== 'REFUND') {
+                continue;
+            }
+            $id = RefundEvidence::refs($row['transactionId'] ?? null)[0] ?? null;
+            $requestId = RefundEvidence::refs($row['transactionRequestId'] ?? null)[0] ?? null;
+            if (!$id && !$requestId) {
+                $observations[] = RefundEvidence::result('lookup', ['payment_refs' => $refs]);
+                continue;
+            }
+            $refund = $this->inquireRefund($id, $requestId);
+            $observations[] = $this->antomRefund($refund, $refs);
+        }
+        if (!$observations && ($payment['paymentStatus'] ?? '') === 'REFUNDED') {
+            return RefundEvidence::result('lookup', ['payment_refs' => $refs]);
+        }
+        return RefundEvidence::collection($observations, $refs);
+    }
+
     public function queryOrderStatus(array $transaction)
     {
         $sessionData = TransactionManager::getGatewaySession($transaction);
@@ -349,13 +436,15 @@ class AntomGateway extends PaymentBase
      * @return array 解析后的响应体
      * @throws \RuntimeException
      */
-    private function signedRequest($method, $path, array $body)
+    private function signedRequest($method, $path, array $body, bool $verifyResponse = false)
     {
         $clientId = $this->config['client_id'];
         $requestTime = gmdate('Y-m-d\TH:i:sP');
         $rawBody = wp_json_encode($body);
+        $url = $this->baseUrl() . $path;
+        $path = parse_url($url, PHP_URL_PATH);
 
-        $stringToSign = "{$method} {$path}\n{$clientId}.{$requestTime}.{$rawBody}\n";
+        $stringToSign = "{$method} {$path}\n{$clientId}.{$requestTime}.{$rawBody}";
         $signature = $this->signWithPrivateKey($stringToSign, $this->config['private_key']);
 
         $headers = [
@@ -364,7 +453,7 @@ class AntomGateway extends PaymentBase
             'Signature' => 'algorithm=RSA256,keyVersion=1,signature=' . rawurlencode($signature),
         ];
 
-        $result = HttpClient::postJson($this->baseUrl() . $path, $body, $headers, HttpClient::DEFAULT_TIMEOUT, $this->config['proxy'] ?? null);
+        $result = HttpClient::postRawJson($url, $rawBody, $headers, HttpClient::DEFAULT_TIMEOUT, $this->config['proxy'] ?? null, $verifyResponse);
 
         if (!$result['ok']) {
             if (in_array($result['status'], [401, 403], true)) {
@@ -375,6 +464,15 @@ class AntomGateway extends PaymentBase
             throw new \RuntimeException('Antom请求失败：HTTP ' . $result['status'] . ' ' . wp_json_encode($result['body']));
         }
 
+        if ($verifyResponse) {
+            $signed = $result['signature_headers'] ?? [];
+            $signature = $this->extractSignatureValue($signed['signature'] ?? '');
+            $timestamp = $signed['response-time'] ?? '';
+            if (($signed['client-id'] ?? null) !== $clientId || !$signature || !$timestamp
+                || !$this->verifyRsaSignature("{$method} {$path}\n{$clientId}.{$timestamp}.{$result['raw']}", $signature, $this->config['antom_public_key'])) {
+                throw new \RuntimeException('Antom退款查询响应未通过验签');
+            }
+        }
         return is_array($result['body']) ? $result['body'] : [];
     }
 
@@ -418,6 +516,7 @@ class AntomGateway extends PaymentBase
     private function extractSignatureValue($signatureHeader)
     {
         foreach (explode(',', $signatureHeader) as $part) {
+            $part = trim($part);
             if (strpos($part, 'signature=') === 0) {
                 return rawurldecode(substr($part, strlen('signature=')));
             }

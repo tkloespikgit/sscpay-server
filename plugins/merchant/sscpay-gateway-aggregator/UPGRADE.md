@@ -3,6 +3,19 @@
 这份文档配合 `src/Core/Migrator.php`、`src/Core/UpdateChecker.php` 和
 `sscpay-gateway-aggregator.php` 一起看。
 
+## 1.16.0 逐笔退款通知
+
+- 先更新 S 系统的 `payment_refund` 接收端，再更新付款站插件。接收端把退款持久化后返回 `code=0`、`received=true` 和同一 `refund_id`，旧接收端返回普通成功响应时退款仍保存在待投递队列。
+- 在对应账号和环境中，将退款事件发送到付款站后台显示的渠道 Webhook 地址。各渠道订阅项如下。
+  - Stripe 订阅 `refund.created`、`refund.updated`、`refund.failed` 和 `charge.refunded`。旧订阅的 `charge.refund.updated` 也能识别。
+  - PayPal 的 JS 和 REST 收款都在对应应用订阅 `PAYMENT.CAPTURE.REFUNDED`、`PAYMENT.REFUND.PENDING`、`PAYMENT.REFUND.FAILED`。
+  - Airwallex 订阅 `refund.received`、`refund.accepted`、`refund.settled`、`refund.failed`。使用历史事件版本的账号也可发送 `refund.succeeded`。
+  - Antom 将退款结果通知地址指向 Antom 渠道入口，接收 `REFUND_RESULT`。核对应用 Client-Id、Antom 公钥和实际回调路径，并确保账号有原支付与退款查询权限。
+- 激活或更新时自动执行 DB `1.7.0` 迁移，创建退款收件和逐笔凭证表。退款凭证、付款交易和回调队列使用 InnoDB，以便退款与出站任务同时提交。已有订单和财务记录保留。
+- 已验签的退款可先于付款到达。插件加密暂存通知，使用现有 WP-Cron 重查付款和退款明细。处理完成后清除暂存原文。未找到父单的 Antom 通知按已验签账号筛选候选付款，须通过渠道的原单查询找到同一退款编号。
+- 对同一退款号先后确认成功和失败时，付款站在支付日志记录订单与退款编号，暂停该笔待发通知并从查单的成功清单中移出。若 S 系统此前已扣款，财务需核对渠道终态与已记流水。
+- 升级前仍在队列中的订单级退款状态转为逐笔补查。历史凭证仅在渠道返回可验证明细后投递。签名与查询见[退款通知协议](docs/s-system-payment-status-notify.md#逐笔退款通知)。
+
 ## 1.15.2 公开更新、私有初始化与日志管理
 
 - 主包可匿名下载，更新不再需要令牌。私有初始化包在本站保存回调默认值，不改 `wp-config.php`；已保存的自定义值优先。设置页不回显密钥，仍可展开「修改回调密钥」保存新值。

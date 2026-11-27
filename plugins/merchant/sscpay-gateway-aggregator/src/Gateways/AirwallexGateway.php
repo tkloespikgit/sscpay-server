@@ -290,6 +290,69 @@ class AirwallexGateway extends PaymentBase
         return $result;
     }
 
+    public function refundReferences(array $event): array
+    {
+        $refund = $event['data']['object'] ?? [];
+        return RefundEvidence::refs($refund['payment_intent_id'] ?? null, $refund['payment_attempt_id'] ?? null);
+    }
+
+    public function readRefund(array $event, ?array $transaction): array
+    {
+        $refund = $event['data']['object'] ?? [];
+        $eventStatus = strtoupper(substr($event['name'] ?? '', strlen('refund.')));
+        $extra = ['event_id' => $event['id'] ?? null];
+        if (is_string($event['account_id'] ?? null)) {
+            $extra['provider_account'] = $event['account_id'];
+        }
+        return $this->airwallexRefund($refund, $eventStatus, $event['created_at'] ?? null, $extra);
+    }
+
+    private function airwallexRefund(array $refund, ?string $eventStatus = null, $eventTime = null, array $extra = []): array
+    {
+        $states = ['SETTLED' => 'succeeded', 'SUCCEEDED' => 'succeeded', 'ACCEPTED' => 'pending', 'RECEIVED' => 'pending', 'FAILED' => 'failed'];
+        $status = $refund['status'] ?? $eventStatus;
+        $kind = $states[$status] ?? 'lookup';
+        if ($eventStatus !== null && $kind !== ($states[$eventStatus] ?? 'lookup')) {
+            $kind = 'lookup';
+        }
+        return RefundEvidence::observation($kind, $refund['id'] ?? null, $refund['amount'] ?? null, $refund['currency'] ?? null,
+            RefundEvidence::refs($refund['payment_intent_id'] ?? null, $refund['payment_attempt_id'] ?? null),
+            $refund['updated_at'] ?? $eventTime, $status, $extra);
+    }
+
+    public function queryRefunds(array $transaction): array
+    {
+        $intent = RefundEvidence::refs($transaction['payment_intent'] ?? null)[0] ?? null;
+        if (!$intent) {
+            return RefundEvidence::result('lookup');
+        }
+        $headers = ['Authorization' => 'Bearer ' . $this->getAccessToken()];
+        $observations = [];
+        $seen = [];
+        $page = 0;
+        do {
+            $params = ['payment_intent_id' => $intent, 'page_num' => $page, 'page_size' => 100];
+            $response = HttpClient::getJson($this->baseUrl() . '/api/v1/pa/refunds?' . http_build_query($params),
+                $headers, HttpClient::DEFAULT_TIMEOUT, $this->config['proxy'] ?? null);
+            if (!$response['ok']) {
+                throw new \RuntimeException('Airwallex退款列表查询失败');
+            }
+            $list = RefundEvidence::decode($response['raw']);
+            if (!is_array($list['items'] ?? null) || !is_bool($list['has_more'] ?? null) || ($list['has_more'] && !$list['items'])) {
+                throw new \RuntimeException('Airwallex退款列表不完整');
+            }
+            foreach ($list['items'] as $refund) {
+                if (($refund['payment_intent_id'] ?? null) !== $intent || !is_string($refund['id'] ?? null) || isset($seen[$refund['id']])) {
+                    throw new \RuntimeException('Airwallex退款原付款或分页不匹配');
+                }
+                $seen[$refund['id']] = true;
+                $observations[] = $this->airwallexRefund($refund);
+            }
+            $page++;
+        } while ($list['has_more']);
+        return RefundEvidence::collection($observations, [$intent]);
+    }
+
     /**
      * 主动核实：Retrieve Payment Intent（payment_intent字段落库的是Intent id，
      * 见preparePayment()里的external_ref）。

@@ -31,6 +31,8 @@ namespace PaymentGatewayAggregator\Tests\QueueRecovery {
     {
         public static $requests;
         public static $exception;
+        public static $ack;
+        public static $refunds = [];
         public static $httpHook;
         public static $logs;
         public static $scheduled;
@@ -42,8 +44,8 @@ namespace PaymentGatewayAggregator\Tests\QueueRecovery {
         {
             global $wpdb;
             $wpdb = new MemoryWpdb();
-            self::$requests = self::$logs = [];
-            self::$exception = self::$httpHook = null;
+            self::$requests = self::$logs = self::$refunds = [];
+            self::$ack = self::$exception = self::$httpHook = null;
             self::$scheduled = [];
             self::$scheduleCalls = self::$spawnCalls = 0;
             self::$scheduleFailure = self::$spawnFailure = false;
@@ -121,6 +123,15 @@ namespace PaymentGatewayAggregator\Core {
                 'paid_at' => '2026-01-01 00:00:00', 'callback_url' => 'https://example.invalid/callback'];
         }
     }
+    class RefundRecords
+    {
+        public static function hasFailedNotice($orderId, $id) { return false; }
+        public static function reconcile($transaction, &$complete)
+        {
+            $complete = (bool) Fixture::$refunds;
+            return Fixture::$refunds;
+        }
+    }
     class OutboundSigner
     {
         const HEADER_NAME = 'X-Test-Signature';
@@ -144,7 +155,7 @@ namespace PaymentGatewayAggregator\Helpers {
             Fixture::$requests[] = compact('url', 'raw', 'headers');
             if (Fixture::$httpHook) { $hook = Fixture::$httpHook; Fixture::$httpHook = null; $hook(); }
             if (Fixture::$exception) { throw Fixture::$exception; }
-            return ['ok' => true, 'status' => 200, 'body' => '{}', 'error' => null];
+            return ['ok' => true, 'status' => 200, 'body' => Fixture::$ack ?? '{}', 'error' => null];
         }
     }
 }
@@ -178,6 +189,37 @@ namespace {
         throws(function () { QueueManager::enqueue('S-001', 'payment_status', ['amount' => NAN]); }, 'Missing serialization error');
         same(1, QueueManager::enqueue('S-001', 'payment_status', ['status' => 'paid']), 'New queue ID');
         same('{"status":"paid"}', $wpdb->rows[1]['payload'], 'Exact payload persisted');
+    };
+    $tests['pending legacy full refund status only reconciles individual refunds'] = function () {
+        global $wpdb;
+        Fixture::seed();
+        $wpdb->rows[1]['payload'] = '{"status":"refunded"}';
+        $wpdb->rows[1]['retry_count'] = 5;
+        QueueManager::deliverNow(1);
+        same([], Fixture::$requests, 'No legacy refund callback');
+        same('pending', $wpdb->rows[1]['status'], 'Legacy detail lookup retries');
+        Fixture::$refunds = [['refund_id' => 're_ok']];
+        QueueManager::deliverNow(1);
+        same('success', $wpdb->rows[1]['status'], 'Superseded after confirmed detailed query');
+        same([], Fixture::$requests, 'Aggregate status never redelivered');
+    };
+    $tests['refund delivery requires acknowledgement of the exact refund and survives older receivers'] = function () {
+        global $wpdb;
+        Fixture::seed();
+        $wpdb->rows[1]['event_type'] = 'payment_refund';
+        $wpdb->rows[1]['payload'] = '{"refund_id":"re_01"}';
+        $wpdb->rows[1]['retry_count'] = 5;
+        foreach ([['code' => 0, 'message' => 'ignored'], ['code' => 0, 'received' => true, 'refund_id' => 're_other']] as $ack) {
+            Fixture::$ack = $ack;
+            $wpdb->rows[1]['next_retry_at'] = gmdate('Y-m-d H:i:s', time() - 1);
+            QueueManager::processDueBatch();
+            same('pending', $wpdb->rows[1]['status'], 'Unconfirmed refund remains retryable');
+        }
+        Fixture::$ack = ['code' => 0, 'received' => true, 'refund_id' => 're_01'];
+        $wpdb->rows[1]['next_retry_at'] = gmdate('Y-m-d H:i:s', time() - 1);
+        QueueManager::processDueBatch();
+        same('success', $wpdb->rows[1]['status'], 'Matching receipt closes delivery');
+        same(3, count(Fixture::$requests), 'Original refund resent');
     };
     $tests['nested workers and repeated immediate delivery send the callback once'] = function () {
         global $wpdb;

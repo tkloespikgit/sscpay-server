@@ -17,6 +17,7 @@ namespace PaymentGatewayAggregator\API\Controllers;
 use PaymentGatewayAggregator\API\ApiResponse;
 use PaymentGatewayAggregator\Core\OrderStatusReconciler;
 use PaymentGatewayAggregator\Core\TransactionManager;
+use PaymentGatewayAggregator\Core\RefundRecords;
 use PaymentGatewayAggregator\Helpers\Validator;
 
 if (!defined('ABSPATH')) {
@@ -48,7 +49,20 @@ class OrderQueryController
 
         $transaction = OrderStatusReconciler::reconcile($transaction);
 
-        return ApiResponse::success(self::buildQueryResponseData($transaction), '查询成功');
+        $data = self::buildQueryResponseData($transaction);
+        if (($body['include_refunds'] ?? false) === true) {
+            try {
+                $refunds = RefundRecords::reconcile($transaction, $complete);
+                $data = self::buildQueryResponseData(TransactionManager::findBySOrderId($transaction['s_order_id']));
+                $data['refunds'] = $refunds;
+                $data['refunds_complete'] = $complete;
+            } catch (\Throwable $exception) {
+                $data['refunds'] = [];
+                $data['refunds_complete'] = false;
+            }
+        }
+
+        return ApiResponse::success($data, '查询成功');
     }
 
     private static function buildQueryResponseData(array $transaction)

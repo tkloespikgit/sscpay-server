@@ -318,9 +318,43 @@ class OrderSettlementBalanceTest extends TestCase
         $this->travel(10)->days();
         $this->artisan('orders:settle-due')->assertSuccessful();
 
-        $this->assertBalances('-5.00', '0.00', '0.00', '0.00', '-5.00');
+        $this->assertBalances('0.00', '0.00', '0.00', '0.00', '0.00');
         $this->assertSame('cancelled', $this->settlement($order)->status);
         $this->assertDatabaseCount('merchant_fund_freezes', 0);
+    }
+
+    public function test_cumulative_fx_uses_the_final_cent_and_only_the_remaining_net_income(): void
+    {
+        $order = $this->paidOrder(['amount' => '3.00', 'currency' => 'EUR', 'converted_amount' => '10.00',
+            'settlement_amount' => '6.66', 'refund_fee_snapshot' => '0.50']);
+        $service = app(BalanceService::class);
+        $service->creditForPaidOrder($order);
+        $order->update(['gateway_status' => 'refunded']);
+        foreach (['one', 'two', 'three'] as $key) {
+            $refund = $service->refund($order, '1.00', null, idempotencyKey: $key);
+            $this->assertTrue($refund->is($service->refund($order, '1.00', null, idempotencyKey: $key)));
+        }
+        $this->assertSame(['3.33', '3.33', '3.34'], $order->refunds()->orderBy('id')->pluck('amount_usd')->all());
+        $this->assertSame(['3.33', '3.33', '0.00'], $order->refunds()->orderBy('id')->pluck('principal_deducted_usd')->all());
+        $this->assertSame(3, $order->balanceTransactions()->where('type', MerchantBalanceTransaction::TYPE_REFUND_FEE)->count());
+        $this->assertBalances('-1.50', '0.00', '0.00', '0.00', '-1.50');
+        Event::assertDispatched(OrderStatusChanged::class, fn ($event) => $event->newStatus === 'partially_refunded');
+        Event::assertDispatched(OrderStatusChanged::class, fn ($event) => $event->oldStatus === 'partially_refunded' && $event->newStatus === 'refunded');
+    }
+
+    #[TestWith([null])]
+    #[TestWith(['immediate'])]
+    public function test_manual_refund_without_income_requires_review_even_with_a_settlement_snapshot(?string $mode): void
+    {
+        $order = $this->paidOrder(['settlement_mode' => $mode]);
+        try {
+            app(BalanceService::class)->refund($order, '10.00', $this->operator());
+            $this->fail('A legacy refund without income was booked.');
+        } catch (BalanceOperationException $exception) {
+            $this->assertSame(__('admin.finance.refund.income_review'), $exception->getMessage());
+        }
+        $this->assertDatabaseCount('order_refunds', 0);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
     }
 
     public function test_partial_refund_that_exhausts_net_proceeds_cancels_settlement_without_marking_the_order_completed(): void
@@ -366,11 +400,11 @@ class OrderSettlementBalanceTest extends TestCase
         $operator = $this->operator();
         $service->refund($order, '100.00', $operator);
         $settlementBefore = $this->settlement($order)->toArray();
-        $this->assertBalances('90.00', '95.00', '0.00', '0.00', '-5.00');
+        $this->assertBalances('95.00', '95.00', '0.00', '0.00', '0.00');
 
         $service->chargeback($order->refresh(), $operator, '拒付拦截');
 
-        $this->assertBalances('87.00', '95.00', '0.00', '0.00', '-8.00');
+        $this->assertBalances('92.00', '95.00', '0.00', '0.00', '-3.00');
         $this->assertSame('chargeback', $order->refresh()->status);
         $this->assertSame($settlementBefore, $this->settlement($order)->toArray());
         $this->assertSame('95.00', $this->settlement($other)->remaining_amount);
@@ -397,17 +431,17 @@ class OrderSettlementBalanceTest extends TestCase
 
         $service->chargeback($order->refresh(), $operator, '确认剩余本金拒付');
 
-        $this->assertBalances('87.00', '95.00', '0.00', '0.00', '-8.00');
+        $this->assertBalances('92.00', '95.00', '0.00', '0.00', '-3.00');
         $this->assertSame('chargeback', $order->refresh()->status);
         $this->assertSame('40.00', $order->refunded_amount);
         $this->assertSame('95.00', $this->settlement($other)->remaining_amount);
         $this->assertDatabaseHas('merchant_balance_transactions', [
-            'order_id' => $order->id, 'type' => MerchantBalanceTransaction::TYPE_CHARGEBACK, 'amount' => '-60.00',
+            'order_id' => $order->id, 'type' => MerchantBalanceTransaction::TYPE_CHARGEBACK, 'amount' => '-55.00',
         ]);
         $this->travel(10)->days();
         $this->artisan('orders:settle-due')->assertSuccessful();
         $this->assertSame('chargeback', $order->refresh()->status);
-        $this->assertSame('87.00', $this->merchant->refresh()->balance);
+        $this->assertSame('92.00', $this->merchant->refresh()->balance);
     }
 
     public function test_legacy_order_remains_immediately_available_without_creating_a_settlement(): void
@@ -476,7 +510,7 @@ class OrderSettlementBalanceTest extends TestCase
 
         $service->refund($order, '100.00', $this->operator());
 
-        $this->assertBalances('90.00', '95.00', '0.00', '0.00', '-5.00');
+        $this->assertBalances('95.00', '95.00', '0.00', '0.00', '0.00');
         $this->assertSame('95.00', $this->settlement($other)->remaining_amount);
         $this->assertSame('cancelled', $this->settlement($order)->status);
     }

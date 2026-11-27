@@ -42,6 +42,8 @@ class DeploymentScriptTest extends TestCase
         $this->assertBefore('filament:upgrade', 'config:cache', $trace);
         $this->assertBefore('--working-dir=plugins/merchant/sscpay-gateway-aggregator', 'plugins:sync --dry-run', $trace);
         $this->assertBefore('plugins:sync --dry-run', 'migrate --force', $trace);
+        $this->assertBefore('migrate --force', 'db:seed --class=PermissionSeeder --force --no-interaction', $trace);
+        $this->assertBefore('db:seed --class=PermissionSeeder --force --no-interaction', 'queue:restart', $trace);
         $this->assertBefore('migrate --force', 'plugins:sync --no-interaction', $trace);
         $this->assertBefore('migrate --force', 'crypto:check-addresses --initialize --no-interaction', $trace);
         $this->assertBefore('crypto:check-addresses --initialize --no-interaction', 'queue:restart', $trace);
@@ -73,6 +75,7 @@ class DeploymentScriptTest extends TestCase
             'gateway dependencies' => ['composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --working-dir=plugins/merchant/sscpay-gateway-aggregator', false],
             'plugin preflight' => ['php artisan plugins:sync --dry-run --no-interaction', false],
             'migration' => ['php artisan migrate --force --no-interaction', true],
+            'permission catalog synchronization' => ['php artisan db:seed --class=PermissionSeeder --force --no-interaction', true],
             'crypto address check initialization' => ['php artisan crypto:check-addresses --initialize --no-interaction', true],
             'Telegram webhook registration' => ['php artisan telegram:register-webhook --if-configured --no-interaction', true],
             'plugin upload' => ['php artisan plugins:sync --no-interaction', true],

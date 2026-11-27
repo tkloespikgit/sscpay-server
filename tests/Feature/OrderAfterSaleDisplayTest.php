@@ -581,7 +581,7 @@ class OrderAfterSaleDisplayTest extends TestCase
     private function paidOrder(string $suffix, array $overrides = []): Order
     {
         return $this->makeOrder('AFTER-'.$suffix, 'M-'.$suffix, array_merge([
-            'status' => 'paid', 'paid_at' => now(),
+            'status' => 'paid', 'paid_at' => now(), 'settlement_amount' => '100.00',
             'payment_method_id' => $this->paymentMethod->id, 'payment_method' => $this->paymentMethod->method_code,
             'refund_fee_snapshot' => '2.00', 'chargeback_fee_snapshot' => '15.00',
         ], $overrides));
@@ -598,6 +598,8 @@ class OrderAfterSaleDisplayTest extends TestCase
     private function refund(Order $order, string $amount, string $at): OrderRefund
     {
         $this->travelToDate($at);
+
+        app(BalanceService::class)->creditForPaidOrder($order);
 
         return app(BalanceService::class)->refund($order->fresh(), $amount, $this->reader, 'Refund confirmed');
     }

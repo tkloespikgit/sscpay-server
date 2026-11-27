@@ -19,6 +19,7 @@ use App\Filament\Support\OrderAfterSaleDisplay;
 use App\Jobs\SendPaymentLinkJob;
 use App\Jobs\SyncOrderTrackingJob;
 use App\Models\Carrier;
+use App\Models\GatewayRefund;
 use App\Models\Order;
 use App\Models\OrderDisputeEvent;
 use App\Models\OrderRefund;
@@ -26,6 +27,7 @@ use App\Models\OrderSettlement;
 use App\Models\OrderShipping;
 use App\Models\User;
 use App\Services\BalanceService;
+use App\Services\GatewayRefundService;
 use App\Services\LogisticsTracking\Drivers\SeventeenTrack\SeventeenTrackDriver;
 use App\Services\LogisticsTracking\LogisticsTrackingSyncService;
 use App\Services\MerchantShipmentSyncService;
@@ -49,6 +51,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\FontWeight;
 use Filament\Support\Enums\Size;
@@ -238,6 +241,7 @@ class ViewOrder extends ViewRecord
                     ])->columnSpanFull(),
                     RepeatableEntry::make('refund_history')->label(__('admin.order.after_sale.refund_history'))
                         ->state(fn (Order $record): Collection => $record->refunds()->where('merchant_id', $record->merchant_id)
+                            ->with(['gatewayRefund' => fn ($query) => $query->where('merchant_id', $record->merchant_id)->where('order_id', $record->id)])
                             ->orderBy('created_at')->orderBy('id')->get())
                         ->visible(fn (Order $record): bool => $this->afterSaleOrder($record)->after_sale_refunded_total !== null)
                         ->schema([
@@ -245,10 +249,59 @@ class ViewOrder extends ViewRecord
                                 ->dateTime('Y-m-d H:i:s')->timezone(config('app.timezone')),
                             TextEntry::make('amount')->label(__('admin.finance.refund.amount'))
                                 ->money(fn (OrderRefund $record): string => $record->currency),
+                            TextEntry::make('amount_usd')->label(__('admin.finance.refund.converted'))->money('USD'),
+                            TextEntry::make('principal_deducted_usd')->label(__('admin.finance.refund.principal'))
+                                ->state(fn (OrderRefund $record): string => $record->principal_deducted_usd ?? $record->amount_usd)->money('USD'),
                             TextEntry::make('fee')->label(__('admin.order.after_sale.refund_fee'))->money('USD'),
+                            TextEntry::make('gatewayRefund.refund_id')->label(__('admin.finance.refund.gateway_id'))->placeholder('—'),
                             TextEntry::make('reason')->label(__('admin.finance.refund.reason'))
                                 ->placeholder(__('admin.order.placeholders.none'))->columnSpanFull(),
                         ])->columns(3)->columnSpanFull(),
+                ])->columnSpanFull(),
+
+            Section::make(__('admin.finance.refund.outstanding'))
+                ->visible(fn (Order $record): bool => $record->gatewayRefunds()->where('merchant_id', $record->merchant_id)->unsettled()->exists())
+                ->schema([
+                    RepeatableEntry::make('unsettled_gateway_refunds')->hiddenLabel()
+                        ->state(fn (Order $record): Collection => $record->gatewayRefunds()->where('merchant_id', $record->merchant_id)->unsettled()->orderBy('id')->get())
+                        ->schema([
+                            TextEntry::make('refund_id')->label(__('admin.finance.refund.gateway_id')),
+                            TextEntry::make('amount')->label(__('admin.finance.refund.amount'))
+                                ->formatStateUsing(fn (GatewayRefund $record): string => "{$record->amount} {$record->currency}"),
+                            TextEntry::make('status')->label(__('admin.order.fields.status'))
+                                ->formatStateUsing(fn (string $state): string => __("admin.finance.refund.receipt_status.{$state}")),
+                            TextEntry::make('last_error')->label(__('admin.finance.refund.reason'))
+                                ->formatStateUsing(function (string $state): string {
+                                    $key = "admin.finance.refund.receipt_reason.{$state}";
+
+                                    return trans()->has($key) ? __($key) : $state;
+                                })->placeholder('—')->columnSpanFull(),
+                        ])->columns(3)->columnSpanFull(),
+                ])->columnSpanFull(),
+
+            Section::make(__('admin.finance.refund.conflicts'))
+                ->visible(fn (Order $record): bool => DB::table('gateway_refund_conflicts')->where('order_id', $record->id)->exists())
+                ->schema([
+                    RepeatableEntry::make('gateway_refund_conflicts')->hiddenLabel()
+                        ->state(fn (Order $record): Collection => DB::table('gateway_refund_conflicts')
+                            ->where('order_id', $record->id)->orderByDesc('id')->get(['facts', 'created_at'])
+                            ->map(function (object $conflict): array {
+                                $facts = json_decode($conflict->facts, true, flags: JSON_THROW_ON_ERROR);
+
+                                return [
+                                    'refund_id' => $facts['refund_id'],
+                                    'amount' => $facts['amount'].' '.$facts['currency'],
+                                    'payment_reference' => $facts['payment_reference'],
+                                    'received_at' => $conflict->created_at,
+                                ];
+                            }))
+                        ->schema([
+                            TextEntry::make('refund_id')->label(__('admin.finance.refund.gateway_id')),
+                            TextEntry::make('amount')->label(__('admin.finance.refund.amount')),
+                            TextEntry::make('payment_reference')->label(__('admin.order.fields.transaction_id')),
+                            TextEntry::make('received_at')->label(__('admin.finance.refund.received_at'))
+                                ->dateTime('Y-m-d H:i:s')->timezone(config('app.timezone')),
+                        ])->columns(2)->columnSpanFull(),
                 ])->columnSpanFull(),
 
             Section::make(__('admin.order.sections.customer_shipping'))
@@ -764,6 +817,7 @@ class ViewOrder extends ViewRecord
             $this->openDisputeAction(),
             $this->viewActiveDisputeEventAction(),
             $this->refundAction(),
+            $this->resolveGatewayRefundAction(),
             $this->chargebackAction(),
             $this->manualStatusChangeAction(),
         ];
@@ -1106,7 +1160,7 @@ class ViewOrder extends ViewRecord
             ->modalDescription(fn ($record) => __('admin.finance.refund.desc', [
                 'remaining' => number_format((float) $record->refundableAmount(), 2),
                 'currency' => $record->currency,
-                'fee' => number_format((float) ($record->paymentMethodConfig()->refund_fee ?? 0), 2),
+                'fee' => app(BalanceService::class)->refundFee($record),
             ]).($record->status === 'refunded' ? "\n\n".__('admin.finance.refund.settle_notice') : ''))
             ->schema(fn ($record) => [
                 TextInput::make('amount')
@@ -1115,7 +1169,21 @@ class ViewOrder extends ViewRecord
                     ->required()
                     ->minValue(0.01)
                     ->maxValue((float) $record->refundableAmount())
-                    ->suffix($record->currency),
+                    ->suffix($record->currency)
+                    ->live(onBlur: true)
+                    ->helperText(function (Get $get) use ($record): ?string {
+                        $amount = (string) $get('amount');
+                        if (! preg_match('/^\d{1,13}(?:\.\d{1,2})?$/D', $amount)) {
+                            return null;
+                        }
+                        try {
+                            $quote = app(BalanceService::class)->refundQuote($record, $amount);
+                        } catch (BalanceOperationException $exception) {
+                            return $exception->getMessage();
+                        }
+
+                        return __('admin.finance.refund.preview', $quote + ['total' => bcadd($quote['principal_deducted_usd'], $quote['fee'], 2)]);
+                    }),
                 Textarea::make('reason')->label(__('admin.finance.refund.reason'))->rows(2)->maxLength(500),
                 FinanceSecurity::codeField(),
             ])
@@ -1132,6 +1200,46 @@ class ViewOrder extends ViewRecord
                 }
 
                 Notification::make()->title(__('admin.finance.refund.success'))->success()->send();
+                $this->record->refresh();
+            });
+    }
+
+    private function resolveGatewayRefundAction(): Action
+    {
+        $receipts = fn (Order $order) => GatewayRefund::forMerchant($order->merchant_id)->where('order_id', $order->id)
+            ->where('status', 'review')->where('last_error', 'unlinked_refunds');
+
+        return Action::make('resolveGatewayRefund')
+            ->label(__('admin.finance.refund.reconcile'))
+            ->icon('heroicon-o-document-magnifying-glass')
+            ->authorize(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND))
+            ->visible(fn (Order $record): bool => $this->canPerformOrderAction($record, Permissions::ORDERS_REFUND) && $receipts($record)->exists())
+            ->modalDescription(__('admin.finance.refund.unlinked'))
+            ->schema(fn (Order $record): array => [
+                Select::make('receipt_id')->label(__('admin.finance.refund.gateway_id'))->required()
+                    ->options(fn (): array => $receipts($record)->get()->mapWithKeys(fn (GatewayRefund $receipt): array => [
+                        $receipt->id => "{$receipt->refund_id} · {$receipt->amount} {$receipt->currency} · {$receipt->refunded_at}",
+                    ])->all()),
+                Select::make('resolution')->label(__('admin.finance.refund.decision'))->required()
+                    ->options(fn (): array => ['new' => __('admin.finance.refund.independent')] + $record->refunds()
+                        ->where('merchant_id', $record->merchant_id)->whereDoesntHave('gatewayRefund')
+                        ->orderBy('id')->get()->mapWithKeys(fn (OrderRefund $refund): array => [
+                            $refund->id => "#{$refund->id} · {$refund->amount} {$refund->currency} · {$refund->created_at} · {$refund->reason}",
+                        ])->all()),
+                FinanceSecurity::codeField(),
+            ])
+            ->action(function (array $data): void {
+                $user = $this->authorizeOrderAction(Permissions::ORDERS_REFUND);
+                try {
+                    FinanceSecurity::assertVerified($user, $data['mfa_code'] ?? null);
+                    app(GatewayRefundService::class)->resolveUnlinked($this->record, (int) $data['receipt_id'],
+                        $data['resolution'] === 'new' ? null : (int) $data['resolution'], $user);
+                } catch (BalanceOperationException $exception) {
+                    Notification::make()->title($exception->getMessage())->danger()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('admin.finance.refund.reconciled'))->success()->send();
                 $this->record->refresh();
             });
     }
@@ -1172,7 +1280,8 @@ class ViewOrder extends ViewRecord
                         }
 
                         return __('admin.finance.chargeback.partial_refund_conversion_desc', [
-                            'refunded' => number_format((float) bcsub((string) $record->converted_amount, $principal, 2), 2),
+                            'refunded' => number_format((float) $record->refunds()->where('merchant_id', $record->merchant_id)
+                                ->selectRaw('COALESCE(SUM(COALESCE(principal_deducted_usd, amount_usd)), 0) AS deducted')->value('deducted'), 2),
                             'amount' => number_format((float) $principal, 2),
                             'fee' => $fee,
                             'total' => number_format((float) bcadd($principal, $feeAmount, 2), 2),

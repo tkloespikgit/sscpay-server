@@ -13,6 +13,8 @@ class EditAdmin extends EditRecord
 {
     protected static string $resource = AdminResource::class;
 
+    protected ?bool $hasDatabaseTransactions = true;
+
     protected function getHeaderActions(): array
     {
         return [DeleteAction::make()];

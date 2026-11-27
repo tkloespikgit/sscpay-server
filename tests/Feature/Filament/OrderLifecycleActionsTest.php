@@ -5,11 +5,15 @@ namespace Tests\Feature\Filament;
 use App\Events\OrderStatusChanged;
 use App\Filament\Resources\OrderResource\Pages\ListOrders;
 use App\Filament\Resources\OrderResource\Pages\ViewOrder;
+use App\Models\Application;
 use App\Models\Carrier;
+use App\Models\GatewayRefund;
+use App\Models\Merchant;
 use App\Models\Order;
 use App\Models\OrderSettlement;
 use App\Models\User;
 use App\Services\BalanceService;
+use App\Services\GatewayRefundService;
 use App\Services\OrderPaymentStatusService;
 use App\Support\Permissions;
 use Filament\Actions\Action;
@@ -295,16 +299,105 @@ class OrderLifecycleActionsTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_order_readers_see_unbooked_gateway_evidence_when_no_local_refund_exists(): void
+    {
+        $reader = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $reader->givePermissionTo(Permissions::ORDERS_VIEW);
+        $this->actingAs($reader);
+        Filament::setCurrentPanel('merchant');
+        $method = $this->makePaymentMethod('receipt');
+        $order = $this->makeOrder('NO-CREDIT', 'M-NO-CREDIT', [
+            'status' => 'paid', 'paid_at' => now(), 'transaction_id' => 'txn_1',
+            'payment_method' => $method->method_code, 'payment_method_id' => $method->id,
+        ]);
+        $receipt = $this->receiveRefund($order, '12.34', 're_missing_credit');
+        $this->assertSame('missing_income_ledger', $receipt->last_error);
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->assertSee('re_missing_credit')->assertSee('12.34 USD')
+            ->assertSee(__('admin.finance.refund.receipt_reason.missing_income_ledger'))
+            ->assertActionHidden('resolveGatewayRefund');
+        $this->assertDatabaseCount('order_refunds', 0);
+    }
+
+    public function test_refund_conflicts_only_show_the_report_for_the_viewers_order(): void
+    {
+        $method = $this->makePaymentMethod('conflict-source');
+        $bookedOrder = $this->makeOrder('BOOKED-ORDER', 'M-BOOKED', [
+            'status' => 'paid', 'paid_at' => now(), 'transaction_id' => 'txn_1', 'settlement_amount' => '95.00',
+            'payment_method_id' => $method->id, 'payment_method' => $method->method_code,
+        ]);
+        app(BalanceService::class)->creditForPaidOrder($bookedOrder);
+        $receipt = $this->receiveRefund($bookedOrder, '10.00', 're_shared');
+        $this->assertSame('booked', $receipt->status);
+        $otherMerchant = Merchant::create(['name' => 'Other merchant']);
+        $app = Application::createWithCredentials(['merchant_id' => $otherMerchant->id, 'name' => 'Other app', 'website' => 'https://other.example.com']);
+        $otherOrder = $this->makeOrder('OTHER-ORDER', 'M-OTHER', ['merchant_id' => $otherMerchant->id, 'application_id' => $app->id]);
+        $reports = [
+            [$bookedOrder, 'txn_booked_claim', '23.45', 'USD'],
+            [$otherOrder, 'txn_other_claim', '67.89', 'EUR'],
+        ];
+        $this->travelTo(now()->setTime(13, 14, 15));
+        foreach ($reports as [$order, $paymentReference, $amount, $currency]) {
+            app(GatewayRefundService::class)->receive([
+                'event' => 'payment_refund', 'status' => 'succeeded', 's_order_id' => $order->gatewayOrderReference(),
+                'payment_method' => 'stripe', 'livemode' => true, 'refund_id' => 're_shared',
+                'payment_reference' => $paymentReference, 'amount' => $amount, 'currency' => $currency,
+                'refunded_at' => '2026-11-25T10:00:00Z',
+            ]);
+        }
+        Filament::setCurrentPanel('merchant');
+        foreach ($reports as $index => [$order, $paymentReference, $amount, $currency]) {
+            $reader = User::factory()->create(['merchant_id' => $order->merchant_id]);
+            $reader->givePermissionTo(Permissions::ORDERS_VIEW);
+            $this->actingAs($reader);
+            Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+                ->assertSee('re_shared')->assertSee($paymentReference)->assertSee($amount.' '.$currency)
+                ->assertSee(now()->format('Y-m-d H:i:s'))->assertDontSee($reports[1 - $index][1]);
+        }
+        $this->assertDatabaseCount('order_refunds', 1);
+        $this->assertSame('85.00', $this->merchant->fresh()->balance);
+        $this->assertSame('0.00', $otherMerchant->fresh()->balance);
+    }
+
+    public function test_an_unlinked_gateway_receipt_can_only_be_reconciled_with_totp(): void
+    {
+        $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $operator->givePermissionTo([Permissions::ORDERS_VIEW, Permissions::ORDERS_REFUND]);
+        $this->actingAs($operator);
+        Filament::setCurrentPanel('merchant');
+        $order = $this->refundedOrder($operator, '10.00');
+        $receipt = GatewayRefund::create([
+            'merchant_id' => $order->merchant_id, 'order_id' => $order->id, 'payment_method_id' => $order->payment_method_id,
+            'identity_hash' => hash('sha256', 'receipt'), 'order_refund_hash' => hash('sha256', 'refund'),
+            'gateway_reference' => $order->order_no, 'payment_method' => 'stripe', 'livemode' => true,
+            'refund_id' => 're_unlinked', 'payment_reference' => 'transaction', 'amount' => '10.00',
+            'currency' => 'USD', 'refunded_at' => now(), 'status' => 'review', 'last_error' => 'unlinked_refunds',
+        ]);
+        $data = ['receipt_id' => $receipt->id, 'resolution' => $order->refunds()->sole()->id];
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])->assertSee('re_unlinked')
+            ->assertSee(__('admin.finance.refund.receipt_reason.unlinked_refunds'))
+            ->callAction('resolveGatewayRefund', $data + ['mfa_code' => '123456']);
+        $this->assertSame('review', $receipt->refresh()->status);
+        $auth = app(AppAuthentication::class);
+        $operator->saveAppAuthenticationSecret($auth->generateSecret());
+        Livewire::test(ViewOrder::class, ['record' => $order->getRouteKey()])
+            ->callAction('resolveGatewayRefund', $data + ['mfa_code' => $auth->getCurrentCode($operator, $operator->getAppAuthenticationSecret())]);
+        $this->assertSame('booked', $receipt->refresh()->status);
+        $this->assertSame($operator->id, $receipt->reviewed_by);
+        $this->assertDatabaseCount('order_refunds', 1);
+    }
+
     private function refundedOrder(User $operator, string $refundAmount = '100.00'): Order
     {
-        $this->merchant->update(['balance' => '1000.00']);
+        $this->merchant->update(['balance' => '900.00']);
         $method = $this->makePaymentMethod('refund-conversion');
         $method->update(['chargeback_fee' => '50.00']);
         $order = $this->makeOrder('REFUND-CONVERSION', 'M-REFUND-CONVERSION', [
             'status' => 'paid', 'paid_at' => now(), 'payment_method_id' => $method->id,
             'payment_method' => $method->method_code, 'refund_fee_snapshot' => '2.00',
-            'chargeback_fee_snapshot' => '12.00',
+            'chargeback_fee_snapshot' => '12.00', 'settlement_amount' => '100.00',
         ]);
+        app(BalanceService::class)->creditForPaidOrder($order);
         app(BalanceService::class)->refund($order, $refundAmount, $operator);
 
         return $order->refresh();

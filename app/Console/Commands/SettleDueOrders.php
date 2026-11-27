@@ -2,11 +2,13 @@
 
 namespace App\Console\Commands;
 
+use App\Models\GatewayRefund;
 use App\Models\Order;
 use App\Models\OrderAccountingTask;
 use App\Models\OrderSettlement;
 use App\Services\BalanceService;
 use App\Services\OrderAccountingService;
+use App\Services\OrderPaymentStatusService;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Builder;
 use Throwable;
@@ -30,7 +32,7 @@ class SettleDueOrders extends Command
     /**
      * Execute the console command.
      */
-    public function handle(BalanceService $balanceService, OrderAccountingService $accountingService): int
+    public function handle(BalanceService $balanceService, OrderAccountingService $accountingService, OrderPaymentStatusService $gateway): int
     {
         $limit = (string) $this->option('limit');
 
@@ -63,6 +65,24 @@ class SettleDueOrders extends Command
                 ->where(fn (Builder $query) => $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now())),
             (int) $limit,
             fn (OrderAccountingTask $task): bool => $accountingService->process($task),
+            $failed,
+        );
+
+        $booked = $this->processCandidates(
+            GatewayRefund::query()->withoutGlobalScopes()->where('status', 'pending')
+                ->where(fn (Builder $query) => $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now())),
+            (int) $limit,
+            fn (GatewayRefund $receipt): bool => $gateway->recoverRefund($receipt),
+            $failed,
+        );
+
+        $queried = $this->processCandidates(
+            OrderAccountingTask::query()->withoutGlobalScopes()->where('type', OrderAccountingTask::TYPE_REFUND)
+                ->where('status', OrderAccountingTask::STATUS_MANUAL_REVIEW)->where('last_error', OrderAccountingTask::REFUND_DETAIL_REQUIRED)
+                ->where(fn (Builder $query) => $query->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now()))
+                ->whereHas('order', fn (Builder $q) => $q->withoutGlobalScopes()->whereNull('deleted_at')->whereNotNull('payment_method_id')),
+            min(10, (int) $limit),
+            fn (OrderAccountingTask $task): bool => $gateway->queryRefundHint($task),
             $failed,
         );
 
@@ -104,7 +124,7 @@ class SettleDueOrders extends Command
             $failed,
         );
 
-        $this->info("记账 {$accounted} 笔，人工补录核销 {$reconciled} 笔，检查发货 {$started} 笔，结算 {$settled} 笔，失败 {$failed} 笔。");
+        $this->info("记账 {$accounted} 笔，网关退款 {$booked} 笔，退款明细补查 {$queried} 笔，人工补录核销 {$reconciled} 笔，检查发货 {$started} 笔，结算 {$settled} 笔，失败 {$failed} 笔。");
 
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }

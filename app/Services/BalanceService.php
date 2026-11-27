@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\BalanceOperationException;
+use App\Models\GatewayRefund;
 use App\Models\Merchant;
 use App\Models\MerchantBalanceTransaction;
 use App\Models\MerchantFundFreeze;
@@ -226,7 +227,7 @@ class BalanceService
     /**
      * 退款（支持部分退款）。amountOriginal 为订单原币种金额，
      * 换算成 USD 记账，并按支付方式收取固定退款手续费（USD）。
-     * 余额扣减 = 退款 USD + 手续费。
+     * 退款本金受该单实际净入账上限约束，固定手续费另计。
      *
      * @param  ?User  $operator  操作人；网关回调自动入账时为 null（系统行为）
      * @param  ?string  $idempotencyKey  幂等键前缀，自动入账时必传：余额流水表对该列
@@ -241,41 +242,29 @@ class BalanceService
             throw new BalanceOperationException('退款金额必须大于 0。');
         }
 
-        $this->assertRefundable($order);
+        return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountOriginal, $operator, $reason, $idempotencyKey) {
+            $fresh = Order::query()->withoutGlobalScopes()->where('merchant_id', $merchant->id)->lockForUpdate()->findOrFail($order->id);
 
-        // 换算成 USD：按已收款总额（converted_amount）对退款占订单金额的比例分摊，
-        // 避免依赖汇率乘除方向；订单金额为 0 的异常单直接拒绝。
-        if (bccomp((string) $order->amount, '0', 2) <= 0) {
-            throw new BalanceOperationException('订单金额异常（为 0），无法计算退款。');
-        }
+            if ($idempotencyKey !== null) {
+                $previous = $fresh->balanceTransactions()->withoutGlobalScopes()->where('merchant_id', $merchant->id)
+                    ->where('idempotency_key', $idempotencyKey.':principal')->first();
+                if ($previous) {
+                    $refund = $fresh->refunds()->withoutGlobalScopes()->where('merchant_id', $merchant->id)->find($previous->order_refund_id);
+                    if (! $refund || bccomp((string) $refund->amount, $amountOriginal, 2) !== 0) {
+                        throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+                    }
 
-        $method = $order->paymentMethodConfig();
-        $fee = (string) ($order->refund_fee_snapshot ?? $method?->refund_fee ?? '0');
-
-        return $this->mutate($order->merchant_id, function (Merchant $merchant) use ($order, $amountOriginal, $operator, $reason, $fee, $idempotencyKey) {
-            // 在锁内重新读取订单最新状态，做并发安全的校验：不能只信外层（加锁前）
-            // 读到的旧状态——等锁期间订单可能已被另一笔并发的拒付/退款改变状态。
-            $fresh = Order::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->id);
-
-            $this->assertRefundable($fresh);
-
-            if ((int) $fresh->merchant_id !== (int) $merchant->id) {
-                throw new BalanceOperationException(__('settlement.errors.order_merchant_mismatch'));
+                    return $refund;
+                }
             }
 
-            if ($fresh->settlement_mode !== null) {
-                $this->creditForPaidOrder($fresh);
-                $merchant->refresh();
-            }
+            $this->assertRefundable($fresh, $operator === null && $idempotencyKey !== null);
 
-            $remaining = bcsub((string) $fresh->amount, (string) $fresh->refunded_amount, 2);
-
-            if (bccomp($amountOriginal, $remaining, 2) > 0) {
-                throw new BalanceOperationException("退款金额超过剩余可退金额（剩余 {$remaining} {$fresh->currency}）。");
-            }
-
-            $amountUsd = bcdiv(bcmul((string) $fresh->converted_amount, $amountOriginal, 6), (string) $fresh->amount, 2);
-            $bucketChanges = $this->consumeOrderFunds($merchant, $fresh, $amountUsd);
+            $quote = $this->refundQuote($fresh, $amountOriginal);
+            $amountUsd = $quote['amount_usd'];
+            $principal = $quote['principal_deducted_usd'];
+            $fee = $quote['fee'];
+            $bucketChanges = bccomp($principal, '0', 2) > 0 ? $this->consumeOrderFunds($merchant, $fresh, $principal) : [];
 
             $refund = OrderRefund::query()->create([
                 'merchant_id' => $fresh->merchant_id,
@@ -284,13 +273,14 @@ class BalanceService
                 'amount' => $amountOriginal,
                 'exchange_rate' => $fresh->exchange_rate,
                 'amount_usd' => $amountUsd,
+                'principal_deducted_usd' => $principal,
                 'fee' => $fee,
                 'operator_id' => $operator?->id,
                 'reason' => $reason,
             ]);
 
             // 扣退款本金
-            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_REFUND, '-'.$amountUsd, array_merge($bucketChanges, [
+            $this->writeLedger($merchant, MerchantBalanceTransaction::TYPE_REFUND, bcsub('0', $principal, 2), array_merge($bucketChanges, [
                 'order_id' => $fresh->id,
                 'order_refund_id' => $refund->id,
                 'operator_id' => $operator?->id,
@@ -308,11 +298,7 @@ class BalanceService
                 ]);
             }
 
-            // 累计退款额 + 订单状态
-            $newRefunded = bcadd((string) $fresh->refunded_amount, $amountOriginal, 2);
-            $fresh->refunded_amount = $newRefunded;
-            $fresh->status = bccomp($newRefunded, (string) $fresh->amount, 2) >= 0 ? 'refunded' : 'partially_refunded';
-            $fresh->save();
+            $fresh->refunded_amount = bcadd((string) $fresh->refunded_amount, $amountOriginal, 2);
             $this->lifecycle->sync($fresh);
 
             return $refund;
@@ -393,27 +379,76 @@ class BalanceService
             return '0.00';
         }
 
-        $refundedOriginal = '0.00';
-        $refundedUsd = '0.00';
-        foreach ($order->refunds()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->get() as $refund) {
+        return $this->refundAccounting($order)['available_principal'];
+    }
+
+    /** @return array{amount_usd: string, principal_deducted_usd: string, fee: string} */
+    public function refundQuote(Order $order, string $amountOriginal): array
+    {
+        $this->assertFiatOrder($order);
+        $remaining = $order->refundableAmount();
+        if (bccomp($amountOriginal, '0', 2) <= 0 || bccomp((string) $order->amount, '0', 2) <= 0) {
+            throw new BalanceOperationException('退款金额与订单金额必须大于 0。');
+        }
+        if (bccomp($amountOriginal, $remaining, 2) > 0) {
+            throw new BalanceOperationException("退款金额超过剩余可退金额（剩余 {$remaining} {$order->currency}）。");
+        }
+
+        $accounting = $this->refundAccounting($order);
+        $newOriginal = bcadd((string) $order->refunded_amount, $amountOriginal, 2);
+        $cumulativeUsd = bcdiv(bcmul((string) $order->converted_amount, $newOriginal, 6), (string) $order->amount, 2);
+        $amountUsd = bcsub($cumulativeUsd, $accounting['refunded_usd'], 2);
+        if (bccomp($amountUsd, '0', 2) < 0) {
+            throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+        }
+
+        return [
+            'amount_usd' => $amountUsd,
+            'principal_deducted_usd' => bccomp($amountUsd, $accounting['available_principal'], 2) > 0 ? $accounting['available_principal'] : $amountUsd,
+            'fee' => $this->refundFee($order),
+        ];
+    }
+
+    public function refundFee(Order $order): string
+    {
+        return (string) ($order->refund_fee_snapshot ?? $order->paymentMethodConfig()?->refund_fee ?? '0.00');
+    }
+
+    /** @return array{refunded_usd: string, available_principal: string} */
+    private function refundAccounting(Order $order): array
+    {
+        $ledger = $order->balanceTransactions()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id);
+        $income = (clone $ledger)->where('type', MerchantBalanceTransaction::TYPE_ORDER_PAID)->get();
+        if ($income->count() !== 1 || bccomp((string) $income->first()->amount, '0', 2) < 0) {
+            throw new BalanceOperationException(__('admin.finance.refund.income_review'));
+        }
+        $refunds = $order->refunds()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->get();
+        $entries = $ledger->where('type', MerchantBalanceTransaction::TYPE_REFUND)->get()->groupBy('order_refund_id');
+        if ($refunds->count() !== $entries->count()) {
+            throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+        }
+
+        $refundedOriginal = $refundedUsd = $deductedUsd = '0.00';
+        foreach ($refunds as $refund) {
+            $principal = (string) ($refund->principal_deducted_usd ?? $refund->amount_usd);
+            $principalEntries = $entries->get($refund->id);
+            if ($refund->currency !== $order->currency || bccomp((string) $refund->amount, '0', 2) <= 0
+                || bccomp($principal, '0', 2) < 0 || bccomp($principal, (string) $refund->amount_usd, 2) > 0
+                || $principalEntries?->count() !== 1 || bccomp(bcsub('0', $principal, 2), (string) $principalEntries->first()->amount, 2) !== 0) {
+                throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
+            }
             $refundedOriginal = bcadd($refundedOriginal, (string) $refund->amount, 2);
             $refundedUsd = bcadd($refundedUsd, (string) $refund->amount_usd, 2);
+            $deductedUsd = bcadd($deductedUsd, $principal, 2);
         }
-
-        $deductedUsd = '0.00';
-        foreach ($order->balanceTransactions()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
-            ->where('type', MerchantBalanceTransaction::TYPE_REFUND)->get() as $transaction) {
-            $deductedUsd = bcsub($deductedUsd, (string) $transaction->amount, 2);
-        }
-
         if (bccomp($refundedOriginal, (string) $order->refunded_amount, 2) !== 0
-            || bccomp($refundedUsd, $deductedUsd, 2) !== 0
-            || bccomp($refundedUsd, '0', 2) < 0
             || bccomp($refundedUsd, (string) $order->converted_amount, 2) > 0) {
             throw new BalanceOperationException(__('admin.finance.chargeback.refund_accounting_mismatch'));
         }
 
-        return bcsub((string) $order->converted_amount, $refundedUsd, 2);
+        $available = bcsub((string) $income->first()->amount, $deductedUsd, 2);
+
+        return ['refunded_usd' => $refundedUsd, 'available_principal' => bccomp($available, '0', 2) > 0 ? $available : '0.00'];
     }
 
     /** Crypto balances must never enter the fiat balance ledger. */
@@ -425,13 +460,14 @@ class BalanceService
     }
 
     /**
-     * 订单当前是否还能退款。外层与锁内各调一次；历史已退款但未扣足的订单仍允许补录。
+     * 持有商户和订单锁时校验可退状态，历史已退款但未扣足的订单允许核对后补录。
      */
-    private function assertRefundable(Order $order): void
+    private function assertRefundable(Order $order, bool $confirmedGatewayRefund): void
     {
         $this->assertFiatOrder($order);
 
-        if (! in_array($order->status, self::REFUNDABLE_STATUSES, true)) {
+        if (! in_array($order->status, self::REFUNDABLE_STATUSES, true)
+            && ! ($confirmedGatewayRefund && in_array($order->status, ['disputing', Order::STATUS_DISPUTE_REVIEW], true))) {
             throw new BalanceOperationException("当前订单状态「{$order->status}」不可退款，只有已收款的订单才能退款。");
         }
 
@@ -972,7 +1008,9 @@ class BalanceService
     {
         return OrderAccountingTask::query()->withoutGlobalScopes()->where('merchant_id', $merchantId)
             ->when($orderId !== null, fn (Builder $query) => $query->where('order_id', $orderId))
-            ->unsettledReversals()->exists();
+            ->unsettledReversals()->exists()
+            || GatewayRefund::forMerchant($merchantId)->unsettled()
+                ->when($orderId !== null, fn (Builder $query) => $query->where('order_id', $orderId))->exists();
     }
 
     /**

@@ -48,7 +48,7 @@ class OrderTelegramAlertsTest extends TestCase
         $this->assertStringContainsString('网关回传金额与订单金额不一致', $message);
         $this->assertStringContainsString('网关金额：75.00 EUR', $message);
         $this->assertOrderSummary($message, $order);
-        $this->assertSame('refunded', $order->refresh()->status);
+        $this->assertSame('paid', $order->refresh()->status);
     }
 
     public function test_paid_gateway_fact_during_review_keeps_the_review_and_deduplicates_its_alert(): void
@@ -76,6 +76,8 @@ class OrderTelegramAlertsTest extends TestCase
     {
         $order = $this->paidOrder();
         $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        $order->update(['settlement_amount' => '100.00']);
+        app(BalanceService::class)->creditForPaidOrder($order);
         app(BalanceService::class)->refund($order, '10.00', $operator, '部分退款');
         $this->fakeDelivery();
 

@@ -20,6 +20,8 @@ class OrderAccountingTask extends Model
 
     public const TYPE_REFUND = 'refund';
 
+    public const REFUND_DETAIL_REQUIRED = '等待渠道逐笔退款单号和金额';
+
     public const TYPE_CHARGEBACK = 'chargeback';
 
     public const STATUS_PENDING = 'pending';

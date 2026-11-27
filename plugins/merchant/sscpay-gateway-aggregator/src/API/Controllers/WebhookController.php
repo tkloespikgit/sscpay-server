@@ -27,14 +27,16 @@ class WebhookController
         // x-pga-*伪头传给Gateway::verifyCallbackSignature()，不影响其它网关
         // （它们直接忽略这两个键）。
         $headers['x-pga-http-method'] = 'POST';
-        $headers['x-pga-http-path'] = '/ams/sandbox/api/v1/payments/pay'; // 占位，见下方说明
+        $headers['x-pga-http-path'] = isset($_SERVER['REQUEST_URI'])
+            ? (string) wp_unslash($_SERVER['REQUEST_URI']) : $request->get_route();
 
-        // 说明：Antom通知(notify)签名用的path，理论上应该是商户在Antom后台配置的
-        // notify接收路径，而不是Pay API的请求路径——Antom文档对"通知请求的
-        // string-to-sign具体用哪个path"这一点在可核实到的资料里不够明确，
-        // 这里先按一个占位实现，接入前请对照实际收到的通知请求和Antom提供的
-        // 验签工具/SDK核实一遍这个path该怎么取，不要直接信任这个占位值。
         $result = WebhookRouter::handle($paymentMethod, $rawBody, $headers);
+
+        if ($paymentMethod === 'antom' && $result['success'] && (json_decode($rawBody, true)['notifyType'] ?? '') === 'REFUND_RESULT') {
+            return new \WP_REST_Response(['result' => [
+                'resultCode' => 'SUCCESS', 'resultStatus' => 'S', 'resultMessage' => 'success',
+            ]], 200);
+        }
 
         return new \WP_REST_Response([
             'code' => $result['code'],

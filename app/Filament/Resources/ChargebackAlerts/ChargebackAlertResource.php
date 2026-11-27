@@ -40,6 +40,10 @@ class ChargebackAlertResource extends Resource
 {
     protected static ?string $model = ChargebackAlert::class;
 
+    protected static bool $shouldRegisterNavigation = false;
+
+    protected static bool $isGloballySearchable = false;
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedShieldExclamation;
 
     protected static ?string $recordTitleAttribute = 'external_id';

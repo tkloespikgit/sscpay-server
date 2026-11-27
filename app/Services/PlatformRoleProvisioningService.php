@@ -3,7 +3,10 @@
 namespace App\Services;
 
 use App\Support\Permissions;
+use Illuminate\Support\Facades\DB;
+use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Spatie\Permission\PermissionRegistrar;
 
 /**
  * 平台级角色（roles.merchant_id = NULL）的配置。目前只有"商户级管理员"一个角色，
@@ -22,14 +25,27 @@ class PlatformRoleProvisioningService
 
     public function provisionMerchantManagerRole(): Role
     {
-        $role = Role::query()->firstOrCreate([
-            'merchant_id' => null,
-            'name' => self::ROLE_MERCHANT_MANAGER,
-            'guard_name' => 'web',
-        ]);
+        return DB::transaction(function (): Role {
+            $role = Role::query()->lockForUpdate()->firstOrCreate([
+                'merchant_id' => null,
+                'name' => self::ROLE_MERCHANT_MANAGER,
+                'guard_name' => 'web',
+            ]);
 
-        $role->syncPermissions(Permissions::platformMerchantManager());
+            $names = Permissions::platformMerchantManager();
+            $permissions = Permission::query()->where('guard_name', 'web')->whereIn('name', $names)->get();
 
-        return $role;
+            foreach (array_diff($names, $permissions->pluck('name')->all()) as $name) {
+                $permissions->push(Permission::query()->lockForUpdate()->firstOrCreate([
+                    'name' => $name,
+                    'guard_name' => 'web',
+                ]));
+            }
+
+            $role->syncPermissions($permissions);
+            DB::afterCommit(fn () => app(PermissionRegistrar::class)->forgetCachedPermissions());
+
+            return $role;
+        });
     }
 }

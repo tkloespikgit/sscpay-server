@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SSCPay Gateway Aggregator
  * Description: 接收Laravel系统S的API请求，创建WordPress订单，提供WooCommerce商品与变体同步，并聚合多个支付网关。
- * Version: 1.15.2
+ * Version: 1.16.0
  * Update URI: false
  * Requires PHP: 7.4
  * Requires at least: 5.6
@@ -22,6 +22,7 @@ use PaymentGatewayAggregator\API\Controllers\ProductCatalogController;
 use PaymentGatewayAggregator\Core\LogManager;
 use PaymentGatewayAggregator\Core\Migrator;
 use PaymentGatewayAggregator\Core\QueueManager;
+use PaymentGatewayAggregator\Core\RefundInbox;
 use PaymentGatewayAggregator\Core\Roles;
 use PaymentGatewayAggregator\Core\UpdateChecker;
 use PaymentGatewayAggregator\Admin\GatewayConfigViewer;
@@ -35,9 +36,9 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('PGA_VERSION', '1.15.2');
-// 1.6.0（DB版本）新增平台会话期限与历史引用表，见 Migrator::migrate_1_6_0()。
-define('PGA_DB_VERSION', '1.6.0');
+define('PGA_VERSION', '1.16.0');
+// 1.7.0 新增退款收件及逐笔退款凭证。
+define('PGA_DB_VERSION', '1.7.0');
 define('PGA_PLUGIN_FILE', __FILE__);
 define('PGA_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PGA_PLUGIN_URL', plugin_dir_url(__FILE__));
@@ -123,6 +124,7 @@ add_action('plugins_loaded', function () {
 
 add_filter('cron_schedules', [QueueManager::class, 'registerCronSchedule']);
 add_action(QueueManager::CRON_HOOK, [QueueManager::class, 'processDueBatch']);
+add_action(QueueManager::CRON_HOOK, [RefundInbox::class, 'retryDue']);
 add_action(QueueManager::CRON_HOOK_IMMEDIATE, [QueueManager::class, 'processDueBatch']);
 add_action(LogManager::CRON_HOOK, [LogManager::class, 'purgeOldLogs']);
 

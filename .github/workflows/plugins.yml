@@ -67,6 +67,24 @@ jobs:
         run: php artisan test --compact tests/Unit/WordPressPaymentProtocolTest.php tests/Feature/PluginDistributionTest.php tests/Feature/WordPressV2ContractTest.php tests/Feature/SyncPluginReleasesTest.php tests/Feature/DeploymentScriptTest.php tests/Unit/OpenCartPaymentProtocolTest.php tests/Feature/OpenCartGatewayTest.php tests/Feature/OpenCartV2ContractTest.php tests/Feature/OpenCartDistributionTest.php tests/Feature/OpenCartStorageTest.php
       - name: Test server v2 contract
         run: php artisan test --compact tests/Feature/CombinedPaymentTest.php tests/Feature/OrderCustomerIpTest.php tests/Feature/OrderNotificationRetryTest.php
+      - name: Test itemized gateway refunds and callback retries
+        run: |
+          php artisan test --compact tests/Feature/GatewayRefundReceiptTest.php tests/Feature/GatewayRefundChargebackTest.php tests/Feature/OrderAccountingRecoveryTest.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/refund-drivers.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/refund-delivery.php
+          php plugins/merchant/sscpay-gateway-aggregator/tests/callback-queue-recovery.php
+      - name: Test concurrent duplicate refunds on MySQL
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_USERNAME: root
+          DB_PASSWORD: sscpay-ci-only
+          SSCPAY_ALLOW_MYSQL_CONCURRENCY: '1'
+        run: |
+          export DB_DATABASE="sscpay_test_$(openssl rand -hex 8)"
+          export SSCPAY_CONCURRENCY_DATABASE="$DB_DATABASE"
+          MYSQL_PWD="$DB_PASSWORD" mysql -h "$DB_HOST" -u "$DB_USERNAME" -e "CREATE DATABASE $DB_DATABASE"
+          php vendor/bin/phpunit tests/Feature/MySqlSettlementConcurrencyTest.php --filter=test_concurrent_refund_redeliveries
       - name: Test receiving-site product API
         run: php plugins/merchant/sscpay-gateway-aggregator/tests/product-catalog.php
       - name: Test receiving-site settings, logs and updates

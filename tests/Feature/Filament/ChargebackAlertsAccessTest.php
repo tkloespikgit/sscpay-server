@@ -2,7 +2,10 @@
 
 namespace Tests\Feature\Filament;
 
+use App\Filament\Resources\ChargebackAlerts\ChargebackAlertResource;
 use App\Filament\Resources\ChargebackAlerts\Pages\ManageChargebackAlerts;
+use App\Filament\Resources\ChargebackOrders\ChargebackOrderResource;
+use App\Filament\Resources\ChargebackProviderAccounts\ChargebackProviderAccountResource;
 use App\Filament\Resources\ChargebackProviderAccounts\Pages\CreateChargebackProviderAccount;
 use App\Filament\Resources\ChargebackProviderAccounts\Pages\EditChargebackProviderAccount;
 use App\Filament\Resources\OrderResource;
@@ -16,6 +19,8 @@ use App\Services\ChargebackAlerts\ChargebackAccountConfiguration;
 use App\Support\Permissions;
 use Filament\Actions\Testing\TestAction;
 use Filament\Facades\Filament;
+use Filament\Navigation\NavigationGroup;
+use Filament\Navigation\NavigationItem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
@@ -35,6 +40,21 @@ class ChargebackAlertsAccessTest extends TestCase
         $this->createMerchantAndApplication();
         Filament::setCurrentPanel('admin');
         app()->setLocale('zh_CN');
+    }
+
+    public function test_chargeback_alert_links_are_hidden_from_panel_navigation_and_search(): void
+    {
+        $this->actingAs(User::factory()->create(['is_super_admin' => true, 'status' => true]));
+
+        $navigationUrls = collect(Filament::getNavigation())
+            ->flatMap(fn (NavigationGroup $group): array => collect($group->getItems())->all())
+            ->map(fn (NavigationItem $item): ?string => $item->getUrl());
+
+        $this->assertContains(ChargebackOrderResource::getUrl(), $navigationUrls);
+        $this->assertNotContains(ChargebackAlertResource::getUrl(), $navigationUrls);
+        $this->assertNotContains(ChargebackProviderAccountResource::getUrl(), $navigationUrls);
+        $this->assertFalse(ChargebackAlertResource::canGloballySearch());
+        $this->assertFalse(ChargebackProviderAccountResource::canGloballySearch());
     }
 
     public function test_platform_admin_chooses_driver_and_clicks_to_bind_multiple_methods_without_exposing_secret(): void

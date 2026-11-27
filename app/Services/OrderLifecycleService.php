@@ -46,9 +46,11 @@ final class OrderLifecycleService
             return 'chargeback';
         }
 
-        if ($gatewayStatus === 'refunded' || $order->status === 'refunded'
-            || (bccomp((string) ($order->amount ?? '0'), '0', 2) > 0
-                && bccomp((string) ($order->refunded_amount ?? '0'), (string) $order->amount, 2) >= 0)) {
+        $amount = (string) ($order->amount ?? '0');
+        $refunded = (string) ($order->refunded_amount ?? '0');
+        $hasBookedRefund = bccomp($refunded, '0', 2) > 0;
+        $legacyRefundStatus = $gatewayStatus === 'refunded' || $order->status === 'refunded';
+        if ((! $hasBookedRefund && $legacyRefundStatus) || (bccomp($amount, '0', 2) > 0 && bccomp($refunded, $amount, 2) >= 0)) {
             return 'refunded';
         }
 
@@ -60,7 +62,7 @@ final class OrderLifecycleService
             return 'disputing';
         }
 
-        if (bccomp((string) ($order->refunded_amount ?? '0'), '0', 2) > 0) {
+        if ($hasBookedRefund) {
             return 'partially_refunded';
         }
 
@@ -108,6 +110,7 @@ final class OrderLifecycleService
                 && bccomp((string) $order->refunded_amount, (string) $order->amount, 2) < 0 && ! $hasChargebackLedger)
             || (($order->gateway_status === 'chargeback' || $order->status === 'chargeback') && ! $hasChargebackLedger)
             || $order->activeDisputeEvent()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->exists()
+            || $order->gatewayRefunds()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->unsettled()->exists()
             || $order->accountingTasks()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
                 ->unsettledReversals()->exists();
     }

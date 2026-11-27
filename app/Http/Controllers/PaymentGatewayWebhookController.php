@@ -2,24 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\GatewayRefundService;
 use App\Services\OrderPaymentStatusService;
 use App\Services\PaymentGateway\PaymentGatewayService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
-/**
- * 接收支付网关聚合插件的 payment_status 回调（doc/s-system-payment-status-notify.md 第一节）。
- *
- * 只做验签 + 转交，业务逻辑全部在 OrderPaymentStatusService。签名校验通过但
- * "重试也没用"的几种情况（未知 event、找不到订单、未知 status，均在
- * OrderPaymentStatusService 内部记警告日志后直接跳过）仍然返回 2xx，避免插件
- * 白白重试 5 次；真正的异常（如落库时数据库报错）不在这里捕获，让它走 Laravel
- * 默认异常处理返回 5xx，触发插件侧退避重试（文档第一节的重试策略正是为此设计）。
- */
 class PaymentGatewayWebhookController extends Controller
 {
-    public function status(Request $request, PaymentGatewayService $paymentGateway, OrderPaymentStatusService $service): JsonResponse
+    public function status(Request $request, PaymentGatewayService $paymentGateway, OrderPaymentStatusService $service, GatewayRefundService $refunds): JsonResponse
     {
         $raw = $request->getContent();
 
@@ -30,6 +23,16 @@ class PaymentGatewayWebhookController extends Controller
         }
 
         $payload = json_decode($raw, true);
+
+        if (is_array($payload) && ($payload['event'] ?? null) === 'payment_refund') {
+            try {
+                $receipt = $refunds->receive($payload);
+            } catch (ValidationException $exception) {
+                return response()->json(['code' => 422, 'errors' => $exception->errors()], 422);
+            }
+
+            return response()->json(['code' => 0, 'received' => true, 'refund_id' => $receipt->refund_id]);
+        }
 
         if (! is_array($payload) || ($payload['event'] ?? null) !== 'payment_status') {
             return response()->json(['code' => 0, 'message' => 'ignored']);

@@ -241,6 +241,193 @@ abstract class AbstractPayPalGateway extends PaymentBase
         return ['supported' => true, 'success' => true, 'message' => 'PayPal物流信息同步成功'];
     }
 
+    private function refundParents(array $refund): array
+    {
+        $related = $refund['supplementary_data']['related_ids'] ?? [];
+        $capture = $related['capture_id'] ?? null;
+        $order = $related['order_id'] ?? null;
+        foreach ($refund['links'] ?? [] as $link) {
+            if (($link['rel'] ?? '') !== 'up' || !is_string($link['href'] ?? null)) {
+                continue;
+            }
+            $path = parse_url($link['href'], PHP_URL_PATH);
+            if (is_string($path) && preg_match('~\A/v2/payments/captures/([A-Za-z0-9_-]+)\z~', $path, $match)) {
+                if ($capture !== null && $capture !== $match[1]) {
+                    throw new \RuntimeException('PayPal退款的原Capture编号冲突');
+                }
+                $capture = $match[1];
+            } elseif (is_string($path) && preg_match('~\A/v2/checkout/orders/([A-Za-z0-9_-]+)\z~', $path, $match)) {
+                if ($order !== null && $order !== $match[1]) {
+                    throw new \RuntimeException('PayPal退款的原Order编号冲突');
+                }
+                $order = $match[1];
+            }
+        }
+        return ['capture' => $capture, 'order' => $order];
+    }
+
+    private function isRefundedCapture(array $event): bool
+    {
+        $resource = $event['resource'] ?? [];
+        foreach ($resource['links'] ?? [] as $link) {
+            if (($link['rel'] ?? '') !== 'self' || !is_string($link['href'] ?? null)) {
+                continue;
+            }
+            $path = parse_url($link['href'], PHP_URL_PATH);
+            if (is_string($path) && preg_match('~\A/v2/payments/(refunds|captures)/([A-Za-z0-9_-]+)\z~', $path, $match)) {
+                if (($resource['id'] ?? null) !== $match[2]) {
+                    throw new \RuntimeException('PayPal退款资源链接与编号冲突');
+                }
+                return $match[1] === 'captures';
+            }
+        }
+        return ($event['resource_type'] ?? '') === 'capture' || in_array($resource['status'] ?? '', ['REFUNDED', 'PARTIALLY_REFUNDED'], true);
+    }
+
+    public function refundReferences(array $event): array
+    {
+        $resource = $event['resource'] ?? [];
+        $parents = $this->refundParents($resource);
+        if ($this->isRefundedCapture($event)) {
+            return RefundEvidence::refs($resource['id'] ?? null, $parents['order']);
+        }
+        return RefundEvidence::refs($parents['capture'], $parents['order']);
+    }
+
+    private function fetchRefundResource(string $type, string $id): array
+    {
+        $result = \PaymentGatewayAggregator\Helpers\HttpClient::getJson(
+            PayPalRestClient::baseUrl($this->config) . '/v2/payments/' . $type . '/' . rawurlencode($id),
+            ['Authorization' => 'Bearer ' . PayPalRestClient::getAccessToken($this->config)],
+            \PaymentGatewayAggregator\Helpers\HttpClient::DEFAULT_TIMEOUT,
+            $this->config['proxy'] ?? null
+        );
+        if (!$result['ok'] || ($result['body']['id'] ?? '') !== $id) {
+            throw new \RuntimeException('PayPal退款查询失败或返回了其他编号');
+        }
+        return $result['body'];
+    }
+
+    public function readRefund(array $event, ?array $transaction): array
+    {
+        $resource = $event['resource'] ?? [];
+        $extra = ['event_id' => $event['id'] ?? null];
+        if ($this->isRefundedCapture($event)) {
+            $refs = $this->refundReferences($event);
+            if ($transaction === null) {
+                $parents = $this->refundParents($resource);
+                $order = $parents['order'];
+                $capture = RefundEvidence::refs($resource['id'] ?? null)[0] ?? null;
+                if (!$order && $capture) {
+                    $parents = $this->refundParents($this->fetchRefundResource('captures', $capture));
+                    $order = $parents['order'];
+                }
+                if (!$order) {
+                    return RefundEvidence::result('lookup', ['payment_refs' => $refs] + $extra);
+                }
+                $transaction = ['payment_intent' => $order, 'transaction_id' => $capture];
+            }
+            $result = $this->queryRefunds($transaction);
+            if (!$result['refunds'] && $result['kind'] === 'ignored') {
+                $result['kind'] = 'lookup';
+            }
+            $result['evidence'] += $extra;
+            return $result;
+        }
+        $id = RefundEvidence::refs($resource['id'] ?? null)[0] ?? null;
+        $parents = $this->refundParents($resource);
+        if ($id && (!$parents['capture'] || empty($resource['amount']) || empty($resource['status']))) {
+            $detail = $this->fetchRefundResource('refunds', $id);
+            $fromApi = $this->refundParents($detail);
+            foreach ($parents as $key => $value) {
+                if ($value && $fromApi[$key] && $fromApi[$key] !== $value) {
+                    throw new \RuntimeException('PayPal退款详情与通知的原付款不符');
+                }
+                $parents[$key] = $fromApi[$key] ?: $value;
+            }
+            $resource = $detail;
+        }
+        if ($transaction === null && $parents['capture'] && !$parents['order']) {
+            $capture = $this->fetchRefundResource('captures', $parents['capture']);
+            $parents['order'] = $this->refundParents($capture)['order'];
+        }
+        $refs = RefundEvidence::refs($parents['capture'], $parents['order']);
+        $result = $this->paypalRefund($resource, $refs, $event['create_time'] ?? null, $extra);
+        $expectedCapture = $transaction['transaction_id'] ?? null;
+        if ($result['kind'] === 'succeeded' && (!$parents['capture'] || ($expectedCapture && $parents['capture'] !== $expectedCapture))) {
+            return RefundEvidence::result('lookup', $result['evidence']);
+        }
+        $eventStates = ['PAYMENT.REFUND.FAILED' => 'failed', 'PAYMENT.REFUND.PENDING' => 'pending'];
+        $required = $eventStates[$event['event_type'] ?? ''] ?? null;
+        if ($required && $result['kind'] !== $required) {
+            return RefundEvidence::result('lookup', $result['evidence']);
+        }
+        return $result;
+    }
+
+    public function queryRefunds(array $transaction): array
+    {
+        $orderId = RefundEvidence::refs($transaction['payment_intent'] ?? null)[0] ?? null;
+        if (!$orderId) {
+            return RefundEvidence::result('lookup');
+        }
+        $order = PayPalRestClient::getOrder($this->config, rawurlencode($orderId));
+        if (($order['id'] ?? '') !== $orderId || !is_array($order['purchase_units'] ?? null)) {
+            throw new \RuntimeException('PayPal的原订单或付款单元不匹配');
+        }
+        $observations = [];
+        foreach ($order['purchase_units'] as $unit) {
+            $captures = [];
+            $refundedCaptures = [];
+            foreach ($unit['payments']['captures'] ?? [] as $capture) {
+                $id = $capture['id'] ?? null;
+                if (is_string($id)) {
+                    $captures[] = $id;
+                    if (in_array($capture['status'] ?? '', ['REFUNDED', 'PARTIALLY_REFUNDED'], true)) {
+                        $refundedCaptures[$id] = true;
+                    }
+                }
+            }
+            foreach ($unit['payments']['refunds'] ?? [] as $refund) {
+                $id = RefundEvidence::refs($refund['id'] ?? null)[0] ?? null;
+                $parents = $this->refundParents($refund);
+                if ($id && (empty($refund['status']) || empty($refund['amount']) || !$parents['capture'])) {
+                    $detail = $this->fetchRefundResource('refunds', $id);
+                    $detailParents = $this->refundParents($detail);
+                    if (($parents['capture'] && $detailParents['capture'] && $parents['capture'] !== $detailParents['capture'])
+                        || ($parents['order'] && $parents['order'] !== $orderId)) {
+                        throw new \RuntimeException('PayPal退款摘要的关联不一致');
+                    }
+                    $refund = $detail;
+                    $parents = ['capture' => $detailParents['capture'] ?: $parents['capture'], 'order' => $detailParents['order'] ?: $parents['order']];
+                }
+                if (($parents['order'] && $parents['order'] !== $orderId)
+                    || ($parents['capture'] && $captures && !in_array($parents['capture'], $captures, true))) {
+                    throw new \RuntimeException('PayPal退款不属于所查订单或Capture');
+                }
+                unset($refundedCaptures[$parents['capture'] ?? '']);
+                $observation = $this->paypalRefund($refund, RefundEvidence::refs($orderId, $parents['capture']), null);
+                $expectedCapture = $transaction['transaction_id'] ?? null;
+                if ($observation['kind'] === 'succeeded' && (!$parents['capture'] || ($expectedCapture && $expectedCapture !== $parents['capture']))) {
+                    $observation = RefundEvidence::result('lookup', $observation['evidence']);
+                }
+                $observations[] = $observation;
+            }
+            foreach (array_keys($refundedCaptures) as $unresolved) {
+                $observations[] = RefundEvidence::result('lookup', ['payment_refs' => [$orderId, $unresolved]]);
+            }
+        }
+        return RefundEvidence::collection($observations, [$orderId]);
+    }
+
+    private function paypalRefund(array $refund, array $refs, $time, array $extra = []): array
+    {
+        $states = ['COMPLETED' => 'succeeded', 'PENDING' => 'pending', 'FAILED' => 'failed', 'CANCELLED' => 'failed'];
+        $status = $refund['status'] ?? '';
+        return RefundEvidence::observation($states[$status] ?? 'lookup', $refund['id'] ?? null, $refund['amount']['value'] ?? null,
+            $refund['amount']['currency_code'] ?? null, $refs, $refund['update_time'] ?? $time, $status, $extra);
+    }
+
     /**
      * 主动核实：GET Order（payment_intent字段落库的是PayPal Order id，
      * 见 PayPalJsGateway/PayPalRestGateway::preparePayment()里的external_ref）。

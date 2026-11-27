@@ -58,7 +58,7 @@
 
 ## D-07 网关退款和拒付自动记账，保留人工补录
 
-**状态：已实现，替代旧版“只改状态、人工扣款”的行为。** `refunded` 自动按本地剩余可退金额退款，`confused` 映射 `chargeback` 并自动尝试扣款；金额依据本地账面，不直接信任 webhook 的订单金额为退款额。
+**状态：拒付部分沿用，退款扣款依据由 [D-78](#d-78-逐笔退款按实际入账封顶) 替代。原决策如下。** `refunded` 自动按本地剩余可退金额退款，`confused` 映射 `chargeback` 并自动尝试扣款；金额依据本地账面，不直接信任 webhook 的订单金额为退款额。
 
 **原因与影响：** 旧路径会留下“状态已退款但余额未扣”的记录，且人工按钮可能被终态限制挡住。现通过状态守卫与流水幂等保护自动扣款；业务性失败告警并支持补录。资金事务放在状态事务之后，维持商户→订单锁顺序，不能随意嵌套反向加锁。
 
@@ -829,3 +829,12 @@ WeTech 预警和 Ethoca 处理反馈独立保存。已退款反馈需要支付�
 **状态：当前工作区，未部署。** 在 D-76 的驱动之上，管理员分别管理 WeTech · Ethoca 和 WeTech · RDR。服务开关和支付方式绑定可以不同；同一 Secret ID 的签名身份、密钥、环境和 webhook 只配置一次。服务停用不解除渠道绑定，不删除历史预警，也不代表向 WeTech 注销产品。继续使用现有账号和服务代码，无需重建账号或回填历史数据。
 
 代码依据：[账号配置服务](../app/Services/ChargebackAlerts/ChargebackAccountConfiguration.php)、[预警服务管理](../app/Filament/Resources/ChargebackProviderAccounts/Pages/EditChargebackProviderAccount.php)。
+
+
+## D-78 逐笔退款按实际入账封顶
+
+**状态：已实现，待部署。** 替代 D-07、D-29 中仅凭网关退款状态扣完剩余本金的处理，更新 D-63 中部分退款转拒付的剩余本金口径。
+
+按渠道成功退款号、原币及实际金额入账，回调、查单、重试共用同一凭证。累计原币退款折算后的本次增量用于扣本金，整笔订单最多扣至实际净收入。每个成功退款号另收一次订单约定的退款手续费，剩余可扣本金为零时仍记该笔费。无可核对的入账流水或既有退款无法对应时转人工。历史欠缺渠道退款号的退款单可在核验凭据后关联，保留原账并登记操作人。
+
+代码依据见 [GatewayRefundService](../app/Services/GatewayRefundService.php)、[BalanceService](../app/Services/BalanceService.php) 和[回调契约](../doc/wordpress/s-system-payment-status-notify.md#逐笔退款通知)。

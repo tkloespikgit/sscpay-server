@@ -14,6 +14,7 @@ use App\Models\OrderDisputeEventReply;
 use App\Models\OrderSettlement;
 use App\Models\User;
 use App\Services\BalanceService;
+use App\Services\GatewayRefundService;
 use App\Services\OrderDisputeService;
 use Closure;
 use Illuminate\Support\Carbon;
@@ -79,6 +80,28 @@ class MySqlSettlementConcurrencyTest extends TestCase
         $this->assertSame(1, OrderSettlement::where('order_id', $orderId)->count());
     }
 
+    public function test_concurrent_refund_redeliveries_post_one_fee_each_and_cap_principal(): void
+    {
+        $this->createMerchantAndApplication();
+        $order = $this->paidOrder('concurrent-refunds');
+        $order->update(['payment_method_id' => $this->makePaymentMethod('stripe')->id,
+            'refund_fee_snapshot' => '2.00', 'transaction_id' => 'pi_concurrent']);
+        app(BalanceService::class)->creditForPaidOrder($order);
+        $payload = ['event' => 'payment_refund', 'status' => 'succeeded', 's_order_id' => $order->order_no,
+            'payment_method' => 'stripe', 'livemode' => true, 'payment_reference' => 'pi_concurrent',
+            'currency' => 'USD', 'amount' => '50.00', 'refunded_at' => '2026-11-25T10:00:00Z'];
+        $calls = [];
+        foreach (['re_A', 're_B', 're_A', 're_B'] as $refundId) {
+            $calls[] = static fn (): string => app(GatewayRefundService::class)->receive($payload + ['refund_id' => $refundId])->status;
+        }
+        $results = $this->concurrently($calls);
+        $this->assertSame(['booked', 'booked', 'booked', 'booked'], array_column($results, 'result'));
+        $this->assertSame('100.00', $order->refresh()->refunded_amount);
+        $this->assertSame('-4.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseCount('order_refunds', 2);
+        $this->assertSame(2, $order->balanceTransactions()->where('type', 'refund_fee')->count());
+    }
+
     public function test_concurrent_withdrawals_cannot_exceed_the_merchants_available_balance(): void
     {
         $this->createMerchantAndApplication();
@@ -122,28 +145,29 @@ class MySqlSettlementConcurrencyTest extends TestCase
         $this->assertSame(['completed', 'completed'], array_column($results, 'status'));
         $this->assertSame('refunded', $order->refresh()->status);
         $this->assertSame('100.00', $order->refunded_amount);
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
         $this->assertSame('0.00', $this->merchant->frozen_balance);
-        $this->assertSame('-5.00', $this->merchant->availableBalance());
+        $this->assertSame('0.00', $this->merchant->availableBalance());
         $this->assertSame(1, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_REFUND)->count());
         $this->assertSame(0, MerchantFundFreeze::where('status', MerchantFundFreeze::STATUS_FROZEN)->count());
 
         $this->assertFalse(app(BalanceService::class)->settleOrder(OrderSettlement::findOrFail($settlementId)));
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->frozen_balance);
     }
 
-    #[TestWith(['3.00', '-8.00', 1, '100.00', '0.00'])]
-    #[TestWith(['0.00', '-5.00', 0, '100.00', '0.00'])]
-    #[TestWith(['3.00', '-8.00', 1, '40.00', '-60.00'])]
-    #[TestWith(['0.00', '-5.00', 0, '40.00', '-60.00'])]
+    #[TestWith(['3.00', '-3.00', 1, '100.00', '0.00'])]
+    #[TestWith(['0.00', '0.00', 0, '100.00', '0.00'])]
+    #[TestWith(['3.00', '-3.00', 1, '40.00', '-55.00'])]
+    #[TestWith(['0.00', '0.00', 0, '40.00', '-55.00'])]
     public function test_concurrent_refund_to_chargeback_conversions_only_record_one_fee(string $fee, string $expectedBalance, int $expectedFeeEntries, string $refundAmount, string $expectedPrincipal): void
     {
         $this->createMerchantAndApplication();
         $order = $this->paidOrder('refund-conversion');
         $order->update(['chargeback_fee_snapshot' => $fee]);
         $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        app(BalanceService::class)->creditForPaidOrder($order);
         app(BalanceService::class)->refund($order, $refundAmount, $operator);
         $orderId = $order->id;
         $operatorId = $operator->id;
@@ -173,6 +197,7 @@ class MySqlSettlementConcurrencyTest extends TestCase
         $order = $this->paidOrder('refund-races-conversion');
         $order->update(['chargeback_fee_snapshot' => '3.00']);
         $operator = User::factory()->create(['merchant_id' => $this->merchant->id]);
+        app(BalanceService::class)->creditForPaidOrder($order);
         app(BalanceService::class)->refund($order, '40.00', $operator);
         $orderId = $order->id;
         $operatorId = $operator->id;
@@ -186,13 +211,13 @@ class MySqlSettlementConcurrencyTest extends TestCase
 
         $this->assertSame('completed', $results[1]['status']);
         $this->assertSame('chargeback', $order->refresh()->status);
-        $this->assertSame('-8.00', $this->merchant->refresh()->balance);
+        $this->assertSame('-3.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
         $principal = '0.00';
         foreach (MerchantBalanceTransaction::whereIn('type', [MerchantBalanceTransaction::TYPE_REFUND, MerchantBalanceTransaction::TYPE_CHARGEBACK])->get() as $transaction) {
             $principal = bcadd($principal, $transaction->amount, 2);
         }
-        $this->assertSame('-100.00', $principal);
+        $this->assertSame('-95.00', $principal);
         $this->assertSame(1, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK)->count());
         $this->assertSame(1, MerchantBalanceTransaction::where('type', MerchantBalanceTransaction::TYPE_CHARGEBACK_FEE)->count());
     }

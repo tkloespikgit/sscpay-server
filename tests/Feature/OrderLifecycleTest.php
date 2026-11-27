@@ -62,10 +62,14 @@ class OrderLifecycleTest extends TestCase
         $this->push($order, $gatewayStatus, '2026-11-06 10:01:00');
         $this->push($order, $gatewayStatus, '2026-11-06 10:01:00');
         $this->assertSame($expected, $order->refresh()->status);
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame($expected === 'refunded' ? '0.00' : '-5.00', $this->merchant->refresh()->balance);
         $this->assertSame('settled', $order->settlement->status);
         $this->assertSame(1, MerchantBalanceTransaction::where('type', $expected === 'refunded' ? 'refund' : 'chargeback')->count());
-        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'status' => 'completed', 'type' => $expected === 'refunded' ? 'refund' : 'chargeback']);
+        if ($expected === 'refunded') {
+            $this->assertDatabaseHas('gateway_refunds', ['order_id' => $order->id, 'status' => 'booked']);
+        } else {
+            $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'status' => 'completed', 'type' => 'chargeback']);
+        }
     }
 
     public function test_equal_timestamp_conflict_is_audited_and_automatically_resolved_by_query(): void
@@ -92,7 +96,7 @@ class OrderLifecycleTest extends TestCase
         }, '*' => Http::response(['code' => 0, 'data' => []])]);
         $this->push($order, 'paid', '2026-11-06 09:59:00');
         $this->assertSame('refunded', $order->refresh()->status);
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertDatabaseHas('order_gateway_status_events', ['outcome' => 'query_race']);
     }
 
@@ -103,37 +107,33 @@ class OrderLifecycleTest extends TestCase
             'event_no' => 'CASE-REFUND', 'reason' => 'Review', 'images' => [], 'final_action' => 'refund',
             'deadline_value' => 24, 'deadline_unit' => 'hours', 'deadline_hours' => 24,
         ]);
-        $this->push($order, 'refunded', '2026-11-06 10:01:00');
+        $frozen = $this->merchant->refresh()->frozen_balance;
+        $this->receiveRefund($order, '40.00', 'first');
+        $this->receiveRefund($order, '40.00', 'first');
+        $this->assertSame('processing', $event->refresh()->status);
+        $this->assertSame($frozen, $this->merchant->refresh()->frozen_balance);
+        $this->assertSame('40.00', $order->refresh()->refunded_amount);
+        $this->receiveRefund($order, '60.00', 'last');
         $this->assertSame('refunded', $order->refresh()->status);
         $this->assertSame('closed', $event->refresh()->status);
         $this->assertSame('0.00', $this->merchant->refresh()->frozen_balance);
-        $this->assertSame('-5.00', $this->merchant->balance);
+        $this->assertSame('0.00', $this->merchant->balance);
     }
 
-    public function test_legacy_completed_refund_is_retryable_without_creating_income_or_settlement(): void
+    public function test_legacy_completed_order_without_income_stays_in_review_without_new_credit(): void
     {
-        $order = $this->makeOrder('LEGACY', 'M-LEGACY', ['status' => 'completed', 'settlement_mode' => null]);
+        $method = $this->makePaymentMethod('stripe');
+        $order = $this->makeOrder('LEGACY', 'M-LEGACY', [
+            'status' => 'completed', 'paid_at' => now(), 'transaction_id' => 'txn_1',
+            'settlement_mode' => null, 'payment_method_id' => $method->id,
+        ]);
         $this->merchant->update(['balance' => '100.00']);
-        $fail = true;
-        DB::listen(function (QueryExecuted $query) use (&$fail): void {
-            if ($fail && str_starts_with(strtolower($query->sql), 'insert') && str_contains($query->sql, 'merchant_balance_transactions')) {
-                $fail = false;
-                throw new RuntimeException('simulated accounting failure');
-            }
-        });
-        try {
-            $this->push($order, 'refunded', '2026-11-06 10:01:00');
-            $this->fail('Expected accounting failure');
-        } catch (RuntimeException $exception) {
-            $this->assertSame('simulated accounting failure', $exception->getMessage());
-        }
-        $this->assertSame('100.00', $this->merchant->refresh()->balance);
-        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'pending']);
-        $this->travel(2)->minutes();
+        $this->receiveRefund($order, '100.00');
         $this->artisan('orders:settle-due')->assertSuccessful();
-        $this->assertSame('0.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseHas('gateway_refunds', ['order_id' => $order->id, 'status' => 'review', 'last_error' => 'missing_income_ledger']);
+        $this->assertSame('100.00', $this->merchant->refresh()->balance);
         $this->assertDatabaseCount('order_settlements', 0);
-        $this->assertSame(0, MerchantBalanceTransaction::where('type', 'order_paid')->count());
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
     }
 
     public function test_newly_confirmed_legacy_payment_recovers_income_without_a_settlement_cycle(): void
@@ -229,8 +229,13 @@ class OrderLifecycleTest extends TestCase
 
     private function push(Order $order, string $status, string $timestamp): void
     {
+        if ($status === 'refunded') {
+            $this->receiveRefund($order, '100.00');
+
+            return;
+        }
         app(OrderPaymentStatusService::class)->handle([
-            's_order_id' => $order->order_no, 'status' => $status, 'updated_at' => $timestamp,
+            's_order_id' => $order->order_no, 'status' => $status, 'updated_at' => $timestamp, 'transaction_id' => 'txn_1',
             'amount' => '100.00', 'currency' => 'USD',
         ]);
     }

@@ -11,6 +11,8 @@ class CreateAdmin extends CreateRecord
 {
     protected static string $resource = AdminResource::class;
 
+    protected ?bool $hasDatabaseTransactions = true;
+
     /**
      * 这份名单只建平台侧账号，merchant_id 强制落 NULL，不管表单是否传了别的值。
      *

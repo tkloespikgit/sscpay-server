@@ -38,6 +38,7 @@ class OrderAccountingRecoveryTest extends TestCase
 
         $this->travelTo(Carbon::parse('2026-10-16 12:00:00'));
         Http::preventStrayRequests();
+        Http::fake(['*order-logs*' => Http::response(['code' => 0, 'data' => []])]);
         Event::fake([OrderStatusChanged::class]);
         $this->createMerchantAndApplication();
     }
@@ -81,11 +82,15 @@ class OrderAccountingRecoveryTest extends TestCase
         $this->push($order, 'refunded');
         $this->push($order, 'refunded');
 
+        $this->assertSame('pending', $order->refresh()->status);
+        $this->assertDatabaseCount('merchant_balance_transactions', 0);
+        $this->push($order, 'paid');
+
         $this->assertSame('refunded', $order->refresh()->status);
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
         $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'paid', 'status' => 'completed']);
-        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'completed']);
+        $this->assertDatabaseHas('gateway_refunds', ['order_id' => $order->id, 'status' => 'booked']);
         $this->assertDatabaseCount('order_refunds', 1);
     }
 
@@ -110,13 +115,13 @@ class OrderAccountingRecoveryTest extends TestCase
 
         $this->pushAndAssertAccountingFailure($order, 'refunded');
 
-        $this->assertSame('refunded', $order->refresh()->status);
+        $this->assertSame('pending_settlement', $order->refresh()->status);
         $this->assertSame('95.00', $this->merchant->refresh()->balance);
-        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'pending']);
+        $this->assertDatabaseHas('gateway_refunds', ['order_id' => $order->id, 'status' => 'pending']);
 
         $this->push($order, 'refunded');
 
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
+        $this->assertSame('0.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
         $this->assertDatabaseCount('order_refunds', 1);
     }
@@ -153,51 +158,15 @@ class OrderAccountingRecoveryTest extends TestCase
         $this->assertSame('95.00', $this->merchant->refresh()->balance);
     }
 
-    public function test_direct_refund_income_and_reversal_roll_back_together_if_reversal_ledger_fails(): void
+    public function test_worker_does_not_convert_a_legacy_pending_refund_task_into_a_full_debit(): void
     {
         $order = $this->pendingOrder();
-        $inserts = 0;
-        DB::listen(function (QueryExecuted $query) use (&$inserts): void {
-            if (str_starts_with(strtolower($query->sql), 'insert') && str_contains($query->sql, 'merchant_balance_transactions') && ++$inserts === 2) {
-                throw new RuntimeException('simulated accounting failure');
-            }
-        });
-
-        $this->pushAndAssertAccountingFailure($order, 'refunded');
-
-        $this->assertSame('refunded', $order->refresh()->status);
-        $this->assertSame('0.00', $this->merchant->refresh()->balance);
-        $this->assertDatabaseCount('merchant_balance_transactions', 0);
-        $this->assertDatabaseCount('order_settlements', 0);
-
-        $this->push($order, 'refunded');
-
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
-        $this->assertDatabaseCount('order_refunds', 1);
-    }
-
-    public function test_worker_rechecks_reversal_created_after_candidate_selection_before_credit(): void
-    {
-        $order = $this->pendingOrder(['status' => 'paid', 'paid_at' => now()]);
-        $accounting = app(OrderAccountingService::class);
-        $accounting->recordForStatus($order, 'paid');
-        $candidate = OrderAccountingTask::query()->where('order_id', $order->id)->sole();
-        $inserted = false;
-        DB::listen(function (QueryExecuted $query) use ($order, $accounting, &$inserted): void {
-            if (! $inserted && str_starts_with(strtolower($query->sql), 'select')
-                && (str_contains($query->sql, 'from "orders"') || str_contains($query->sql, 'from `orders`'))) {
-                $inserted = true;
-                $order->update(['status' => 'refunded']);
-                $accounting->recordForStatus($order, 'refunded');
-            }
-        });
-
-        $accounting->process($candidate);
-
-        $this->assertTrue($inserted);
-        $this->assertSame('-5.00', $this->merchant->refresh()->balance);
-        $this->assertSame('0.00', $this->merchant->pending_settlement_balance);
-        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'completed']);
+        $this->push($order, 'paid');
+        app(OrderAccountingService::class)->recordForStatus($order, 'refunded');
+        $this->artisan('orders:settle-due')->assertSuccessful();
+        $this->assertSame('95.00', $this->merchant->refresh()->balance);
+        $this->assertDatabaseHas('order_accounting_tasks', ['order_id' => $order->id, 'type' => 'refund', 'status' => 'manual_review']);
+        $this->assertDatabaseCount('order_refunds', 0);
     }
 
     public function test_pre_recorded_shipping_starts_cycle_only_after_payment(): void
@@ -260,9 +229,9 @@ class OrderAccountingRecoveryTest extends TestCase
         $this->push($order, $status);
         app(BalanceService::class)->requestWithdrawal($this->merchant, '50.00', $operator);
 
-        $this->assertSame('195.00', $this->merchant->refresh()->balance);
+        $this->assertSame($status === 'refunded' ? '200.00' : '195.00', $this->merchant->refresh()->balance);
         $this->assertSame('50.00', $this->merchant->pending_withdrawal_balance);
-        $this->assertSame('145.00', $this->merchant->availableBalance());
+        $this->assertSame($status === 'refunded' ? '150.00' : '145.00', $this->merchant->availableBalance());
     }
 
     public function test_failed_reversal_blocks_approval_of_an_already_pending_withdrawal(): void
@@ -289,7 +258,7 @@ class OrderAccountingRecoveryTest extends TestCase
         $service->approveWithdrawal($withdrawal, $operator);
 
         $this->assertSame('approved', $withdrawal->refresh()->status);
-        $this->assertSame('145.00', $this->merchant->refresh()->balance);
+        $this->assertSame('150.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->pending_withdrawal_balance);
     }
 
@@ -299,10 +268,9 @@ class OrderAccountingRecoveryTest extends TestCase
         $order = $this->pendingOrder(['settlement_days' => 0]);
         $this->push($order, 'paid');
         $freeze = MerchantFundFreeze::query()->where('order_id', $order->id)->sole();
-        $this->failNextLedgerInsert();
-        $this->pushAndAssertAccountingFailure($order, 'refunded');
+        app(OrderPaymentStatusService::class)->handle(['s_order_id' => $order->order_no, 'status' => 'refunded']);
         $task = OrderAccountingTask::query()->where('order_id', $order->id)->where('type', 'refund')->sole();
-        $task->update(['status' => OrderAccountingTask::STATUS_MANUAL_REVIEW]);
+        $this->assertSame(OrderAccountingTask::STATUS_MANUAL_REVIEW, $task->status);
         $this->travel(8)->days();
 
         $this->artisan('fund-freezes:release-due')->assertSuccessful();
@@ -319,7 +287,7 @@ class OrderAccountingRecoveryTest extends TestCase
 
         $this->assertSame('completed', $task->refresh()->status);
         $this->assertNotNull($task->completed_at);
-        $this->assertSame('195.00', $this->merchant->refresh()->balance);
+        $this->assertSame('200.00', $this->merchant->refresh()->balance);
         $this->assertSame('0.00', $this->merchant->frozen_balance);
         $this->assertSame('50.00', $this->merchant->pending_withdrawal_balance);
         $this->assertDatabaseCount('order_refunds', 1);
@@ -377,8 +345,10 @@ class OrderAccountingRecoveryTest extends TestCase
 
     private function pendingOrder(array $overrides = []): Order
     {
+        $method = $this->makePaymentMethod(uniqid('channel'));
+
         return $this->makeOrder('SSC-ACCOUNTING', 'M-ACCOUNTING', array_merge([
-            'status' => 'pending', 'settlement_amount' => '95.00',
+            'payment_method_id' => $method->id, 'status' => 'pending', 'settlement_amount' => '95.00',
             'settlement_mode' => 'immediate', 'settlement_days' => 2,
             'reserve_percent' => '10', 'reserve_days' => 7,
             'refund_fee_snapshot' => '0.00', 'chargeback_fee_snapshot' => '0.00',
@@ -387,8 +357,13 @@ class OrderAccountingRecoveryTest extends TestCase
 
     private function push(Order $order, string $status): void
     {
+        if ($status === 'refunded') {
+            $this->receiveRefund($order, '100.00');
+
+            return;
+        }
         app(OrderPaymentStatusService::class)->handle([
-            's_order_id' => $order->order_no, 'status' => $status,
+            's_order_id' => $order->order_no, 'status' => $status, 'transaction_id' => 'txn_1',
             'amount' => '100.00', 'currency' => 'USD',
         ]);
     }

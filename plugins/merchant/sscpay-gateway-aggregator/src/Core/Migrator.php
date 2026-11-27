@@ -41,6 +41,7 @@ class Migrator
             '1.4.0' => [self::class, 'migrate_1_4_0'],
             '1.5.0' => [self::class, 'migrate_1_5_0'],
             '1.6.0' => [self::class, 'migrate_1_6_0'],
+            '1.7.0' => [self::class, 'migrate_1_7_0'],
         ];
     }
 
@@ -729,6 +730,63 @@ CREATE TABLE {$table} (
         ));
         if ($found !== $table || $column !== 'gateway_session_expires_at' || $referenceError !== '' || !empty($wpdb->last_error)) {
             throw new \RuntimeException('支付会话历史引用或期限字段迁移失败');
+        }
+    }
+
+    /** Verified refund deliveries await a match, and each successful refund has its own outbox entry. */
+    private static function migrate_1_7_0($wpdb)
+    {
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $charset = $wpdb->get_charset_collate();
+        $inbox = $wpdb->prefix . 'payment_refund_inbox';
+        $refunds = $wpdb->prefix . 'payment_refunds';
+        dbDelta("CREATE TABLE {$inbox} (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    receipt_key CHAR(64) NOT NULL,
+    failed_source CHAR(64) DEFAULT NULL,
+    payment_method VARCHAR(32) NOT NULL,
+    config_source VARCHAR(16) NOT NULL,
+    config_id BIGINT UNSIGNED NOT NULL,
+    config_hash CHAR(64) NOT NULL,
+    s_order_id VARCHAR(64) NOT NULL DEFAULT '',
+    verified_body LONGTEXT DEFAULT NULL,
+    status VARCHAR(20) NOT NULL,
+    attempts INT UNSIGNED NOT NULL DEFAULT 0,
+    lookup_cursor BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NOT NULL,
+    last_error VARCHAR(160) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY  (id),
+    UNIQUE KEY receipt_key (receipt_key),
+    KEY failed_source (failed_source),
+    KEY due (status,next_attempt_at),
+    KEY by_order (s_order_id,status)
+) ENGINE=InnoDB {$charset};");
+        if ($wpdb->last_error !== '') { throw new \RuntimeException('退款收件表升级失败'); }
+        dbDelta("CREATE TABLE {$refunds} (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    refund_key CHAR(64) NOT NULL,
+    source_hash CHAR(64) NOT NULL,
+    amount DECIMAL(18,4) NOT NULL,
+    s_order_id VARCHAR(64) NOT NULL,
+    payload LONGTEXT NOT NULL,
+    PRIMARY KEY  (id),
+    UNIQUE KEY refund_key (refund_key),
+    UNIQUE KEY source_hash (source_hash),
+    KEY by_order (s_order_id)
+) ENGINE=InnoDB {$charset};");
+        if ($wpdb->last_error !== '') { throw new \RuntimeException('退款凭证表升级失败'); }
+        foreach ([[$inbox, 'receipt_key'], [$refunds, 'refund_key'], [$refunds, 'source_hash']] as [$table, $key]) {
+            $indexes = $wpdb->get_results($wpdb->prepare("SHOW INDEX FROM `{$table}` WHERE Key_name = %s", $key), ARRAY_A);
+            if (count($indexes ?: []) !== 1 || (int) $indexes[0]['Non_unique'] !== 0 || $indexes[0]['Column_name'] !== $key) {
+                throw new \RuntimeException('逐笔退款幂等索引未完成升级');
+            }
+        }
+        foreach ([$inbox, $refunds, $wpdb->prefix . 'payment_callback_queue', $wpdb->prefix . 'payment_transactions'] as $table) {
+            $row = $wpdb->get_row($wpdb->prepare('SHOW TABLE STATUS WHERE Name = %s', $table), ARRAY_A);
+            if (!$row || strcasecmp($row['Engine'], 'InnoDB') !== 0) {
+                throw new \RuntimeException('退款收件、凭证及回调队列表需要 InnoDB');
+            }
         }
     }
 

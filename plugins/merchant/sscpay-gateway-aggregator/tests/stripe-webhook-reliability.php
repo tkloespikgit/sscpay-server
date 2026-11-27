@@ -520,26 +520,7 @@ namespace {
             same([], Fixture::$remoteCalls, 'Invalid header does not call Stripe'); noEffects();
         }
     };
-    $tests['partial refunds preserve paid status and full refunds still close it'] = function () {
-        global $wpdb;
-        Fixture::reset('paid'); $wpdb->transactions['S-001']['transaction_id'] = 'pi_regression';
-        same(200, send(event('charge.refunded', ['amount_refunded' => 200, 'refunded' => false]))['http_status'], 'Partial refund acknowledgment');
-        same('paid', Fixture::row()['status'], 'Partial refund keeps paid status'); noEffects();
-        same(200, send(event('charge.refunded', [], 'evt_full_refund'))['http_status'], 'Full refund acknowledgment');
-        same('refunded', Fixture::row()['status'], 'Full refund state');
-        same(1, count(Fixture::$callbacks), 'Full refund callback');
-    };
-    $tests['refund preceding payment remains retryable and applies after payment arrives'] = function () {
-        global $wpdb;
-        Fixture::reset(); $wpdb->transactions['S-001']['transaction_id'] = 'pi_regression';
-        $refund = event('charge.refunded', [], 'evt_refund_first');
-        same(503, send($refund)['http_status'], 'Out of order refund asks for retry');
-        same('pending', Fixture::row()['status'], 'Refund does not fabricate paid state'); noEffects();
-        same(200, send(paidEvent('evt_paid_later'))['http_status'], 'Paid acknowledgment');
-        same(200, send($refund)['http_status'], 'Refund replay acknowledgment');
-        same('refunded', Fixture::row()['status'], 'Refund survives out of order delivery');
-        same(2, count(Fixture::$callbacks), 'Payment and refund callbacks');
-    };
+    // Per-refund amount, replay, aggregate charge and out-of-order cases run in refund-delivery.php.
     $tests['legacy PI resolves through verified Stripe Session association'] = function () {
         Fixture::reset();
         Fixture::$sessionLookup = [(object) ['id' => 'cs_test_session', 'payment_intent' => 'pi_regression']];

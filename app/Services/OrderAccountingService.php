@@ -26,12 +26,18 @@ class OrderAccountingService
             return;
         }
 
+        if ($targetStatus === 'refunded') {
+            $this->recordTask($order, OrderAccountingTask::TYPE_REFUND);
+
+            return;
+        }
+
         if ($order->settlement_mode !== null || $firstPayment) {
             $this->recordTask($order, OrderAccountingTask::TYPE_PAID);
         }
 
-        if (in_array($targetStatus, ['refunded', 'chargeback'], true)) {
-            $this->recordTask($order, $targetStatus === 'refunded' ? OrderAccountingTask::TYPE_REFUND : OrderAccountingTask::TYPE_CHARGEBACK);
+        if ($targetStatus === 'chargeback') {
+            $this->recordTask($order, OrderAccountingTask::TYPE_CHARGEBACK);
         }
     }
 
@@ -58,7 +64,7 @@ class OrderAccountingService
                 if ($task->type === OrderAccountingTask::TYPE_PAID) {
                     $task = OrderAccountingTask::query()->withoutGlobalScopes()
                         ->where('merchant_id', $order->merchant_id)->where('order_id', $order->id)
-                        ->whereIn('type', [OrderAccountingTask::TYPE_REFUND, OrderAccountingTask::TYPE_CHARGEBACK])
+                        ->where('type', OrderAccountingTask::TYPE_CHARGEBACK)
                         ->where('status', OrderAccountingTask::STATUS_PENDING)->orderBy('id')
                         ->lockForUpdate()->first() ?? $task;
                 }
@@ -69,6 +75,17 @@ class OrderAccountingService
 
                 if ($fresh->status !== OrderAccountingTask::STATUS_PENDING) {
                     return false;
+                }
+
+                if ($fresh->type === OrderAccountingTask::TYPE_REFUND) {
+                    if (bccomp((string) $order->refunded_amount, (string) $order->amount, 2) >= 0 || BalanceService::hasChargebackLedger($order)) {
+                        $this->complete($fresh);
+                    } else {
+                        $fresh->update(['status' => OrderAccountingTask::STATUS_MANUAL_REVIEW,
+                            'last_attempted_at' => now(), 'last_error' => OrderAccountingTask::REFUND_DETAIL_REQUIRED, 'next_attempt_at' => now()->addMinute()]);
+                    }
+
+                    return true;
                 }
 
                 if ($fresh->type !== OrderAccountingTask::TYPE_PAID && $order->settlement_mode !== null) {
@@ -86,20 +103,13 @@ class OrderAccountingService
                     $review = $order->activeDisputeEvent()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)->first();
                     if ($review) {
                         $this->balanceService->releaseForDisputeEvent($review, null, OrderDisputeEvent::CLOSE_TYPE_AUTO,
-                            '网关已确认退款或拒付，审核冻结与反向扣款在同一事务处理。');
+                            '网关已确认拒付，审核冻结与拒付扣款在同一事务处理。');
                     }
                     $order->refresh();
                 }
 
                 if ($fresh->type === OrderAccountingTask::TYPE_PAID) {
                     $this->balanceService->creditForPaidOrder($order);
-                } elseif ($fresh->type === OrderAccountingTask::TYPE_REFUND) {
-                    $remaining = bcsub((string) $order->amount, (string) $order->refunded_amount, 2);
-
-                    if (bccomp($remaining, '0', 2) > 0 && ! BalanceService::hasChargebackLedger($order)) {
-                        $this->balanceService->refund($order, $remaining, null,
-                            __('admin.finance.refund.gateway_auto_reason'), "gateway_refund:{$order->id}");
-                    }
                 } elseif ($fresh->type === OrderAccountingTask::TYPE_CHARGEBACK) {
                     if (! BalanceService::hasChargebackLedger($order)) {
                         $this->balanceService->chargeback($order, null,
@@ -161,6 +171,29 @@ class OrderAccountingService
             $this->complete($fresh);
 
             return true;
+        }, 3);
+    }
+
+    /** 认证查单确认退款清单完整，且清单内每笔均已入账。 */
+    public function completeRefundHint(Order $order): void
+    {
+        DB::transaction(function () use ($order): void {
+            Merchant::query()->withoutGlobalScopes()->lockForUpdate()->findOrFail($order->merchant_id);
+            $locked = Order::forMerchant($order->merchant_id)->lockForUpdate()->findOrFail($order->id);
+            if ($locked->gatewayRefunds()->withoutGlobalScopes()->where('merchant_id', $locked->merchant_id)->unsettled()->exists()) {
+                return;
+            }
+            OrderAccountingTask::forMerchant($locked->merchant_id)->where('order_id', $locked->id)
+                ->where('type', OrderAccountingTask::TYPE_REFUND)
+                ->where('status', OrderAccountingTask::STATUS_MANUAL_REVIEW)
+                ->where('last_error', OrderAccountingTask::REFUND_DETAIL_REQUIRED)
+                ->update(['status' => OrderAccountingTask::STATUS_COMPLETED, 'completed_at' => now(), 'last_error' => null, 'next_attempt_at' => null]);
+
+            // 旧插件可能将部分退款记成整单终态；完整渠道清单已核实时，解除这项历史出款阻断。
+            if ($locked->gateway_status === 'refunded' && $locked->paid_at !== null
+                && bccomp($locked->refunded_amount, '0', 2) > 0 && bccomp($locked->refunded_amount, $locked->amount, 2) < 0) {
+                $locked->update(['gateway_status' => 'paid', 'gateway_status_version' => $locked->gateway_status_version + 1]);
+            }
         }, 3);
     }
 

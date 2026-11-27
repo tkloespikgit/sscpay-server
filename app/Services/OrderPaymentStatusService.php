@@ -8,8 +8,10 @@ use App\Jobs\SendOrderNotificationJob;
 use App\Models\CryptoChainEvent;
 use App\Models\CryptoLedgerEntry;
 use App\Models\CryptoPaymentRequest;
+use App\Models\GatewayRefund;
 use App\Models\Merchant;
 use App\Models\Order;
+use App\Models\OrderAccountingTask;
 use App\Models\OrderGatewayStatusEvent;
 use App\Models\OrderNotificationAttempt;
 use App\Models\PaymentMethod;
@@ -53,6 +55,7 @@ class OrderPaymentStatusService
         private readonly TelegramNotificationRouter $telegramRoutes,
         private readonly PaymentChannelTelegramNotifier $channelTelegram,
         private readonly OrderAccountingService $accountingService,
+        private readonly GatewayRefundService $refunds,
         private readonly OrderLifecycleService $lifecycle,
         private readonly CombinedPaymentStatusService $combinedPayments,
     ) {}
@@ -179,15 +182,98 @@ class OrderPaymentStatusService
 
         $targetStatus = self::STATUS_MAP[$pluginStatus];
 
-        $oldStatus = $this->applyStatus($order, $targetStatus, $data, $gatewayReference, allowPaidOverride: true, expectedVersion: $expectedVersion);
+        $details = is_array($data['refunds'] ?? null) ? $data['refunds'] : [];
+        // 旧支付通知可能丢失。只有认证查单同时提供原收款时间、交易号和匹配金额时才恢复付款事实。
+        if ($targetStatus === 'refunded' && ($order->paid_at === null || blank($order->transaction_id))
+            && collect($details)->contains(fn ($refund) => is_array($refund) && ($refund['status'] ?? null) === 'succeeded'
+                && ($refund['s_order_id'] ?? null) === $gatewayReference && ($refund['payment_reference'] ?? null) === ($data['transaction_id'] ?? null)
+                && ($refund['payment_method'] ?? null) === $method->configMap?->payment_config_tag && ($refund['currency'] ?? null) === $order->currency)
+            && ($data['s_order_id'] ?? null) === $gatewayReference && filled($data['paid_at'] ?? null)
+            && filled($data['transaction_id'] ?? null) && $this->combinedPayments->amountMatches($order, $data)) {
+            $this->applyStatus($order, 'paid', $data, $gatewayReference, allowPaidOverride: true, expectedVersion: $expectedVersion);
+        }
+        $this->applyStatus($order, $targetStatus, $data, $gatewayReference, allowPaidOverride: true, expectedVersion: $expectedVersion);
+
+        $allBooked = ! empty($details) && ($data['refunds_complete'] ?? false) === true;
+        foreach ($details as $refund) {
+            if (! is_array($refund) || ($refund['s_order_id'] ?? null) !== $gatewayReference) {
+                $allBooked = false;
+
+                continue;
+            }
+            $receipt = $this->refunds->receive($refund);
+            $allBooked = $allBooked && $receipt->status === 'booked' && $receipt->order_id === $order->id
+                && ! DB::table('gateway_refund_conflicts')->where('gateway_refund_id', $receipt->id)->exists();
+        }
+        if ($allBooked) {
+            $this->accountingService->completeRefundHint($order);
+        }
+        $order->refresh();
 
         return [
             'queried_status' => $pluginStatus,
             'mapped_status' => $targetStatus,
-            'old_status' => $oldStatus ?? $beforeStatus,
+            'old_status' => $beforeStatus,
             'new_status' => $order->status,
-            'changed' => $oldStatus !== null,
+            'changed' => $beforeStatus !== $order->status,
         ];
+    }
+
+    /** 先尝试已有付款证据；处理顺序颠倒且收款引用仍缺时，通过认证查单恢复。 */
+    public function recoverRefund(GatewayRefund $receipt): bool
+    {
+        if ($this->refunds->process($receipt, onlyDue: true)) {
+            return true;
+        }
+        $receipt->refresh();
+        if ($receipt->status !== 'pending' || $receipt->last_error !== 'awaiting_payment_reference') {
+            return false;
+        }
+
+        $order = Order::forMerchant($receipt->merchant_id)->find($receipt->order_id);
+        if (! $order || ! $order->payment_method_id) {
+            return false;
+        }
+        // 领取下一次补查时点再访问外部；支付回调到达时可以立即处理，不必等到该时点。
+        $claimed = GatewayRefund::forMerchant($receipt->merchant_id)->whereKey($receipt->id)
+            ->where('status', 'pending')->where('last_error', 'awaiting_payment_reference')
+            ->where('next_attempt_at', $receipt->next_attempt_at)
+            ->update(['last_error' => 'querying_payment_reference', 'next_attempt_at' => now()->addHour()]);
+        if (! $claimed) {
+            return false;
+        }
+
+        $this->queryAndApply($order);
+
+        return $receipt->refresh()->status === 'booked';
+    }
+
+    /** 分批补查缺明细的历史通知。发送 HTTP 前领取查询资格，避免多台调度器同时请求。 */
+    public function queryRefundHint(OrderAccountingTask $task): bool
+    {
+        $claimed = OrderAccountingTask::forMerchant($task->merchant_id)->whereKey($task->id)
+            ->where('type', OrderAccountingTask::TYPE_REFUND)->where('status', OrderAccountingTask::STATUS_MANUAL_REVIEW)
+            ->where('last_error', OrderAccountingTask::REFUND_DETAIL_REQUIRED)
+            ->where(fn ($q) => $q->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now()))
+            ->update(['attempts' => DB::raw('attempts + 1'), 'last_attempted_at' => now(),
+                'next_attempt_at' => now()->addMinutes(min(1440, 5 * (2 ** min(9, $task->attempts))))]);
+        if (! $claimed) {
+            return false;
+        }
+        $order = Order::forMerchant($task->merchant_id)->find($task->order_id);
+        if (! $order || ! $order->payment_method_id) {
+            return false;
+        }
+
+        try {
+            $this->queryAndApply($order);
+        } catch (\Throwable $exception) {
+            Log::warning('退款明细补查失败，已安排下次重试', ['order_id' => $order->id, 'exception' => $exception::class]);
+
+            return false;
+        }
+
+        return true;
     }
 
     /** Caller holds merchant/order/request locks and has credited the ledger in this same transaction. */
@@ -283,7 +369,7 @@ class OrderPaymentStatusService
                 'source' => $source,
                 'status' => $targetStatus,
                 'gateway_updated_at' => $timestamp,
-                'outcome' => $outcome,
+                'outcome' => $targetStatus === 'refunded' && in_array($outcome, ['accepted', 'duplicate'], true) ? 'refund_detail_required' : $outcome,
                 'payload' => array_intersect_key($payload, array_flip([
                     'status', 's_order_id', 'wp_order_id', 'transaction_id', 'amount', 'currency', 'paid_at', 'updated_at',
                 ])),
@@ -291,6 +377,13 @@ class OrderPaymentStatusService
 
             if ($outcome === 'obsolete_reference') {
                 return ['old' => $old, 'accepted' => false, 'first' => false, 'changed' => false, 'outcome' => $outcome];
+            }
+
+            if ($targetStatus === 'refunded') {
+                // 历史插件和补查可能只提供一个订单级状态，无法据此确定本次退款金额。
+                $this->accountingService->recordForStatus($locked, 'refunded');
+
+                return ['old' => $old, 'accepted' => true, 'first' => false, 'changed' => false];
             }
 
             if ($checkForbiddenAccount) {
@@ -326,7 +419,7 @@ class OrderPaymentStatusService
             if (empty($locked->wp_order_id) && ! empty($payload['wp_order_id'])) {
                 $locked->wp_order_id = (int) $payload['wp_order_id'];
             }
-            if (! empty($payload['transaction_id'])) {
+            if ($targetStatus === 'paid' && ($firstPayment || blank($locked->transaction_id)) && filled($payload['transaction_id'] ?? null)) {
                 $locked->transaction_id = (string) $payload['transaction_id'];
             }
 
@@ -374,6 +467,8 @@ class OrderPaymentStatusService
 
         $this->processAccounting($order, $targetStatus, $payload);
         if ($targetStatus === 'paid') {
+            $order->gatewayRefunds()->withoutGlobalScopes()->where('merchant_id', $order->merchant_id)
+                ->where('status', 'pending')->orderBy('id')->each(fn ($receipt) => $this->refunds->process($receipt));
             $this->advancePreRecordedShipment($order);
         }
 

@@ -69,6 +69,11 @@ class OrderStatusReconciler
     public static function applyGatewayResult(array $transaction, array $result)
     {
         $targetStatus = $result['status'] ?? null;
+        if ($targetStatus === TransactionStateMachine::REFUNDED) {
+            // A payment-level status has no individual refund ID or amount.
+            // Only confirmed refund records can close the local transaction.
+            return TransactionManager::findBySOrderId($transaction['s_order_id']) ?: $transaction;
+        }
         $transactionId = $result['transaction_id'] ?? null;
         $storedTransactionId = $transaction['transaction_id'] ?? null;
         $fillMissingTransactionId = $targetStatus === TransactionStateMachine::PAID
