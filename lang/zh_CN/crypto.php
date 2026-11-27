@@ -215,6 +215,8 @@ return [
             '报价过期后，请重新获取报价，勿向旧地址转账。',
         ],
         'copy_amount' => '复制应付数量', 'payment_qr' => '付款二维码', 'open_wallet' => '打开钱包付款',
+        'standards' => ['erc20' => 'ERC20', 'trc20' => 'TRC20'],
+        'asset_with_standard' => ':asset（:standard）',
         'qr_amount' => '支持的钱包扫码后可自动填写地址和金额。',
         'qr_address' => '扫码填写收款地址，再输入上方应付数量。',
         'no_js' => '请启用 JavaScript，以安全核对付款状态并获取当前付款信息。',

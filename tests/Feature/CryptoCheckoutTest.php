@@ -208,6 +208,34 @@ class CryptoCheckoutTest extends TestCase
         $this->getJson($this->endpoint($order))->assertJsonPath('state', 'ready');
     }
 
+    public function test_open_keeps_a_live_quote_instead_of_returning_it_to_preparation(): void
+    {
+        [$checkout, $monitor] = $this->checkoutFixture();
+        $handoff = now()->subMinutes(2);
+        $monitor->update(['status' => 'active', 'activated_at' => $handoff, 'expires_at' => now()->addMinutes(15)]);
+        $monitor->paymentRequest->update([
+            'status' => 'ready', 'history_to_block' => 100, 'history_to_hash' => str_repeat('b', 64),
+            'history_to_time' => now(), 'history_checked_at' => now(),
+        ]);
+        $checkout->update([
+            'status' => 'ready', 'phase' => 'handoff', 'ready_at' => $handoff, 'handoff_at' => $handoff,
+            'requested_at' => now()->subMinute(),
+        ]);
+
+        $this->postJson($this->endpoint($monitor->paymentRequest->order), [
+            'action' => 'open', 'request_id' => $monitor->crypto_payment_request_id,
+        ])->assertStatus(202);
+
+        $fresh = $checkout->fresh();
+        $this->assertSame('ready', $fresh->status);
+        $this->assertSame('handoff', $fresh->phase);
+        $this->assertTrue($fresh->handoff_at->equalTo($handoff));
+        $this->assertTrue($fresh->ready_at->equalTo($handoff));
+        $this->getJson($this->endpoint($monitor->paymentRequest->order))->assertOk()
+            ->assertJsonPath('state', 'ready')
+            ->assertJsonPath('address', $monitor->address->address);
+    }
+
     public function test_reopen_backfills_payment_before_restoring_subscription_and_credits_only_once(): void
     {
         [$checkout, $monitor, $rpc] = $this->checkoutFixture(withPayment: true);

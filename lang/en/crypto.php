@@ -215,6 +215,8 @@ return [
             'If the quote expires, get a new quote and do not send funds to the old address.',
         ],
         'copy_amount' => 'Copy amount', 'payment_qr' => 'Payment QR code', 'open_wallet' => 'Open wallet',
+        'standards' => ['erc20' => 'ERC20', 'trc20' => 'TRC20'],
+        'asset_with_standard' => ':asset (:standard)',
         'qr_amount' => 'Scan with a compatible wallet to fill in the address and amount.',
         'qr_address' => 'Scan to fill in the address and enter the amount shown above.',
         'no_js' => 'Enable JavaScript to check payment safely and obtain the current payment instructions.',

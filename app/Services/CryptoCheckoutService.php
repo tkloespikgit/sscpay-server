@@ -65,6 +65,9 @@ final class CryptoCheckoutService
                 if ($action === 'requote' && (! $current || $current->expires_at->isFuture())) {
                     throw new DomainException('A valid quote cannot be replaced.');
                 }
+                if ($action === 'open' && $this->subscriptionIsLive($current)) {
+                    return;
+                }
                 $checkout->update(['action' => $action, 'phase' => 'backfill', 'status' => 'checking',
                     'requested_at' => now(), 'handoff_at' => null, 'ready_at' => null, 'next_attempt_at' => now(), 'error_code' => null]);
                 $this->requireCoverage($order);
@@ -204,6 +207,18 @@ final class CryptoCheckoutService
         $checkout->refresh();
 
         return $request;
+    }
+
+    private function subscriptionIsLive(?CryptoPaymentRequest $request): bool
+    {
+        if ($request === null || ! $request->expires_at->isFuture() || $request->current_monitor_id === null) {
+            return false;
+        }
+        $monitor = CryptoAddressMonitor::query()->forMerchant($request->merchant_id)
+            ->where('crypto_payment_request_id', $request->id)
+            ->find($request->current_monitor_id);
+
+        return $monitor?->status === 'active' && $monitor->expires_at?->isFuture();
     }
 
     private function current(CryptoCheckout $checkout): ?CryptoPaymentRequest
