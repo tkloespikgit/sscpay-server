@@ -44,6 +44,10 @@ class ViewOrder extends ViewRecord
                     TextEntry::make('order_no')->label(__('admin.order.fields.order_no'))->copyable(),
                     TextEntry::make('merchant_order_no')->label(__('admin.order.fields.merchant_order_no'))
                         ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('merchant.name')->label(__('observer.orders.columns.merchant_name'))
+                        ->placeholder(__('admin.order.placeholders.none')),
+                    TextEntry::make('merchant.owner.name')->label(__('observer.orders.columns.agent_name'))
+                        ->placeholder(__('admin.merchant.placeholders.owner_platform')),
                     TextEntry::make('status')->label(__('admin.order.fields.status'))->badge()
                         ->formatStateUsing(fn (string $state) => ObserverOrderStatus::label($state))
                         ->color(fn (string $state): string => OrderStatusColor::get($state)),

@@ -164,19 +164,7 @@ class OrderResource extends Resource
                     ->color('primary')
                     ->action(static::viewCustomerInfoAction()),
 
-                // 发货状态与物流同步状态合并：已发货显示运单号，颜色表示同步态
-                // （pending 灰 / synced 绿 / failed 红）；未发货占位灰。详情弹窗仍含完整同步信息。
-                TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
-                    ->placeholder(__('admin.order.placeholders.not_shipped'))
-                    ->size(TextSize::ExtraSmall)
-                    ->limit(24)
-                    ->tooltip(fn ($record) => $record->shipping?->tracking_number)
-                    ->color(fn ($record) => match ($record->shipping?->sync_status) {
-                        OrderShipping::SYNC_STATUS_SYNCED => 'success',
-                        OrderShipping::SYNC_STATUS_FAILED => 'danger',
-                        default => 'gray',
-                    })
-                    ->action(static::viewShippingInfoAction()),
+                static::shippingInfoColumn(),
 
                 // 供应商轨迹最新状态（与上方 WP sync 列独立）；展示形态对齐「状态」列 badge。
                 // 异常红 / 有轨迹绿 / 无轨迹灰；点击独立弹窗查看 tracking_* / 异常。
@@ -632,6 +620,22 @@ class OrderResource extends Resource
                         ->placeholder(__('admin.order.placeholders.none')),
                 ]),
             ]);
+    }
+
+    /** 发货状态与物流同步状态合并，平台、商户和观察者共用只读物流弹窗。 */
+    public static function shippingInfoColumn(): TextColumn
+    {
+        return TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
+            ->placeholder(__('admin.order.placeholders.not_shipped'))
+            ->size(TextSize::ExtraSmall)
+            ->limit(24)
+            ->tooltip(fn (Order $record): ?string => $record->shipping?->tracking_number)
+            ->color(fn (Order $record): string => match ($record->shipping?->sync_status) {
+                OrderShipping::SYNC_STATUS_SYNCED => 'success',
+                OrderShipping::SYNC_STATUS_FAILED => 'danger',
+                default => 'gray',
+            })
+            ->action(static::viewShippingInfoAction());
     }
 
     /**

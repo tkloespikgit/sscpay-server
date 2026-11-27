@@ -4,12 +4,14 @@ namespace App\Filament\Observer\Resources;
 
 use App\Filament\Observer\Resources\OrderResource\Pages;
 use App\Filament\Resources\OrderResource as AdminOrderResource;
+use App\Models\Merchant;
 use App\Models\Observer;
 use App\Models\Order;
 use App\Models\PaymentMethod;
+use App\Models\User;
+use App\Services\ObserverOrderQueryService;
 use App\Support\ObserverOrderStatus;
 use App\Support\OrderStatusColor;
-use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
@@ -90,9 +92,17 @@ class OrderResource extends Resource
         $observer = static::currentObserver();
 
         return $table
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping', 'paymentMethod.merchant']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['shipping.operator', 'paymentMethod', 'merchant.owner']))
             ->columns([
-                TextColumn::make('order_no')->label(__('admin.order.columns.order_no'))->searchable()->copyable(),
+                TextColumn::make('merchant.owner.name')->label(__('observer.orders.columns.agent_name'))
+                    ->placeholder(__('admin.merchant.placeholders.owner_platform')),
+                TextColumn::make('merchant.name')->label(__('observer.orders.columns.merchant_name'))
+                    ->placeholder(__('admin.order.placeholders.none')),
+                TextColumn::make('order_no')->label(__('observer.orders.columns.order_no'))->searchable()->copyable(),
+                TextColumn::make('merchant_order_no')->label(__('observer.orders.columns.merchant_order_no'))->copyable(),
+                TextColumn::make('transaction_id')->label(__('observer.orders.columns.transaction_id'))
+                    ->copyable()
+                    ->placeholder(__('admin.order.placeholders.none')),
                 TextColumn::make('paymentMethod.method_name')->label(__('admin.order.columns.payment_method'))
                     ->formatStateUsing(fn (?string $state, Order $record) => $state ?? $record->payment_method),
 
@@ -101,11 +111,9 @@ class OrderResource extends Resource
                     ->formatStateUsing(fn (string $state) => ObserverOrderStatus::label($state))
                     ->color(fn (string $state): string => OrderStatusColor::get($state)),
 
-                TextColumn::make('shipping.tracking_number')->label(__('admin.order.columns.shipping_status'))
-                    ->placeholder(__('admin.order.placeholders.not_shipped'))
-                    ->color(fn (?Order $record) => $record?->shipping ? 'primary' : 'gray'),
+                AdminOrderResource::shippingInfoColumn(),
 
-                TextColumn::make('amount')->label(__('admin.order.columns.amount_original'))
+                TextColumn::make('amount')->label(__('observer.orders.columns.amount'))
                     ->formatStateUsing(fn ($state, Order $record): string|HtmlString => AdminOrderResource::originalCurrencyAmountState(
                         $record,
                         $record->amount,
@@ -114,17 +122,70 @@ class OrderResource extends Resource
                     ->html()
                     ->alignCenter()
                     ->sortable(),
-                TextColumn::make('converted_amount')->label(__('admin.order.columns.amount_usd'))
+                TextColumn::make('converted_amount')->label(__('observer.orders.columns.converted_amount'))
                     ->formatStateUsing(fn ($state, Order $record): string => AdminOrderResource::convertedAmountState(
                         $record,
                         $record->converted_amount,
                         fn (string $amount): string => (string) ($observer?->scaleAmount($amount) ?? $amount),
                     ))
                     ->sortable(),
+                TextColumn::make('settlement_amount')->label(__('observer.orders.columns.settlement_amount'))
+                    ->state(fn (Order $record): ?string => $record->payment_type === 'crypto'
+                        ? null : $observer?->scaleAmount($record->settlement_amount))
+                    ->formatStateUsing(fn ($state, Order $record): string => AdminOrderResource::convertedAmountState($record, $state))
+                    ->placeholder(__('admin.order.placeholders.none'))
+                    ->sortable(),
 
                 TextColumn::make('created_at')->label(__('admin.order.columns.created_at'))->dateTime()->sortable(),
             ])
             ->filters([
+                SelectFilter::make('agent_id')
+                    ->label(__('observer.orders.columns.agent_name'))
+                    ->options(function (): array {
+                        $merchants = static::visibleMerchantsQuery();
+                        $options = User::query()
+                            ->whereIn('id', (clone $merchants)->select('owner_id'))
+                            ->orderBy('name')
+                            ->pluck('name', 'id')
+                            ->all();
+
+                        if ((clone $merchants)->whereNull('owner_id')->exists()) {
+                            $options = ['platform' => __('admin.merchant.placeholders.owner_platform')] + $options;
+                        }
+
+                        return $options;
+                    })
+                    ->searchable()
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        filled($data['value'] ?? null),
+                        fn (Builder $q): Builder => $q->whereHas('merchant', fn (Builder $merchantQuery): Builder => $data['value'] === 'platform'
+                                ? $merchantQuery->whereNull('owner_id')
+                                : $merchantQuery->where('owner_id', $data['value']))
+                    )),
+
+                SelectFilter::make('merchant_id')
+                    ->label(__('observer.orders.columns.merchant_name'))
+                    ->options(fn () => static::visibleMerchantsQuery()->orderBy('name')->pluck('name', 'id'))
+                    ->searchable(),
+
+                Filter::make('created_from')
+                    ->schema([
+                        DatePicker::make('created_from')->label(__('admin.order.filters.created_from')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['created_from'] ?? null,
+                        fn (Builder $q, $date): Builder => $q->whereDate('orders.created_at', '>=', $date)
+                    )),
+
+                Filter::make('created_to')
+                    ->schema([
+                        DatePicker::make('created_to')->label(__('admin.order.filters.created_to')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        $data['created_to'] ?? null,
+                        fn (Builder $q, $date): Builder => $q->whereDate('orders.created_at', '<=', $date)
+                    )),
+
                 SelectFilter::make('payment_method_id')
                     ->label(__('admin.order.filters.payment_method'))
                     ->options(fn () => $observer
@@ -134,6 +195,66 @@ class OrderResource extends Resource
                             ])
                         : []),
 
+                Filter::make('order_no')
+                    ->label(__('observer.orders.columns.order_no'))
+                    ->schema([
+                        TextInput::make('order_no')
+                            ->label(__('observer.orders.columns.order_no'))
+                            ->placeholder(__('admin.order.filters.order_no_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['order_no'] ?? '')) !== '',
+                        fn (Builder $q): Builder => $q->where('orders.order_no', 'like', '%'.trim((string) $data['order_no']).'%')
+                    )),
+
+                Filter::make('merchant_order_no')
+                    ->label(__('observer.orders.columns.merchant_order_no'))
+                    ->schema([
+                        TextInput::make('merchant_order_no')
+                            ->label(__('observer.orders.columns.merchant_order_no'))
+                            ->placeholder(__('admin.order.filters.merchant_order_no_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['merchant_order_no'] ?? '')) !== '',
+                        fn (Builder $q): Builder => $q->where('orders.merchant_order_no', 'like', '%'.trim((string) $data['merchant_order_no']).'%')
+                    )),
+
+                Filter::make('transaction_id')
+                    ->label(__('observer.orders.columns.transaction_id'))
+                    ->schema([
+                        TextInput::make('transaction_id')
+                            ->label(__('observer.orders.columns.transaction_id'))
+                            ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['transaction_id'] ?? '')) !== '',
+                        fn (Builder $q): Builder => $q->where('orders.transaction_id', 'like', '%'.trim((string) $data['transaction_id']).'%')
+                    )),
+
+                Filter::make('amount')
+                    ->label(__('observer.orders.columns.amount'))
+                    ->schema([
+                        TextInput::make('amount')
+                            ->label(__('observer.orders.columns.amount'))
+                            ->inputMode('decimal')
+                            ->placeholder('100.00'),
+                    ])
+                    ->query(fn (Builder $query, array $data, ObserverOrderQueryService $service): Builder => $observer
+                        ? $service->filterByDisplayedAmount($query, $observer, (string) ($data['amount'] ?? ''))
+                        : $query),
+
+                Filter::make('customer_email')
+                    ->label(__('admin.order.filters.customer_email'))
+                    ->schema([
+                        TextInput::make('customer_email')
+                            ->label(__('admin.order.filters.customer_email'))
+                            ->placeholder(__('admin.order.filters.customer_email_placeholder')),
+                    ])
+                    ->query(fn (Builder $query, array $data): Builder => $query->when(
+                        trim((string) ($data['customer_email'] ?? '')) !== '',
+                        fn (Builder $q): Builder => $q->where('orders.customer_email', 'like', '%'.trim((string) $data['customer_email']).'%')
+                    )),
+
                 SelectFilter::make('status')->label(__('admin.order.filters.status'))
                     ->options(ObserverOrderStatus::options())
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
@@ -141,59 +262,24 @@ class OrderResource extends Resource
                         fn (Builder $q) => $q->whereIn('status', ObserverOrderStatus::GROUPS[$data['value']] ?? [])
                     )),
 
-                Filter::make('created_at')
-                    ->label(__('admin.order.columns.created_at'))
-                    ->schema([
-                        DatePicker::make('created_from')->label(__('admin.order.filters.created_from')),
-                        DatePicker::make('created_to')->label(__('admin.order.filters.created_to')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query
-                        ->when($data['created_from'] ?? null, fn (Builder $q, $date) => $q->whereDate('orders.created_at', '>=', $date))
-                        ->when($data['created_to'] ?? null, fn (Builder $q, $date) => $q->whereDate('orders.created_at', '<=', $date))),
-
-                // 发货状态判定方式对齐 App\Filament\Resources\OrderResource（以是否存在
-                // 物流记录为准，不按 status 字段判断）。
                 SelectFilter::make('shipping_status')
                     ->label(__('admin.order.filters.shipping_status'))
                     ->options([
                         'shipped' => __('admin.order.filters.shipping_shipped'),
                         'unshipped' => __('admin.order.filters.shipping_unshipped'),
                     ])
-                    ->query(function (Builder $query, array $data): Builder {
-                        return $query
-                            ->when(($data['value'] ?? null) === 'shipped', fn ($q) => $q->whereHas('shipping'))
-                            ->when(($data['value'] ?? null) === 'unshipped', fn ($q) => $q->doesntHave('shipping'));
-                    }),
-
-                Filter::make('order_no')
-                    ->label(__('admin.order.filters.order_no'))
-                    ->schema([
-                        TextInput::make('order_no')
-                            ->label(__('admin.order.filters.order_no'))
-                            ->placeholder(__('admin.order.filters.order_no_placeholder')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['order_no'] ?? null,
-                        fn ($q, $orderNo) => $q->where('order_no', 'like', '%'.$orderNo.'%')
-                    )),
-
-                Filter::make('transaction_id')
-                    ->label(__('admin.order.filters.transaction_id'))
-                    ->schema([
-                        TextInput::make('transaction_id')
-                            ->label(__('admin.order.filters.transaction_id'))
-                            ->placeholder(__('admin.order.filters.transaction_id_placeholder')),
-                    ])
-                    ->query(fn (Builder $query, array $data): Builder => $query->when(
-                        $data['transaction_id'] ?? null,
-                        fn ($q, $transactionId) => $q->where('transaction_id', 'like', '%'.$transactionId.'%')
-                    )),
+                    ->query(fn (Builder $query, array $data): Builder => $query
+                        ->when(($data['value'] ?? null) === 'shipped', fn (Builder $q): Builder => $q->whereHas('shipping'))
+                        ->when(($data['value'] ?? null) === 'unshipped', fn (Builder $q): Builder => $q->doesntHave('shipping'))),
             ], layout: FiltersLayout::AboveContent)
-            ->filtersFormColumns(3)
-            ->recordActions([
-                ViewAction::make(),
-            ])
+            ->filtersFormColumns(4)
+            ->recordActions([])
             ->defaultSort('created_at', 'desc');
+    }
+
+    private static function visibleMerchantsQuery(): Builder
+    {
+        return Merchant::query()->whereIn('id', static::getEloquentQuery()->select('orders.merchant_id'));
     }
 
     /**
